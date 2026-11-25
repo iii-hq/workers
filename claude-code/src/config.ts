@@ -60,6 +60,12 @@ const ConfigSchema = z.object({
     .string()
     .default('')
     .describe('Path to the claude CLI; empty = resolve on PATH'),
+  external_sessions: z
+    .boolean()
+    .default(false)
+    .describe(
+      "claude::agents::list shows every Claude Code session on the terminal host, not only this worker's runs and the sessions whose hooks reached it, and its background ones may be opened and stopped",
+    ),
   terminal: z
     .object({
       executable: z
@@ -76,7 +82,7 @@ const ConfigSchema = z.object({
         .string()
         .default('')
         .describe(
-          "Directory the terminal starts in. Empty: `claude-code` under the ide worker's primary root. Must be inside its jail: the ide worker owns the terminal.",
+          "The worker's own folder on the terminal host (it keeps default-mcp.md there). Empty: `claude-code` under the ide worker's primary root. Not where sessions run: each runs in the folder the console page picks, else the compose project folder.",
         ),
       auto_install: z
         .boolean()
@@ -86,7 +92,7 @@ const ConfigSchema = z.object({
         .boolean()
         .default(true)
         .describe(
-          'Keep the workspace equipped on every boot: the iii plugin, with its skills, commands and the hooks that report activity',
+          'Before every session: install the published iii plugin (iii@iii, scope local) in its folder when missing, and append default-mcp',
         ),
     })
     .prefault({})
@@ -108,11 +114,34 @@ export const RuntimeConfigSchema = ConfigSchema.omit({ engine_url: true });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
 /** JSON Schema published to the configuration worker. The registry validator
- *  has no `$schema` meta-schema, so strip the draft-2020-12 `$schema` key. */
+ *  has no `$schema` meta-schema, so strip the draft-2020-12 `$schema` key.
+ *
+ *  It describes what may be STORED (`io: 'input'`), not what a parse returns:
+ *  a setting with a default is optional and carries that default. The
+ *  configuration worker validates a stored value against this schema, and
+ *  compose refuses to start the worker when it does not validate, so a
+ *  setting a release adds must never make an older stored configuration
+ *  invalid; this worker's own parse fills in the default. */
 export function runtimeJsonSchema(): Record<string, unknown> {
-  const out = z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>;
+  const out = z.toJSONSchema(RuntimeConfigSchema, { io: 'input' }) as Record<string, unknown>;
+  // Input mode leaves objects open; the stored value stays closed, as it was,
+  // so a misspelt setting is still refused rather than silently ignored.
+  closeLike(out, z.toJSONSchema(RuntimeConfigSchema) as Record<string, unknown>);
   delete out.$schema;
   return out;
+}
+
+type SchemaNode = { properties?: Record<string, SchemaNode>; additionalProperties?: unknown };
+
+/** Copy `additionalProperties` from `like` onto the matching objects of `node`. */
+function closeLike(node: SchemaNode, like: SchemaNode): void {
+  if ('additionalProperties' in like && node.properties) {
+    node.additionalProperties = like.additionalProperties;
+  }
+  for (const [key, child] of Object.entries(node.properties ?? {})) {
+    const other = like.properties?.[key];
+    if (other) closeLike(child, other);
+  }
 }
 
 /** The runtime slice of a full config, for use as `initial_value`. */

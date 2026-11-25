@@ -5,6 +5,8 @@ import {
   escapeAttr,
   extensionOf,
   failureBlock,
+  isWorkerMissing,
+  reportDropped,
 } from './shared'
 
 describe('describeWorkerFailure', () => {
@@ -47,6 +49,19 @@ describe('describeWorkerFailure', () => {
   })
 })
 
+describe('isWorkerMissing', () => {
+  it('knows each way the engine says it, and nothing else', () => {
+    expect(isWorkerMissing("'document::to-markdown' is not registered")).toBe(
+      true,
+    )
+    expect(isWorkerMissing({ code: 'NOT_FOUND' })).toBe(true)
+    expect(isWorkerMissing('function document::to-markdown not found')).toBe(
+      true,
+    )
+    expect(isWorkerMissing(new Error('malformed document'))).toBe(false)
+  })
+})
+
 describe('failureBlock', () => {
   /* The header is parsed by finding the first `>`, so an unescaped one in a
      file name would cut it short and lose every attribute after it. */
@@ -57,6 +72,35 @@ describe('failureBlock', () => {
     expect(block).toContain('&quot;')
     // The only unescaped `>` is the one that closes the block.
     expect(block.indexOf('>')).toBe(block.length - 1)
+    const stored = failureBlock('a.docx', 'nope', 'a>1')
+    expect(stored.indexOf('>')).toBe(stored.length - 1)
+  })
+
+  it('names the stored id and the call that reads it', () => {
+    expect(failureBlock('a.docx', 'nope', 'a_1')).toBe(
+      '<attached-file path="a.docx" id="a_1" error="nope" read-with="session::read-attachment" />',
+    )
+  })
+
+  it('names neither when nothing was stored', () => {
+    expect(failureBlock('a.docx', 'nope')).toBe(
+      '<attached-file path="a.docx" error="nope" />',
+    )
+  })
+})
+
+describe('reportDropped', () => {
+  it('passes each stored id to its stub', () => {
+    const into = { blocks: [], failures: [] }
+    reportDropped(
+      [{ name: 'a.pdf', attachmentId: 'a_1' }, { name: 'b.pdf' }],
+      'nope',
+      into,
+    )
+    expect(into.blocks).toEqual([
+      failureBlock('a.pdf', 'nope', 'a_1'),
+      failureBlock('b.pdf', 'nope'),
+    ])
   })
 })
 

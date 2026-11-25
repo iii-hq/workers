@@ -17,17 +17,14 @@ pub use wiring::{WEBHOOK_CONSUMER_GROUP, queue_observer_id, register};
 use crate::configuration::ConfigCell;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
-use iii_sdk::{
-    CallRequest, CallRequestWithMetadata, IIIClient,
-    channel::{ChannelReader, StreamChannelRef},
-};
+use iii_sdk::{CallRequest, CallRequestWithMetadata, IIIClient, InputStream};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use std::{collections::HashMap, path::Path, sync::Arc};
 use store::Store;
-use tokio::sync::Mutex;
+use tokio::{io::AsyncReadExt, sync::Mutex};
 /// The private function each subscriber notification is a call of. Observers
 /// pass [`EventFilter`] as args; its deliver hook hands each call to the one
 /// subscriber it is for.
@@ -89,7 +86,6 @@ pub struct Service {
     iii: Arc<IIIClient>,
     cell: ConfigCell,
     config: WebhookConfig,
-    engine_url: String,
     store: Option<Store>,
     /// Why storage did not open while webhooks were enabled at startup.
     storage_error: Option<String>,
@@ -575,14 +571,18 @@ impl Service {
             {
                 return Err(Failure::Oversize);
             }
-            let reader = ChannelReader::new(&self.engine_url, &req.request_body);
+            // Read at most one byte past the cap: enough to tell an oversize
+            // body apart without buffering the rest of it.
+            let limit = self.config.max_body_bytes;
+            let mut body = req.request_body;
             let mut raw = Vec::new();
-            while let Some(chunk) = reader.next_binary().await? {
-                if chunk.len() > self.config.max_body_bytes.saturating_sub(raw.len()) {
-                    reader.close().await?;
-                    return Err(Failure::Oversize);
-                }
-                raw.extend_from_slice(&chunk);
+            (&mut body)
+                .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+                .read_to_end(&mut raw)
+                .await?;
+            if raw.len() > limit {
+                body.cancel().await;
+                return Err(Failure::Oversize);
             }
             let service = self.clone();
             tokio::task::spawn_blocking(move || {
@@ -628,7 +628,7 @@ impl Service {
 pub struct ReceiveRequest {
     pub headers: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
-    pub request_body: StreamChannelRef,
+    pub request_body: InputStream,
 }
 #[derive(Serialize, JsonSchema)]
 pub struct HttpResponse {

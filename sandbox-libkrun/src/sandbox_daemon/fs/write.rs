@@ -3,11 +3,10 @@
 
 //! sandbox::fs::write — streaming file upload function.
 //!
-//! The caller creates a channel and passes its `reader_ref` (a
-//! `StreamChannelRef`) in the request JSON. This handler constructs a
-//! `ChannelReader` from that ref, adapts it to `tokio::io::AsyncRead`
-//! via `ChannelReaderAdapter`, then streams bytes into the supervisor
-//! through `FsRunner::fs_write_stream`.
+//! The caller passes a stream's read ref (a `StreamChannelRef`) in the
+//! request JSON. This handler opens it as an `InputStream`, adapts it to
+//! `tokio::io::AsyncRead` via `ChannelReaderAdapter`, then streams bytes into
+//! the supervisor through `FsRunner::fs_write_stream`.
 
 use std::future::Future;
 use std::io;
@@ -16,8 +15,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::future::BoxFuture;
-use iii_sdk::RegisterFunction;
-use iii_sdk::channels::{ChannelReader, StreamChannelRef};
+use iii_sdk::protocol::StreamChannelRef;
+use iii_sdk::{InputStream, RegisterFunction};
 use iii_shell_proto::FsResult;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -29,38 +28,46 @@ use crate::sandbox_daemon::{
 };
 
 // ---------------------------------------------------------------------------
-// AsyncRead adapter for ChannelReader
+// AsyncRead adapter for an InputStream
 // ---------------------------------------------------------------------------
 
-/// Wraps a `ChannelReader` and implements `tokio::io::AsyncRead` by driving
-/// `next_binary()` on each poll. Because `ChannelReader::next_binary` is
-/// async and `poll_read` is synchronous, we store a pending future when the
+/// Wraps an `InputStream` and implements `tokio::io::AsyncRead` by reading
+/// its next byte chunk on each poll, skipping empty chunks (an empty write
+/// must not read as EOF). Because the read is async and `poll_read` is
+/// synchronous, we store a pending future when the
 /// current chunk isn't ready yet. Leftover bytes from a chunk larger than
 /// the read buffer are kept in `pending_buf`.
 ///
 /// # Limitations
 /// This adapter holds a `tokio::runtime::Handle` internally and spawns the
-/// async `next_binary()` call as a task, then polls the JoinHandle. This
+/// async read as a task, then polls the JoinHandle. This
 /// keeps the `AsyncRead` impl `Unpin` without unsafe and avoids storing a
 /// `Pin<Box<dyn Future>>` inline (which would require `unsafe Unpin`).
 pub struct ChannelReaderAdapter {
-    /// Starts the read of the next frame: `ChannelReader::next_binary`, or a
-    /// scripted source in tests.
+    /// Starts the read of the next chunk: the `InputStream`'s, or a scripted
+    /// source in tests.
     next: Box<dyn Fn() -> BoxFuture<'static, Frame> + Send>,
     pending_buf: Vec<u8>,
     pending_task: Option<tokio::task::JoinHandle<Frame>>,
     eof: bool,
 }
 
-/// One `next_binary` result: a frame, `None` at the end of the stream.
+/// One read: a chunk, `None` at the end of the stream.
 type Frame = Result<Option<Vec<u8>>, iii_sdk::Error>;
 
 impl ChannelReaderAdapter {
-    pub fn new(reader: ChannelReader) -> Self {
-        let reader = Arc::new(reader);
+    pub fn new(reader: InputStream) -> Self {
+        let reader = Arc::new(tokio::sync::Mutex::new(reader));
         Self::from_source(move || {
             let reader = reader.clone();
-            Box::pin(async move { reader.next_binary().await })
+            Box::pin(async move {
+                use futures::StreamExt;
+                match reader.lock().await.next().await {
+                    Some(Ok(chunk)) => Ok(Some(chunk.to_vec())),
+                    Some(Err(e)) => Err(e),
+                    None => Ok(None),
+                }
+            })
         })
     }
 
@@ -313,7 +320,6 @@ pub async fn handle_write<R: FsRunner + ?Sized>(
     req: WriteRequest,
     registry: &SandboxRegistry,
     runner: &R,
-    engine_address: &str,
 ) -> Result<WriteResponse, SandboxError> {
     use base64::Engine as _;
     use std::io::Cursor;
@@ -322,8 +328,11 @@ pub async fn handle_write<R: FsRunner + ?Sized>(
     {
         (Some(WriteContent::Utf8(s)), None) => Box::new(Cursor::new(s.into_bytes())),
         (Some(WriteContent::Stream(ref_)), None) => {
-            let ch_reader = ChannelReader::new(engine_address, &ref_);
-            Box::new(ChannelReaderAdapter::new(ch_reader))
+            // 0.27: a read ref deserializes to the InputStream it stands for.
+            let input: InputStream = serde_json::to_value(&ref_)
+                .and_then(serde_json::from_value)
+                .map_err(|e| SandboxError::InvalidRequest(format!("content stream: {e}")))?;
+            Box::new(ChannelReaderAdapter::new(input))
         }
         (None, Some(b64)) => {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -368,18 +377,16 @@ pub(super) fn register(
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
 ) -> iii_sdk::runtime::FunctionRef {
-    let engine_address = iii.address().to_string();
     iii.register_function(
         "sandbox-libkrun::fs::write",
         RegisterFunction::new_async(move |req: Payload<WriteRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
-            let engine_address = engine_address.clone();
             async move {
                 let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
-                let result = handle_write(req, &registry, &*runner, &engine_address).await;
+                let result = handle_write(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
                     "sandbox-libkrun::fs::write",
                     Some(&sid),
@@ -617,9 +624,7 @@ mod tests {
             content: Some(WriteContent::Utf8("console.log('hi')\n".into())),
             content_b64: None,
         };
-        let resp = handle_write(req, &reg, &runner, "irrelevant")
-            .await
-            .unwrap();
+        let resp = handle_write(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.bytes_written, "console.log('hi')\n".len() as u64);
         assert_eq!(*captured.lock().await, b"console.log('hi')\n");
     }
@@ -645,9 +650,7 @@ mod tests {
             content: None,
             content_b64: Some(b64),
         };
-        let resp = handle_write(req, &reg, &runner, "irrelevant")
-            .await
-            .unwrap();
+        let resp = handle_write(req, &reg, &runner).await.unwrap();
         assert_eq!(resp.bytes_written, payload.len() as u64);
         assert_eq!(&*captured.lock().await, payload);
     }
@@ -667,9 +670,7 @@ mod tests {
             content: None,
             content_b64: Some("not!valid!base64!".into()),
         };
-        let err = handle_write(req, &reg, &runner, "irrelevant")
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("not valid base64"), "got: {err}");
     }
@@ -689,9 +690,7 @@ mod tests {
             content: Some(WriteContent::Utf8("a".into())),
             content_b64: Some("YQ==".into()),
         };
-        let err = handle_write(req, &reg, &runner, "irrelevant")
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("not both"), "got: {err}");
     }
@@ -711,9 +710,7 @@ mod tests {
             content: None,
             content_b64: None,
         };
-        let err = handle_write(req, &reg, &runner, "irrelevant")
-            .await
-            .unwrap_err();
+        let err = handle_write(req, &reg, &runner).await.unwrap_err();
         assert_eq!(err.code().as_str(), "S001");
         assert!(err.to_string().contains("missing file body"), "got: {err}");
     }

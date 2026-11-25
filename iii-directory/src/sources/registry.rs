@@ -25,10 +25,13 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::functions::download::read_worker_markers;
 use crate::functions::prompts::validate_name;
+use crate::kits::lock::sha256_hex;
 
 use super::{
-    DownloadResult, SkippedAgent, build_http_client, validate_relative_path, write_file_atomic,
+    DownloadResult, SkippedAgent, back_up, build_http_client, read_existing,
+    validate_relative_path, write_file_atomic,
 };
 
 /// Specifier for which version of a worker's skills to pull.
@@ -65,11 +68,11 @@ struct SkillEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkerSkillsResponse {
+pub struct WorkerSkillsResponse {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
-    version: Option<String>,
+    pub version: Option<String>,
     #[serde(default)]
     skills: Vec<SkillEntry>,
 }
@@ -97,12 +100,12 @@ pub fn validate_worker_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Outcome of a registry download attempt. Distinguishes between a
-/// successful download, a 404 (worker has no skills bundle — benign),
-/// a registry that could not answer now, and (as `Err`) any other error.
-pub enum RegistryDownloadOutcome {
-    /// Skills successfully downloaded and written.
-    Ok(DownloadResult),
+/// Outcome of a registry request for a bundle. Distinguishes between a
+/// bundle, a 404 (worker has no skills bundle — benign), a registry that
+/// could not answer now, and (as `Err`) any other error.
+pub enum RegistryFetchOutcome {
+    /// The bundle, not written yet.
+    Ok(WorkerSkillsResponse),
     /// HTTP 404 — the worker has no skills bundle. Benign no-op.
     NotFound,
     /// Unreachable, a 5xx or a 429: worth asking again later. Carries the
@@ -110,13 +113,14 @@ pub enum RegistryDownloadOutcome {
     Unavailable(String),
 }
 
-/// HTTP GET the worker's directory bundle, parse the response, and route
-/// skills and agent profiles to their configured roots. The HTTP request
-/// and file writes are bounded by `timeout_ms` collectively.
+/// HTTP GET the worker's directory bundle (bounded by `timeout_ms`), parse
+/// the response, and route skills and agent profiles to their configured
+/// roots.
 ///
 /// `kit_agents` maps agent ids owned by an installed kit to that kit: those
 /// profiles are never overwritten by a worker bundle and are reported in
-/// `agents_skipped` instead.
+/// `agents_skipped` instead, like the ones another worker wrote and the ones
+/// made or edited in the project.
 pub async fn download(
     registry_base: &str,
     worker: &str,
@@ -126,39 +130,28 @@ pub async fn download(
     timeout_ms: u64,
     kit_agents: &BTreeMap<String, String>,
 ) -> Result<DownloadResult, String> {
-    match download_typed(
-        registry_base,
-        worker,
-        spec,
-        skills_folder,
-        agents_folder,
-        timeout_ms,
-        kit_agents,
-    )
-    .await?
-    {
-        RegistryDownloadOutcome::Ok(result) => Ok(result),
-        RegistryDownloadOutcome::NotFound => Err(format!(
+    match fetch(registry_base, worker, spec, timeout_ms).await? {
+        RegistryFetchOutcome::Ok(response) => {
+            write_response(worker, response, skills_folder, agents_folder, kit_agents)
+        }
+        RegistryFetchOutcome::NotFound => Err(format!(
             "D310 not_found: registry worker {worker:?} has no published skills bundle. \
              Next: call directory::registry::workers::list to browse worker names."
         )),
-        RegistryDownloadOutcome::Unavailable(error) => Err(error),
+        RegistryFetchOutcome::Unavailable(error) => Err(error),
     }
 }
 
-/// Like [`download`] but returns a typed outcome distinguishing 404
-/// (benign) and an unavailable registry (unreachable, 5xx, 429) from other
-/// errors. Used by auto-download paths that treat 404 as a no-op and retry
-/// an unavailable registry.
-pub async fn download_typed(
+/// The request half of [`download`]. The typed outcome tells a 404 (benign)
+/// and an unavailable registry (unreachable, 5xx, 429) from other errors:
+/// the auto-download treats a 404 as a no-op, retries an unavailable
+/// registry, and writes the bundle only when its version is new.
+pub async fn fetch(
     registry_base: &str,
     worker: &str,
     spec: &VersionSpec,
-    skills_folder: &Path,
-    agents_folder: &Path,
     timeout_ms: u64,
-    kit_agents: &BTreeMap<String, String>,
-) -> Result<RegistryDownloadOutcome, String> {
+) -> Result<RegistryFetchOutcome, String> {
     validate_worker_name(worker)?;
 
     let url = format!(
@@ -171,7 +164,7 @@ pub async fn download_typed(
     let client = build_http_client(timeout_ms)?;
 
     let Ok(response) = client.get(&url).query(&[(key, value)]).send().await else {
-        return Ok(RegistryDownloadOutcome::Unavailable(
+        return Ok(RegistryFetchOutcome::Unavailable(
             "D320 registry_error: could not reach the registry. Next: retry shortly.".to_string(),
         ));
     };
@@ -180,7 +173,7 @@ pub async fn download_typed(
 
     // 404 is benign — the worker simply has no skills bundle.
     if status.as_u16() == 404 {
-        return Ok(RegistryDownloadOutcome::NotFound);
+        return Ok(RegistryFetchOutcome::NotFound);
     }
 
     if !status.is_success() {
@@ -191,7 +184,7 @@ pub async fn download_typed(
             status.as_u16()
         );
         if status.is_server_error() || status.as_u16() == 429 {
-            return Ok(RegistryDownloadOutcome::Unavailable(error));
+            return Ok(RegistryFetchOutcome::Unavailable(error));
         }
         return Err(error);
     }
@@ -208,8 +201,7 @@ pub async fn download_typed(
         ));
     }
 
-    let result = write_response(worker, parsed, skills_folder, agents_folder, kit_agents)?;
-    Ok(RegistryDownloadOutcome::Ok(result))
+    Ok(RegistryFetchOutcome::Ok(parsed))
 }
 
 /// Registry bundles store skill files under a `skills/` directory in the source
@@ -234,7 +226,11 @@ fn dedupe_stale_overview(skills: &mut Vec<SkillEntry>) {
     }
 }
 
-fn write_response(
+/// Write a bundle over what is on disk. The worker's previous completion
+/// marker tells its untouched files, which are replaced, from the rest: any
+/// other skill or system prompt is backed up first, any other agent profile
+/// is kept.
+pub fn write_response(
     worker: &str,
     mut response: WorkerSkillsResponse,
     skills_folder: &Path,
@@ -247,10 +243,13 @@ fn write_response(
 
     dedupe_stale_overview(&mut response.skills);
 
+    let markers = read_worker_markers(skills_folder);
+    let previous = markers.iter().find(|m| m.worker == worker);
     let mut result = DownloadResult::new(worker);
     result.version = response.version.clone();
 
     for skill in response.skills {
+        let body = skill.content.as_bytes();
         // Drop the redundant leading `skills/` packaging prefix so files land at
         // `<worker>/<path>` instead of a nested `<worker>/skills/<path>`.
         let normalized = strip_leading_skills_segment(&skill.path);
@@ -268,15 +267,41 @@ fn write_response(
                 });
                 continue;
             }
-            write_file_atomic(
-                &agents_folder.join(format!("{id}.md")),
-                skill.content.as_bytes(),
-            )?;
+            let dest = agents_folder.join(format!("{id}.md"));
+            let current = read_existing(&dest)?;
+            let same = current.as_deref() == Some(body);
+            if let Some(current) = &current {
+                let recorded = previous.and_then(|m| m.agents.get(id));
+                let other = markers
+                    .iter()
+                    .find(|m| m.worker != worker && m.agents.contains_key(id));
+                let ours = match recorded {
+                    Some(sha) => same || *sha == sha256_hex(current),
+                    // An older build, or a download interrupted before its
+                    // marker, wrote an identical copy nothing records.
+                    None => same && other.is_none(),
+                };
+                if !ours {
+                    // Ours but edited here: still attributed to this worker.
+                    if let Some(sha) = recorded {
+                        result.agent_shas.insert(id.to_string(), sha.clone());
+                    }
+                    let owned_by = match other.filter(|_| recorded.is_none()) {
+                        Some(m) => format!("worker {}", m.worker),
+                        None => "project".into(),
+                    };
+                    result.agents_skipped.push(SkippedAgent {
+                        id: id.to_string(),
+                        owned_by,
+                    });
+                    continue;
+                }
+            }
+            if !same {
+                write_file_atomic(&dest, body)?;
+            }
             result.agents_written.push(id.to_string());
-            result.agent_shas.insert(
-                id.to_string(),
-                crate::kits::lock::sha256_hex(skill.content.as_bytes()),
-            );
+            result.agent_shas.insert(id.to_string(), sha256_hex(body));
             continue;
         }
         let Some(kind) = crate::fs_source::classify_rel_path(&rel) else {
@@ -286,7 +311,24 @@ fn write_response(
             continue;
         }
         let dest = dest_root.join(&rel);
-        write_file_atomic(&dest, skill.content.as_bytes())?;
+        let path = rel.to_string_lossy().replace('\\', "/");
+        let current = read_existing(&dest)?;
+        if current.as_deref() != Some(body) {
+            let recorded = previous.and_then(|m| m.files.get(&path));
+            if let Some(current) = &current
+                && recorded != Some(&sha256_hex(current))
+            {
+                let backup = back_up(&dest, current)?;
+                tracing::warn!(
+                    worker,
+                    file = %dest.display(),
+                    backup = %backup.display(),
+                    "replacing a file that differs from what the last download wrote; kept a copy"
+                );
+            }
+            write_file_atomic(&dest, body)?;
+        }
+        result.file_shas.insert(path.clone(), sha256_hex(body));
 
         // The registry calls every entry in `skills[]` a "skill", but the shared
         // classifier rejects `prompts/` paths and reports system prompts to their
@@ -300,9 +342,7 @@ fn write_response(
                     result.system_prompts_written.push(stem);
                 }
             }
-            _ => result
-                .skills_written
-                .push(rel.to_string_lossy().replace('\\', "/")),
+            _ => result.skills_written.push(path),
         }
     }
 
@@ -479,7 +519,7 @@ mod tests {
         assert_eq!(result.version.as_deref(), Some("1.6.1"));
         assert_eq!(
             result.agent_shas.get("triager").map(String::as_str),
-            Some(crate::kits::lock::sha256_hex(b"---\nname: Triager\n---\nBody.\n").as_str())
+            Some(sha256_hex(b"---\nname: Triager\n---\nBody.\n").as_str())
         );
     }
 
@@ -628,5 +668,287 @@ mod tests {
         let err = write_response("resend", response, tmp.path(), tmp.path(), &BTreeMap::new())
             .unwrap_err();
         assert!(err.contains("invalid skill path"), "got: {err}");
+    }
+
+    // ── files already on disk ─────────────────────────────────────────
+
+    /// Write a bundle and its completion marker, as a download does.
+    fn install(
+        worker: &str,
+        version: &str,
+        files: &[(&str, &str)],
+        skills: &Path,
+        agents: &Path,
+    ) -> DownloadResult {
+        let response = WorkerSkillsResponse {
+            name: Some(worker.into()),
+            version: Some(version.into()),
+            skills: files
+                .iter()
+                .map(|(path, content)| SkillEntry {
+                    path: (*path).into(),
+                    content: (*content).into(),
+                })
+                .collect(),
+        };
+        let result = write_response(worker, response, skills, agents, &BTreeMap::new()).unwrap();
+        crate::functions::download::write_completion_marker(
+            skills,
+            worker,
+            &VersionSpec::Version(version.into()),
+            &result,
+        )
+        .unwrap();
+        result
+    }
+
+    /// Contents of the backups in `dir`, sorted.
+    fn backups(dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "bak"))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn an_untouched_file_is_replaced_without_a_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let file = skills.join("ade/mentions.md");
+        install("ade", "1.0.0", &[("mentions.md", "one")], &skills, &agents);
+        install("ade", "1.1.0", &[("mentions.md", "two")], &skills, &agents);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "two");
+        assert!(backups(&skills.join("ade")).is_empty());
+    }
+
+    #[test]
+    fn every_edit_is_backed_up_before_it_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let file = skills.join("ade/mentions.md");
+        for (version, shipped, edit) in [("1.0.0", "one", "my one"), ("1.1.0", "two", "my two")] {
+            install(
+                "ade",
+                version,
+                &[("mentions.md", shipped)],
+                &skills,
+                &agents,
+            );
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), shipped);
+            std::fs::write(&file, edit).unwrap();
+        }
+        install(
+            "ade",
+            "1.2.0",
+            &[("mentions.md", "three")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "three");
+        assert_eq!(backups(&skills.join("ade")), ["my one", "my two"]);
+        // A backup is not a skill.
+        let ids: Vec<String> = crate::fs_source::scan_skills(&skills)
+            .0
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["ade/mentions"]);
+    }
+
+    #[test]
+    fn a_file_the_marker_does_not_record_is_backed_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        std::fs::create_dir_all(skills.join("iii/system-prompts")).unwrap();
+        std::fs::write(skills.join("iii/index.md"), "stale").unwrap();
+        std::fs::write(skills.join("iii/system-prompts/p.md"), "stale prompt").unwrap();
+        std::fs::write(
+            skills.join("iii/.iii-skill-complete"),
+            r#"{"worker":"iii","source":"registry","tag_or_version":"latest","schema":1}"#,
+        )
+        .unwrap();
+        let bundle = [("index.md", "current"), ("system-prompts/p.md", "prompt")];
+        install("iii", "0.26.0", &bundle, &skills, &agents);
+        assert_eq!(
+            std::fs::read_to_string(skills.join("iii/index.md")).unwrap(),
+            "current"
+        );
+        assert_eq!(backups(&skills.join("iii")), ["stale"]);
+        assert_eq!(
+            backups(&skills.join("iii/system-prompts")),
+            ["stale prompt"]
+        );
+    }
+
+    #[test]
+    fn identical_content_is_not_written_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let bundle = [("index.md", "same"), ("agents/lead.md", "same")];
+        install("ade", "1.0.0", &bundle, &skills, &agents);
+        let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let files = [skills.join("ade/index.md"), agents.join("lead.md")];
+        for file in &files {
+            let handle = std::fs::File::options().write(true).open(file).unwrap();
+            handle.set_modified(past).unwrap();
+        }
+        let result = install("ade", "1.1.0", &bundle, &skills, &agents);
+        for file in &files {
+            assert_eq!(file.metadata().unwrap().modified().unwrap(), past);
+        }
+        assert_eq!(result.skills_written, ["index.md"], "still reported");
+        assert_eq!(result.agents_written, ["lead"], "still reported");
+        assert!(backups(&skills.join("ade")).is_empty());
+    }
+
+    #[test]
+    fn an_untouched_worker_profile_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        install(
+            "kanban",
+            "1.0.0",
+            &[("agents/lead.md", "one")],
+            &skills,
+            &agents,
+        );
+        let result = install(
+            "kanban",
+            "1.1.0",
+            &[("agents/lead.md", "two")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "two"
+        );
+        assert!(result.agents_skipped.is_empty());
+    }
+
+    #[test]
+    fn a_profile_made_in_the_project_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("lead.md"), "mine").unwrap();
+        let result = install(
+            "kanban",
+            "1.0.0",
+            &[("agents/lead.md", "theirs")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "mine"
+        );
+        assert!(result.agents_written.is_empty());
+        assert_eq!(
+            result.agents_skipped,
+            [SkippedAgent {
+                id: "lead".into(),
+                owned_by: "project".into()
+            }]
+        );
+        assert!(result.agent_shas.is_empty(), "never the worker's");
+    }
+
+    #[test]
+    fn an_edited_worker_profile_is_kept_and_stays_the_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let file = agents.join("lead.md");
+        install(
+            "kanban",
+            "1.0.0",
+            &[("agents/lead.md", "one")],
+            &skills,
+            &agents,
+        );
+        std::fs::write(&file, "edited").unwrap();
+        let result = install(
+            "kanban",
+            "1.1.0",
+            &[("agents/lead.md", "two")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited");
+        assert_eq!(result.agents_skipped[0].owned_by, "project");
+
+        // Undoing the edit hands the file back to the worker's updates.
+        std::fs::write(&file, "one").unwrap();
+        install(
+            "kanban",
+            "1.2.0",
+            &[("agents/lead.md", "three")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "three");
+    }
+
+    #[test]
+    fn another_workers_profile_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        install(
+            "kanban",
+            "1.0.0",
+            &[("agents/lead.md", "kanban")],
+            &skills,
+            &agents,
+        );
+        let result = install(
+            "zeta",
+            "1.0.0",
+            &[("agents/lead.md", "zeta")],
+            &skills,
+            &agents,
+        );
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "kanban"
+        );
+        assert_eq!(result.agents_skipped[0].owned_by, "worker kanban");
+    }
+
+    #[test]
+    fn an_identical_profile_another_worker_wrote_stays_theirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        let shipped = |content: &'static str| [("agents/lead.md", content)];
+        install("kanban", "1.0.0", &shipped("same"), &skills, &agents);
+        let result = install("zeta", "1.0.0", &shipped("same"), &skills, &agents);
+        assert_eq!(result.agents_skipped[0].owned_by, "worker kanban");
+        install("zeta", "1.1.0", &shipped("zeta"), &skills, &agents);
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "same"
+        );
+    }
+
+    /// What an older build (schema 1) wrote, or a download interrupted before
+    /// its marker: nothing records it, and it must keep following the worker.
+    #[test]
+    fn an_identical_profile_no_marker_records_is_the_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (skills, agents) = (tmp.path().join("skills"), tmp.path().join("agents"));
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("lead.md"), "one").unwrap();
+        for (version, content) in [("1.0.0", "one"), ("1.1.0", "two")] {
+            let bundle = [("agents/lead.md", content)];
+            let result = install("kanban", version, &bundle, &skills, &agents);
+            assert!(result.agents_skipped.is_empty(), "{version}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(agents.join("lead.md")).unwrap(),
+            "two"
+        );
     }
 }

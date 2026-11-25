@@ -1,8 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { StreamChannelRef } from 'iii-sdk/channel';
-import { createChannel } from 'iii-sdk/helpers';
+import { InputStream } from 'iii-sdk';
+import type { StreamChannelRef } from 'iii-sdk/protocol';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 
 function newWorkdir(prefix: string): string {
@@ -44,10 +44,11 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     name: 'stream_write_with_wrong_access_key_rejected',
     async run(ctx: CaseContext) {
       const root = newWorkdir('bad-key');
-      const channel = await createChannel(ctx.iii, 64);
+      // A real pipe's channel id with a key that is not its own.
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const tampered: StreamChannelRef = {
-        channel_id: channel.readerRef.channel_id,
-        access_key: 'tampered-' + channel.readerRef.access_key,
+        channel_id: pipe.input.toJSON().id,
+        access_key: 'tampered-access-key',
         direction: 'read',
       };
       let threw = false;
@@ -63,7 +64,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
         threw = true;
       }
       expect(threw, 'mutated access_key should reject');
-      try { channel.writer.close(); } catch { /* ignore */ }
+      try { await pipe.output.close(); } catch { /* ignore */ }
       await expectWorkerHealthy(ctx);
     },
   },
@@ -93,33 +94,26 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     },
   },
   {
-    // Reused reader_ref after close: engine treats re-dial as immediate
-    // EOF, producing a zero-byte file rather than an error.
+    // Reusing a stream after it was read to the end: the 0.27 SDK refuses to
+    // send it again (STREAM_IN_USE); an engine that got it anyway answers EOF.
     name: 'stream_write_reader_reused_after_close_yields_zero_bytes',
     async run(ctx: CaseContext) {
       const root = newWorkdir('reuse');
       const path1 = join(root, 'first.bin');
       const path2 = join(root, 'second.bin');
-      const channel = await createChannel(ctx.iii, 64);
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const payload = Buffer.from('hello world');
 
-      // First write — drives the channel through completion.
-      const writePromise = new Promise<void>((resolve, reject) => {
-        channel.writer.stream.once('error', reject);
-        channel.writer.stream.write(payload, (err) => {
-          if (err) return reject(err);
-          channel.writer.stream.end(() => resolve());
-        });
-      });
+      // First write — drives the stream through completion.
       const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path: path1,
         mode: '0644',
         parents: false,
-        content: channel.readerRef,
+        content: pipe.input,
       });
-      await writePromise;
-      channel.writer.close();
+      await pipe.output.write(payload);
+      await pipe.output.close();
       const r1 = await write;
       expectEqual(r1.bytes_written, payload.length, 'first write succeeded');
 
@@ -131,7 +125,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
           path: path2,
           mode: '0644',
           parents: false,
-          content: channel.readerRef,
+          content: pipe.input,
         });
         zeroSize = r2.bytes_written === 0;
       } catch {
@@ -139,7 +133,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       }
       expect(
         zeroSize || threw,
-        'reused reader_ref must either yield zero bytes or reject — never crash',
+        'a reused stream must either yield zero bytes or reject — never crash',
       );
       await expectWorkerHealthy(ctx);
     },
@@ -149,11 +143,9 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     async run(ctx: CaseContext) {
       const root = newWorkdir('closed-pre');
       const path = join(root, 'closed.bin');
-      const channel = await createChannel(ctx.iii, 64);
-      // sendMessage('') forces WS connect before close() (SDK quirk:
-      // close() is a no-op when never connected).
-      channel.writer.sendMessage('');
-      channel.writer.close();
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
+      // A 0.27 writer opens its socket to close, so the close reaches the engine.
+      await pipe.output.close();
       let succeeded = false;
       let threw = false;
       try {
@@ -162,7 +154,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
           path,
           mode: '0644',
           parents: false,
-          content: channel.readerRef,
+          content: pipe.input,
         });
         expectEqual(r.bytes_written, 0, 'pre-closed channel writes 0 bytes');
         succeeded = true;
@@ -174,24 +166,24 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     },
   },
   {
-    // Text frames are dispatched to an empty callback list and skipped by
-    // next_binary() — cannot smuggle data through the binary stream.
+    // Text frames are not bytes: the worker's byte reads skip them, so they
+    // cannot smuggle data through the binary stream.
     name: 'stream_write_text_only_frames_yields_zero_bytes',
     async run(ctx: CaseContext) {
       const root = newWorkdir('text-only');
       const path = join(root, 'text-only.bin');
-      const channel = await createChannel(ctx.iii, 64);
-      channel.writer.sendMessage('this is text, not binary');
-      channel.writer.sendMessage('still text');
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path,
         mode: '0644',
         parents: false,
-        content: channel.readerRef,
+        content: pipe.input,
       });
+      await pipe.output.send('this is text, not binary');
+      await pipe.output.send('still text');
       await ctx.sleep(100);
-      channel.writer.close();
+      await pipe.output.close();
       const r = await write;
       expectEqual(r.bytes_written, 0, 'text frames must not count as bytes_written');
       await expectWorkerHealthy(ctx);
@@ -203,24 +195,17 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       const root = newWorkdir('drop-read');
       const path = join(root, 'undrained.bin');
       // Write a small file via the streaming write path.
-      const channel = await createChannel(ctx.iii, 64);
+      const pipe = await ctx.iii.pipe({ bufferSize: 64 });
       const payload = Buffer.from('payload-bytes');
-      const wp = new Promise<void>((resolve, reject) => {
-        channel.writer.stream.once('error', reject);
-        channel.writer.stream.write(payload, (err) => {
-          if (err) return reject(err);
-          channel.writer.stream.end(() => resolve());
-        });
-      });
       const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path,
         mode: '0644',
         parents: false,
-        content: channel.readerRef,
+        content: pipe.input,
       });
-      await wp;
-      channel.writer.close();
+      await pipe.output.write(payload);
+      await pipe.output.close();
       await write;
 
       const resp = await ctx.call('shell::fs::read', {
@@ -228,8 +213,8 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
         path,
       });
       expect(typeof resp.size === 'number', 'read returns size');
-      expect(resp.content && typeof resp.content.channel_id === 'string',
-        'read returns a channel ref');
+      expect(resp.content instanceof InputStream,
+        'read returns a stream (its ref arrives as an InputStream)');
       await ctx.sleep(50);
       await expectWorkerHealthy(ctx);
     },

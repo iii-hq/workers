@@ -40,7 +40,7 @@ pub async fn fetch_vault_credential(
     Ok(cred)
 }
 
-/// Wire-identical mirror of `iii_sdk::channels::StreamChannelRef`. The SDK
+/// Wire-identical mirror of `iii_sdk::protocol::StreamChannelRef`. The SDK
 /// type does not derive `JsonSchema`, which would block typed registration
 /// of `email::search` and `email::attachment::get`. Converted via `From` at
 /// the handler boundary so the rest of the worker keeps using the SDK type.
@@ -60,15 +60,25 @@ pub enum StreamDirection {
     Write,
 }
 
-impl From<StreamRef> for iii_sdk::channels::StreamChannelRef {
+impl From<StreamRef> for iii_sdk::protocol::StreamChannelRef {
     fn from(s: StreamRef) -> Self {
-        iii_sdk::channels::StreamChannelRef {
+        iii_sdk::protocol::StreamChannelRef {
             channel_id: s.channel_id,
             access_key: s.access_key,
             direction: match s.direction {
-                StreamDirection::Read => iii_sdk::channels::ChannelDirection::Read,
-                StreamDirection::Write => iii_sdk::channels::ChannelDirection::Write,
+                StreamDirection::Read => iii_sdk::protocol::ChannelDirection::Read,
+                StreamDirection::Write => iii_sdk::protocol::ChannelDirection::Write,
             },
         }
+    }
+}
+
+impl StreamRef {
+    /// Opens this write ref as the stream the handler writes to (0.27: a
+    /// write ref deserializes to an `OutputStream`).
+    pub fn open_writer(&self) -> Result<iii_sdk::OutputStream, iii_sdk::errors::Error> {
+        let value =
+            serde_json::to_value(self).map_err(|e| iii_sdk::errors::Error::Serde(e.to_string()))?;
+        serde_json::from_value(value).map_err(|e| iii_sdk::errors::Error::Serde(e.to_string()))
     }
 }

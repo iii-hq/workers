@@ -82,7 +82,7 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
             "settings": {
                 "type": "object",
                 "properties": {
-                    "stream_timeout_ms": { "type": "number", "default": 600000 },
+                    "stream_timeout_ms": { "type": "number", "default": 1500000 },
                     "idle_timeout_ms": { "type": "number", "default": 120000 },
                     "retry_max": {
                         "type": "integer",

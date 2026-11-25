@@ -3,7 +3,12 @@
 /*
  * The agent terminal page. Every rule is a class on this page's own markup —
  * an injected page is already scoped by the console's `data-iii-ui` wrapper,
- * and the class names carry the rest. Theming rides the console's tokens.
+ * and the class names carry the rest. Theming rides the console's tokens; the
+ * status strip itself is the console's `StatusBar`.
+ *
+ * Every worker's sheet is loaded at once and released separately, so a class
+ * name here is never reused with another meaning: an older worker's sheet
+ * still applies to it.
  */
 
 .agent-terminal {
@@ -12,111 +17,105 @@
   height: 100%;
   min-height: 0;
   background: var(--color-panel);
+  container-type: inline-size;
 }
 
 .agent-terminal-viewport {
   flex: 1;
   min-height: 0;
+}
+
+/* The inset is the terminal's own padding, not the viewport's: the fit addon
+   sizes the terminal from the viewport's computed size and subtracts only the
+   terminal element's padding, so a viewport padding (counted as room under
+   border-box sizing) would give it a row more than fits, drawn under the
+   strip. */
+.agent-terminal-viewport .xterm {
+  box-sizing: border-box;
+  height: 100%;
   padding: 8px 4px 8px 12px;
 }
 
-.agent-terminal-viewport .xterm {
-  height: 100%;
+/* One line in the 28px strip, whatever the pane width: the status text and
+   the plan name give way with an ellipsis before any control is pushed out. */
+.agent-terminal-strip > :first-child {
+  flex: 1 1 0;
+  min-width: 12ch;
 }
 
-.agent-terminal-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--color-edge);
-  color: var(--color-ink-faint);
-  font-size: 12px;
+/* The pane's folder: the console's DirectoryPicker trigger, first in the
+   strip when the page has one. It never grows and shrinks before the
+   controls, so a long path never pushes the font stepper out of a narrow
+   pane; the status text after it takes the grow the first child had. */
+.agent-terminal-folder {
+  display: inline-flex;
+  min-width: 0;
 }
 
-.agent-terminal-statusbar .agent-terminal-status-error {
+.agent-terminal-strip > .agent-terminal-folder {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+}
+
+.agent-terminal-strip > .agent-terminal-folder + * {
+  flex: 1 1 0;
+  min-width: 12ch;
+}
+
+.agent-terminal-strip > :last-child {
+  min-width: 0;
+}
+
+.agent-terminal-strip .agent-terminal-strip-error {
   color: var(--color-alert);
 }
 
-/*
- * Which plan the session spends. Accent is reserved for actions, so the
- * subscription case is neutral ink and only the two cases an operator might
- * not expect — a metered key, or no credentials at all — carry a colour.
- */
-.agent-terminal-billing {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  padding: 1px 8px;
-  border: 1px solid var(--color-edge);
-  border-radius: 999px;
-  color: var(--color-ink-faint);
-  font-size: 11px;
+.agent-terminal-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-terminal-billing-subscription {
-  color: var(--color-ink);
-}
-
-.agent-terminal-billing-api-key {
-  color: var(--color-warn);
-  border-color: var(--color-warn);
-}
-
-.agent-terminal-billing-none {
-  color: var(--color-alert);
-  border-color: var(--color-alert);
-}
-
-/* Font-size stepper: the same 8..40 value every terminal in the console
-   reads, so a change here moves shell's panes too. */
-.agent-terminal-font {
+/* A label and the value it names, read as one unit in the status strip. */
+.agent-terminal-strip-field,
+.agent-terminal-strip-billing {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  color: var(--color-ink-faint);
-  font-size: 11px;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-.agent-terminal-font button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid var(--color-edge);
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
+/* The plan is the one long field: it shrinks, and the two that name a surprise
+   (a metered key, no credentials) stay when the neutral one gives way. */
+.agent-terminal-strip-billing {
+  min-width: 0;
 }
 
-.agent-terminal-font button:hover:not(:disabled) {
-  color: var(--color-ink);
-  border-color: var(--color-ink-faint);
+.agent-terminal-strip-billing > :last-child {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 36ch;
 }
 
-.agent-terminal-font button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.agent-terminal-font output {
-  min-width: 18px;
+/* Font size: the same 8..40 value every terminal in the console reads, so a
+   change here moves shell's panes too. */
+.agent-terminal-strip-field output {
+  min-width: 20px;
   text-align: center;
+  color: var(--color-ink);
   font-variant-numeric: tabular-nums;
 }
 
-/* Says what the value beside it IS. A status bar of bare numbers and plan
-   names makes the reader guess; two words each removes the guessing. */
-.agent-terminal-field-label {
-  color: var(--color-ink-faint);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+/* The terminal column's own width decides, not the pane's: the rail beside it
+   takes some. */
+@container (max-width: 560px) {
+  .agent-terminal-strip-billing > :first-child {
+    display: none;
+  }
+
+  .agent-terminal-strip-billing:not([data-billing="api-key"], [data-billing="none"]) {
+    display: none;
+  }
 }

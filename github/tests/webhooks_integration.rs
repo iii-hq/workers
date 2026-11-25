@@ -152,7 +152,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        github::webhooks::register(&github, &config_cell(&gh_path, &db_path), &engine.url).await;
+        github::webhooks::register(&github, &config_cell(&gh_path, &db_path)).await;
         for (function, target) in [
             ("http::on-request", "github::webhooks::receive"),
             ("queue::on-message", "github::webhooks::process"),
@@ -231,12 +231,7 @@ impl Fixture {
         wait(|| self.engine.departures() > departures).await;
         self.db_path = self._dir.path().join("restarted/store.sqlite3");
         self.github = self.engine.client(PROVIDER).await;
-        github::webhooks::register(
-            &self.github,
-            &config_cell(&self.gh_path, &self.db_path),
-            &self.engine.url,
-        )
-        .await;
+        github::webhooks::register(&self.github, &config_cell(&self.gh_path, &self.db_path)).await;
     }
     fn gh(&self) -> Value {
         serde_json::from_slice(&std::fs::read(&self.gh_path).unwrap()).unwrap()
@@ -904,7 +899,7 @@ async fn an_observer_id_another_connection_holds_is_observed_again_after_1_then_
         .unwrap();
 
     let github = engine.client(PROVIDER).await;
-    github::webhooks::register(&github, &config_cell(&gh_path, &db_path), &engine.url).await;
+    github::webhooks::register(&github, &config_cell(&gh_path, &db_path)).await;
     // The squatter's observe, then the worker's.
     let observes = || {
         engine

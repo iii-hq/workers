@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::{
     Call, CallRequest, Capture, IIIClient, Observer, ObserverOptions, RegisterFunction, Source,
     register_worker,
@@ -235,6 +235,10 @@ fn remote_code(err: &Error) -> &str {
 #[derive(Clone, Default)]
 struct ProviderOptions {
     ping_forever: bool,
+    /// Send no `start` frame, so nothing reaches the caller before the pings.
+    skip_start: bool,
+    /// Close the stream right after `start`, with no terminal frame.
+    eof_after_start: bool,
     /// Keep the function handler alive after the terminal frame. A compliant
     /// router must complete from the stream terminal, not this RPC lifetime.
     done_linger_ms: Option<u64>,
@@ -277,16 +281,16 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
     let stream_calls = Arc::new(AtomicU64::new(0));
     let token_cell: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
 
-    let address = url.to_string();
     let wf = write_failed.clone();
     let fam = fail_at_ms.clone();
     let calls = stream_calls.clone();
     let ping_forever = opts.ping_forever;
+    let skip_start = opts.skip_start;
+    let eof_after_start = opts.eof_after_start;
     let done_linger_ms = opts.done_linger_ms;
     iii.register_function(
         "provider::real::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let (wf, fam) = (wf.clone(), fam.clone());
             let calls = calls.clone();
             async move {
@@ -294,19 +298,25 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let r: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|e| Error::Serde(e.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &r);
+                let writer = open_writer(&r);
                 let model = input["model"].clone();
                 let start = json!({ "type": "start", "partial": { "role": "assistant", "content": [], "stop_reason": "end", "model": model, "provider": "real", "timestamp": 1 } });
-                writer
-                    .send_message(&start.to_string())
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+                if !skip_start {
+                    writer
+                        .send_text(&start.to_string())
+                        .await
+                        .map_err(|e| Error::Handler(e.to_string()))?;
+                }
+                if eof_after_start {
+                    let _ = writer.close().await;
+                    return Ok(json!({ "ok": true }));
+                }
                 if ping_forever {
                     let begun = Instant::now();
                     loop {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         if writer
-                            .send_message(&json!({ "type": "ping" }).to_string())
+                            .send_text(&json!({ "type": "ping" }).to_string())
                             .await
                             .is_err()
                         {
@@ -334,7 +344,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     json!({ "type": "done", "message": message }),
                 ] {
                     writer
-                        .send_message(&frame.to_string())
+                        .send_text(&frame.to_string())
                         .await
                         .map_err(|e| Error::Handler(e.to_string()))?;
                 }
@@ -443,20 +453,21 @@ async fn consumer_channel(
     Arc<std::sync::Mutex<Vec<String>>>,
     tokio::task::JoinHandle<()>,
 ) {
-    let channel = iii_sdk::helpers::create_channel(iii, None)
-        .await
-        .expect("channel");
+    let pipe = iii.pipe().await.expect("channel");
+    // The write end's ref goes to the router; its serialized form is the ref.
+    let writer_ref: iii_sdk::protocol::StreamChannelRef =
+        serde_json::from_value(serde_json::to_value(&pipe.output).expect("ref")).expect("ref");
     let frames = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let f2 = frames.clone();
-    channel
-        .reader
-        .on_message(move |m| {
-            f2.lock().unwrap().push(m);
-        })
-        .await;
-    let writer_ref = channel.writer_ref.clone();
+    let input = pipe.input;
     let pump = tokio::spawn(async move {
-        let _ = channel.reader.read_all().await; // drives text-message dispatch
+        use futures::StreamExt;
+        let mut items = input.frames();
+        while let Some(Ok(item)) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(m) = item {
+                f2.lock().unwrap().push(m);
+            }
+        }
     });
     (writer_ref, frames, pump)
 }
@@ -622,20 +633,19 @@ async fn consumer_cancellation_propagates_to_the_provider() {
     .await;
 
     let consumer = register_worker(&engine.url, test_init_options());
-    let channel = iii_sdk::helpers::create_channel(&consumer, None)
-        .await
-        .expect("channel");
-    let reader = channel.reader;
+    let pipe = consumer.pipe().await.expect("channel");
+    let writer_ref = ref_of(&pipe.output);
+    let reader = pipe.input;
     let pump = tokio::spawn(async move {
-        // start reading, then drop the reader after 300ms = consumer walks away
+        // start reading, then cancel the reader after 300ms = consumer walks away
         let _ = tokio::time::timeout(Duration::from_millis(300), reader.read_all()).await;
-        let _ = reader.close().await;
+        reader.cancel().await;
         drop(reader);
     });
 
     let chat = {
         let consumer = consumer.clone();
-        let writer_ref = channel.writer_ref.clone();
+        let writer_ref = writer_ref.clone();
         tokio::spawn(async move {
             consumer
                 .call(CallRequest {
@@ -2508,11 +2518,9 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let resolution_keys = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let observed_calls = calls.clone();
     let observed_keys = resolution_keys.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::retryable::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let resolution_keys = observed_keys.clone();
             async move {
@@ -2526,11 +2534,11 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|error| Error::Serde(error.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                let writer = open_writer(&writer_ref);
                 let model = input["model"].clone();
                 if attempt == 1 {
                     writer
-                        .send_message(
+                        .send_text(
                             &json!({
                                 "type": "error",
                                 "error": {
@@ -2575,7 +2583,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
                     json!({ "type": "done", "message": message }),
                 ] {
                     writer
-                        .send_message(&frame.to_string())
+                        .send_text(&frame.to_string())
                         .await
                         .map_err(|error| Error::Handler(error.to_string()))?;
                 }
@@ -2660,11 +2668,9 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
     let error_sent = Arc::new(tokio::sync::Semaphore::new(0));
     let observed_calls = calls.clone();
     let observed_error = error_sent.clone();
-    let address = engine.url.clone();
     provider.register_function(
         "provider::backoff::stream",
         RegisterFunction::new_async(move |input: Value| {
-            let address = address.clone();
             let calls = observed_calls.clone();
             let error_sent = observed_error.clone();
             async move {
@@ -2672,9 +2678,9 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
                 let writer_ref: StreamChannelRef =
                     serde_json::from_value(input["writer_ref"].clone())
                         .map_err(|error| Error::Serde(error.to_string()))?;
-                let writer = iii_sdk::channel::ChannelWriter::new(&address, &writer_ref);
+                let writer = open_writer(&writer_ref);
                 writer
-                    .send_message(
+                    .send_text(
                         &json!({
                             "type": "error",
                             "error": {
@@ -3145,6 +3151,114 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     consumer.shutdown();
     provider.iii.shutdown();
     router.shutdown();
+}
+
+/// One `router::chat` against the fake provider under a 1 s stream budget with
+/// two in-router retries allowed: checks the error contract, that the provider
+/// was dispatched once, and that the caller saw exactly one terminal frame.
+/// The idle guard sits above the budget so a slow ping cannot end the call first.
+async fn assert_chat_error_under_a_one_second_budget(
+    opts: ProviderOptions,
+    code: &str,
+    kind: &str,
+) {
+    let engine = engine_or_skip!();
+    let router = register_worker(&engine.url, test_init_options());
+    register_entry(&router, &BTreeMap::new()).await.unwrap();
+    write_entry_value(
+        &router,
+        json!({ "settings": { "stream_timeout_ms": 1_000, "idle_timeout_ms": 5_000, "retry_max": 2 } }),
+    )
+    .await
+    .unwrap();
+    register_router(router.clone()).await.expect("router boots");
+    let provider = start_live_provider(&engine.url, opts).await;
+
+    let consumer = register_worker(&engine.url, test_init_options());
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+    let response = consumer
+        .call(CallRequest {
+            function_id: "router::chat".into(),
+            payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect("a stream without a terminal frame still answers router::chat");
+    tokio::time::timeout(Duration::from_secs(2), pump)
+        .await
+        .expect("caller channel EOF")
+        .expect("channel pump joins");
+
+    assert_eq!(response["error"]["code"], code, "{response}");
+    assert_eq!(response["error"]["kind"], kind, "{response}");
+    assert_eq!(
+        response["error"]["retryable"],
+        kind == "transient",
+        "{response}"
+    );
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        1,
+        "the router must not dispatch the provider again"
+    );
+    let terminals: Vec<Value> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| matches!(frame["type"].as_str(), Some("done" | "error")))
+        .collect();
+    assert_eq!(terminals.len(), 1, "frames: {:?}", frames.lock().unwrap());
+    assert_eq!(terminals[0]["error"]["error_kind"], kind);
+
+    consumer.shutdown();
+    provider.iii.shutdown();
+    router.shutdown();
+}
+
+/// Prevents: the router's own budget cutting a healthy stream and reporting it
+/// as a provider disconnect that callers then retry into the same budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_budget_expiry_mid_stream_is_a_permanent_stream_timeout() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            ping_forever: true,
+            ..Default::default()
+        },
+        "router/stream_timeout",
+        "permanent",
+    )
+    .await;
+}
+
+/// Prevents: a budget expiry before the first forwarded frame being retried
+/// in-router, one whole budget per attempt.
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_budget_expiry_before_any_frame_is_not_retried() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            ping_forever: true,
+            skip_start: true,
+            ..Default::default()
+        },
+        "router/stream_timeout",
+        "permanent",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_eof_without_a_terminal_frame_stays_stream_incomplete() {
+    assert_chat_error_under_a_one_second_budget(
+        ProviderOptions {
+            eof_after_start: true,
+            ..Default::default()
+        },
+        "router/stream_incomplete",
+        "transient",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

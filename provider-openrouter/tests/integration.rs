@@ -33,24 +33,25 @@ async fn call(
 async fn consumer_channel(
     iii: &IIIClient,
 ) -> (
-    iii_sdk::channel::StreamChannelRef,
+    iii_sdk::protocol::StreamChannelRef,
     Arc<std::sync::Mutex<Vec<String>>>,
     tokio::task::JoinHandle<()>,
 ) {
-    let channel = iii_sdk::helpers::create_channel(iii, None)
-        .await
-        .expect("channel");
+    let pipe = iii.pipe().await.expect("channel");
+    // The write end's ref goes to the router; its serialized form is the ref.
+    let writer_ref: iii_sdk::protocol::StreamChannelRef =
+        serde_json::from_value(serde_json::to_value(&pipe.output).expect("ref")).expect("ref");
     let frames = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let f2 = frames.clone();
-    channel
-        .reader
-        .on_message(move |m| {
-            f2.lock().unwrap().push(m);
-        })
-        .await;
-    let writer_ref = channel.writer_ref.clone();
+    let input = pipe.input;
     let pump = tokio::spawn(async move {
-        let _ = channel.reader.read_all().await;
+        use futures::StreamExt;
+        let mut items = input.frames();
+        while let Some(Ok(item)) = items.next().await {
+            if let iii_sdk::protocol::ChannelItem::Text(m) = item {
+                f2.lock().unwrap().push(m);
+            }
+        }
     });
     (writer_ref, frames, pump)
 }

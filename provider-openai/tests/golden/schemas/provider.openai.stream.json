@@ -134,6 +134,7 @@
         "type": "string"
       },
       "ChannelDirection": {
+        "description": "Which end of a pipe a [`StreamChannelRef`] opens: `read` is received as an [`InputStream`](crate::InputStream), `write` as an [`OutputStream`](crate::OutputStream).",
         "enum": [
           "read",
           "write"
@@ -687,6 +688,7 @@
         "type": "string"
       },
       "StreamChannelRef": {
+        "description": "One end of an engine pipe as a payload carries it: `{ channel_id, access_key, direction }`. The JSON is the same in every SDK and release, so new and old SDKs read each other's refs.",
         "properties": {
           "access_key": {
             "type": "string"

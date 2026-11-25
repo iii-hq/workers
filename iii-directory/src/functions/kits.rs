@@ -381,8 +381,8 @@ impl Ctx {
             let mut any = false;
             for worker in workers {
                 match super::download::download_worker_skills(&cfg, &worker, &spec).await {
-                    Ok(true) => any = true,
-                    Ok(false) => {}
+                    Ok(Some(_)) => any = true,
+                    Ok(None) => {}
                     Err(e) => {
                         tracing::warn!(worker, error = %e, "worker bundle download after kit apply failed")
                     }

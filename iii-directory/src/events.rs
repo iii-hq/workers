@@ -4,15 +4,15 @@
 //! with. The worker calls it when the change happens, and its observers
 //! receive the event:
 //!
-//! - `directory::skills::on-change`: after every successful
-//!   `directory::skills::download` that wrote at least one skill markdown
-//!   file, a `directory::skills::update`, `create`, or `delete`, and a kit
-//!   apply that wrote skills (`kit`) or downloaded the bundles of the
-//!   workers it added or updated (`download`). External edits under the
+//! - `directory::skills::on-change`: after every successful download
+//!   (`directory::skills::download` or the auto-download) that wrote at least
+//!   one skill markdown file, a `directory::skills::update`, `create`, or
+//!   `delete`, and a kit apply that wrote skills (`kit`) or downloaded the
+//!   bundles of the workers it added or updated (`download`). External edits under the
 //!   read-only `agents_skills_folder` call it too, through the fs watcher
 //!   (doorbell only: the worker never writes there).
-//! - `directory::system-prompts::on-change`: after every successful
-//!   `directory::skills::download` that wrote at least one system prompt, a
+//! - `directory::system-prompts::on-change`: after every successful download
+//!   that wrote at least one system prompt, a
 //!   `directory::system-prompts::update`, or a
 //!   `directory::system-prompts::create` / `delete`.
 //! - `directory::agents::on-change`: after every successful download
@@ -65,9 +65,9 @@ pub struct ChangeEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// The namespace written: skill edits, and a `download` by
-    /// `directory::skills::download`. A kit apply downloads the bundles of
-    /// the workers it added or updated, one namespace each, and its
-    /// `download` carries none.
+    /// `directory::skills::download` or the auto-download. A kit apply
+    /// downloads the bundles of the workers it added or updated, one
+    /// namespace each, and its `download` carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     /// `download`: `repo` or `registry` (`registry` for a kit apply's
@@ -176,12 +176,12 @@ pub fn register_all(iii: &IIIClient) -> ChangeSources {
         SKILLS_ON_CHANGE,
         RegisterFunction::new(|event: ChangeEvent| Ok::<_, Error>(event))
             .description(
-                "Called after a directory::skills::download that wrote at least one skill \
-                 markdown file, or a directory::skills::update, create, or delete. Also called \
-                 with { op: \"external\" } when a watched skills root changes on disk outside \
-                 this worker, including the read-only agents skills root when that root exists \
-                 at startup. Observe it; filter on input.op, input.name (the skill id) or \
-                 input.namespace.",
+                "Called after a directory::skills::download or auto-download that wrote at \
+                 least one skill markdown file, or a directory::skills::update, create, or \
+                 delete. Also called with { op: \"external\" } when a watched skills root \
+                 changes on disk outside this worker, including the read-only agents skills \
+                 root when that root exists at startup. Observe it; filter on input.op, \
+                 input.name (the skill id) or input.namespace.",
             )
             .private(),
     );
@@ -190,10 +190,11 @@ pub fn register_all(iii: &IIIClient) -> ChangeSources {
         SYSTEM_PROMPTS_ON_CHANGE,
         RegisterFunction::new(|event: ChangeEvent| Ok::<_, Error>(event))
             .description(
-                "Called after a directory::skills::download that wrote at least one system \
-                 prompt, or a directory::system-prompts::update, create, or delete. Also called \
-                 with { op: \"external\" } when a watched system-prompts root changes on disk \
-                 outside this worker. Observe it; filter on input.op or input.name.",
+                "Called after a directory::skills::download or auto-download that wrote at \
+                 least one system prompt, or a directory::system-prompts::update, create, or \
+                 delete. Also called with { op: \"external\" } when a watched system-prompts \
+                 root changes on disk outside this worker. Observe it; filter on input.op or \
+                 input.name.",
             )
             .private(),
     );
@@ -202,10 +203,10 @@ pub fn register_all(iii: &IIIClient) -> ChangeSources {
         AGENTS_ON_CHANGE,
         RegisterFunction::new(|event: ChangeEvent| Ok::<_, Error>(event))
             .description(
-                "Called after a directory::skills::download that wrote at least one agent \
-                 profile, or a directory::agents::update, create, or delete. Also called with \
-                 { op: \"external\" } when a watched agents file changes on disk outside this \
-                 worker. Observe it; filter on input.op or input.name.",
+                "Called after a directory::skills::download or auto-download that wrote at \
+                 least one agent profile, or a directory::agents::update, create, or delete. \
+                 Also called with { op: \"external\" } when a watched agents file changes on \
+                 disk outside this worker. Observe it; filter on input.op or input.name.",
             )
             .private(),
     );

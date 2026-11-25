@@ -239,10 +239,10 @@ async fn write_forwards_content_ref_verbatim() {
     let stub = StubFwd::new(Response::Ok(json!({
         "bytes_written": 42, "path": "/sb/x",
     })));
-    let content_ref = iii_sdk::channels::StreamChannelRef {
+    let content_ref = iii_sdk::protocol::StreamChannelRef {
         channel_id: "c-input".into(),
         access_key: "k-input".into(),
-        direction: iii_sdk::channels::ChannelDirection::Read,
+        direction: iii_sdk::protocol::ChannelDirection::Read,
     };
     let resp = backend(stub.clone())
         .write(WriteArgs {

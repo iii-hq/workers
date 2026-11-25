@@ -235,6 +235,52 @@ iii.observe(
 )
 ```
 
+## Keeping values out of observers and traces
+
+The `secrets::*` functions above refuse observers, but the function that
+*calls* them does not unless you say so. A function is observable by default,
+and for an observable function:
+
+- every observer that captures `input` or `output` gets the call's payload;
+- the engine stores the payload in the call's trace span, as the
+  `iii.invocation.input` and `iii.invocation.output` events (attribute
+  `iii.payload.json`). Traces are kept for the configured trace retention
+  (`trace_storage.retention_seconds`, 30 days by default), and nothing redacts
+  them.
+
+So a `myapp::connect-stripe { api_key }` that passes the key on to
+`secrets::set` leaks it, even though `secrets::set` itself does not. A
+non-observable function's span carries no payload events.
+
+Register every function whose input or output can hold a credential with
+observable off:
+
+```rust
+iii.register_function(
+    "myapp::connect-stripe",
+    RegisterFunction::new_async(handler).observable(false),
+);
+```
+
+```typescript
+iii.registerFunction('myapp::connect-stripe', handler, { observable: false })
+```
+
+```python
+iii.register_function("myapp::connect-stripe", handler, observable=False)
+```
+
+Better still, keep the value out of your function entirely:
+
+- When the key is already in the environment, `.env` or the login shell, call
+  `secrets::import`. This worker reads the value from the source itself, so
+  only the name passes through your function.
+- Pass references (`secret://NAME`, `env://NAME`) between functions, never
+  values. A consumer resolves the reference with `secrets::resolve` when it
+  needs the value.
+- Do not echo the value in an error message or a returned object. Return the
+  reference, or the masked `hint` that `secrets::set` returns.
+
 ## How llm-router uses it
 
 `llm-router` depends on this worker. A provider slice whose `api_key` is

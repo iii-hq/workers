@@ -73,7 +73,7 @@ const SETTINGS_FIELDS: readonly SettingsField[] = [
     key: 'stream_timeout_ms',
     label: 'Stream timeout',
     description: 'Maximum total time for a streaming response, in milliseconds.',
-    defaultValue: 600_000,
+    defaultValue: 1_500_000,
     echo: formatMs,
   },
   {

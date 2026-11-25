@@ -4,7 +4,7 @@ exclude = ["vendor/cssselect", "vendor/curl_impersonate_sys", "vendor/rustpython
 
 [package]
 name = "browser"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 publish = false
 
@@ -21,7 +21,7 @@ name = "browser"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.27.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }

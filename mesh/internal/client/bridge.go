@@ -686,6 +686,34 @@ func (b *Bridge) forward(id string) iii.Handler {
 
 // HasChannelRefs says whether data holds a channel ref, which works only on the engine that created it.
 func HasChannelRefs(data json.RawMessage) bool {
-	refs, err := iii.ExtractChannelRefs(data)
-	return err == nil && len(refs) > 0
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return false
+	}
+	return hasChannelRef(value)
+}
+
+// hasChannelRef finds a stream ref ({channel_id, access_key, direction}) anywhere in v.
+func hasChannelRef(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		_, id := t["channel_id"].(string)
+		_, key := t["access_key"].(string)
+		dir, _ := t["direction"].(string)
+		if id && key && (dir == string(iii.ChannelRead) || dir == string(iii.ChannelWrite)) {
+			return true
+		}
+		for _, child := range t {
+			if hasChannelRef(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if hasChannelRef(child) {
+				return true
+			}
+		}
+	}
+	return false
 }

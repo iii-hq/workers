@@ -36,10 +36,16 @@ instead of bolting anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying Claude Code session with full context.
 - Run long jobs without holding the call open: `claude::start` returns
-  `{session_id, started}` immediately; observe `claude::on-raw-event` with
+  `{session_id, turn_id, started}` immediately; observe `claude::on-raw-event` with
   args `{ session_id }` for raw progress or `claude::on-agent-event` for the
   rendered view;
-  interrupt with `claude::stop`.
+  interrupt with `claude::stop`. To be woken when it ends, choose a
+  `session_id` and a `turn_id`, observe `state::on-changed` filtered on
+  `input.scope == 'claude_turns'`, `input.key == session_id` and
+  `input.new_value.turn_id == turn_id`, and only then call
+  `claude::start { session_id, turn_id, prompt }` or
+  `claude::task { session_id, turn_id, task }`. An id you leave out is minted,
+  and that observer never fires.
 - Act on the whole backend: turns carry the iii runtime context by default,
   so the agent discovers and calls any registered function through the iii
   CLI (engine::functions::list, `iii call <fn> --help`) with the
@@ -65,7 +71,9 @@ instead of bolting anything onto this one.
   `policy::check_permissions` (fail-closed, needs the harness worker).
 - One turn per session at a time: check `claude::status` (`live: true`)
   before sending another `claude::run` for the same `session_id`; parallel
-  runs against one session race on the underlying Claude Code resume.
+  runs against one session race on the underlying Claude Code resume. A
+  follow-up also answers `busy` with a `reason` while a person has the session
+  open in a terminal; `options.forkSession: true` continues in a copy.
 - `claude::on-agent-event` carries whole-message frames (`message_complete`,
   `function_execution_start/end`, `turn_end`, `agent_end`); token deltas
   exist only on `claude::on-raw-event` and only when `includePartialMessages` is
@@ -77,14 +85,20 @@ instead of bolting anything onto this one.
   `messages` array whose last user entry becomes the prompt), plus `model`,
   `cwd`, `permission_mode`, `allowed_tools`, `disallowed_tools`,
   `max_turns`, `system_prompt`, `append_system_prompt`, and raw `options`;
-  returns `{session_id, claude_session_id, result, stop_reason, usage,
-  total_cost_usd}`.
-- `claude::start` — same payload, returns `{session_id, started}`
-  immediately; progress arrives on the event feeds.
+  returns `{session_id, turn_id, claude_session_id, result, stop_reason,
+  usage, total_cost_usd}`.
+- `claude::start` — same payload (plus an optional `turn_id`), returns
+  `{session_id, turn_id, started}` immediately; progress arrives on the event
+  feeds, the settle in state scope `claude_turns`.
 - `claude::stop` — interrupt the live run for a session.
 - `claude::status` — point-in-time session view: live flag, status, turns,
   usage, cost.
 - `claude::sessions::list` — every session this worker has run.
+- `claude::agents::list` — headless runs plus the terminal host's interactive
+  and background Claude Code sessions, each with `kind`, `status` and `alive`.
+- `claude::agents::stop` — stop a live background session by its Claude Code
+  session id (needs `external_sessions`); stop a headless run with
+  `claude::stop`.
 - `claude::on-agent-event`, `claude::on-raw-event` — the event feeds: private
   functions you observe with args `{ session_id }` (at most 256 observers
   each); never call them.

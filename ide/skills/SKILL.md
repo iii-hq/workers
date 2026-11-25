@@ -75,8 +75,10 @@ agents, pair with the `skills` worker.
   to the main checkout, and `git worktree move` of it takes you along. Under
   `landlock` that way back needs the worktree's parent and the main checkout
   writable for the exec; otherwise git empties the worktree, unregisters it
-  and fails, and you stay in the empty directory. For a worktree meant for a child or a side look, use
-  `worktree::create` (it does not move you).
+  and fails, and you stay in the empty directory. For a worktree meant for a child or a side look, pass
+  `follow_worktree: false` on the call: a worktree it adds does not move you
+  (removing or moving the one you are rooted in still takes you back or
+  along). `worktree::create` does not move you either.
 - With `fs.exec_confinement: landlock`, a session's host `shell::exec` /
   `exec_bg` can write only under its root, its grants, the repository's git
   dir and `fs.exec_writable` (`/tmp`, `/dev`, caches, toolchains); reads stay

@@ -2,7 +2,7 @@
 
 [package]
 name = "fp"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2024"
 publish = false
 
@@ -17,7 +17,7 @@ name = "fp"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.27.0"
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
 # NOT_FOUND semantics, serialized hot-reload, guidance observer slot).
 iii-config-client = { path = "../crates/config-client" }
@@ -40,6 +40,10 @@ aho-corasick = "1"
 tokio = { version = "1", features = ["net"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
+# The policy drift test in src/pipe.rs reads the root iii-permissions.yaml with
+# the gate's own matcher. Tests only: nothing ships in the fp binary.
+approval-gate = { path = "../approval-gate" }
+serde_yaml_ng = "0.10"
 
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller

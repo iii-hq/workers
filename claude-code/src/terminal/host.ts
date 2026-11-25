@@ -15,12 +15,19 @@ export type ExecResult = { stdout: string; stderr: string; exit_code: number };
 export async function exec(
   iii: IIIClient,
   command: string,
-  options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
+  options: {
+    /** Argv, passed verbatim (no shell); omitted, `command` is split into words. */
+    args?: string[];
+    cwd?: string;
+    timeoutMs?: number;
+    env?: Record<string, string>;
+  } = {},
 ): Promise<ExecResult> {
   const res = await iii.call<unknown, Partial<ExecResult>>({
     function_id: 'shell::exec',
     payload: {
       command,
+      ...(options.args ? { args: options.args } : {}),
       ...(options.cwd ? { cwd: options.cwd } : {}),
       ...(options.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
       timeout_ms: options.timeoutMs ?? EXEC_TIMEOUT_MS,
@@ -30,7 +37,9 @@ export async function exec(
   return {
     stdout: res?.stdout ?? '',
     stderr: res?.stderr ?? '',
-    exit_code: res?.exit_code ?? 0,
+    // A null exit code is a command killed at its timeout or by a signal (the
+    // ide appends why to stderr): never a success.
+    exit_code: res?.exit_code ?? -1,
   };
 }
 
@@ -93,26 +102,6 @@ export async function fileExists(iii: IIIClient, path: string): Promise<boolean 
     if (r.exit_code === 0) return true;
     if (r.exit_code === 1) return false;
     return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Every file under `dir` on the terminal host, each as `${dir}/<relative>`
- * (an absent `dir` is an empty set), or null when the host could not list it.
- * One call in place of a read per file, for the same reason as `fileExists`.
- */
-export async function listFiles(iii: IIIClient, dir: string): Promise<Set<string> | null> {
-  try {
-    const q = quote(dir);
-    // -L: a symlinked folder (or file) is listed through the link; without it
-    // find reports nothing under a linked folder, and every file would read as absent.
-    const r = await exec(iii, `if [ -d ${q} ]; then find -L ${q} -type f; fi`, {
-      timeoutMs: 15_000,
-    });
-    if (r.exit_code !== 0) return null;
-    return new Set(r.stdout.split('\n').filter(Boolean));
   } catch {
     return null;
   }

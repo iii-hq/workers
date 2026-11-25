@@ -70,6 +70,7 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         "ide",
         "ade",
         "fp",
+        "document",
     ] {
         assert_eq!(
             dependencies.get(serde_yaml_ng::Value::String(worker.into())),

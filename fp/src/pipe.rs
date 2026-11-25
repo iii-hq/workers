@@ -8,7 +8,8 @@
 //! Steps run with THIS worker's authority, not the calling agent's dispatch
 //! policy — the `fp::pipe` call itself is the policy/approval surface
 //! (an approver sees the full step list). `forbidden_step` statically refuses
-//! the classes that must never ride on worker authority. Database writes are
+//! every call the root iii-permissions.yaml denies, less a short table of
+//! written exceptions, plus fp's own extra refusals. Database writes are
 //! refused only when the approval gate is present.
 
 use aho_corasick::{AhoCorasick, MatchKind};
@@ -22,7 +23,7 @@ use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
-pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router:: (but its catalog reads router::models::list/get/budget/supports and router::provider::list), provider::, harness::, run::, workflow::start, workflow-result::submit, session writes or approval::. For independent calls use fp::batch. A refusal lists every problem in the request."#;
+pub const PIPE_DESC: &str = r#"Run a worker-side pipeline: each step calls a function and its result lands in the next step's payload at `into` (default "/value"); fp::* steps thread the bare value and a failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step sizes and a preview, not the value. A pipe is a chain, not a batch: fp::batch and fp::pipe cannot be steps (no nesting), and neither can engine::observers::dispose, configuration::, oauth::, secrets:: (but list/get/status/detect), mcp-client::, router:: (but its catalog reads router::models::list/get/budget/supports and router::provider::list), provider::, harness::, run::, workflow::start, workflow-result::submit, session writes, approval::, or any other call the agent policy denies (hooks, terminals, console UI) except state writes and kanban planning writes. For independent calls use fp::batch. A refusal lists every problem in the request."#;
 // Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
@@ -43,7 +44,9 @@ const MAX_PREVIEW_CHARS: usize = 8_000;
 const STEP_TIMEOUT_MS: u64 = 120_000;
 /// The read-only session-manager surface — every `session::*` id that
 /// iii-permissions.yaml leaves at the needs_approval default instead of
-/// hard-denying. The only `session::*` steps a pipe accepts.
+/// hard-denying, and `read-attachment`, an explicit allow there: it answers
+/// text, less than `get-attachment`'s bytes. The only `session::*` steps a
+/// pipe accepts.
 const SESSION_READS: &[&str] = &[
     "session::get",
     "session::list",
@@ -53,6 +56,7 @@ const SESSION_READS: &[&str] = &[
     "session::get-message",
     "session::get-attachment",
     "session::list-attachments",
+    "session::read-attachment",
 ];
 
 /// The metadata reads of the secrets worker (masked hints, fingerprints,
@@ -74,6 +78,90 @@ const ROUTER_READS: &[&str] = &[
     "router::models::budget",
     "router::models::supports",
     "router::provider::list",
+];
+
+/// Calls the root iii-permissions.yaml denies that a step may still make, each
+/// with its reason. The pipe or batch call is the approval surface a person
+/// reviews. A test fails when an entry is no longer denied.
+const ALLOWED_ON_PURPOSE: &[(&str, &str)] = &[
+    (
+        "state::set",
+        "persisting the threaded value is what a pipe is for",
+    ),
+    (
+        "state::update",
+        "persisting the threaded value is what a pipe is for",
+    ),
+    (
+        "state::delete",
+        "clearing a stored value is part of persisting one",
+    ),
+    (
+        "kanban::ticket::restore",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::project::update",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::project::archive",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::project::restore",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::release::create",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::release::update",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::release::ship",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::release::reopen",
+        "a planning write an approved pipe may make",
+    ),
+    (
+        "kanban::label::convert",
+        "a planning write an approved pipe may make",
+    ),
+    // Gate-only: the database branch of `forbidden_unprefixed_step` refuses
+    // these while the approval gate runs, before this table is read.
+    (
+        "database::on-secret-change",
+        "gate-only: reloads stored connections; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::saveConnection",
+        "gate-only: writes a stored connection; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::deleteConnection",
+        "gate-only: deletes a stored connection; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::getConnection",
+        "gate-only: reads a stored connection; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::testConnection",
+        "gate-only: tests a stored connection; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::mention::search",
+        "gate-only: lists tables for chat mentions; with no gate, no per-agent decision exists to bypass",
+    ),
+    (
+        "database::mention::get",
+        "gate-only: reads a table for a chat mention; with no gate, no per-agent decision exists to bypass",
+    ),
 ];
 
 // NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
@@ -182,12 +270,14 @@ pub(crate) fn remote_scoped_step(function_id: &str) -> bool {
             .any(|(index, _)| is_scoped_step(&function_id[index + 2..]))
 }
 
-/// Step functions a pipe refuses. Steps run with THIS worker's authority, so
-/// every class the agent policy hard-denies (iii-permissions.yaml) must be
-/// refused here too — an allowlisted or approve-always `fp::pipe` would
-/// otherwise be a standing policy bypass. `state::*` is the deliberate
-/// exception: persisting the threaded value is the pipe's purpose, and the
-/// pipe call itself is the approval surface an approver reviews. Note that
+/// Step functions a pipe or batch refuses. Steps run with THIS worker's
+/// authority, so every call the root iii-permissions.yaml denies is refused
+/// here too — an allowlisted or approve-always `fp::pipe` would otherwise be a
+/// standing policy bypass. No process loads that file at runtime: it is the
+/// shipped agent policy, and a test keeps this hand list in line with it.
+/// `ALLOWED_ON_PURPOSE` lists the denied calls a step may still make, each
+/// with its reason; the pipe call itself is the approval surface an approver
+/// reviews. Operator rules added at runtime are not seen. Note that
 /// the same reasoning makes allowlisting `fp::pipe` grant un-approved
 /// shell::*/coder::* execution (scoped steps, gated in `validate`) — the
 /// pipe must stay needs_approval. Residual, accepted: an rbac boundary that
@@ -197,18 +287,26 @@ pub(crate) fn forbidden_step(
     function_id: &str,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
+    // Every `::` offset, overlapping ones too: in `a:::x::y` the tail `x::y`
+    // starts after the second `::`, which `match_indices` would skip.
     let ids = std::iter::once(function_id).chain(
         function_id
-            .match_indices("::")
+            .as_bytes()
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| *pair == b"::")
             .map(|(index, _)| &function_id[index + 2..]),
     );
-    for id in ids {
+    for (index, id) in ids.enumerate() {
         // A catalog read ends the scan: the `provider::list` tail of
         // `router::provider::list` is not a provider call.
         if ROUTER_READS.contains(&id) {
             return None;
         }
-        if let Some(reason) = forbidden_unprefixed_step(id, approval_gate_running) {
+        // Checks that read the whole id run once, on the first (whole) id: a
+        // tail cannot match them unless the whole id does.
+        let whole = index == 0;
+        if let Some(reason) = forbidden_unprefixed_step(id, whole, approval_gate_running) {
             return Some(reason);
         }
     }
@@ -217,6 +315,7 @@ pub(crate) fn forbidden_step(
 
 fn forbidden_unprefixed_step(
     function_id: &str,
+    whole: bool,
     approval_gate_running: bool,
 ) -> Option<&'static str> {
     // Private accessors validate their scope, not the caller. A pipe must not
@@ -258,7 +357,7 @@ fn forbidden_unprefixed_step(
     if function_id == "engine::observers::dispose" {
         return Some("observer control calls are not supported in a pipe — call them directly");
     }
-    // Session READS are only needs_approval for agents (the policy hard-denies
+    // Session READS are at most needs_approval for agents (the policy hard-denies
     // the writes and the raw `session::store::*` protocol), and the pipe call
     // is that approval surface — so, like `database::query`, they may ride a
     // pipe. Writes and approval::* stay refused.
@@ -266,8 +365,8 @@ fn forbidden_unprefixed_step(
         || function_id.starts_with("approval::")
     {
         return Some(
-            "only read-only session functions (session::get/list/messages*/get-message/\
-             get-attachment/list-attachments) are supported in a pipe — session writes and \
+            "only session reads (session::get/list/messages*/get-message/get-attachment/\
+             list-attachments/read-attachment) are supported in a pipe — session writes and \
              approval functions run with worker authority, which would bypass the agent-level \
              deny on them",
         );
@@ -278,7 +377,19 @@ fn forbidden_unprefixed_step(
              functions would run with worker authority, past the agent-level deny on them",
         );
     }
-    if function_id.starts_with("configuration::") || function_id.starts_with("oauth::") {
+    if function_id.starts_with("configuration::")
+        || function_id.starts_with("oauth::")
+        || matches!(
+            function_id,
+            "email::config-status"
+                | "claude::auth::status"
+                | "pi::auth::status"
+                | "storage::getBucket"
+                | "storage::saveBucket"
+                | "storage::deleteBucket"
+                | "storage::testBucket"
+        )
+    {
         return Some(
             "credential/config functions are not supported in a pipe — steps run with worker \
              authority, which would bypass the agent-level deny on them",
@@ -291,7 +402,10 @@ fn forbidden_unprefixed_step(
              router::provider::list are allowed",
         );
     }
-    if function_id.starts_with("harness::") || function_id.starts_with("run::") {
+    if function_id.starts_with("harness::")
+        || function_id.starts_with("run::")
+        || matches!(function_id, "context::assemble" | "context::compact")
+    {
         return Some(
             "harness/turn-control functions are not supported in a pipe — steps run with \
              worker authority, which would bypass the agent-level deny on them",
@@ -351,8 +465,74 @@ fn forbidden_unprefixed_step(
              agent-level deny on them; call them directly",
         );
     }
-    if function_id.ends_with("::on-config-change") {
+    // After the database branch: its table entries are gate-only.
+    if ALLOWED_ON_PURPOSE.iter().any(|(id, _)| *id == function_id) {
+        return None;
+    }
+    // Event hooks: `on-config-change`, `on-secret-change`, `on_secret_changed`, …
+    // Only after a `::`, or the bare tail of a gate-only database hook would
+    // refuse it.
+    if whole
+        && function_id
+            .rsplit_once("::")
+            .is_some_and(|(_, last)| last.starts_with("on-") || last.starts_with("on_"))
+    {
         return Some("lifecycle hooks are engine-dispatched, never pipe steps");
+    }
+    if (whole && function_id.contains("::terminal::"))
+        || function_id.starts_with("shell::pty::")
+        || function_id.starts_with("shell::ui-state::")
+        || function_id.ends_with("::ui-content")
+        || matches!(
+            function_id,
+            "stories::ui-file"
+                | "browser::pick::start"
+                | "browser::pick::resolve"
+                | "browser::pick::stop"
+                | "browser::pick::hint"
+                | "browser::screencast::start"
+                | "browser::screencast::stop"
+                | "browser::frame"
+                | "computer::screencast::start"
+                | "computer::screencast::stop"
+                | "computer::frame"
+                | "ios-simulator::touch"
+                | "ios-simulator::watch"
+                | "ios-simulator::frame"
+                | "a2ui::action"
+                | "a2ui::binding::apply"
+                | "a2ui::stamp-session"
+                | "slack::interactions"
+        )
+    {
+        return Some(
+            "terminal and console UI functions are not supported in a pipe — steps run with \
+             worker authority, which would bypass the agent-level deny on them",
+        );
+    }
+    if function_id.starts_with("shell::scm::")
+        || function_id.starts_with("github::webhooks::")
+        || function_id.starts_with("ade::conversations::")
+        || matches!(
+            function_id,
+            "directory::pre-generate"
+                | "directory::hint-preview"
+                | "kanban::ticket::delete"
+                | "kanban::release::delete"
+                | "eval::step"
+                | "eval::sweep"
+                | "security-scan::execute"
+                | "sentinel::ingest"
+                | "ios-simulator::tenants::list"
+                | "worktree::land-step"
+                | "slack::events"
+                | "openwiki::cron::refresh-due"
+        )
+    {
+        return Some(
+            "the agent policy denies this function, so it is not supported in a pipe — steps \
+             run with worker authority, which would bypass that deny",
+        );
     }
     None
 }
@@ -976,7 +1156,7 @@ mod tests {
 
         // control / nested / worker-authority steps are refused with a
         // reason — mirroring every agent-policy hard-denied class
-        // (iii-permissions.yaml), state::* excepted on purpose
+        // (iii-permissions.yaml), the ALLOWED_ON_PURPOSE ids excepted on purpose
         for (function, needle) in [
             ("shell::config-status", "control-plane"),
             ("shell::kill-session-jobs", "control-plane"),
@@ -1044,6 +1224,7 @@ mod tests {
               "payload": { "session_id": "s", "attachment_id": "a" } },
             { "function": "fp::get", "payload": { "path": "/data" } },
             { "function": "session::messages-tail", "payload": { "session_id": "s", "n": 5 } },
+            { "function": "session::read-attachment", "payload": { "attachment_id": "a" } },
         ]}))
         .unwrap();
         assert!(validate(&reads).is_ok());
@@ -1308,6 +1489,17 @@ mod tests {
                 "shell::filesystem::read",
                 "state::get",
                 "state::set",
+                "state::update",
+                "state::delete",
+                "kanban::ticket::restore",
+                "kanban::project::update",
+                "kanban::project::archive",
+                "kanban::project::restore",
+                "kanban::release::create",
+                "kanban::release::update",
+                "kanban::release::ship",
+                "kanban::release::reopen",
+                "kanban::label::convert",
                 "state::claim-namespace-info",
                 "provider-openai-codex::state-info",
                 "mesh::status",
@@ -1319,6 +1511,7 @@ mod tests {
                 "session::get-message",
                 "session::get-attachment",
                 "session::list-attachments",
+                "session::read-attachment",
                 "secrets::list",
                 "secrets::get",
                 "secrets::status",
@@ -1337,9 +1530,72 @@ mod tests {
             let query = format!("{prefix}database::query");
             assert!(forbidden_step(&query, true).is_none(), "{query}");
             assert!(forbidden_step(&query, false).is_none(), "{query}");
-            let write = format!("{prefix}database::execute");
-            assert!(forbidden_step(&write, true).is_some(), "{write}");
-            assert!(forbidden_step(&write, false).is_none(), "{write}");
+            // Gate-only: the writes and the 7 policy-denied database ids run
+            // only while no approval gate runs.
+            for function in [
+                "database::execute",
+                "database::on-secret-change",
+                "database::saveConnection",
+                "database::deleteConnection",
+                "database::getConnection",
+                "database::testConnection",
+                "database::mention::search",
+                "database::mention::get",
+            ] {
+                let write = format!("{prefix}{function}");
+                assert!(forbidden_step(&write, true).is_some(), "{write}");
+                // The hook pattern sees the last segment of an old mesh spelling.
+                let hook = !prefix.is_empty() && function == "database::on-secret-change";
+                assert_eq!(forbidden_step(&write, false).is_some(), hook, "{write}");
+            }
+        }
+    }
+
+    #[test]
+    fn calls_the_policy_denies_are_refused_in_every_spelling() {
+        for (function, needle) in [
+            ("storage::saveBucket", "credential"),
+            ("storage::getBucket", "credential"),
+            ("email::config-status", "credential"),
+            ("claude::auth::status", "credential"),
+            ("context::compact", "turn-control"),
+            ("judge-openai::on-secret-change", "lifecycle"),
+            ("telegram-bot::on-message-added", "lifecycle"),
+            ("context::on_message_added", "lifecycle"),
+            ("github::on-config-change", "lifecycle"),
+            ("claude::terminal::describe", "terminal"),
+            ("tmux::terminal::open", "terminal"),
+            ("shell::pty::open", "terminal"),
+            // No exception: the policy allows it bare but denies it prefixed.
+            ("shell::pty::sessions", "terminal"),
+            ("shell::ui-state::set", "console UI"),
+            ("kanban::ui-content", "console UI"),
+            ("stories::ui-file", "console UI"),
+            ("browser::pick::start", "console UI"),
+            ("computer::frame", "console UI"),
+            ("a2ui::action", "console UI"),
+            ("slack::interactions", "console UI"),
+            ("shell::scm::commit-message", "policy denies"),
+            ("github::webhooks::receive", "policy denies"),
+            ("ade::conversations::import", "policy denies"),
+            ("kanban::ticket::delete", "policy denies"),
+            ("kanban::release::delete", "policy denies"),
+            ("eval::step", "policy denies"),
+            ("security-scan::execute", "policy denies"),
+            ("ios-simulator::tenants::list", "policy denies"),
+            ("slack::events", "policy denies"),
+            ("openwiki::cron::refresh-due", "policy denies"),
+        ] {
+            for prefix in ["", "laptop::", "a::b::", "laptop:::"] {
+                let id = format!("{prefix}{function}");
+                for gate in [false, true] {
+                    let reason = forbidden_step(&id, gate);
+                    let reason = reason.unwrap_or_else(|| panic!("{id}, gate={gate}"));
+                    assert!(reason.contains(needle), "{id}: {reason}");
+                    let problem = format!("call 12 ({id}): {reason}");
+                    assert!(problem.chars().count() <= MAX_PROBLEM_CHARS, "{problem}");
+                }
+            }
         }
     }
 
@@ -1584,6 +1840,17 @@ mod tests {
     }
 
     #[test]
+    fn a_long_nested_function_id_is_judged_in_linear_time() {
+        // 100k `::` tails of a 300 KB id: a scan of the whole tail per suffix
+        // would read about 15 GB.
+        let id = format!("{}x", "a::".repeat(100_000));
+        let start = std::time::Instant::now();
+        assert!(forbidden_step(&id, false).is_none());
+        assert!(forbidden_step(&id, true).is_none());
+        assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    }
+
+    #[test]
     fn a_long_function_id_cannot_inflate_a_refusal() {
         let long_name = format!("configuration::{}", "x".repeat(100_000));
         let req: PipeRequest = serde_json::from_value(json!({
@@ -1694,5 +1961,97 @@ mod tests {
         // A key that also occurs inside the note leaves the note whole.
         let out = withhold_access_keys("k=read".into(), &["read".to_string()]);
         assert_eq!(out, format!("k={WITHHELD_ACCESS_KEY}"));
+    }
+
+    /// fp follows the root iii-permissions.yaml by hand. A deny added there
+    /// fails this test until `forbidden_unprefixed_step` refuses it or
+    /// `ALLOWED_ON_PURPOSE` names a reason to accept it.
+    #[test]
+    fn every_call_the_root_policy_denies_is_refused_or_allowed_on_purpose() {
+        use approval_gate::permissions::{
+            Action, Decision, Permissions, compile_rule, parse_rules_from_config,
+        };
+        use approval_gate::types::PermissionMode;
+
+        #[derive(Deserialize)]
+        struct PolicyFile {
+            rules: Vec<Value>,
+        }
+        let file: PolicyFile =
+            serde_yaml_ng::from_str(include_str!("../../iii-permissions.yaml")).unwrap();
+        let specs = parse_rules_from_config(&Value::Array(file.rules.clone()));
+        // The parser drops an entry it cannot read, with no error.
+        assert_eq!(specs.len(), file.rules.len(), "a rule did not parse");
+        let policy = Permissions::compile(&specs).unwrap();
+        let denied = |id: &str| {
+            matches!(
+                policy.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            )
+        };
+
+        // Each deny rule's literal id or glob samples, every exact id the file
+        // names, and every id fp accepts on purpose; then all of them again
+        // under an old mesh prefix. An exception inside a denied glob
+        // (`zz::shell::pty::sessions`) is found only this way.
+        let mut samples = Vec::new();
+        for (index, spec) in specs.iter().enumerate() {
+            let rule = compile_rule(spec, index).unwrap();
+            let rule_samples = match rule.glob {
+                None => vec![rule.function_id.clone()],
+                Some(_) => vec![
+                    rule.function_id.replace('*', "zz"),
+                    rule.function_id.replace('*', "zz::yy"),
+                    rule.function_id.replace('*', "zz:"),
+                ],
+            };
+            if rule.action == Action::Deny {
+                assert!(
+                    rule_samples.iter().any(|s| denied(s)),
+                    "{}: no sample is denied, so this test cannot see it",
+                    rule.rule_id
+                );
+            } else if rule.glob.is_some() {
+                continue;
+            }
+            samples.extend(rule_samples);
+        }
+        let on_purpose = SESSION_READS
+            .iter()
+            .chain(SECRETS_READS)
+            .chain(ROUTER_READS)
+            .chain(&["database::query"])
+            .copied()
+            .chain(ALLOWED_ON_PURPOSE.iter().map(|(id, _)| *id));
+        samples.extend(on_purpose.map(str::to_string));
+        let prefixed: Vec<String> = samples.iter().map(|s| format!("zz::{s}")).collect();
+        samples.extend(prefixed);
+        samples.sort();
+        samples.dedup();
+
+        let mut accepted = Vec::new();
+        for sample in samples.iter().filter(|s| denied(s)) {
+            if ALLOWED_ON_PURPOSE.iter().any(|(id, _)| id == sample) {
+                continue;
+            }
+            // The old spelling pins fp's `::` suffix scan: the policy denies
+            // few ids under a prefix.
+            for id in [sample.clone(), format!("zz::{sample}")] {
+                if forbidden_step(&id, false).is_none() {
+                    accepted.push(id);
+                }
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "the policy denies these, fp accepts them: {accepted:?}"
+        );
+        for (id, reason) in ALLOWED_ON_PURPOSE {
+            assert!(
+                denied(id),
+                "{id} is no longer denied: drop it from the table"
+            );
+            assert!(!reason.trim().is_empty(), "{id} needs a reason");
+        }
     }
 }

@@ -84,7 +84,7 @@ A turn from the CLI and the session record it leaves behind:
 
 ![iii call claude::run --help printing the published request schema as a parameter table](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/cli-help.png)
 
-Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically.
+Call `claude::run` again with the returned `session_id` to continue the same conversation: the worker maps iii session ids to Claude Code session ids in engine state and resumes automatically. A turn that would run beside another on the same conversation is refused with `busy: true` and a `reason` (and `started: false` from `claude::start` and `claude::task`): while a run of that session is live here, or while another process on the terminal host, such as a terminal, has the conversation open. `options.forkSession: true` continues in a copy.
 
 Two ids come back from every run. `session_id` is the iii session id: the key for `claude::status`, `claude::stop`, resume, and the `session_id` an event-feed observer passes as its args. `claude_session_id` is Claude Code's internal session id (what the worker passes to the CLI's resume under the hood) — returned for reference, not a lookup key.
 
@@ -94,18 +94,20 @@ Long turns: use `claude::start` to return immediately, then observe `claude::on-
 
 | Function | Purpose |
 | --- | --- |
-| `claude::run` | Run one turn, wait, return the final result |
-| `claude::start` | Fire-and-forget turn; progress arrives on `claude::on-agent-event` |
-| `claude::task` | Delegate one task as a SUB-AGENT: hand it off with a call or an observer, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator observes (`state::on-changed`, filtered on `input.scope` and `input.key`) and is woken by |
+| `claude::run` | Run one turn, wait, return the final result and its `turn_id` |
+| `claude::start` | Fire-and-forget turn; returns `session_id` and `turn_id` at once, progress arrives on `claude::on-agent-event`, the end in `claude_turns` (see [Waiting for a turn to finish](#waiting-for-a-turn-to-finish)) |
+| `claude::task` | Delegate one task as a SUB-AGENT: hand it off with a call or an observer, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and be woken by its settle in `claude_turns` (see [Waiting for a turn to finish](#waiting-for-a-turn-to-finish)). The outcome is also written to `agent_tasks/<session id>`, the shape every agent worker shares, but only by the run itself: a worker restart settles `claude_turns` alone |
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
 | `claude::sessions::list` | All sessions this worker has run |
-| `claude::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. Internal. |
+| `claude::agents::list` | Every Claude Code session in one list: this worker's headless runs plus the terminal host's interactive and background sessions (see [Listing sessions](#listing-sessions)) |
+| `claude::agents::stop` | Stop a live background session of the terminal host (`claude stop`); its conversation is kept. Only with `external_sessions` on. A headless run stops through `claude::stop` |
+| `claude::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. With `session` (a row id of `claude::agents::list`), the argv and cwd that open that session, and `copy: true` when they open a copy of it. Internal. |
 | `claude::terminal::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the feed, not the delivery. |
 | `claude::auth::status` | Which plan a terminal session spends (see [Billing](#billing-which-plan-a-session-spends)). Agent-denied. |
 | `claude::ui-content` | Console page assets. Internal. |
 
-`claude::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), plus `model`, `cwd`, `system_prompt`, `append_system_prompt`, `permission_mode`, `allowed_tools`, `disallowed_tools`, and `max_turns` overrides.
+`claude::run` accepts either a bare `prompt` string or a `messages` array (`[{ role: 'user', content: [{ type: 'text', text }] }]`), plus `model`, `cwd`, `system_prompt`, `append_system_prompt`, `permission_mode`, `allowed_tools`, `disallowed_tools`, and `max_turns` overrides, and an optional `turn_id` (non-empty, at most 200 characters; minted when omitted) that names the turn in its settle.
 
 ### Raw API pass-through
 
@@ -175,6 +177,122 @@ consumer that fails or disappears never fails the turn.
 The feeds do not use iii-stream (see the guide "Migrate from iii-stream and
 pubsub"). The acp worker observes `claude::on-agent-event` for the brain
 `claude::run`.
+
+## Waiting for a turn to finish
+
+Every turn this worker sees end writes one record to state scope
+`claude_turns`: headless turns (`claude::run`, `claude::start`,
+`claude::task`) under their `session_id`, and any session that loads the iii
+plugin (the console terminal) under its Claude Code session id, from the
+plugin's `Stop` and `SessionEnd` activity hooks (`claude::terminal::activity`
+also settles a `StopFailure`, the event Claude Code sends instead of `Stop`
+when a turn ends on an API error, once the published plugin reports it).
+Observe `state::on-changed` once and be woken by it; no polling.
+
+```jsonc
+{
+  "id": "sess_...",            // iii session_id, or the Claude Code session id for a hook session
+  "source": "run",             // run | hook | boot (a restart settled a turn left running)
+  "status": "completed",       // completed | stopped | error | gone (the session ended)
+  "turn_id": "my-turn-1",
+  "claude_session_id": "...",
+  "stop_reason": "end",
+  "result": "final assistant text, when known",
+  "error": "set when status is error",
+  "background_tasks": 0,       // Stop hook: >0 means paused on background work, not finished
+  "settled_at_ms": 1764000000000
+}
+```
+
+Choose the `session_id` and the `turn_id` yourself, register the observer
+BEFORE starting the turn, and pass both: an id you leave out is minted, and
+the observer never fires. The `turn_id` keeps a settle of an earlier turn on
+the same session from waking you:
+
+```ts
+iii.registerFunction('my::on-claude-turn', ({ output: event }) => {
+  // event.new_value is the settle above
+});
+await iii
+  .observe(
+    {
+      function_id: 'state::on-changed',
+      filters: {
+        'input.scope': { $eq: 'claude_turns' },
+        'input.key': { $eq: session_id },
+        'input.new_value.turn_id': { $eq: turn_id },
+      },
+      capture: ['output'],
+    },
+    'my::on-claude-turn',
+  )
+  .ready();
+await iii.call({ function_id: 'claude::start', payload: { session_id, turn_id, prompt } });
+```
+
+The settle is written after the session's final status and after its run
+slot is released, so the woken observer can call `claude::start` on the same
+session at once. For a terminal session, use the Claude Code session id as
+the key and no `turn_id` filter. `claude::terminal::activity` accepts any
+caller, so confirm a settle before acting on it. A headless one:
+`claude::status` shows `live: false` and `record.status` `done` or `error`. A
+terminal one has no `claude_sessions` record, so use `claude::agents::list`:
+the row whose `id` is that Claude Code session id is `idle` or `done`, or for
+`gone` is missing or not `alive`, in a response with no `detail`.
+
+## Listing sessions
+
+`claude::agents::list` (`{ all?: boolean }`) returns `{ agents, detail? }`,
+one row per session:
+
+- `headless`: a `claude::run` / `claude::start` / `claude::task` session of
+  this worker, from `claude_sessions`, newest first (`updated_at_ms`). `busy`
+  while its run is live, then `done`, `error`, or `stopped` after
+  `claude::stop`; `unknown` when the record says `working` and no run is live
+  here.
+- `interactive` and `background`: sessions on the terminal host, read from its
+  `claude agents --json` (`--all` adds completed background sessions). The
+  CLI's states map to `busy`, `idle`, `waiting` (with `waiting_for`), `done`,
+  `error` and `stopped`; anything else is `unknown`. `alive` is true while a
+  process runs the session. A headless run's own CLI row is dropped, unless the
+  run is open in a terminal: a process runs its Claude session and no turn runs
+  here. Then the CLI row is listed (whatever `external_sessions` says) and the
+  headless row is dropped, because a message would put a second writer on the
+  conversation. A background row carries its `short_id` only with
+  `external_sessions` on: it is what `claude::agents::stop` needs.
+  `pty_session_id` names the console terminal (`shell::pty`) that runs the
+  session, when one does.
+
+That output has no versioned contract, so a value this worker does not know
+reads as `unknown`, and a failed or unreadable listing leaves only the
+headless rows, with the reason in `detail`. By default a host session is
+listed only when this worker saw it (its hooks reached
+`claude::terminal::activity`) or it runs in a console terminal; the others are
+counted in `detail`. Set `external_sessions: true` to list every session on
+that host.
+
+`claude::agents::stop` (`{ id }`, the Claude Code session id) stops one
+background session by the short id a fresh listing gives it. It refuses, with a
+`reason`, when `external_sessions` is off, when no live background session has
+that id, and for interactive sessions, which nothing here can stop.
+
+The console's **claude** page shows this list in a rail beside the terminal:
+the sessions open in this console, the others on the host, of which a live
+background one can be stopped, and the worker's own runs, which take a message
+(`claude::start`) or a stop (`claude::stop`). It re-reads when a turn starts or settles (`claude_sessions`
+and `claude_turns` in state), when a hooked terminal reports a session start, a
+prompt, a stop or an end, when the terminal beside it changes session, when the
+window gains focus, and on its refresh button.
+
+A click on a row opens that session in the terminal, in its own directory. One
+that runs in a terminal of this console shows that terminal; a finished run
+resumes (`claude --resume`); a background session is attached to (`claude
+attach`, which needs `external_sessions` on). A session that is live anywhere
+else, in another terminal or in a headless turn, opens as a copy under a new id
+(`--fork-session`), after a confirmation: the CLI would let a second process
+resume the same id, and both would write to one transcript. Nothing is
+resumed while `claude agents --json` fails, since then nothing says whether a
+session is live.
 
 ## The agent on the bus
 
@@ -249,33 +367,49 @@ terminal itself stays dark whatever the console theme is: an agent CLI paints
 its own interface in colors chosen for a dark terminal and never learns the
 page went light.
 
-### What the workspace gets
+### Which folder, and what a session gets
 
-On every boot, when `terminal.setup_workspace` is on:
+Each Claude pane has its own **folder pill** in its bottom row. A session
+starts in the chat's working directory, else in the compose project's folder
+(the folder holding the project's worker-compose file, from `compose::list`),
+never in the ide worker's own folder. Picking another folder closes the
+session and starts a new one there: Claude Code cannot change folder
+mid-session. `claude::terminal::describe { cwd?, session? }` is what the page
+calls; it prepares the session right then, every time. A session opened from
+the Sessions panel (`session`: a `claude::agents::list` row id) is prepared in
+that session's own folder, and its resume argv goes after the prepared one.
 
-- `.iii-plugin/`, a Claude Code **plugin** the session loads with
-  `--plugin-dir` (see [the iii plugin](https://github.com/iii-hq/agent-plugins-claude/tree/main/plugins/iii)). It carries the
-  hooks for `SessionStart`, `SessionEnd`,
-  `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
-  payload to `claude::terminal::activity` with the `iii` CLI, so it works
-  whether or not the terminal host is this worker's host — and the
-  `iii-runtime` skill fetched from `iii-directory` when the engine runs no
-  mcp-server (with mcp-server, default-mcp takes its place).
+When `terminal.setup_workspace` is on, that preparation:
 
-  The same plugin serves the headless half: the Agent SDK turns
-  `plugins: [{ type: 'local', path }]` into that same `--plugin-dir` flag, so a
-  typed turn and a `claude::run` turn get identical hooks and the identical
-  skill from one definition (`src/plugin.ts`). `claude plugin validate` accepts
-  the generated directory.
+- **installs the published `iii` plugin in the folder when it is missing**,
+  with Claude Code's own commands: `claude plugin list --json` (run in the
+  folder) decides; when `iii@iii` is not installed and enabled for it, the
+  worker adds the `iii` marketplace (iii-hq/agent-plugins-claude) if it is
+  missing and runs `claude plugin install iii@iii --scope local` there (a
+  disabled local install is enabled instead). The plugin is not configured
+  and no copy of it is written: no `--plugin-dir`, no generated hooks,
+  commands or agent. A folder already covered is left alone.
+- **sets the environment of the Claude process**, read at that start:
+  `III_MCP_URL` (the http worker's address from `http::status`, plus `/mcp`;
+  the plugin's `.mcp.json` reads it), `III_CLI` (the `iii` CLI on the terminal
+  host, which the plugin's activity hooks report through to
+  `claude::terminal::activity`) and `III_URL`. A moved http worker therefore
+  reaches the next session without a worker restart.
+- **writes default-mcp** to `<workspace_dir>/default-mcp.md` (the worker's own
+  folder on the terminal host) and checks it is there before appending it with
+  `--append-system-prompt-file`; a session never starts with a path to a
+  missing file. An `--append-system-prompt` in `terminal.args` wins.
 
-  `.claude/settings.json` is no longer written at all. It is the operator's
-  file; the plugin directory is this worker's, so it is written whole instead of
-  merged into.
+Headless `claude::run` turns get the same plugin check in the folder the turn
+runs in (its `cwd`, else this worker's own folder), on this worker's host,
+and the same `III_MCP_URL` / `III_CLI` environment. A turn reads the folder's
+local settings (`settingSources: ['local']`, where a local install lives)
+only when the plugin is there.
 
-  `CLAUDE.md` is not written either. Earlier versions kept an
-  `<!-- iii:begin -->` block in it; the plugin carries what it said, so the
-  worker takes that block out on the next boot, keeps any text of yours around
-  it, and removes the file when nothing else is in it.
+The `/iii:<profile>` commands and the `iii` agent come from the plugin
+itself: its SessionStart hook generates them (`sync`, in the background, so a
+profile added to the engine appears from the next session on) and adds the
+default-mcp profile to the session.
 
 ## Billing: which plan a session spends
 
@@ -380,18 +514,20 @@ defaults:
 
 approval_gate: false           # route tool permissions through policy::check_permissions
 claude_executable: ""          # path to the claude CLI; empty = SDK default resolution
+external_sessions: false       # claude::agents::list shows every session on the terminal host, and
+                               # its background ones may be opened and stopped
 
 terminal:                      # the console terminal page — a DIFFERENT host: the ide worker's
   executable: ""               # path to `claude` there; empty = resolve on PATH there
   args: []                     # extra argv for every terminal session
-  workspace_dir: ""            # empty = `claude-code` under the ide worker's primary root
+  workspace_dir: ""            # the worker's own files (default-mcp.md); empty = `claude-code` under the ide worker's root. NOT where sessions run
   auto_install: true           # install Claude Code from https://claude.ai/install.sh when missing
-  setup_workspace: true        # keep the iii plugin (skills, commands, activity hooks) in place
+  setup_workspace: true        # install the iii plugin in each session folder when missing; append default-mcp
 ```
 
 Settings live in the `configuration` worker under the **Claude Code** entry —
 edit them in the Console's global Settings modal; they hot-reload, and a change to the
-`terminal` block re-runs the workspace preparation for the next session.
+`terminal` block applies to the next session (every session is prepared when it starts).
 
 The event feeds are fixed functions, not settings. The former
 `events_stream` / `raw_events_stream` keys are ignored; a stored
@@ -441,14 +577,14 @@ those keys rather than in one covering span; a headless turn gets both.
 
 ## The iii Claude Code plugin
 
-The `iii` Claude Code plugin lives in [iii-hq/agent-plugins-claude](https://github.com/iii-hq/agent-plugins-claude): `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker embeds it in its bundle and installs it for every session (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), adding the activity hooks that feed `claude::on-agent-event`, and the `iii-runtime` skill when the engine runs no mcp-server. It also works in a standalone `claude` on any machine that can reach an engine:
+The `iii` Claude Code plugin lives in [iii-hq/agent-plugins-claude](https://github.com/iii-hq/agent-plugins-claude): `/iii:profile`, `/iii:skills` and one `/iii:<profile>` command per visible agent profile, backed by the engine's `mcp-server` worker. The worker installs it with Claude Code's own commands (scope local) in the folder of every session where it is missing (headless `claude::run` turns when `iii_context` is on, terminal sessions when `setup_workspace` is on), and points each Claude process at mcp-server with `III_MCP_URL`. It also works in a standalone `claude` on any machine that can reach an engine:
 
 ```sh
 claude plugin marketplace add iii-hq/agent-plugins-claude
 claude plugin install iii@iii
 ```
 
-`pnpm run build:iii-plugin` (part of `build`, `build:bundle`, `typecheck`, `test` and `dev`) fetches the latest `main` of that repository (a shallow clone; the build needs network) and embeds its `plugins/iii/` into `src/iii-plugin/assets.generated.ts`, recording the commit as `PLUGIN_SOURCE`; it also copies the modules the worker shares with the plugin's CLI into `src/iii-plugin/shared/`. Both are generated and git-ignored: change those modules in the plugin repository. The worker logs the embedded commit at start (`claude-code: iii plugin from ... at <sha>`). To build against a local checkout instead (offline, or while changing the plugin), set `III_PLUGIN_SOURCE`:
+`pnpm run build:iii-plugin` (part of `build`, `build:bundle`, `typecheck`, `test` and `dev`) fetches the latest `main` of that repository (a shallow clone; the build needs network) and copies the modules the worker shares with the plugin's CLI into `src/iii-plugin/shared/`, recording the commit as `PLUGIN_SOURCE` in `src/iii-plugin/source.generated.ts`. The plugin's own files are not embedded. Both outputs are generated and git-ignored: change those modules in the plugin repository. The worker logs the commit at start (`claude-code: iii plugin modules from ... at <sha>`). To build against a local checkout instead (offline, or while changing the plugin), set `III_PLUGIN_SOURCE`:
 
 ```sh
 III_PLUGIN_SOURCE=/path/to/agent-plugins-claude pnpm run build:iii-plugin

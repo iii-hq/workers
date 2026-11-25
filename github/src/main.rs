@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
     register_all(&iii, &cell, &called);
 
     // Register the webhook interface even when disabled; only activation uses backends.
-    github::webhooks::register(&iii, &cell, &cli.url).await;
+    github::webhooks::register(&iii, &cell).await;
 
     // Injectable console UI — after the github::* functions so the console can
     // attribute the assets.

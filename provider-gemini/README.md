@@ -122,8 +122,8 @@ at the output rate); thought tokens are also reported as `reasoning`.
   thought step, because Gemini rejects a function call in the current turn that
   has no thought at the start of its model run. Gemini's own thought signatures are replayed as
   received; thinking from other providers is dropped.
-- The router ends any provider stream after its `stream_timeout_ms` (600 s by
-  default); raise it for prompts that need Gemini 4's full 15 minutes.
+- The router ends any provider stream after its `stream_timeout_ms` (1500 s by
+  default), which covers Gemini 4's full 15 minutes.
 
 ## Tests
 

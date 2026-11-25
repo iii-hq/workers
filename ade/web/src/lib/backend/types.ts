@@ -1,5 +1,9 @@
 import type { ModelId } from '@/types/chat'
-import type { HarnessFileBlock, HarnessImageBlock } from './harness-send'
+import type {
+  HarnessFileBlock,
+  HarnessImageBlock,
+  TurnRest,
+} from './harness-send'
 import type { SessionObserverInfo } from './observers'
 
 /**
@@ -362,6 +366,11 @@ export interface ChatBackend {
    * against the model's window.
    */
   contextUsage?(sessionId: string): Promise<ContextUsageReport | null>
+  /**
+   * Whether the session's last turn waits for a wake or is over
+   * (`harness::status`); `null` in any other state and with no turn.
+   */
+  turnRest?(sessionId: string): Promise<TurnRest | null>
   /**
    * Remove a still-parked message from the server-side queue by its entry id
    * (`harness::unqueue`). Lets the composer pull a queued message back for

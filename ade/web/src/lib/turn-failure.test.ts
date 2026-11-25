@@ -196,6 +196,31 @@ describe('classifyTurnFailure', () => {
     )
   })
 
+  it('points a router stream time limit at the setting, not at a rejection', () => {
+    const presentation = classifyTurnFailure(
+      {
+        content: 'The response ran past the LLM Router stream time limit.',
+        failure: {
+          summary: 'The response ran past the LLM Router stream time limit.',
+        },
+        technicalDetails: {
+          code: 'router/stream_timeout',
+          class: 'llm.permanent',
+          detail:
+            'router stream_timeout_ms (1500000ms) elapsed before provider openai-codex finished',
+          provider: 'openai-codex',
+        },
+        nextActions: ['Raise the stream timeout.'],
+      },
+      { providerName: 'OpenAI Codex' },
+    )
+    expect(presentation.category).toBe('configuration')
+    expect(presentation.owner).toBe('user')
+    expect(presentation.title).toBe('The reply ran past the stream time limit')
+    expect(presentation.ownership).toContain('same limit')
+    expect(presentation.actions).toEqual(['Raise the stream timeout.'])
+  })
+
   it('describes a billing wall as the provider account, not iii', () => {
     const presentation = classifyTurnFailure({
       content: 'The provider rejected this request.',

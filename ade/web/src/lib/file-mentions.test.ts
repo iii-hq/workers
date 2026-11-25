@@ -188,6 +188,14 @@ describe('attached-file block helpers', () => {
     })
   })
 
+  it('ignores the stored id and the call on an attachment stub', () => {
+    expect(
+      parseAttachedFileHeader(
+        '<attached-file path="a.docx" id="a_1" error="not read" read-with="session::read-attachment" />',
+      ),
+    ).toEqual({ path: 'a.docx', error: 'not read' })
+  })
+
   it('rejects non-attachment text', () => {
     expect(isAttachedFileBlock('hello')).toBe(false)
     expect(parseAttachedFileHeader('hello')).toBeNull()

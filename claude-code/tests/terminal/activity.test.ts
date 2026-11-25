@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ActivityTracker, callId, toolFunctionId } from '../../src/terminal/activity.js';
 import type { AgentEvent } from '../../src/terminal/types.js';
+import { markHeadless } from '../../src/turns.js';
+import { fakeIii } from '../_helpers/fake-iii.js';
 
 function tracker() {
   const emitted: { session: string; event: AgentEvent }[] = [];
@@ -149,5 +151,107 @@ describe('a terminal turn becomes AgentEvent frames', () => {
       event: 'Notification',
     });
     expect(await subject.handle({})).toEqual({ ok: true, event: 'unknown' });
+  });
+});
+
+describe('a terminal turn settles in claude_turns', () => {
+  const SESSION = '1c51db64-0000-4000-8000-000000000001';
+  function settling() {
+    const fake = fakeIii();
+    const emitted: AgentEvent[] = [];
+    const subject = new ActivityTracker(async (_s, event) => {
+      emitted.push(event);
+    }, fake.iii);
+    const settles = () =>
+      fake.calls.filter(
+        (c) => c.function_id === 'state::set' && c.payload.scope === 'claude_turns',
+      );
+    return { fake, emitted, subject, settles };
+  }
+
+  it('Stop settles completed with the result, background work and turn', async () => {
+    const { fake, subject } = settling();
+    await subject.handle({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: SESSION,
+      prompt: 'go',
+    });
+    expect(subject.has(SESSION)).toBe(true);
+    await subject.handle({
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      last_assistant_message: 'all green',
+      background_tasks: [{ id: 'b1' }, { id: 'b2' }],
+    });
+    const settle = fake.state.get(`claude_turns/${SESSION}`) as Record<string, unknown>;
+    expect(settle).toMatchObject({
+      id: SESSION,
+      source: 'hook',
+      status: 'completed',
+      claude_session_id: SESSION,
+      result: 'all green',
+      background_tasks: 2,
+    });
+    expect(typeof settle.turn_id).toBe('string');
+  });
+
+  it('StopFailure closes the turn as an error and settles error', async () => {
+    const { fake, emitted, subject } = settling();
+    await subject.handle({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: SESSION,
+      prompt: 'go',
+    });
+    await subject.handle({
+      hook_event_name: 'StopFailure',
+      session_id: SESSION,
+      error: 'rate_limit',
+      error_details: '429 Too Many Requests',
+    });
+    expect(emitted.map((e) => e.type)).toEqual(['message_complete', 'turn_end', 'agent_end']);
+    const turnEnd = emitted[1];
+    if (turnEnd.type !== 'turn_end') throw new Error('expected turn_end');
+    expect(turnEnd.message).toMatchObject({
+      stop_reason: 'error',
+      error_message: '429 Too Many Requests',
+    });
+    expect(fake.state.get(`claude_turns/${SESSION}`)).toMatchObject({
+      status: 'error',
+      error: '429 Too Many Requests',
+    });
+  });
+
+  it('SessionEnd settles gone with the last turn, then forgets the session', async () => {
+    const { fake, subject } = settling();
+    await subject.handle({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: SESSION,
+      prompt: 'go',
+    });
+    await subject.handle({
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      last_assistant_message: 'done here',
+    });
+    const turn = (fake.state.get(`claude_turns/${SESSION}`) as { turn_id: string }).turn_id;
+    await subject.handle({ hook_event_name: 'SessionEnd', session_id: SESSION, reason: 'exit' });
+    expect(fake.state.get(`claude_turns/${SESSION}`)).toMatchObject({
+      status: 'gone',
+      stop_reason: 'exit',
+      turn_id: turn,
+      result: 'done here',
+    });
+    expect(subject.has(SESSION)).toBe(false);
+  });
+
+  it('a non-UUID session and a headless run write nothing', async () => {
+    const { settles, subject } = settling();
+    await subject.handle({ hook_event_name: 'Stop' });
+    await subject.handle({ hook_event_name: 'Stop', session_id: 'not-a-uuid' });
+    const headless = '1c51db64-0000-4000-8000-000000000002';
+    markHeadless(headless);
+    await subject.handle({ hook_event_name: 'Stop', session_id: headless });
+    await subject.handle({ hook_event_name: 'SessionEnd', session_id: headless });
+    expect(settles()).toEqual([]);
   });
 });

@@ -180,7 +180,6 @@ pub async fn handle_run<L, R, S>(
     runner: &R,
     fs_runner: &(dyn FsRunner + Sync),
     stopper: &S,
-    engine_address: &str,
 ) -> Result<RunResponse, SandboxError>
 where
     L: crate::sandbox_daemon::create::VmLauncher,
@@ -209,16 +208,7 @@ where
     // own and best-effort-stops the sandbox when a sub-step fails. So
     // handle_run just propagates the result verbatim — there's nothing
     // for an outer cleanup arm to do.
-    run_inner(
-        req,
-        create_resp,
-        registry,
-        runner,
-        fs_runner,
-        stopper,
-        engine_address,
-    )
-    .await
+    run_inner(req, create_resp, registry, runner, fs_runner, stopper).await
 }
 
 async fn run_inner<S: VmStopper>(
@@ -228,7 +218,6 @@ async fn run_inner<S: VmStopper>(
     runner: &impl ShellRunner,
     fs_runner: &(dyn FsRunner + Sync),
     stopper: &S,
-    engine_address: &str,
 ) -> Result<RunResponse, SandboxError> {
     let sandbox_id = create_resp.sandbox_id;
     let keep_sandbox = req.keep_sandbox;
@@ -243,7 +232,7 @@ async fn run_inner<S: VmStopper>(
             content: Some(WriteContent::Utf8(f.content.clone())),
             content_b64: None,
         };
-        if let Err(e) = handle_write(write_req, registry, fs_runner, engine_address).await {
+        if let Err(e) = handle_write(write_req, registry, fs_runner).await {
             // Per E2: stop sandbox unless caller asked to keep it.
             if !keep_sandbox {
                 best_effort_stop(&sandbox_id, registry, stopper).await;
@@ -263,7 +252,7 @@ async fn run_inner<S: VmStopper>(
         content: Some(WriteContent::Utf8(req.code.clone())),
         content_b64: None,
     };
-    if let Err(e) = handle_write(write_code_req, registry, fs_runner, engine_address).await {
+    if let Err(e) = handle_write(write_code_req, registry, fs_runner).await {
         if !keep_sandbox {
             best_effort_stop(&sandbox_id, registry, stopper).await;
         }
@@ -342,7 +331,6 @@ pub(super) fn register(
     fs_runner: Arc<dyn FsRunner>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
 ) -> iii_sdk::runtime::FunctionRef {
-    let engine_address = iii.address().to_string();
     iii.register_function(
         "sandbox-libkrun::run",
         RegisterFunction::new_async(move |req: Payload<RunRequest>| {
@@ -352,7 +340,6 @@ pub(super) fn register(
             let runner = runner.clone();
             let fs_runner = fs_runner.clone();
             let stopper = stopper.clone();
-            let engine_address = engine_address.clone();
             async move {
                 let req = req.decode()?;
                 let start = std::time::Instant::now();
@@ -364,7 +351,6 @@ pub(super) fn register(
                     &*runner,
                     &*fs_runner,
                     &*stopper,
-                    &engine_address,
                 )
                 .await;
                 // On Ok the response carries sandbox_id only when

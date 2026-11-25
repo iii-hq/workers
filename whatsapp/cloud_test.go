@@ -304,10 +304,12 @@ func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 	}))
 	defer server.Close()
 	engineURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	client := iii.New(engineURL)
+	t.Cleanup(func() { _ = client.Close() })
 	ref := &iii.StreamChannelRef{ChannelID: "test-channel", AccessKey: "test-key", Direction: iii.ChannelRead}
 	req := cloudReceiveRequest{Headers: map[string]string{"X-Hub-Signature-256": cloudTestSignature(raw)}, RequestBody: ref}
 	for range 2 {
-		response := receiveCloudWebhook(context.Background(), manager, engineURL, req)
+		response := receiveCloudWebhook(context.Background(), manager, client, req)
 		if response.StatusCode != 200 {
 			t.Fatalf("valid delivery failed: %+v", response)
 		}
@@ -328,11 +330,11 @@ func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 		t.Fatalf("wrong webhook event: %+v", event)
 	}
 	req.Headers["X-Hub-Signature-256"] = "sha256=" + strings.Repeat("0", 64)
-	if receiveCloudWebhook(context.Background(), manager, engineURL, req).StatusCode != 403 {
+	if receiveCloudWebhook(context.Background(), manager, client, req).StatusCode != 403 {
 		t.Fatal("bad signature accepted")
 	}
 	req.RequestBody = nil
-	if receiveCloudWebhook(context.Background(), manager, engineURL, req).StatusCode != 400 {
+	if receiveCloudWebhook(context.Background(), manager, client, req).StatusCode != 400 {
 		t.Fatal("missing original body accepted")
 	}
 	if streamCalls.Load() != 3 {

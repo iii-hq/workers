@@ -46,9 +46,13 @@ for small values).
   `secrets::list`/`get`/`status`/`detect`), model spend via
   `router::*`/`provider::*` (but `router::models::list`/`get`/`budget`/`supports`
   and `router::provider::list` are allowed), turn control via `harness::*`/`run::*`, bus
-  internals) — call those directly. So is `workflow::start`, which needs the
+  internals, event hooks (`*::on-*`, `*::on_*`), terminals and console UI, and every
+  other call the agent policy denies) — call those directly. So is `workflow::start`, which needs the
   caller stamp a direct call gets; `workflow::status`/`stop` are allowed. Session reads (`session::get-attachment`,
-  `session::messages-tail`, …) and `state::*` stay allowed on purpose.
+  `session::read-attachment`, `session::messages-tail`, …), `state::*` and the kanban planning writes
+  (not deletes) stay allowed on purpose. In a `fp::batch` give each `session::read-attachment` `max_chars: 4000`
+  (its default window is larger than the 16 KB an entry keeps) and read the rest of a long file with direct
+  calls from its `next_offset`.
 - While the approval gate runs, a step naming another namespace is refused;
   call it directly with `namespace`.
 - The first pipe step receives no threaded value — start with a producer

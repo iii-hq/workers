@@ -128,7 +128,9 @@ export async function expandTextAttachments(
   for (const attachment of files.slice(0, MAX_TEXT_FILES_PER_SEND)) {
     if (attachment.size > MAX_TEXT_BYTES) {
       const reason = `${formatBytes(attachment.size)} is over the ${formatBytes(MAX_TEXT_BYTES)} limit for inlining a text file`
-      blocks.push(failureBlock(attachment.name, reason))
+      blocks.push(
+        failureBlock(attachment.name, reason, attachment.attachmentId),
+      )
       failures.push({ name: attachment.name, reason })
       continue
     }
@@ -157,7 +159,9 @@ export async function expandTextAttachments(
       })
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
-      blocks.push(failureBlock(attachment.name, reason))
+      blocks.push(
+        failureBlock(attachment.name, reason, attachment.attachmentId),
+      )
       failures.push({ name: attachment.name, reason })
     }
   }

@@ -1038,8 +1038,9 @@ iii.observe(
 
 An `on-post-call` target may move the session's working directory: it answers
 `{ "decision": "continue", "mutations": { "fs_scope": { "root": "/abs/path" } } }`.
-The `ide` worker does this after a `shell::exec` that created a git worktree,
-or removed the one the session is rooted in. The harness takes the mutation
+The `ide` worker does this after a `shell::exec` that created a git worktree
+(unless the call passes `follow_worktree: false`), or removed the one the
+session is rooted in. The harness takes the mutation
 only when both the target and the called function are `shell::*` / `coder::*`
 ids. That is a filter that keeps the scope-enforcing workers the only
 proposers, not authentication: any worker on the bus can already send a
