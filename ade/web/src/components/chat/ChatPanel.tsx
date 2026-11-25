@@ -51,6 +51,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
+import { ClaudeAccountsDialogHost } from './ClaudeAccountsDialog'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
 import { ConversationSkeleton } from './ConversationSkeleton'
 import { ImportConversationsDialog } from './ImportConversationsDialog'
@@ -641,6 +642,9 @@ export function ChatPanel({
           conversations={conversations}
         />
       ) : null}
+      {/* Claude Code accounts (chat-projects §4.3.1): the picker's "Open in
+          Settings", the account chip and the limit card's Other…. */}
+      <ClaudeAccountsDialogHost />
       <NewChatDialog
         open={newChatOpen}
         onOpenChange={setNewChatOpen}

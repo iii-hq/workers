@@ -41,6 +41,7 @@ export function ProjectDialogHost({
       projects={projects}
       conversations={conversations}
       initialFolders={request?.mode === 'new' ? request.folders : undefined}
+      initialSection={request?.mode === 'edit' ? request.section : undefined}
     />
   )
 }

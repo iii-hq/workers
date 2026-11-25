@@ -273,6 +273,22 @@
   --color-glyph-green: #15803d;
   --color-glyph-amber: #b7791f;
   --color-glyph-rose: #e11d48;
+  /* ── Account tones ───────────────────────────────────────────────────
+     The five colours the tmux worker stores for a Claude Code account
+     (chat-projects §4.4): its dot, its chip and its pin. The apps' values
+     (`AccountLook`): a step darker in light so a 6px dot reads on white;
+     gray for a token this console doesn't know. `account-outside` is the
+     neutral grey of "Outside the Chat" in the week's split (D28, the apps'
+     Dim), `account-no-project` the faint grey of "no project". Identity
+     only: never text, a hover or a selection. */
+  --color-account-blue: #2563eb;
+  --color-account-green: #16a34a;
+  --color-account-violet: #7c3aed;
+  --color-account-orange: #ea580c;
+  --color-account-pink: #db2777;
+  --color-account-gray: #737373;
+  --color-account-outside: #a3a3a3;
+  --color-account-no-project: #737373;
   /* ── Syntax tones ─────────────────────────────────────────────────────
      Token colours for read-only highlighted code (`CodeHighlight` /
      `JsonHighlight`: fenced Markdown blocks, tool-card payloads). Light
@@ -488,6 +504,15 @@
   --color-glyph-green: #22c55e;
   --color-glyph-amber: #eab308;
   --color-glyph-rose: #f43f5e;
+  /* Account tones: the apps' dark values (the prototypes'). */
+  --color-account-blue: #3b82f6;
+  --color-account-green: #36c98f;
+  --color-account-violet: #a78bfa;
+  --color-account-orange: #ea580c;
+  --color-account-pink: #db2777;
+  --color-account-gray: #8a8a8a;
+  --color-account-outside: #5e5e5e;
+  --color-account-no-project: #8a8a8a;
   /* Worker ramp on near-black: the same eight dusty mid-tones as light
      (the :root block documents the ramp) — mid-lightness fills carry the
      near-black type in both themes. */

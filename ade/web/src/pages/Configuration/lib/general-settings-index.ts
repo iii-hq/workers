@@ -17,6 +17,7 @@ export const GENERAL_ANCHOR = {
   sendKey: 'settings-general-send-key',
   projects: 'settings-general-projects',
   sessionDescriptions: 'settings-general-session-descriptions',
+  claudeAccounts: 'settings-general-claude-accounts',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
   allowlist: 'settings-general-allowlist',
@@ -140,6 +141,27 @@ const DESCRIPTION_FIELDS: SettingsSearchField[] = [
   },
 ]
 
+/** Chat › Claude Code accounts, on an engine with `harness::retry` (chat-projects §4.3.1). */
+const CLAUDE_ACCOUNT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'claude-accounts',
+    label: 'Claude Code accounts',
+    trail: ['Chat'],
+    description:
+      'The same accounts as tmux. A project follows the global account or is pinned to one.',
+    keywords: [
+      'claude code',
+      'account',
+      'usage',
+      'limit',
+      'global account',
+      'tmux',
+      'sign in',
+    ],
+    anchor: A.claudeAccounts,
+  },
+]
+
 const PERMISSION_FIELDS: SettingsSearchField[] = [
   {
     key: 'permissions',
@@ -241,17 +263,22 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
 ]
 
 /**
- * The General page's searchable fields; Permissions, Projects and Session
- * descriptions only when they render.
+ * The General page's searchable fields; Permissions, Projects, Session
+ * descriptions and Claude Code accounts only when they render.
  */
 export function generalSearchFields(
   approvalGateAvailable: boolean,
-  chat: { projects?: boolean; descriptions?: boolean } = {},
+  chat: {
+    projects?: boolean
+    descriptions?: boolean
+    claudeAccounts?: boolean
+  } = {},
 ): SettingsSearchField[] {
   return [
     ...BASE_FIELDS,
     ...(chat.projects ? PROJECT_FIELDS : []),
     ...(chat.descriptions ? DESCRIPTION_FIELDS : []),
+    ...(chat.claudeAccounts ? CLAUDE_ACCOUNT_FIELDS : []),
     ...(approvalGateAvailable ? PERMISSION_FIELDS : []),
     ...TRAILING_FIELDS,
   ]

@@ -4,7 +4,9 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { seedClaudeAccountsForTests } from '@/lib/backend/claude-accounts'
 import type { ChatProject } from '@/lib/backend/projects'
+import { usageFixture } from '@/stories/fixtures/claude-accounts-fixtures'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -248,5 +250,70 @@ describe('New project / Edit project (§1.3.2)', () => {
     )
     act(() => button('Remove folder')?.click())
     expect(dialog().textContent).not.toContain('~/work/billing')
+  })
+})
+
+describe("the project's Claude Code account (§4.3.2)", () => {
+  const section = () =>
+    dialog().querySelector('[data-project-account]') as HTMLElement | null
+  const label = (name: string) =>
+    [...dialog().querySelectorAll('label')].find(
+      (l) => l.textContent === name,
+    ) as HTMLLabelElement | undefined
+
+  afterEach(() => seedClaudeAccountsForTests(null))
+
+  it('is absent short of the whole feature (§4.3.6)', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0), gate: 'update' })
+    const { save } = render()
+    expect(section()).toBeNull()
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('follows the global account by default, and creates with it', async () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0) })
+    const { save } = render()
+    expect(section()?.textContent).toContain('Claude Code account')
+    expect(section()?.textContent).toContain('Follow the global account')
+    expect(section()?.textContent).toContain('Work now')
+    expect(section()?.textContent).toContain(
+      'Other providers (Codex, API keys) ignore this.',
+    )
+    // A pin starts on another account than the global: none has room
+    // (Personal is at its 5-hour limit), so the first signed-in one.
+    expect(
+      section()?.querySelector('[data-project-account-pin]')?.textContent,
+    ).toBe('Personal · 22% this week')
+    typeName('acme-web')
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ account: { mode: 'global' } }),
+    )
+  })
+
+  it("edits a pinned project's account as part of the patch", async () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0) })
+    const { save } = render({
+      project: {
+        ...billing,
+        account: { mode: 'pinned', account_id: 'personal' },
+      },
+      initialFolders: undefined,
+    })
+    expect(
+      section()?.querySelector('[data-project-account-pin]')?.textContent,
+    ).toBe('Personal · 22% this week')
+    act(() => label('Follow the global account')?.click())
+    await act(async () => {
+      button('Save')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: { mode: 'global' },
+        changed: { name: false, color: false, folders: false, account: true },
+      }),
+    )
   })
 })

@@ -8,6 +8,7 @@ import {
   getChatSettings,
   listProjects,
   NO_PROJECT,
+  parseProjectAccount,
   parseProjectError,
   projectOf,
   setChatSettings,
@@ -122,7 +123,7 @@ describe('project calls', () => {
     expect(res.moved).toBe(4)
   })
 
-  it('updates as a patch and never sends account or autocompact', async () => {
+  it('updates as a patch: account only when given, autocompact never', async () => {
     call.mockResolvedValue({
       project: { id: 'prj_2', name: 'y', color: 'rose', folders: ['/x'] },
       moved: 0,
@@ -132,6 +133,23 @@ describe('project calls', () => {
       id: 'prj_2',
       name: 'y',
     })
+    await updateProject({
+      id: 'prj_2',
+      account: { mode: 'pinned', account_id: 'personal' },
+    })
+    expect(call).toHaveBeenLastCalledWith('harness::projects::update', {
+      id: 'prj_2',
+      account: { mode: 'pinned', account_id: 'personal' },
+    })
+  })
+
+  it("reads a project's account, anything else following the global", () => {
+    expect(
+      parseProjectAccount({ mode: 'pinned', account_id: 'personal' }),
+    ).toEqual({ mode: 'pinned', account_id: 'personal' })
+    expect(parseProjectAccount({ mode: 'pinned' })).toEqual({ mode: 'global' })
+    expect(parseProjectAccount(undefined)).toEqual({ mode: 'global' })
+    expect(parseProjectAccount('personal')).toEqual({ mode: 'global' })
   })
 
   it('assigns sessions, with "none" for No project', async () => {
@@ -253,6 +271,10 @@ describe('project errors', () => {
     expect(describeProjectError(new Error('engine down'), context)).toEqual({
       field: 'form',
       message: 'engine down',
+    })
+    expect(describeProjectError({ code: 'invalid_account' }, context)).toEqual({
+      field: 'account',
+      message: 'Follow the global account, or pin to one of the accounts',
     })
   })
 })

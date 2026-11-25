@@ -391,6 +391,17 @@ export interface SystemNoticeFailure {
   recoveryAttempted?: number
   recoveryMaxAttempts?: number
   phase?: string
+  /**
+   * A Claude Code account's usage limit (`llm.usage_limit`, D147): the
+   * window that is full, when it resets and the turn's account.
+   */
+  usageLimit?: {
+    window: 'five_hour' | 'week' | null
+    resetsAtMs: number | null
+    account: string | null
+  }
+  /** A pin to a removed account (`harness.unknown_account`): the id it names. */
+  unknownAccount?: string
 }
 
 /**

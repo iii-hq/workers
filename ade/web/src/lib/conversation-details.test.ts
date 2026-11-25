@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ACCOUNT_DEFAULT,
   applyPatchToMetadata,
   buildDetailsPatch,
+  claudeAccountOf,
   cleanDescription,
   descriptionHistory,
   detailsDraftOf,
@@ -112,5 +114,53 @@ describe('Conversation details: the one patch-meta of a Save (§1.3.5)', () => {
     expect(
       applyPatchToMetadata({ a: 1, b: 2 }, { set: { c: 3 }, unset: ['b'] }),
     ).toEqual({ a: 1, c: 3 })
+  })
+})
+
+describe('Conversation details: the Claude Code account (§4.3.5)', () => {
+  it('leaves claude_account alone until the row is changed', () => {
+    const pinned = {
+      ...base,
+      sessionMetadata: { ...base.sessionMetadata, claude_account: 'personal' },
+    }
+    expect(claudeAccountOf(pinned.sessionMetadata)).toBe('personal')
+    expect(claudeAccountOf(base.sessionMetadata)).toBe(ACCOUNT_DEFAULT)
+    expect(detailsDraftOf(pinned).claudeAccount).toBeUndefined()
+    expect(buildDetailsPatch(pinned, detailsDraftOf(pinned), 999)).toBeNull()
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: 'personal' },
+        999,
+      ),
+    ).toBeNull()
+  })
+
+  it('pins an account, follows the global, or goes back to the project', () => {
+    const pinned = {
+      ...base,
+      sessionMetadata: { ...base.sessionMetadata, claude_account: 'personal' },
+    }
+    expect(
+      buildDetailsPatch(
+        base,
+        { ...detailsDraftOf(base), claudeAccount: 'work' },
+        999,
+      ),
+    ).toEqual({ set: { claude_account: 'work' }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: 'global' },
+        999,
+      ),
+    ).toEqual({ set: { claude_account: 'global' }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: ACCOUNT_DEFAULT },
+        999,
+      ),
+    ).toEqual({ set: {}, unset: ['claude_account'] })
   })
 })
