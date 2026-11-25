@@ -7,6 +7,9 @@
 //! the SAME wire mappers the stream path uses, so the count matches what a
 //! real turn would send; the endpoint meters without generating, so it never
 //! runs the model and costs nothing. Exposed behind `router::count_tokens`.
+//!
+//! A count has no turn: while an account source holds the accounts, it uses
+//! the global account's token, and a 401 asks the source once more.
 
 use std::time::Duration;
 
@@ -20,6 +23,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::accounts::{self, AccountSource, AccountToken, Credential};
 use crate::config::{ClaudeCodeConfig, build_config};
 use crate::errors::{classify_bus_error, invalid_request};
 use crate::request::{BodyArgs, build_body, build_headers};
@@ -127,6 +131,19 @@ fn build_count_body(
     body
 }
 
+/// A count that failed, with the upstream status when there was one.
+#[derive(Debug)]
+struct CountFailure {
+    status: Option<u16>,
+    error: Error,
+}
+
+impl CountFailure {
+    fn new(status: Option<u16>, error: Error) -> Self {
+        Self { status, error }
+    }
+}
+
 /// POST the count body with the OAuth headers the stream path sends. A non-2xx
 /// answer (including an endpoint that rejects the token or does not exist) is
 /// an error, never a panic, so the router can still fall back to an estimate.
@@ -134,38 +151,68 @@ async fn post_count(
     http: &reqwest::Client,
     cfg: &ClaudeCodeConfig,
     body: &Value,
-) -> Result<u64, Error> {
+) -> Result<u64, CountFailure> {
     let mut request = http
         .post(count_tokens_url(&cfg.api_url))
         .timeout(Duration::from_secs(COUNT_TOKENS_TIMEOUT_SECS));
     for (name, value) in build_headers(cfg) {
         request = request.header(name, value);
     }
-    let response = request
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| Error::Handler(format!("provider/upstream: {e}")))?;
+    let response =
+        request.json(body).send().await.map_err(|e| {
+            CountFailure::new(None, Error::Handler(format!("provider/upstream: {e}")))
+        })?;
 
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         let excerpt: String = body.chars().take(300).collect();
-        return Err(Error::Handler(format!(
-            "provider/upstream_status: {status}: {excerpt}"
-        )));
+        return Err(CountFailure::new(
+            Some(status.as_u16()),
+            Error::Handler(format!("provider/upstream_status: {status}: {excerpt}")),
+        ));
     }
-    let wire: WireCountResponse = response
-        .json()
-        .await
-        .map_err(|e| Error::Handler(format!("provider/bad_response: {e}")))?;
+    let wire: WireCountResponse = response.json().await.map_err(|e| {
+        CountFailure::new(None, Error::Handler(format!("provider/bad_response: {e}")))
+    })?;
     Ok(wire.input_tokens)
+}
+
+/// One count; with an account source's token, one more after a 401 with the
+/// token the source gives when asked again (D140). A token refused twice is
+/// dropped from the source's cache.
+async fn post_count_for_account(
+    http: &reqwest::Client,
+    cfg: &mut ClaudeCodeConfig,
+    body: &Value,
+    account: Option<&AccountToken>,
+    accounts: &dyn AccountSource,
+) -> Result<u64, Error> {
+    match post_count(http, cfg, body).await {
+        Err(failure) if failure.status == Some(401) => {
+            let Some(refused) = account else {
+                return Err(failure.error);
+            };
+            let Some(fresh) = accounts::ask_again(accounts, refused).await else {
+                return Err(failure.error);
+            };
+            cfg.credential_value = fresh.access_token;
+            post_count(http, cfg, body).await.map_err(|failure| {
+                if failure.status == Some(401) {
+                    accounts.invalidate(&fresh.account);
+                }
+                failure.error
+            })
+        }
+        other => other.map_err(|f| f.error),
+    }
 }
 
 pub async fn handle(
     iii: &IIIClient,
     http: &reqwest::Client,
     cache: &ScaffoldCache,
+    accounts: &dyn AccountSource,
     req: CountTokensRequest,
 ) -> Result<CountTokensResponse, Error> {
     // Dumb pipe: an empty request is a caller bug, never padded into a
@@ -191,8 +238,16 @@ pub async fn handle(
             default_resolve()
         }
     };
-    let credential = auth::fetch_fresh_credential(iii).await;
-    let cfg = build_config(&req.model, None, &resolved, credential.as_ref())
+    // The global account's token while an account source holds the accounts.
+    let (credential, account) =
+        match accounts::credential(accounts, None, || auth::fetch_fresh_credential(iii))
+            .await
+            .map_err(|e| Error::Handler(e.message()))?
+        {
+            Credential::Account(token) => (Some(token.credential()), Some(token)),
+            Credential::Legacy(credential) => (credential, None),
+        };
+    let mut cfg = build_config(&req.model, None, &resolved, credential.as_ref())
         .map_err(|e| Error::Handler(e.to_string()))?;
 
     // Same model_meta lookup as the stream feeds its thinking mapping.
@@ -205,7 +260,7 @@ pub async fn handle(
         req.thinking_level,
         model_meta.as_ref(),
     );
-    let tokens = post_count(http, &cfg, &body).await?;
+    let tokens = post_count_for_account(http, &mut cfg, &body, account.as_ref(), accounts).await?;
 
     Ok(CountTokensResponse {
         model: cfg.model,
@@ -341,6 +396,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            error_details: None,
             warnings: None,
             usage: None,
             model: "m".into(),
@@ -561,7 +617,117 @@ mod tests {
         let err = post_count(&reqwest::Client::new(), &cfg(url), &body)
             .await
             .expect_err("401 is an error");
-        let msg = err.to_string();
+        assert_eq!(err.status, Some(401));
+        let msg = err.error.to_string();
         assert!(msg.contains("provider/upstream_status: 401"), "{msg}");
+    }
+
+    /// Count stub for many requests: `{"input_tokens":7}` for `Bearer
+    /// <good>`, 401 otherwise; records each request's bearer.
+    async fn bearer_count_stub(
+        good: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let bearer = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("authorization: bearer "))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let (status, body) = if bearer == good {
+                    ("200 OK", r#"{"input_tokens":7}"#)
+                } else {
+                    ("401 Unauthorized", "{}")
+                };
+                record.lock().unwrap().push(bearer);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1/messages"), seen)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_401_on_the_global_accounts_token_asks_the_source_once_more() {
+        use crate::accounts::testing::{FakeEngine, in_one_hour};
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let accounts = crate::accounts::TmuxAccounts::new(FakeEngine::new(move |id, payload| {
+            assert_eq!(id, crate::accounts::CREDENTIAL_FN);
+            let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(json!({
+                "account": payload["account"],
+                "access_token": format!("work-{n}"),
+                "expires_at_ms": in_one_hour()
+            }))
+        }));
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            None,
+            None,
+        );
+        let token = accounts.token("work").await.unwrap();
+        let (url, seen) = bearer_count_stub("work-2").await;
+        let mut config = ClaudeCodeConfig {
+            credential_value: token.access_token.clone(),
+            ..cfg(url)
+        };
+        let tokens = post_count_for_account(
+            &reqwest::Client::new(),
+            &mut config,
+            &body,
+            Some(&token),
+            &accounts,
+        )
+        .await
+        .expect("the second token counts");
+        assert_eq!(tokens, 7);
+        assert_eq!(*seen.lock().unwrap(), ["work-1", "work-2"]);
+
+        // A second 401 is final, and that token leaves the cache.
+        let token = accounts.token("work").await.unwrap();
+        let (url, seen) = bearer_count_stub("never").await;
+        let mut config = ClaudeCodeConfig {
+            credential_value: token.access_token.clone(),
+            ..cfg(url)
+        };
+        post_count_for_account(
+            &reqwest::Client::new(),
+            &mut config,
+            &body,
+            Some(&token),
+            &accounts,
+        )
+        .await
+        .expect_err("refused twice");
+        assert_eq!(*seen.lock().unwrap(), ["work-2", "work-3"]);
+        assert_eq!(accounts.token("work").await.unwrap().access_token, "work-4");
+
+        // The vault path keeps a single attempt.
+        let (url, seen) = bearer_count_stub("never").await;
+        let mut config = ClaudeCodeConfig {
+            credential_value: "vault-token".into(),
+            ..cfg(url)
+        };
+        let err =
+            post_count_for_account(&reqwest::Client::new(), &mut config, &body, None, &accounts)
+                .await
+                .expect_err("a 401 without an account source is final");
+        assert!(err.to_string().contains("401"), "{err}");
+        assert_eq!(*seen.lock().unwrap(), ["vault-token"]);
     }
 }
