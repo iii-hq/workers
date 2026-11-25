@@ -829,13 +829,24 @@ session does:
   then the last 49 changes; also in `tmux::accounts::list`), and
   `attributed` counts those replies. A session found only in the `projects/`
   of an account that does not share `conversations` is that account's.
-- A reply counts once (by message id and request id), wherever its
+- A reply counts once (by its message id, else its request id), wherever its
   transcript was copied; a reply written over several lines counts with its
   largest figures. Synthetic messages and replies with no usage are left out.
 
-The transcripts are read only when asked, those changed in the last eight
-days at least, and the result is kept five minutes (`as_of_ms`). The Chat's
-own provider writes no transcript, so nothing is counted twice.
+The transcripts are read only when asked, and only what Claude Code added
+since the last read: the worker keeps how far it read each one (by device,
+inode, size and modification time; one replaced or cut shorter is read again
+from its start, its replies still counted once) and the replies summed by
+session, model and minute, for eight days back at least; a line still being
+written is read once it is whole. A line longer than 1 MiB is parsed from the
+file without being held, one longer than 256 MiB is skipped, and most lines
+are skipped unparsed. The result is kept five minutes (`as_of_ms`), and
+`since_ms` counts to the minute. The Chat's own provider writes no
+transcript, so nothing is counted twice.
+
+An unreadable `claude-sessions.json` is moved aside as
+`claude-sessions.json.corrupt-<ms>` before a new one is written; when it can't
+be moved, none is written.
 
 ### When the global account runs low
 

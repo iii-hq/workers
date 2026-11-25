@@ -16,10 +16,13 @@
   the tokens Claude Code spent on an account outside the Chat (tmux windows and any other
   Claude Code on the computer) by model, from Claude Code's own transcripts: a session the
   worker saw in a pane counts for that pane's account at each reply's time, any other for
-  the account global then (`attributed` counts those), each reply once by message and
-  request id. Read only when asked and kept five minutes. Devices may call it; agents are
-  denied. The sessions seen in panes are kept in `claude-sessions.json` in the accounts
-  folder.
+  the account global then (`attributed` counts those), each reply once by its message id
+  (else its request id). Read only when asked, and only what Claude Code added since the
+  last read (how far each transcript was read and the replies summed by session, model and
+  minute are kept; a line over 1 MiB is parsed without being held, one over 256 MiB
+  skipped), and kept five minutes. Devices may call it; agents are denied. The sessions
+  seen in panes are kept in `claude-sessions.json` in the accounts folder; an unreadable
+  one is moved aside (`.corrupt-<ms>`) before a new one is written.
 - **Who was global when.** `accounts.json` and `tmux::accounts::list` keep
   `global_history` as `{account, at_ms}`: the account global before the oldest change kept
   (at `at_ms` 0), then the last 49 changes of the global account.
