@@ -113,13 +113,13 @@ import {
   useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
-import {
-  ACCOUNT_ROW_LABEL,
-  globalRefusal,
-  type LockedAccount,
-} from '@/lib/claude-accounts-words'
+import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
-import { claudeAccountOf } from '@/lib/conversation-details'
+import {
+  chatAccountResolution,
+  lockedAccountOf,
+  type TurnAccountRef,
+} from '@/lib/conversation-account'
 import {
   effectiveModel as effectiveModelOf,
   effectiveProvider,
@@ -237,7 +237,6 @@ import {
   composerControlNodes,
 } from './Composer'
 import { ContextUsage } from './ContextUsage'
-import { conversationResolution } from './ConversationAccountRow'
 import {
   ConversationDetailsDialog,
   type ConversationDetailsSection,
@@ -1299,11 +1298,53 @@ export function ChatView({
 
   const claudeCodeChat =
     claudeAccounts.gate === 'full' && chatProvider === CLAUDE_CODE_PROVIDER
+  // A side chat keeps its lock's account (D2, D80); a sub-agent runs on its
+  // conversation's. The card and the transcript's account notices offer no
+  // other account then, each with its own words.
+  const lockedAccount = lockedAccountOf(conversation, Boolean(side))
+  // A sub-agent whose parent isn't loaded here: the parent turn's account,
+  // as the verbose `harness::status` reports it.
+  const parentId = conversation.parentId
+  const parentLoaded = Boolean(
+    parentId && listedConversations?.some((c) => c.id === parentId),
+  )
+  const [parentTurnAccount, setParentTurnAccount] =
+    useState<TurnAccountRef | null>(null)
+  const readsParentTurn =
+    claudeCodeChat && lockedAccount === 'sub-agent' && !parentLoaded
+  // A new turn of the sub-agent may run on another account: read again then.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-read per status change
+  useEffect(() => {
+    if (!readsParentTurn || !parentId) return
+    let cancelled = false
+    getIiiClient()
+      .then((client) => getTurnStatus(client, parentId))
+      .then((report) => {
+        const account = report?.account
+        if (!cancelled) {
+          setParentTurnAccount(
+            account && typeof account.id === 'string' && account.id
+              ? account
+              : null,
+          )
+        }
+      })
+      .catch(() => {
+        // The sub-agent's own resolution stands.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [readsParentTurn, parentId, conversation.status])
+  // The one resolution the chip, the limit card and Details' row read.
   const accountResolution = claudeCodeChat
-    ? conversationResolution({
-        choice: claudeAccountOf(conversation.sessionMetadata),
-        project: chatProject,
+    ? chatAccountResolution({
+        conversation,
+        sideChat: Boolean(side),
+        projects: chatProjects.projects,
         global: claudeAccounts.claude?.global ?? null,
+        conversations: listedConversations,
+        parentTurnAccount: readsParentTurn ? parentTurnAccount : null,
       })
     : null
   const chipAccount =
@@ -1336,14 +1377,6 @@ export function ChatView({
         now: Date.now(),
       })
     : null
-  // A side chat keeps its account (D2); a sub-agent runs on its
-  // conversation's. The card and the transcript's account notices offer no
-  // other account then, each with its own words.
-  const lockedAccount: LockedAccount = side
-    ? 'side-chat'
-    : conversation.parentId
-      ? 'sub-agent'
-      : null
   const limitCard =
     limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
       ? limitModel
@@ -3896,6 +3929,7 @@ export function ChatView({
           projects={chatProjects.available ? chatProjects.projects : undefined}
           agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
           provider={chatProvider}
+          lockedResolution={lockedAccount ? accountResolution : null}
         />
       ) : null}
       {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (

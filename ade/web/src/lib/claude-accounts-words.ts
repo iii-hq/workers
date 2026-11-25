@@ -821,6 +821,11 @@ export interface AccountResolution {
   source: AccountSource
   /** The project it comes from (pinned), or that follows the global. */
   projectName?: string
+  /**
+   * A conversation that runs on another's account: a side chat on its
+   * lock's, a sub-agent on its parent's.
+   */
+  locked?: Exclude<LockedAccount, null>
 }
 
 /**
@@ -859,6 +864,8 @@ export function resolveAccount(input: {
  * - "Runs on Work, the global account." (no project, or the conversation's own choice)
  * - "Runs on Personal, pinned by billing-api."
  * - "Runs on Personal, pinned for this conversation."
+ * - "Runs on Personal, locked to its conversation's account." (a side chat)
+ * - "Runs on Personal, its conversation's account." (a sub-agent)
  */
 export function resolutionText(
   resolution: AccountResolution,
@@ -868,6 +875,11 @@ export function resolutionText(
   const name = resolution.account
     ? nameOf(resolution.account)
     : 'the global account'
+  if (resolution.locked && resolution.account) {
+    return resolution.locked === 'side-chat'
+      ? `Runs on ${name}, locked to its conversation's account.`
+      : `Runs on ${name}, its conversation's account.`
+  }
   if (resolution.source === 'session') {
     return `Runs on ${name}, pinned for this conversation.`
   }

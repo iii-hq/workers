@@ -14,36 +14,15 @@ import {
 import { type ChatProject, parseProjectAccount } from '@/lib/backend/projects'
 import {
   ACCOUNT_ROW_LABEL,
+  type AccountResolution,
   defaultChoiceLabel,
   globalChoiceLabel,
   resolutionText,
-  resolveAccount,
   usable,
 } from '@/lib/claude-accounts-words'
+import { conversationResolution } from '@/lib/conversation-account'
 import { ACCOUNT_DEFAULT } from '@/lib/conversation-details'
 import { AccountDot } from './AccountCard'
-
-/**
- * Where a conversation's account comes from (§4.3.5): the text the row and
- * the chip read, from the draft's choice (`ACCOUNT_DEFAULT`, `"global"` or
- * an id), its project and the global account.
- */
-export function conversationResolution(input: {
-  choice: string
-  project: Pick<ChatProject, 'name' | 'account'> | null
-  global: string | null
-}) {
-  return resolveAccount({
-    claudeAccount: input.choice === ACCOUNT_DEFAULT ? undefined : input.choice,
-    project: input.project
-      ? {
-          name: input.project.name,
-          account: parseProjectAccount(input.project.account),
-        }
-      : null,
-    global: input.global,
-  })
-}
 
 /**
  * Conversation details' "Claude Code account" row (§4.3.5): the resolution
@@ -58,6 +37,7 @@ export function ConversationAccountRow({
   data,
   readOnly = false,
   triggerRef,
+  resolution: given,
 }: {
   /** The draft's `claude_account`: `ACCOUNT_DEFAULT`, `"global"` or an id. */
   value: string
@@ -66,13 +46,19 @@ export function ConversationAccountRow({
   data: ClaudeAccounts
   readOnly?: boolean
   triggerRef?: Ref<HTMLButtonElement>
+  /**
+   * The account the engine runs it on when the choice doesn't decide it (a
+   * side chat's lock, a sub-agent's parent): the text reads it.
+   */
+  resolution?: AccountResolution | null
 }) {
   const ids = useId()
   const claude = data.claude
   const global = claude?.global ?? null
   const globalName = global ? data.nameOf(global) : null
   const projectAccount = project ? parseProjectAccount(project.account) : null
-  const resolution = conversationResolution({ choice: value, project, global })
+  const resolution =
+    given ?? conversationResolution({ choice: value, project, global })
   const text = resolutionText(
     resolution,
     data.nameOf,
