@@ -1349,16 +1349,19 @@ pub async fn account_split(
             Vec::new()
         });
 
-    let mut weeks = Vec::new();
-    for account in &claude.accounts {
+    // One transcript read per account, all at once: each may take seconds.
+    let weeks: Vec<_> = futures_util::future::join_all(claude.accounts.iter().map(|account| {
         let week = week_of(
             account.usage.as_ref().and_then(|usage| usage.week.as_ref()),
             now,
         );
         let chat = chat_tokens(&ledger, &account.id, week.start_ms);
-        let outside = outside_since(deps, &account.id, week.start_ms).await;
-        weeks.push((account.id.clone(), week, chat, outside));
-    }
+        async move {
+            let outside = outside_since(deps, &account.id, week.start_ms).await;
+            (account.id.clone(), week, chat, outside)
+        }
+    }))
+    .await;
     let models: BTreeSet<String> = weeks
         .iter()
         .flat_map(|(_, _, chat, outside)| {
