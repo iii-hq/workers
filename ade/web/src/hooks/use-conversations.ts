@@ -1116,6 +1116,7 @@ export function mergeConversationMeta(
     ...mapped,
     messages: existing.messages,
     hydrated: existing.hydrated,
+    history: existing.history,
     // The server names the parked attachments again; keep the chip objects
     // this tab already hydrated (bytes, thumbnail) for the same ids.
     draftAttachments: reconcileDraftAttachments(
@@ -1214,10 +1215,14 @@ export function bumpSessionWatchEpoch(
   return next
 }
 
-/** Not a person's ask: any non-user row, or a client-handled command row
- *  (`/compact`), which starts no turn and does not name the chat. */
-function isNotAnAsk(m: Message): boolean {
-  return m.role !== 'user' || m.command === true
+/** No person's ask in the chat yet. A client-handled command row (`/compact`)
+ *  is not one: it starts no turn and does not name the chat. While older
+ *  pages are not loaded, the first ask may be in one of them. */
+function hasNoAsk(c: Conversation): boolean {
+  return (
+    c.history?.hasMore !== true &&
+    c.messages.every((m) => m.role !== 'user' || m.command === true)
+  )
 }
 
 export function appendMessageToConversation(
@@ -1254,7 +1259,7 @@ export function appendMessageToConversation(
     next.status = 'working'
     next.statusReason = undefined
   }
-  if (!c.titleManual && startsTurn && c.messages.every(isNotAnAsk)) {
+  if (!c.titleManual && startsTurn && hasNoAsk(c)) {
     next.title = deriveTitle(message.content)
   }
   return next
@@ -3193,7 +3198,7 @@ export function useConversations(
         !before.titleManual &&
         message.role === 'user' &&
         !message.command &&
-        before.messages.every(isNotAnAsk)
+        hasNoAsk(before)
       ) {
         requestHeading(
           id,
