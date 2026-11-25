@@ -165,6 +165,20 @@ function PickerSubpageHeader({
   )
 }
 
+/**
+ * Room the desktop picker needs above its trigger: the search, a few rows,
+ * the effort slider and the footer. With less above and more below, it
+ * opens below instead.
+ */
+const MENU_MIN_ROOM_ABOVE = 360
+
+export function pickMenuSide(trigger: HTMLElement | null): 'top' | 'bottom' {
+  if (!trigger) return 'top'
+  const rect = trigger.getBoundingClientRect()
+  const below = window.innerHeight - rect.bottom
+  return rect.top >= MENU_MIN_ROOM_ABOVE || rect.top >= below ? 'top' : 'bottom'
+}
+
 function stopMenuTabPropagation(event: KeyboardEvent<HTMLElement>) {
   if (event.key === 'Tab') event.stopPropagation()
 }
@@ -302,6 +316,7 @@ export function ModelPicker({
   const [addProviderOpen, setAddProviderOpen] = useState(false)
   // The library dialog behind Manage models: every model, the five slots.
   const [libraryOpen, setLibraryOpen] = useState(false)
+  const [menuSide, setMenuSide] = useState<'top' | 'bottom'>('top')
   // An add on the Add a provider page waiting to open the new provider's
   // settings holds the page's back button meanwhile.
   const [addProviderBusy, setAddProviderBusy] = useState(false)
@@ -441,6 +456,7 @@ export function ModelPicker({
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       playUiSound('tick')
+      setMenuSide(pickMenuSide(triggerRef.current))
       setOpen(true)
       return
     }
@@ -733,10 +749,12 @@ export function ModelPicker({
           />
 
           <DropdownMenuContent
-            // Always above the trigger: the list changes height as you
-            // type, and a flipping popup jumped between above and below
-            // with each keystroke. It shrinks to the room above instead.
-            side="top"
+            // The side is chosen once, when the picker opens (above the
+            // trigger unless there is too little room there, as for a
+            // quick-edit card near the top of the editor), and held while it
+            // is open: the list changes height as you type, and a popup free
+            // to flip jumped between above and below with each keystroke.
+            side={menuSide}
             collisionAvoidance={{
               side: 'none',
               align: 'shift',

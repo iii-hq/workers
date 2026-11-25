@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderListEntry } from '@/lib/models-catalog'
+import { resetProviderInstalls } from '@/lib/provider-installs'
 import type { RegistryWorker } from '@/lib/workers-registry'
 import { AddProviderPanel, AUTO_CONFIGURE_TIMEOUT_MS } from './AddProviderPanel'
 
@@ -10,8 +11,11 @@ import { AddProviderPanel, AUTO_CONFIGURE_TIMEOUT_MS } from './AddProviderPanel'
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
 
-// A live backend whose compose::add lands at once; the provider then
+// A live backend whose compose::add the test controls; the provider then
 // registers with the router when the test says so.
+const { composeCall } = vi.hoisted(() => ({
+  composeCall: vi.fn<() => Promise<unknown>>(),
+}))
 vi.mock('@/lib/conversations-context', () => ({
   useConversationsCtxOptional: () => ({
     backend: { id: 'real' },
@@ -19,7 +23,7 @@ vi.mock('@/lib/conversations-context', () => ({
   }),
 }))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ call: async () => ({}) }),
+  getIiiClient: async () => ({ call: composeCall }),
 }))
 vi.mock('@/pages/Workers/api/workers', () => ({
   fetchEngineWorkersList: async () => ({ workers: [] }),
@@ -73,10 +77,27 @@ function render(providers: ProviderListEntry[]) {
 const button = (label: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
 
+/** An install that lands only when the test calls the returned function. */
+function holdInstall(): () => Promise<void> {
+  let finish: () => void = () => undefined
+  composeCall.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({})
+      }),
+  )
+  return async () => {
+    await act(async () => finish())
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   onConfigureProvider.mockReset()
   onBusyChange.mockReset()
+  composeCall.mockReset()
+  composeCall.mockImplementation(async () => ({}))
+  resetProviderInstalls()
   container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
 })
@@ -98,6 +119,7 @@ async function clickAdd(label: string) {
 
 describe('AddProviderPanel add flow', () => {
   it('keeps the focus on the row being added, so the list never jumps', async () => {
+    holdInstall()
     render([])
     const add = await clickAdd('Add Z.ai')
     // The same button, now pending, still holds the focus: a menu's focus
@@ -113,6 +135,8 @@ describe('AddProviderPanel add flow', () => {
   it('opens the provider settings the moment it registers', async () => {
     render([])
     await clickAdd('Add Z.ai')
+    // Installed, waiting for the provider to register.
+    expect(button('Starting Z.ai')?.getAttribute('aria-busy')).toBe('true')
     expect(onConfigureProvider).not.toHaveBeenCalled()
     render([ZAI])
     expect(onConfigureProvider).toHaveBeenCalledWith('zai')
@@ -127,12 +151,35 @@ describe('AddProviderPanel add flow', () => {
     })
     expect(onBusyChange).toHaveBeenLastCalledWith(false)
     expect(button('Add xAI')?.getAttribute('aria-disabled')).toBeNull()
-    // Registering after the wait no longer navigates; the row offers it.
-    render([ZAI])
-    expect(onConfigureProvider).not.toHaveBeenCalled()
+    // Installed but not registered yet: Configure, not an endless spinner.
     const configure = button('Configure Z.ai')
-    expect(configure).not.toBeNull()
+    expect(configure?.getAttribute('aria-busy')).toBeNull()
+    expect(configure?.getAttribute('aria-disabled')).toBeNull()
     act(() => configure?.click())
     expect(onConfigureProvider).toHaveBeenCalledWith('zai')
+    // Registering after the wait no longer navigates by itself.
+    onConfigureProvider.mockReset()
+    render([ZAI])
+    expect(onConfigureProvider).not.toHaveBeenCalled()
+    expect(button('Configure Z.ai')).not.toBeNull()
+  })
+
+  it('keeps an install running across a remount, never starting it twice', async () => {
+    const finish = holdInstall()
+    render([])
+    await clickAdd('Add Z.ai')
+    expect(composeCall).toHaveBeenCalledTimes(1)
+    // The panel goes away (a cleared search) and comes back.
+    act(() => root.unmount())
+    root = createRoot(container)
+    render([])
+    const pending = button('Adding Z.ai')
+    expect(pending?.getAttribute('aria-busy')).toBe('true')
+    await act(async () => {
+      pending?.click()
+    })
+    expect(composeCall).toHaveBeenCalledTimes(1)
+    await finish()
+    expect(button('Configure Z.ai')).not.toBeNull()
   })
 })

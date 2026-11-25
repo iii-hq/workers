@@ -4,11 +4,13 @@ import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
-import { getIiiClient } from '@/lib/iii-client'
 import type { ProviderListEntry } from '@/lib/models-catalog'
 import { providerIconMaskUrl, providerInitial } from '@/lib/provider-icon'
+import {
+  startProviderInstall,
+  useProviderInstalls,
+} from '@/lib/provider-installs'
 import { bundledProviderMark } from '@/lib/provider-marks'
-import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 import {
   fetchRegistryProviders,
@@ -73,11 +75,6 @@ export const AUTO_CONFIGURE_TIMEOUT_MS = 5_000
 /** Base id for the browser-local `engine::on-workers-changed` handler. */
 const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
-type AddStatus =
-  | { kind: 'adding' }
-  | { kind: 'done' }
-  | { kind: 'failed'; error: string }
-
 export interface AddProviderPanelProps {
   /** Providers already declared to the router; defaults to the chat context. */
   providers?: ProviderListEntry[]
@@ -138,9 +135,9 @@ export function AddProviderPanel({
   const [installed, setInstalled] = useState<ReadonlySet<string>>(
     () => new Set(installedWorkerNames ?? []),
   )
-  const [adds, setAdds] = useState<ReadonlyMap<string, AddStatus>>(
-    () => new Map(),
-  )
+  // Shared with every other Add a provider surface, so an install outlives
+  // this panel (a cleared search, a closed page) and is never started twice.
+  const adds = useProviderInstalls()
   // The worker an Add is waiting on to open its settings; null once it opens,
   // fails or the wait runs out.
   const [awaiting, setAwaiting] = useState<string | null>(null)
@@ -196,38 +193,8 @@ export function AddProviderPanel({
   const addWorker = useCallback(
     (name: string) => {
       if (!live || disabled) return
-      setAdds((current) => new Map(current).set(name, { kind: 'adding' }))
+      startProviderInstall(name)
       if (onConfigureProvider) setAwaiting(name)
-      void (async () => {
-        const client = await getIiiClient()
-        try {
-          await client.call(
-            'compose::add',
-            { workers: [name] },
-            { timeoutMs: 600_000 },
-          )
-          setAdds((current) => new Map(current).set(name, { kind: 'done' }))
-          setInstalled((current) => new Set([...current, name]))
-        } catch (err) {
-          // A late timeout can reject after the add actually landed.
-          try {
-            const list = await fetchEngineWorkersList()
-            if (list.workers.some((worker) => worker.name === name)) {
-              setAdds((current) => new Map(current).set(name, { kind: 'done' }))
-              setInstalled((current) => new Set([...current, name]))
-              return
-            }
-          } catch {
-            // fall through to the original error
-          }
-          setAdds((current) =>
-            new Map(current).set(name, {
-              kind: 'failed',
-              error: normalizeErrorMessage(err),
-            }),
-          )
-        }
-      })()
     },
     [disabled, live, onConfigureProvider],
   )
@@ -248,7 +215,10 @@ export function AddProviderPanel({
           present,
           providerId,
           iconSvg: present?.icon_svg ?? bundledProviderMark(providerId),
-          installed: installed.has(worker.name) || present !== undefined,
+          installed:
+            installed.has(worker.name) ||
+            present !== undefined ||
+            adds.get(worker.name)?.kind === 'done',
           add: adds.get(worker.name),
           label:
             present?.display_name ??
@@ -270,8 +240,9 @@ export function AddProviderPanel({
         )
       })
     : rows
+  // Unknown until a read succeeds: a failed read is not "no providers".
   const matchCount =
-    registry.workers === null
+    registry.workers === null || registry.error
       ? null
       : searchMode
         ? shownRows.length
@@ -328,35 +299,41 @@ export function AddProviderPanel({
         run: () => addWorker(row.worker.name),
       }
     }
-    if (waiting || adding || (row.installed && !row.present)) {
+    // Pending while the install runs, and during the wait for the new
+    // provider to register (which opens its settings by itself).
+    if (adding || waiting) {
+      const starting = !adding && row.installed
       return {
-        label: adding || waiting ? 'Adding…' : 'Starting…',
-        ariaLabel: `${adding || waiting ? 'Adding' : 'Starting'} ${row.label}`,
+        label: starting ? 'Starting…' : 'Adding…',
+        ariaLabel: `${starting ? 'Starting' : 'Adding'} ${row.label}`,
         icon: 'spin' as const,
         pending: true,
         inert: true,
         run: () => undefined,
       }
     }
-    if (row.installed && row.present) {
-      const present = row.present
-      return onConfigureProvider
-        ? {
-            label: 'Configure',
-            ariaLabel: `Configure ${row.label}`,
-            icon: null,
-            pending: false,
-            inert: blocked,
-            run: () => onConfigureProvider(present.id),
-          }
-        : {
-            label: 'Installed',
-            ariaLabel: `${row.label} installed`,
-            icon: 'check' as const,
-            pending: false,
-            inert: true,
-            run: () => undefined,
-          }
+    if (row.installed) {
+      // Past the wait, Configure is offered whether or not the provider has
+      // registered yet: its settings live in the router's configuration.
+      if (onConfigureProvider) {
+        const id = row.present?.id ?? row.providerId
+        return {
+          label: 'Configure',
+          ariaLabel: `Configure ${row.label}`,
+          icon: null,
+          pending: false,
+          inert: blocked,
+          run: () => onConfigureProvider(id),
+        }
+      }
+      return {
+        label: row.present ? 'Installed' : 'Starting…',
+        ariaLabel: `${row.label} ${row.present ? 'installed' : 'starting'}`,
+        icon: 'check' as const,
+        pending: false,
+        inert: true,
+        run: () => undefined,
+      }
     }
     const verb = searchMode ? 'Add provider' : 'Add'
     return {
@@ -459,6 +436,32 @@ export function AddProviderPanel({
       })}
     </ul>
   )
+
+  if (searchMode && registry.error && words.length > 0) {
+    return (
+      <section
+        aria-label="providers to add"
+        className={cn('min-w-0', className)}
+      >
+        <h3 className="mb-3 flex h-6 items-center text-sm text-ink-faint">
+          Providers to add
+        </h3>
+        <div
+          role="alert"
+          className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-dashed border-border px-3 py-2 text-sm text-ink-faint dark:border-edge"
+        >
+          <span>The workers registry is unreachable.</span>
+          <button
+            type="button"
+            onClick={() => loadRegistry()}
+            className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            Retry
+          </button>
+        </div>
+      </section>
+    )
+  }
 
   if (searchMode) {
     // Each match is one more provider column in the Models dialog's grid,
