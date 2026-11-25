@@ -1,0 +1,3 @@
+# Interface capture invokes no handler. Bind an ephemeral loopback port so the
+# capture process never collides with a running artifact worker.
+listen_addr: 127.0.0.1:0

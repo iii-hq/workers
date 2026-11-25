@@ -90,6 +90,18 @@ workers:
         outputs:
         - dist
     publish: true
+  artifact:
+    source:
+      path: artifact
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: artifact
+      targets: *id001
+    publish: true
   bridge:
     source:
       path: bridge

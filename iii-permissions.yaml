@@ -409,6 +409,9 @@ rules:
   # canvas: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
   - '!canvas::on-config-change'
+  # artifact: internal hot-reload hook, same pattern as the other
+  # on-config-change denies.
+  - '!artifact::on-config-change'
   # a2ui: Console action ingress and lifecycle hooks are trusted plumbing.
   # Agents compose/apply surfaces through the public functions below; only the
   # Console may inject a user gesture into an existing Harness session.
@@ -666,6 +669,19 @@ rules:
   - canvas::element::update
   - canvas::element::delete
   - canvas::element::list
+
+  # artifact: storing, reading and revoking touch only the worker's own store
+  # (state scope "artifact"), size- and version-capped by its configuration.
+  # Revoking only ever narrows exposure. artifact::share is deliberately NOT
+  # listed: a public share publishes content to anyone holding the link
+  # through the quick-tunnel, so it keeps needs_approval.
+  - artifact::create
+  - artifact::update
+  - artifact::get
+  - artifact::list
+  - artifact::delete
+  - artifact::shares
+  - artifact::revoke
 
   # a2ui: generated content is declarative data rendered through the fixed
   # Console catalog, never executable code. Size/component caps and the bounded
