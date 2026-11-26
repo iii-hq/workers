@@ -45,28 +45,6 @@ fn a_check(id: &str, commit: &str, run: Option<Run>) -> Check {
     }
 }
 
-fn a_run(id: &str, status: RunStatus, started: &str) -> Run {
-    Run {
-        id: id.into(),
-        check_id: "chk".into(),
-        commit: "abc".into(),
-        engine: "0.27.0".into(),
-        status,
-        started_at: started.into(),
-        finished_at: None,
-        stages: vec![],
-        workers: WorkerCount { ready: 0, total: 0 },
-        routes: RouteCount {
-            count: 0,
-            prefix: None,
-        },
-        healthcheck: None,
-        not_covered: vec![],
-        log_tail: vec![],
-        error: None,
-    }
-}
-
 async fn setup() -> (Harness, MockServer, Repo, PathBuf) {
     let server = MockServer::start().await;
     let repo = repo();
@@ -310,24 +288,6 @@ async fn an_empty_repository_is_told_to_commit_first() {
     let err = check(&h.ctx, CheckRequest::default()).await.unwrap_err();
     assert_eq!(err.code, "NO_COMMITS");
     assert!(err.message.contains("commit first"));
-}
-
-#[tokio::test]
-async fn a_run_already_going_says_which_and_since_when() {
-    let (h, _s, _r, _ws) = setup().await;
-    h.ctx.store.update(|s| {
-        s.put_check(a_check(
-            "chk",
-            "abc",
-            Some(a_run("run-77", RunStatus::Running, "2026-11-26T01:02:03Z")),
-        ))
-    });
-    h.ctx.busy.lock().unwrap().insert("run".into());
-    let err = iii_cloud::run::start(&h.ctx, "chk".into())
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "RUN_BUSY");
-    assert!(err.message.contains("run-77") && err.message.contains("2026-11-26T01:02:03Z"));
 }
 
 #[tokio::test]

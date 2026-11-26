@@ -26,9 +26,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
+use tokio::sync::watch;
 
 use crate::check::{default_not_covered, selected, update_check};
-use crate::ctx::{Ctx, new_id, now, short};
+use crate::ctx::{ActiveRun, Ctx, new_id, now, short};
 use crate::error::{CloudError, Res, cut};
 use crate::local::{
     Manifest, database_binding, install_command, lock_for, runtime_base, worker_runtime,
@@ -38,6 +39,27 @@ use crate::types::*;
 
 const MAX_RUNS_KEPT: usize = 20;
 const TAIL: usize = 40;
+/// Lines of a container's own log kept in a failed workers stage.
+const CONTAINER_TAIL: usize = 10;
+/// Seconds with no new worker connected, once one has, before the stage fails.
+const NO_PROGRESS_S: u64 = 60;
+/// Where `iii compose` keeps the run's namespace, under the compose file's folder.
+const COMPOSE_STATE: &str = ".iii/compose/iii-cloud-run";
+
+/// Whether no process has this pid (unix; elsewhere nothing says so).
+fn pid_gone(pid: u64) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only checks that the process exists.
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
 
 struct Fail {
     code: String,
@@ -318,85 +340,178 @@ struct Exec {
     /// the files it writes there are removed after.
     config_before: Option<(PathBuf, Vec<String>)>,
     stage_started: Instant,
+    /// True when a newer commit of the workspace asks this run to stop.
+    cancel: watch::Receiver<bool>,
 }
 
-/// Start a run for a stored check. One at a time: a second is `RUN_BUSY`.
+/// Start a run for a stored check. One at a time per workspace.
 pub async fn start(ctx: &Arc<Ctx>, check_id: String) -> Res<Run> {
     let sel = selected(ctx)?;
     start_with(ctx, check_id, sel).await
 }
 
 /// Start a run for a check, on the environment and worktree `sel` names (a
-/// hand-off's own, which may not be the page's current selection).
+/// hand-off's own, which may not be the page's current selection). The
+/// workspace's run of the same commit and compose file is waited for instead
+/// (the same run comes back); one of another commit is replaced.
 pub async fn start_with(ctx: &Arc<Ctx>, check_id: String, sel: crate::check::Selected) -> Res<Run> {
-    if !ctx.busy.lock().unwrap().insert("run".into()) {
-        // Say which run, and since when, so the page can show "already running since …".
-        let running = ctx.store.read(|s| {
-            s.check
-                .iter()
-                .chain(s.checks.iter())
-                .filter_map(|c| c.run.as_ref())
-                .find(|r| r.status == RunStatus::Running)
-                .map(|r| (r.id.clone(), r.started_at.clone()))
-        });
-        let message = match running {
-            Some((id, since)) => format!("A run is already going: run {id}, since {since}."),
-            None => "A run is already going.".to_string(),
+    let key = sel.workspace.to_string_lossy().into_owned();
+    let commit = workspace_commit(&sel.workspace).await?;
+    let manifest = ctx
+        .store
+        .read(|s| s.find_check(&check_id).and_then(|c| c.manifest.clone()))
+        .or_else(|| sel.env.manifest.clone());
+    let (id, cancel_rx, guard) = loop {
+        let step = {
+            let mut runs = ctx.runs.lock().unwrap();
+            match runs.get(&key) {
+                Some(a) if a.commit == commit && a.manifest == manifest => {
+                    Err((a.id.clone(), a.done.clone(), false))
+                }
+                Some(a) => {
+                    let _ = a.cancel.send(true);
+                    Err((a.id.clone(), a.done.clone(), true))
+                }
+                None => {
+                    let id = new_id();
+                    let (cancel_tx, cancel_rx) = watch::channel(false);
+                    let (done_tx, done_rx) = watch::channel(false);
+                    runs.insert(
+                        key.clone(),
+                        ActiveRun {
+                            id: id.clone(),
+                            commit: commit.clone(),
+                            manifest: manifest.clone(),
+                            cancel: cancel_tx,
+                            done: done_rx,
+                        },
+                    );
+                    Ok((
+                        id.clone(),
+                        cancel_rx,
+                        ActiveGuard(ctx.clone(), key.clone(), id, done_tx),
+                    ))
+                }
+            }
         };
-        return Err(CloudError::new("RUN_BUSY", message));
-    }
-    match prepare(ctx, &check_id, &sel).await {
-        Ok(mut exec) => {
-            exec.publish();
-            let run = exec.run.clone();
-            let ctx2 = ctx.clone();
-            let check_id = exec.check_id.clone();
-            tokio::spawn(async move {
-                // `busy` is cleared however the run ends, a panic included.
-                let _guard = BusyGuard(ctx2.clone(), "run".into());
-                if tokio::spawn(async move { exec.drive().await })
-                    .await
-                    .is_err()
-                {
-                    update_check(&ctx2, &check_id, |c| {
-                        if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running)
-                        {
-                            let stage = run
-                                .stages
-                                .iter()
-                                .find(|s| s.status == StageStatus::Running)
-                                .map(|s| s.name)
-                                .unwrap_or(StageName::Install);
-                            run.status = RunStatus::Failed;
-                            run.finished_at = Some(now());
-                            run.error = Some(RunError {
-                                stage,
-                                code: "RUN_PANIC".into(),
-                                message: "The run stopped on an internal error.".into(),
-                            });
-                        }
+        match step {
+            Ok(own) => break own,
+            // Replaced: wait for its teardown, then take its place.
+            Err((_, mut done, true)) => {
+                let _ = done.wait_for(|d| *d).await;
+            }
+            // Attached: wait for the end (the caller's own wait is 240 s) and hand back its run.
+            Err((id, mut done, false)) => {
+                let _ = tokio::time::timeout(Duration::from_secs(240), done.wait_for(|d| *d)).await;
+                let Some(run) = ctx.store.read(|s| {
+                    s.check
+                        .iter()
+                        .chain(s.checks.iter())
+                        .filter_map(|c| c.run.clone())
+                        .find(|r| r.id == id)
+                }) else {
+                    continue;
+                };
+                if run.check_id != check_id {
+                    update_check(ctx, &check_id, |c| c.run = Some(run.clone()));
+                }
+                return Ok(run);
+            }
+        }
+    };
+    let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
+    exec.cancel = cancel_rx;
+    exec.publish();
+    let run = exec.run.clone();
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        // The workspace is free again however the run ends, a panic included.
+        let _guard = guard;
+        if tokio::spawn(async move { exec.drive().await })
+            .await
+            .is_err()
+        {
+            let updated = update_check(&ctx2, &check_id, |c| {
+                if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
+                    let stage = run
+                        .stages
+                        .iter()
+                        .find(|s| s.status == StageStatus::Running)
+                        .map(|s| s.name)
+                        .unwrap_or(StageName::Install);
+                    run.status = RunStatus::Failed;
+                    run.finished_at = Some(now());
+                    run.error = Some(RunError {
+                        stage,
+                        code: "RUN_PANIC".into(),
+                        message: "The run stopped on an internal error.".into(),
                     });
                 }
             });
-            Ok(run)
+            if let Some(run) = updated.and_then(|c| c.run) {
+                emit_run(&ctx2, &run);
+            }
         }
-        Err(e) => {
-            ctx.busy.lock().unwrap().remove("run");
-            Err(e)
-        }
-    }
+    });
+    Ok(run)
 }
 
-/// Removes its key from `Ctx::busy` when dropped.
-struct BusyGuard(Arc<Ctx>, String);
+/// Frees the workspace's slot and tells the waiters when dropped.
+struct ActiveGuard(Arc<Ctx>, String, String, watch::Sender<bool>);
 
-impl Drop for BusyGuard {
+impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        self.0.busy.lock().unwrap().remove(&self.1);
+        let mut runs = self.0.runs.lock().unwrap();
+        if runs.get(&self.1).is_some_and(|a| a.id == self.2) {
+            runs.remove(&self.1);
+        }
+        drop(runs);
+        let _ = self.3.send(true);
     }
 }
 
-async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -> Res<Exec> {
+/// What the run proves: HEAD, and `+dirty` when anything is uncommitted. Ready
+/// needs it to equal the checked commit.
+async fn workspace_commit(workspace: &Path) -> Res<String> {
+    let head = crate::tool::git(workspace, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
+    let dirty = crate::tool::git(workspace, &["status", "--porcelain"])
+        .await
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(true);
+    Ok(if dirty { format!("{head}+dirty") } else { head })
+}
+
+/// The run's event: terminal once it is no longer running.
+fn emit_run(ctx: &Ctx, run: &Run) {
+    let summary = match (&run.status, &run.error) {
+        (RunStatus::Failed, Some(e)) => format!(
+            "run {} failed at {:?}: {}",
+            short(&run.commit),
+            e.stage,
+            e.code
+        ),
+        (RunStatus::Passed, _) => format!("run {} passed", short(&run.commit)),
+        _ => format!("run {} is going", short(&run.commit)),
+    };
+    ctx.emit(
+        EventKind::Run,
+        &run.id,
+        run.status != RunStatus::Running,
+        summary,
+        run,
+    );
+}
+
+async fn prepare(
+    ctx: &Arc<Ctx>,
+    id: &str,
+    check_id: &str,
+    sel: &crate::check::Selected,
+    commit: &str,
+) -> Res<Exec> {
     let check = ctx
         .store
         .read(|s| s.find_check(check_id).cloned())
@@ -411,27 +526,16 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         // No environment settings, no run: a null here would skip the release,
         // the root directory and the healthcheck without a word.
         .await?;
-    let id = new_id();
-    let dir = cfg.data_path().join("runs").join(&id);
+    let dir = cfg.data_path().join("runs").join(id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| CloudError::new("GIT_FAILED", format!("cannot create the run folder: {e}")))?;
     let engine = crate::check::local_iii_version(&cfg.iii_bin)
         .await
         .unwrap_or_else(|| "unknown".into());
-    // The run proves what the workspace holds now: its HEAD, and `+dirty` when
-    // anything is uncommitted. Ready needs it to equal the checked commit.
-    let head = crate::tool::git(&sel.workspace, &["rev-parse", "HEAD"])
-        .await?
-        .trim()
-        .to_string();
-    let dirty = crate::tool::git(&sel.workspace, &["status", "--porcelain"])
-        .await
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(true);
     let run = Run {
-        id,
+        id: id.to_string(),
         check_id: check.id.clone(),
-        commit: if dirty { format!("{head}+dirty") } else { head },
+        commit: commit.to_string(),
         engine,
         status: RunStatus::Running,
         started_at: now(),
@@ -479,6 +583,7 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         child: None,
         config_before: None,
         stage_started: Instant::now(),
+        cancel: watch::channel(false).1,
     })
 }
 
@@ -525,23 +630,7 @@ impl Exec {
             e.message = self.redact(&e.message);
         }
         update_check(&self.ctx, &self.check_id, |c| c.run = Some(run.clone()));
-        let summary = match (&run.status, &run.error) {
-            (RunStatus::Failed, Some(e)) => format!(
-                "run {} failed at {:?}: {}",
-                short(&run.commit),
-                e.stage,
-                e.code
-            ),
-            (RunStatus::Passed, _) => format!("run {} passed", short(&run.commit)),
-            _ => format!("run {} is going", short(&run.commit)),
-        };
-        self.ctx.emit(
-            EventKind::Run,
-            &run.id,
-            run.status != RunStatus::Running,
-            summary,
-            &run,
-        );
+        emit_run(&self.ctx, &run);
     }
 
     fn set(&mut self, name: StageName, status: StageStatus, detail: Option<String>) {
@@ -583,11 +672,17 @@ impl Exec {
 
     async fn drive(&mut self) {
         let budget = Duration::from_secs(self.ctx.config().await.run_timeout_s);
-        let outcome = tokio::time::timeout(budget, self.stages()).await;
+        let mut cancel = self.cancel.clone();
+        // None: a newer commit of the workspace replaced this run. Dropping
+        // the stages stops their children; teardown does the rest.
+        let outcome = tokio::select! {
+            r = tokio::time::timeout(budget, self.stages()) => Some(r),
+            _ = cancel.wait_for(|c| *c) => None,
+        };
         match outcome {
-            Ok(Ok(())) => self.run.status = RunStatus::Passed,
-            Ok(Err((stage, f))) => self.finish_failed(stage, f),
-            Err(_) => {
+            Some(Ok(Ok(()))) => self.run.status = RunStatus::Passed,
+            Some(Ok(Err((stage, f)))) => self.finish_failed(stage, f),
+            other => {
                 let stage = self
                     .run
                     .stages
@@ -595,13 +690,18 @@ impl Exec {
                     .find(|s| s.status == StageStatus::Running)
                     .map(|s| s.name)
                     .unwrap_or(StageName::Install);
-                self.finish_failed(
-                    stage,
+                let f = if other.is_none() {
+                    fail(
+                        "RUN_REPLACED",
+                        "A newer commit of this workspace started a run, so this one stopped.",
+                    )
+                } else {
                     fail(
                         "RUN_TIMEOUT",
                         format!("The run passed {} s.", budget.as_secs()),
-                    ),
-                );
+                    )
+                };
+                self.finish_failed(stage, f);
             }
         }
         self.teardown().await;
@@ -1178,30 +1278,47 @@ impl Exec {
             .unwrap_or(Duration::from_secs(60));
         let total = self.run.workers.total;
         let deadline = Instant::now() + startup;
+        // The last time one more worker connected, once one has.
+        let mut progress: Option<Instant> = None;
         let mut stable_since: Option<Instant> = None;
+        let mut connected: Vec<String> = vec![];
         loop {
             if let Some(code) = self.compose_exited() {
-                self.append_compose_log();
-                return Err(fail(
-                    "COMPOSE_FAILED",
-                    format!("`iii compose` exited {code} before the workers connected."),
+                // `iii compose` stops itself when a container dies before it registers.
+                let gone = self.exited_in_compose_log();
+                if gone.is_empty() {
+                    self.append_compose_log();
+                    return Err(fail(
+                        "COMPOSE_FAILED",
+                        format!("`iii compose` exited {code} before the workers connected."),
+                    ));
+                }
+                return Err(self.workers_fail(
+                    format!("{} exited before it connected.", gone.join(", ")),
+                    &connected,
+                ));
+            }
+            let gone = self.exited_containers();
+            if !gone.is_empty() {
+                return Err(self.workers_fail(
+                    format!("{} exited before all workers connected.", gone.join(", ")),
+                    &connected,
                 ));
             }
             if Instant::now() >= deadline {
-                self.append_compose_log();
-                return Err(fail(
-                    "WORKERS_NOT_READY",
+                return Err(self.workers_fail(
                     format!(
                         "{} of {total} workers connected in {} s.",
                         self.run.workers.ready,
                         startup.as_secs()
                     ),
+                    &connected,
                 ));
             }
             // A container's worker registers under the container's name
             // (verified on iii 0.27.0: `api`, `http`), with status `connected`.
             let names = self.container_names();
-            let ready = self
+            connected = self
                 .engine_call("engine::workers::list", &[])
                 .await
                 .and_then(|v| v.get("workers").and_then(Value::as_array).cloned())
@@ -1217,20 +1334,109 @@ impl Exec {
                                     )
                             })
                         })
-                        .count() as u32
+                        .cloned()
+                        .collect()
                 })
-                .unwrap_or(0);
+                .unwrap_or_default();
+            let ready = connected.len() as u32;
+            if ready > self.run.workers.ready {
+                progress = Some(Instant::now());
+            }
             self.run.workers.ready = ready.min(total);
             if ready >= total {
                 let since = *stable_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= Duration::from_secs(2) {
+                if since.elapsed() >= self.ctx.secs(2) {
                     return passed(format!("{} of {total}", self.run.workers.ready));
                 }
             } else {
                 stable_since = None;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Workers come up in seconds: a minute with no new one is a stall.
+            if progress.is_some_and(|p| p.elapsed() >= self.ctx.secs(NO_PROGRESS_S)) {
+                return Err(self.workers_fail(
+                    format!(
+                        "{} of {total} workers connected and no new one in {NO_PROGRESS_S} s.",
+                        self.run.workers.ready
+                    ),
+                    &connected,
+                ));
+            }
+            tokio::time::sleep(self.ctx.secs(1)).await;
         }
+    }
+
+    /// `WORKERS_NOT_READY` naming the containers that did not connect; the run's
+    /// log gets their own last lines, after `compose.log`'s.
+    fn workers_fail(&self, lead: String, connected: &[String]) -> Fail {
+        let missing: Vec<String> = self
+            .container_names()
+            .into_iter()
+            .filter(|n| !connected.contains(n))
+            .collect();
+        self.append_compose_log();
+        for name in &missing {
+            for line in self.container_log(name) {
+                self.note(&format!("[{name}] {line}"));
+            }
+        }
+        fail(
+            "WORKERS_NOT_READY",
+            format!("{lead} Did not connect: {}.", missing.join(", ")),
+        )
+    }
+
+    fn state_dir(&self) -> Option<PathBuf> {
+        Some(self.prep.as_ref()?.manifest.dir.join(COMPOSE_STATE))
+    }
+
+    /// The last lines a container wrote (`iii compose` keeps one file per
+    /// container: a header, then `stdout<TAB>line` / `stderr<TAB>line`).
+    fn container_log(&self, name: &str) -> Vec<String> {
+        let Some(dir) = self.state_dir() else {
+            return vec![];
+        };
+        let text = std::fs::read_to_string(dir.join("logs").join(format!("{name}.log")))
+            .unwrap_or_default();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .collect();
+        lines[lines.len().saturating_sub(CONTAINER_TAIL)..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    /// Containers whose process is gone, by the pids `iii compose` keeps in its
+    /// state file (it lists a container once it is up).
+    fn exited_containers(&self) -> Vec<String> {
+        let Some(dir) = self.state_dir() else {
+            return vec![];
+        };
+        let state = std::fs::read_to_string(dir.join("state.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        state
+            .as_ref()
+            .and_then(|s| s.get("containers").and_then(Value::as_object))
+            .into_iter()
+            .flatten()
+            .filter(|(_, c)| c.get("pid").and_then(Value::as_u64).is_some_and(pid_gone))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// `container 'x' exited with N before it registered`, from `compose.log`.
+    fn exited_in_compose_log(&self) -> Vec<String> {
+        let text = std::fs::read_to_string(self.dir.join("compose.log")).unwrap_or_default();
+        text.lines()
+            .filter(|l| l.contains("before it registered"))
+            .filter_map(|l| {
+                let rest = l.split_once("container '")?.1;
+                Some(rest.split_once('\'')?.0.to_string())
+            })
+            .collect()
     }
 
     fn append_compose_log(&self) {
@@ -1547,7 +1753,7 @@ fn clean_copy(copy: &Path) {
     let _ = std::fs::remove_file(copy);
     let _ = std::fs::remove_file(copy.with_extension("lock"));
     if let Some(dir) = copy.parent() {
-        let _ = std::fs::remove_dir_all(dir.join(".iii/compose/iii-cloud-run"));
+        let _ = std::fs::remove_dir_all(dir.join(COMPOSE_STATE));
     }
 }
 
@@ -1573,7 +1779,7 @@ pub async fn recover(ctx: &Arc<Ctx>) {
             continue;
         }
         done.push(id.clone());
-        update_check(ctx, &id, |c| {
+        let updated = update_check(ctx, &id, |c| {
             if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
                 let stage = run
                     .stages
@@ -1597,6 +1803,10 @@ pub async fn recover(ctx: &Arc<Ctx>) {
                 }
             }
         });
+        // Whoever waits for this run's end hears it.
+        if let Some(run) = updated.and_then(|c| c.run) {
+            emit_run(ctx, &run);
+        }
     }
     let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) else {
         return;
