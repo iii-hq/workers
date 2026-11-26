@@ -620,7 +620,7 @@ the generation it read, local storage seeks.
 ### Object keys
 
 Every call that takes a `key` (`putObject`, `getObject`, `headObject`,
-`deleteObject`, `presignUrl`, `presignPost`) refuses a key with a `.` or `..`
+`deleteObject`, `copyObject` (both keys), `presignUrl`, `presignPost`) refuses a key with a `.` or `..`
 segment and returns `INVALID_KEY`. Segments are read the way a URL parser reads
 them: `%2e` (any case) is a dot, a backslash separates segments like a slash,
 and a tab, CR or LF is ignored, so `../escape`, `a/./b`, `%2e%2e/x` and
@@ -640,6 +640,40 @@ like `%2e%2e/x` or `a\..\b`, which the SDK encoded) still shows in `listObjects`
 but this worker can no longer read or delete it: remove it with the
 provider's own tools. An empty key keeps its earlier code (`CONFIG_ERROR`, and
 `INVALID_PRESIGN_PARAMS` from `presignPost`).
+
+### `storage::copyObject` — copy between keys and buckets
+
+```ts
+const { etag, size, server_side } = await iii.call({
+  function_id: 'storage::copyObject',
+  payload: {
+    source_bucket: 'staging',
+    source_key: 'uploads/1f/app.dmg',
+    bucket: 'cdn',
+    key: 'apps/app/1.0.0/app.dmg',
+    // Optional. Without these three the copy keeps the source's headers.
+    content_type: 'application/x-apple-diskimage',
+    cache_control: 'public, max-age=31536000, immutable',
+    metadata: { release: '1.0.0' },
+  },
+})
+```
+
+When the provider can reach both buckets with one set of credentials — S3 or
+R2 buckets on the same endpoint, region and access key, or two `local`
+buckets — it copies the object itself (`server_side: true`): the bytes never
+pass through the worker or the engine, whatever their size. S3 and R2 send a
+`CopyObject` pinned to the source's ETag (one request copies up to 5 GiB);
+local storage streams the file to a new one. Any other pair, GCS included, is
+copied through the worker (`server_side: false`): the object is read whole
+into memory and written, up to 64 MiB (`OBJECT_TOO_LARGE` above that, before
+anything is written).
+
+Setting any of `content_type`, `cache_control` and `metadata` replaces all
+three on the copy (S3's `REPLACE`): an unset content type or metadata is the
+source's, an unset cache control is dropped. A missing source is
+`OBJECT_NOT_FOUND` naming the source; copying an object onto itself is
+`CONFIG_ERROR`. Both keys follow the rule below.
 
 ### `storage::presignPost` — multipart upload
 
@@ -705,7 +739,7 @@ The worker registers its schema with the `configuration` worker (seeding
 `config.yaml` if no stored value exists), fetches the live config, initializes
 the native store and optional direct-transfer HTTP listener, and registers
 `storage::putObject`, `storage::getObject`, `storage::deleteObject`,
-`storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
+`storage::copyObject`, `storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
 `storage::listBuckets`, `storage::listObjects`, `storage::getBucket`,
 `storage::saveBucket`, `storage::deleteBucket` and `storage::testBucket`. Files land under
 `data/storage/` under `III_COMPOSE_DIR` (configurable via
