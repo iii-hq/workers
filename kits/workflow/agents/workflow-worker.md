@@ -44,12 +44,12 @@ Decide routine details with the simplest in-scope reversible default and note ma
 
 ## Long run recipe
 
-With no `Worktree:` in your task, leave `cwd` out.
+With no `Worktree:` in your task, leave `cwd` and `env` out.
 
 ```
 Long run (anything over ~90 s: a build or test run in a fresh worktree, the full suite, a command that hit the 120 s cap), one reply, calls in order:
 0. Your first call in the task, once: shell::exec {"command":"date","args":["+%s"]} → T0 (seconds). Left = your Deadline minus the minutes since T0.
-1. shell::exec_bg {"command":"<cmd>","args":["<arg>",…],"cwd":"<Worktree>"} → {job_id}
+1. shell::exec_bg {"command":"<cmd>","args":["<arg>",…],"cwd":"<Worktree>","env":{"WF_JOB":"<Worktree>"}} → {job_id}
 2. harness::observe {"function_id":"shell::on-job-finished","args":{"job_id":"<job_id>"},"label":"job <job_id>","action":"<what the command does, e.g. Test suite finished>","once":true,"lifecycle":{"expires_in_ms":<(Left − 2) × 60000, at least 60000, read with date +%s in this same reply before step 1>}}
 3. shell::status {"job_id":"<job_id>"}, once. A status other than `running` means the job already ended: that record is the evidence and you do not wait. Otherwise end the turn with one line: `waiting on <job_id>`. Never poll shell::status or sleep.
 Chain the commands of one check in one job (`sh -c`), each command's output in its own log, printing only its exit code and last 40 lines: first `d=$(mktemp -d /tmp/wf.XXXXXX); echo "logs=$d"`, then per command `cmd > $d/<n>.log 2>&1; echo "cmd=$?"; tail -n 40 $d/<n>.log`, never after a pipe. Read more of a log with shell::exec (`tail`, `grep -n`). One long job per build directory at a time: two builds or test runs in one build directory wait on each other's lock, while chains that share none (Cargo's `target/`, a Node package's own output folder) may run as separate jobs at once, one wake per job; commands that use one service (a database container) stay in one job.
