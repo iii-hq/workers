@@ -115,19 +115,18 @@ pub fn resolve_params(
     })
 }
 
-// Not ImageDecoder::orientation(): it allocates a WebP EXIF chunk from an unchecked header length.
-fn exif_orientation(bytes: &[u8]) -> Orientation {
-    exif::Reader::new()
-        .read_from_container(&mut Cursor::new(bytes))
-        .ok()
-        .and_then(|data| {
-            data.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
-                .value
-                .get_uint(0)
-        })
-        .and_then(|v| u8::try_from(v).ok())
-        .and_then(Orientation::from_exif)
-        .unwrap_or(Orientation::NoTransforms)
+/// The top-level EXIF chunk of a WebP file, as a slice of the input.
+fn webp_exif(bytes: &[u8]) -> Option<&[u8]> {
+    let mut rest = bytes.get(12..)?; // past "RIFF", the size and "WEBP"
+    loop {
+        let (head, tail) = rest.split_at_checked(8)?;
+        let size = u32::from_le_bytes(head[4..].try_into().ok()?) as usize;
+        let body = tail.get(..size)?;
+        if &head[..4] == b"EXIF" {
+            return Some(body);
+        }
+        rest = tail.get(size + (size & 1)..)?;
+    }
 }
 
 /// Largest image decoded, in pixels. The resize keeps an f32 buffer of up to
@@ -143,14 +142,23 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
     // bounds what a PNG's ancillary chunks may inflate to.
     limits.max_alloc = Some(64 << 20);
     reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(undecodable)?;
+    let mut decoder = reader.into_decoder().map_err(undecodable)?;
     let (w, h) = decoder.dimensions();
     if u64::from(w) * u64::from(h) > MAX_PIXELS {
         return Err(invalid(format!(
             "image is {w}x{h}; the limit is {MAX_PIXELS} pixels"
         )));
     }
-    DynamicImage::from_decoder(decoder).map_err(undecodable)
+    let orientation = match format {
+        // Not decoder.orientation(): image-webp sizes the EXIF buffer from an unchecked chunk header.
+        ImageFormat::WebP => webp_exif(bytes).and_then(Orientation::from_exif_chunk),
+        // JPEG: one APP1 segment, at most 64 KiB. PNG: the eXIf chunk the decoder already holds.
+        _ => decoder.orientation().ok(),
+    }
+    .unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).map_err(undecodable)?;
+    img.apply_orientation(orientation);
+    Ok(img)
 }
 
 fn over_white(img: &DynamicImage) -> DynamicImage {
@@ -195,7 +203,6 @@ pub fn process_image(
     params: &ProcessingParams,
 ) -> Result<(Vec<u8>, ThumbnailMetadata), Error> {
     let mut img = decode(bytes, params.input_format.image_format())?;
-    img.apply_orientation(exif_orientation(bytes));
     let (source_width, source_height) = (img.width(), img.height());
     // JPEG has no alpha. Flatten before the resize: the filter mixes straight
     // alpha, so flattening afterwards would leave the hidden colour of
@@ -671,12 +678,33 @@ mod tests {
         tiff
     }
 
-    fn png_with_orientation(img: &DynamicImage, n: u8) -> Vec<u8> {
+    fn png_with_exif(img: &DynamicImage, tiff: Vec<u8>) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut enc = image::codecs::png::PngEncoder::new(&mut buf);
-        enc.set_exif_metadata(tiff_orientation(n)).unwrap();
+        enc.set_exif_metadata(tiff).unwrap();
         img.write_with_encoder(enc).unwrap();
         buf
+    }
+
+    /// A big-endian TIFF whose IFD0 points `k` Exif IFD entries at overlapping child IFDs of `c` entries.
+    fn tiff_overlapping_child_ifds(k: u16, c: u16) -> Vec<u8> {
+        let children = 8 + 2 + 12 * u32::from(k) + 4;
+        let mut tiff = b"MM\0*\0\0\0\x08".to_vec();
+        tiff.extend(k.to_be_bytes());
+        for i in 0..u32::from(k) {
+            tiff.extend([0x87, 0x69, 0, 4, 0, 0, 0, 1]);
+            tiff.extend((children + 2 * i).to_be_bytes());
+        }
+        tiff.extend([0; 4]);
+        // Child i starts at byte 2i of this region: its count, then 0xFF filler entries.
+        let mut region = vec![0xFF; 2 + 12 * usize::from(c)];
+        for count in region[..2 * usize::from(k)].as_chunks_mut::<2>().0 {
+            *count = c.to_be_bytes();
+        }
+        tiff.extend(region);
+        // Every child's next-IFD offset lands here: 0, no further IFD.
+        tiff.extend(vec![0; 2 * usize::from(k) + 4]);
+        tiff
     }
 
     const A: [u8; 4] = [255, 0, 0, 255];
@@ -714,7 +742,7 @@ mod tests {
             (8, [B, D, A, C]),
         ];
         for (n, pixels) in expected {
-            let out = png_out(&png_with_orientation(&quad(), n));
+            let out = png_out(&png_with_exif(&quad(), tiff_orientation(n)));
             assert_eq!(
                 out.to_rgba8().into_raw(),
                 pixels.concat(),
@@ -725,8 +753,32 @@ mod tests {
 
     #[test]
     fn orientation_6_swaps_dimensions() {
-        let out = png_out(&png_with_orientation(&make_rgb_image(2, 1, 1, 2, 3), 6));
+        let png = png_with_exif(&make_rgb_image(2, 1, 1, 2, 3), tiff_orientation(6));
+        let params = ProcessingParams {
+            output_format: Format::Png,
+            ..webp_params(200, 200, 100, Format::Png)
+        };
+        let (out, meta) = process_image(&png, &params).unwrap();
+        assert_eq!((meta.source_width, meta.source_height), (1, 2));
+        assert_eq!((meta.width, meta.height), (1, 2));
+        let out = image::load_from_memory_with_format(&out, ImageFormat::Png).unwrap();
         assert_eq!((out.width(), out.height()), (1, 2));
+    }
+
+    #[test]
+    fn exif_with_overlapping_child_ifds_is_cheap() {
+        let tiff = tiff_overlapping_child_ifds(4000, 4000);
+        assert!(tiff.len() < 110_000, "{} bytes", tiff.len());
+        let png = png_with_exif(&make_rgb_image(1, 1, 1, 2, 3), tiff);
+        let params = ProcessingParams {
+            output_format: Format::Png,
+            ..webp_params(200, 200, 100, Format::Png)
+        };
+        let start = std::time::Instant::now();
+        let (_, meta) = process_image(&png, &params).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!((meta.width, meta.height), (1, 1));
+        assert!(elapsed.as_secs_f64() < 1.0, "took {elapsed:?}");
     }
 
     #[test]
@@ -747,6 +799,30 @@ mod tests {
             100,
         );
         assert_eq!((out.width(), out.height()), (1, 2));
+    }
+
+    #[test]
+    fn orientation_is_read_from_webp() {
+        let mut webp = Vec::new();
+        let mut enc = image::codecs::webp::WebPEncoder::new_lossless(&mut webp);
+        enc.set_exif_metadata(tiff_orientation(6)).unwrap();
+        make_rgb_image(2, 1, 1, 2, 3)
+            .write_with_encoder(enc)
+            .unwrap();
+        let out = run(
+            &webp,
+            Format::Webp,
+            Format::Png,
+            ResizeStrategy::ScaleToFit,
+            200,
+            200,
+            100,
+        );
+        assert_eq!((out.width(), out.height()), (1, 2));
+
+        let p = webp.windows(4).position(|w| w == b"EXIF").unwrap();
+        webp[p + 4..p + 8].fill(0xFF);
+        assert_eq!(webp_exif(&webp), None);
     }
 
     #[test]
