@@ -1,5 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { isLaunching, markAsked, markFolderNote, setLaunch } from './asked'
+import { hubOf } from './hub'
 import {
   activeSameKind,
   fixMessage,
@@ -63,6 +64,8 @@ export async function handOff(
   if (status.check) {
     markAsked(status.check.id)
   }
+  // "Fix with your agent" is the person asking again.
+  hubOf(host).markStopped(status.project?.environment?.id ?? '', false)
   // A hand-off the worker already had open delivers its own text: never start a second chat.
   if (made?.reused) {
     if (made.session_id) openChatFor(host, made.session_id)

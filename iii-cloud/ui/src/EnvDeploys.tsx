@@ -107,7 +107,15 @@ export function Deployments({
                 <button
                   type="button"
                   className="iii-cloud-linkbtn"
-                  onClick={() => go({ at: 'env', env: envId, deploy: d.id })}
+                  aria-label={`Open deployment #${d.number}`}
+                  // A deployment iii cloud holds waits for the person's Confirm, which is on the Deploy screen.
+                  onClick={() =>
+                    go(
+                      needsAction(d)
+                        ? { at: 'deploy', env: envId, deploy: d.id }
+                        : { at: 'env', env: envId, deploy: d.id },
+                    )
+                  }
                 >
                   Open
                 </button>

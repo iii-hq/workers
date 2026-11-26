@@ -2,7 +2,7 @@
 // split by owner, then grouped by code and file ("21 variables have no value in iii cloud").
 
 import { checklist, isDatabaseVar, problemDetail, problemTitle, variableName } from './model'
-import type { Problem, SecretRequest, Status } from './types'
+import type { Problem, SecretRequest, Status, Values } from './types'
 
 export type Item = {
   key: string
@@ -238,13 +238,25 @@ export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
 /**
  * What only the person can do before this check can pass: its blocking problems (a warning is not one) and the
  * console settings still to decide. The one list the Deploy screen's title and the environment's next action count.
- * `except`: names a bulk row covers instead.
+ * `read`: the worker's values read of a first deploy. The names it says a file of the folder (or another
+ * environment) can fill are one row ("Review and save"), not one each.
  */
-export function needsYou(s: Status, except: Set<string> = new Set()) {
+export function needsYou(s: Status, read: Values | null = null) {
+  const fillable =
+    read?.save === 'ok'
+      ? read.items.filter(
+          (i) =>
+            i.in_cloud === 'unset' &&
+            !i.database &&
+            !i.invalid_name &&
+            i.suggestions.some((x) => x.source === 'env_file' || x.source === 'copy'),
+        )
+      : []
+  const covered = new Set(fillable.map((i) => i.name))
   const items = findings(s).person.filter(
-    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !except.has(valueName(i) ?? ''),
+    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !covered.has(valueName(i) ?? ''),
   )
   const chosen = s.override_choices ?? {}
   const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
-  return { items, decide }
+  return { items, decide, fillable, count: items.length + decide.length + (fillable.length ? 1 : 0) }
 }

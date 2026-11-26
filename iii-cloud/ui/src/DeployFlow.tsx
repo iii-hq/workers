@@ -16,12 +16,14 @@ import {
 } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Circle, CircleDot, Copy } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { cloudWrite, useCloud } from './api'
 import { clock, useLaunch } from './asked'
 import { ActionBar, ActionError, CheckStage, checkPayload, GoesSub, ScreenHead, TypedConfirm } from './CheckStage'
+import { useDeployments } from './EnvOverview'
 import { handOff, openAgentChat } from './handoff'
-import { hubOf, useActions } from './hub'
+import { hubOf, useActions, useCheckError } from './hub'
+import { Deleted } from './Manage'
 import {
   activeSameKind,
   ago,
@@ -81,8 +83,17 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
     asked && asked.environment_id === env && !(isFailedDeploy(asked) && activeSameKind(status, 'deploy_fix'))
   const name = status.project?.environments.find((e) => e.id === env)?.name ?? 'the environment'
 
+  // What the last check call of this environment was refused with: kept by the hub, so it shows after the card that
+  // asked is gone (the environment page and first-time setup go here at once).
+  const refused = useCheckError(host, env)
+  const gone =
+    status.problems?.find((p) => p.code === 'PROJECT_DELETED') ??
+    (state === 'selected' ? status.problems?.find((p) => p.code === 'ENVIRONMENT_DELETED') : undefined)
+
   let body: ReactNode
-  if (state === 'unknown') {
+  if (gone) {
+    body = <Deleted host={host} status={status} problem={gone} />
+  } else if (state === 'unknown') {
     body = (
       <EmptyState
         title="Not an environment of this project"
@@ -112,7 +123,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
         onChange={() => setChanging(!changing)}
         panel={
           changing ? (
-            <ChangePanel status={status} envId={env} act={act} go={go} onClose={() => setChanging(false)} />
+            <ChangePanel host={host} status={status} envId={env} act={act} go={go} onClose={() => setChanging(false)} />
           ) : null
         }
       />
@@ -135,6 +146,8 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
         <div className="iii-cloud-depcol">
           {act.error ? (
             <ActionError host={host} status={status} error={act.error} checkAgain={checkAgain} go={go} />
+          ) : refused && !gone ? (
+            <ActionError host={host} status={status} error={refused} checkAgain={checkAgain} go={go} />
           ) : null}
           {body}
         </div>
@@ -183,12 +196,14 @@ function sourcesOf(p: NonNullable<Status['project']>, env: string): Source[] | n
 
 /** The branch, the uncommitted files and the compose file the check runs on. Confirming stops the check in flight and starts another. */
 function ChangePanel({
+  host,
   status,
   envId,
   act,
   go,
   onClose,
 }: {
+  host: Host
   status: Status
   envId: string
   act: Act
@@ -198,6 +213,12 @@ function ChangePanel({
   const [pick, setPick] = useState(() => appFile(status).path)
   const [source, setSource] = useState<string | null>(null)
   const [bring, setBring] = useState(true)
+  const top = useRef<HTMLDivElement>(null)
+  // The panel takes focus when it opens and gives it back to "Change" when it closes.
+  useEffect(() => {
+    top.current?.focus()
+    return () => document.querySelector<HTMLElement>('[data-change-trigger]')?.focus()
+  }, [])
   const p = status.project
   const env = p?.environment
   if (!p || !env) return null
@@ -210,9 +231,12 @@ function ChangePanel({
   const serving = status.deploys.find((d) => d.id === servingId(status, envId))
 
   const start = async () => {
-    // The agent works in the copy this replaces: it stops first, and its commits stay where they are.
-    if (status.agent && ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled'].includes(status.agent.state))
-      await act.call('stop', 'iii-cloud::handoff::stop', { id: status.agent.handoff_id })
+    // The agent works in the copy this replaces: it stops first, and its commits stay where they are. A step that
+    // fails ends it there, with its error on screen: nothing replaces a copy the agent still works in.
+    if (status.agent && ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled'].includes(status.agent.state)) {
+      const stopped = await act.call('stop', 'iii-cloud::handoff::stop', { id: status.agent.handoff_id })
+      if (stopped === null) return
+    }
     const used = await act.call('use', 'iii-cloud::project::use', {
       path: p.path,
       environment_id: envId,
@@ -223,6 +247,8 @@ function ChangePanel({
       bring_changes: bring && (chosen?.folder ?? true) && !env.production && changed.length > 0,
     })
     if (used === null) return
+    // Until a check newer than this exists, the screen holds back Deploy (the old check was of the old source).
+    hubOf(host).markMoved(envId, Date.now())
     onClose()
     void act.call('check', 'iii-cloud::check', checkPayload(status, pick))
     go({ at: 'deploy', env: envId })
@@ -238,7 +264,7 @@ function ChangePanel({
       }
       flush
     >
-      <div className="iii-cloud-cs-change">
+      <div className="iii-cloud-cs-change" ref={top} tabIndex={-1}>
         <fieldset className="iii-cloud-cs-fieldset">
           <legend>Code</legend>
           {sources && chosen ? (
@@ -248,7 +274,6 @@ function ChangePanel({
                   key={o.value}
                   role="radio"
                   aria-checked={o === chosen}
-                  selected={o === chosen}
                   leading={o === chosen ? <CircleDot /> : <Circle />}
                   label={o.label}
                   description={[o.folder ? 'your folder' : null, o.ahead].filter(Boolean).join(' · ')}
@@ -293,7 +318,6 @@ function ChangePanel({
                   key={f.path}
                   role="radio"
                   aria-checked={on}
-                  selected={on}
                   disabled={!f.choosable}
                   leading={on ? <CircleDot /> : <Circle />}
                   label={<Mono>{f.path}</Mono>}
@@ -352,7 +376,9 @@ function Follow({
   const [canceling, setCanceling] = useState(false)
   const envId = d.environment_id
   const running = d.outcome === 'running' && !needsAction(d)
-  const live = d.outcome === 'ready'
+  // Live is what iii cloud's list says serves: an old Follow card of a replaced deployment is not.
+  const feed = useDeployments(host, status, envId)
+  const live = d.outcome === 'ready' && d.id === servingId(status, envId, feed.data?.deployments)
   const held = needsAction(d)
   const failed = isFailedDeploy(d)
   // The worker reads a deploy's log only once it ends: while it runs, the page reads the cloud's.
@@ -446,7 +472,7 @@ function Follow({
     <div className="iii-cloud-cs" data-narrow={narrow ? '' : undefined}>
       <ScreenHead
         title={title}
-        chip={<StatePill state={deployState(d, servingId(status, envId))} />}
+        chip={<StatePill state={deployState(d, servingId(status, envId, feed.data?.deployments))} />}
         sub={
           <>
             <p className="iii-cloud-cs-sub">{sub}</p>

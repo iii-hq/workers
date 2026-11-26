@@ -1,12 +1,14 @@
 // The Deploy screen (DeployArea): one screen driven by state, no step rail. The check and Ready are CheckStage's
 // (its own suite); here: opening with no check, Change, the deployment (stages, live, failed on the cloud, held), and
 // the way out of each.
+import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { boards } from '../fixtures'
 import { DEV, live6, running6, serving5 } from '../fixtures/deploy'
+import { hubOf } from '../hub'
 import type { BranchRef, Status } from '../types'
 import type { Call } from './host'
-import { board, btn, click, ctx, el, flush, lastCall, mount, text, usePage } from './util'
+import { board, btn, click, ctx, el, flush, lastCall, mount, text, type, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -270,6 +272,98 @@ describe('the deployment', () => {
   it('the stages say Deployments, never Deploys', async () => {
     await board('deploy-follow-live')
     expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)
+  })
+})
+
+describe('the review: Change, held deployments, who is serving, what a refusal says', () => {
+  const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
+  const withAgent: Status = {
+    ...boards['deploy-what'].status,
+    agent: { ...boards['deploy-follow-running'].status.agent, handoff_id: 'ho-1', state: 'working' } as never,
+  }
+
+  it('a failed stop ends the Change there: nothing replaces the copy the agent works in, and the error shows', async () => {
+    const h = await mount(withAgent, ctx(route), {
+      'iii-cloud::handoff::stop': () => Promise.reject(Object.assign(new Error('x'), { code: 'NO_COMMITS' })),
+    })
+    await click(btn('Change'))
+    await click(btn('Check this instead'))
+    expect(worker(h.calls).map((c) => c.id)).toEqual(['iii-cloud::handoff::stop'])
+    // The stop's own error stays on screen (the next call never hides it).
+    expect(text()).toContain('Commit something first')
+  })
+
+  it('after a Change the old check cannot be deployed: locked until a newer check exists', async () => {
+    const ready = boards['deploy-review'].status
+    await mount(ready, ctx(route), {
+      'iii-cloud::project::use': {},
+      'iii-cloud::check': () => new Promise(() => undefined),
+    })
+    expect(title()).toBe('Ready to deploy to dev')
+    await click(btn('Change'))
+    await click(btn('Check this instead'))
+    await flush()
+    expect(title()).not.toBe('Ready to deploy to dev')
+    const deploys = [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
+    expect(deploys.every((b) => b.hasAttribute('disabled'))).toBe(true)
+  })
+
+  it('the last refused check shows at the top, kept by the hub after the card that asked is gone', async () => {
+    const h = await board('deploy-what')
+    await act(async () => hubOf(h.host).setCheckError(DEV.id, { code: 'NO_COMMITS', message: 'x' }))
+    expect(text()).toContain('Commit something first')
+    await act(async () => hubOf(h.host).setCheckError(DEV.id, null))
+    expect(text()).not.toContain('Commit something first')
+  })
+
+  it('a deployment iii cloud holds on production: Confirm asks for the name first, then sends check_id and deployment_id', async () => {
+    const s = boards['deploy-review'].status
+    const p = s.project as NonNullable<Status['project']>
+    const prod = { ...p, environment: { ...p.environment!, production: true } }
+    const h = await mount({ ...s, project: prod, deploys: [held, serving5] }, ctx({ ...route, deploy: 'dep-6' }), {
+      'iii-cloud::deploy': {},
+    })
+    await click(btn('Confirm deploy'))
+    expect(h.calls.some((c) => c.id === 'iii-cloud::deploy')).toBe(false)
+    const dialog = el.querySelector('[role=dialog]')
+    expect(dialog).toBeTruthy()
+    await type(dialog?.querySelector('input') ?? null, 'dev')
+    await click([...(dialog?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Confirm deploy'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::deploy')?.payload).toEqual({
+      check_id: 'chk-dev',
+      deployment_id: 'dep-6',
+    })
+  })
+
+  it('Cancel the deployment is not offered for one that did not start on this machine', async () => {
+    const other = { ...running6, check_id: null, approved_by_worker: false, from_console: true }
+    const s = boards['deploy-follow-running'].status
+    await mount({ ...s, deploys: [other, serving5] }, ctx({ ...route, deploy: 'dep-6' }))
+    expect(title()).toBe('Deploying 9c04e7f to dev')
+    expect(btn('Cancel the deployment')).toBeNull()
+  })
+
+  it('a replaced deployment is not "serving" because its outcome says ready: iii cloud\'s list decides', async () => {
+    const s = boards['deploy-follow-live'].status
+    await mount({ ...s, deploys: [live6, serving5] }, ctx({ ...route, deploy: 'dep-5' }))
+    expect(title()).not.toMatch(/is serving/)
+  })
+
+  it('a deleted project or environment shows what the environment page shows', async () => {
+    const s = boards['deploy-what'].status
+    await mount({ ...s, problems: [{ code: 'ENVIRONMENT_DELETED', message: 'gone' }] }, ctx(route))
+    expect(text()).toContain('dev was deleted in iii cloud')
+    expect(text()).not.toContain('Check feat/search-rank')
+  })
+
+  it('Change takes focus when it opens and gives it back when it closes; radios carry aria-checked only', async () => {
+    await board('deploy-what')
+    const trigger = btn('Change')
+    await click(trigger)
+    expect(document.activeElement?.classList.contains('iii-cloud-cs-change')).toBe(true)
+    expect(el.querySelectorAll('[role=radio][aria-pressed]')).toHaveLength(0)
+    await click(btn('Cancel'))
+    expect(document.activeElement).toBe(btn('Change'))
   })
 })
 

@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { clock } from '../asked'
 import { type Next, nextAction } from '../EnvOverview'
+import { valueName, needsYou as youOf } from '../findings'
 import { agent, apiPath, base, check, DEPLOY_BASE, ENV, pr, problems, ready, T } from '../fixtures/base'
 import { DEV, devDeploys } from '../fixtures/deploys'
 import { NEW_SHA } from '../fixtures/manage'
@@ -203,6 +204,62 @@ describe('the next-action card: one state for each combination of Env2', () => {
   })
 })
 
+describe('the next-action card: the same count and the same agent states as the Deploy screen', () => {
+  it('a first deploy with names a .env can fill: the card counts the one row the Deploy title counts, or prints no number', () => {
+    const person = problems.find((p) => p.owner === 'person')!
+    const secrets = ['NAME_A', 'NAME_B', 'NAME_C'].map((n) => ({
+      ...person,
+      id: `p-${n}`,
+      code: 'SECRET_MISSING',
+      severity: 'block' as const,
+      title: `${n} has no value`,
+      detail: `See api/x.yaml:1. (at containers.api.environment.${n})`,
+    }))
+    const s = dev({ check: { ...needsYou, problems: secrets }, deploys: [] })
+    const total = youOf(s).count
+    expect(next(s).title).toMatch(new RegExp(`^${total} things? (needs|need) you`))
+    const names = youOf(s).items.flatMap((i) => valueName(i) ?? [])
+    const read = {
+      environment_id: DEV.id,
+      environment: 'dev',
+      manifest: 'api/worker-compose-prod.yaml',
+      read_from: 'workspace' as const,
+      cloud: 'read' as const,
+      save: 'ok' as const,
+      items: names.map((name) => ({
+        name,
+        need: 'required' as const,
+        default: null,
+        type: 'secret' as const,
+        database: false,
+        containers: [],
+        line: 1,
+        in_cloud: 'unset' as const,
+        value: null,
+        updated_at: null,
+        asked: null,
+        suggestions: [{ source: 'env_file' as const, file: '.env', preselect: true, local: false }],
+      })),
+    }
+    // Every nameable need is fillable: they collapse into one row, as in the Deploy title.
+    expect(names.length).toBeGreaterThan(1)
+    const grouped = next(s, { values: read })
+    expect(youOf(s, read).count).toBeLessThan(total)
+    expect(grouped.title).toMatch(new RegExp(`^${youOf(s, read).count} things? `))
+    // The read has not arrived: no number the card cannot stand behind.
+    expect(next(s, { valuesPending: true }).title).toMatch(/^Things need you before dev can get /)
+  })
+
+  it.each([
+    'waiting_for_you',
+    'stalled',
+  ] as const)('an agent that is %s: the check needs you, not "Deploy to dev"', (state) => {
+    const n = next(dev({ agent: agent(state) }))
+    expect(n).toMatchObject({ state: 'you', action: { label: 'Open the check', kind: 'go' } })
+    expect(n.title).toBe('The check for dev needs you')
+  })
+})
+
 describe('the next-action card: when two states apply, the first of the order wins', () => {
   it('a failed last deployment while a new check is running: the running check', () => {
     const running = { ...passed, ready: false, run: { ...ready.run!, status: 'running' as const } }
@@ -270,6 +327,20 @@ describe('the environment page', () => {
     const liveNow = el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
     expect(liveNow).toContain('Deploys fromwhen its pull request is mergedinto its base branch')
     expect(liveNow).toContain('Nothing is live yet')
+  })
+
+  it('a refused check is not lost on the way: the Deploy place shows what it said', async () => {
+    const h = await board(
+      'env-page',
+      {},
+      { 'iii-cloud::check': () => Promise.reject(Object.assign(new Error('x'), { code: 'NO_COMMITS' })) },
+    )
+    await settle()
+    await click(btn('Deploy to dev'))
+    await settle()
+    expect(h.calls.some((c) => c.id === 'iii-cloud::check')).toBe(true)
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+    expect(text()).toContain('Commit something first')
   })
 
   it('Deploy to dev starts the check and goes to the Deploy place', async () => {

@@ -10,6 +10,7 @@ import { ErrorPanel, Fresh, Notice, PathBar, StaleNotice, useSwitch } from './pa
 import { type AreaProps, envState, pathOf, type Route, type RouteAt } from './route'
 import { useEnvTabs } from './Sidebar'
 import type { Status, WorkerError } from './types'
+import { useValues } from './ValuesEditor'
 
 type ManageProps = AreaProps<RouteAt<'env' | 'secrets'>>
 
@@ -59,7 +60,7 @@ export function ManageArea(props: ManageProps) {
 }
 
 /** A project's or environment's deletion: when it can still be restored, from iii cloud's deletions. */
-function Deleted({ host, status, problem }: { host: Host; status: Status; problem: WorkerError }) {
+export function Deleted({ host, status, problem }: { host: Host; status: Status; problem: WorkerError }) {
   const p = status.project
   const project = problem.code === 'PROJECT_DELETED'
   const name = (project ? p?.cloud_project?.name : p?.environment?.name) ?? 'It'
@@ -166,7 +167,17 @@ function EnvHome({ host, status, envId, go }: { host: Host; status: Status; envI
   const cloud = feed.data
   const members = useMembers(host, status, cloud)
   const live = servingOf(status, envId, cloud?.deployments)
-  const next = nextAction(status, envId, { live, cloud: cloud?.deployments, members })
+  // The Deploy screen's count groups what a .env can fill on a first deploy: the card reads the same values.
+  const c = status.check?.environment_id === envId ? status.check : null
+  const first = !status.deploys.some((d) => d.environment_id === envId)
+  const values = useValues(host, status, first && c ? { manifest: c.manifest || null } : null)
+  const next = nextAction(status, envId, {
+    live,
+    cloud: cloud?.deployments,
+    members,
+    values: values.data,
+    valuesPending: first && !!c && !values.data,
+  })
   const url = projectUrl(status)
   return (
     <>

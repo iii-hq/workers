@@ -3,7 +3,7 @@ import { Button, ConfirmDialog } from '@iii-dev/console-ui'
 import { useState } from 'react'
 import { useLaunch } from './asked'
 import { canOpenChat, openChatFor } from './handoff'
-import { useActions } from './hub'
+import { hubOf, useActions } from './hub'
 import { minutesLabel, type RowTone } from './model'
 import { Dot, ErrorPanel, Notice, Spinner, useNow } from './parts'
 import type { AgentRun, AgentState } from './types'
@@ -53,7 +53,9 @@ function StopButton({
         cancelLabel="Cancel"
         tone="danger"
         onConfirm={async () => {
-          await call('stop', 'iii-cloud::handoff::stop', { id: agent.handoff_id })
+          const stopped = await call('stop', 'iii-cloud::handoff::stop', { id: agent.handoff_id })
+          // The person stopped it: the screen does not start another by itself when the check ends.
+          if (stopped !== null) hubOf(host).markStopped(hubOf(host).get().status?.project?.environment?.id ?? '', true)
           setConfirm(false)
         }}
       />

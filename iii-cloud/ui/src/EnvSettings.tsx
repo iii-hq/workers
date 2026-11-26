@@ -1,6 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import {
   Button,
+  Checkbox,
   ConfirmDialog,
   Dialog,
   DialogContent,
@@ -713,6 +714,9 @@ function PasteEnv({
   const found = parseEnv(text)
   const mine = found.filter((e) => listed.has(e.name) && !listed.get(e.name)?.database)
   const other = found.filter((e) => !listed.has(e.name)).map((e) => e.name)
+  // What a save would overwrite: the names iii cloud already has. The person confirms those before it saves.
+  const replaces = mine.filter((e) => listed.get(e.name)?.in_cloud === 'set').map((e) => e.name)
+  const [confirmed, setConfirmed] = useState(false)
   const save = async () => {
     const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
       environment_id: v.environment_id,
@@ -761,10 +765,17 @@ function PasteEnv({
         {found.length ? (
           <p className="iii-cloud-desc">
             {mine.length
-              ? `${plural(mine.length, 'name')} will be saved.`
+              ? `${plural(mine.length, 'name')} will be saved: ${mine.map((e) => e.name).join(', ')}.`
               : 'None of these names is read by the compose file.'}
             {other.length ? ` Not read by the compose file, so skipped: ${other.join(', ')}.` : ''}
           </p>
+        ) : null}
+        {replaces.length ? (
+          <Checkbox
+            checked={confirmed}
+            onChange={(e) => setConfirmed(e.target.checked)}
+            label={`${plural(replaces.length, 'name')} already set in ${v.environment} will be replaced: ${replaces.join(', ')}.`}
+          />
         ) : null}
         {failed.map((f) => (
           <Notice key={f.name} variant="alert" headline={`${f.name} did not save`} detail={f.message} />
@@ -774,7 +785,11 @@ function PasteEnv({
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={!mine.length || busy === 'save'} onClick={() => void save()}>
+          <Button
+            variant="primary"
+            disabled={!mine.length || busy === 'save' || (replaces.length > 0 && !confirmed)}
+            onClick={() => void save()}
+          >
             {busy === 'save' ? 'Saving…' : mine.length ? `Save ${plural(mine.length, 'secret')}` : 'Save'}
           </Button>
         </div>

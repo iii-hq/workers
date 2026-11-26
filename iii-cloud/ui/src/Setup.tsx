@@ -388,8 +388,8 @@ function Confirm({
     // A compose file picked here that isn't the environment's: the check plans that one.
     const picked =
       manifest && manifest !== composeFile(manifestOf(env)) && !creatingProject && !creatingEnv ? { manifest } : {}
-    const checked = await actions.call('check', 'iii-cloud::check', { run: true, ...picked })
-    if (checked === null) return
+    // The Deploy screen follows the check and shows a refusal: the local run can take minutes, so nothing waits here.
+    void actions.call('check', 'iii-cloud::check', { run: true, ...picked })
     go({ at: 'deploy', env: envId })
   }
 

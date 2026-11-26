@@ -25,7 +25,7 @@ import {
 } from './model'
 import { Dot, ErrorPanel, Mono, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
-import type { CloudDeployment, DeploymentList, Members, Status, WorkerError } from './types'
+import type { CloudDeployment, DeploymentList, Members, Status, Values, WorkerError } from './types'
 
 // The deployment types, the one-source functions and the Feeds context live in the foundation; re-exported
 // so the pages keep importing them from here.
@@ -109,6 +109,10 @@ export function nextAction(
     cloud?: CloudDeployment[] | null
     members?: Members | null
     now?: number
+    /** A first deploy's values read: the count groups the names a file can fill. */
+    values?: Values | null
+    /** A first deploy whose values read has not arrived: no number is printed. */
+    valuesPending?: boolean
   } = {},
 ): Next {
   const now = opts.now ?? Date.now()
@@ -149,18 +153,40 @@ export function nextAction(
   const c = s.check?.environment_id === envId ? s.check : null
   const branch = p ? sourceLabel(s, name) : null
   // The same list the Deploy screen's title counts.
-  const you = c && !c.ready && c.run?.status !== 'running' ? needsYou(s) : null
-  const n = (you?.items.length ?? 0) + (you?.decide.length ?? 0)
-  const a = s.agent && ['starting', 'working'].includes(s.agent.state) ? s.agent : null
+  const you = c && !c.ready && c.run?.status !== 'running' ? needsYou(s, opts.values ?? null) : null
+  const n = you?.count ?? 0
+  const a = s.agent && ['starting', 'working', 'waiting'].includes(s.agent.state) ? s.agent : null
   const fixing = a?.working_on?.length ?? 0
   if (you && n) {
-    const first = you.items[0]?.title ?? `${name}'s ${you.decide[0].setting} was changed in iii cloud's console`
+    const first =
+      you.items[0]?.title ??
+      (you.decide[0]
+        ? `${name}'s ${you.decide[0].setting} was changed in iii cloud's console`
+        : 'Names a file of your folder can fill')
+    // A first deploy's count needs the values read (it groups what a .env can fill): without it, no number.
+    const title = opts.valuesPending
+      ? `Things need you before ${name} can get ${branch ?? 'your changes'}`
+      : `${plural(n, 'thing')} ${n === 1 ? 'needs' : 'need'} you before ${name} can get ${branch ?? 'your changes'}`
     return {
       state: 'you',
       wait: true,
       primary: true,
-      title: `${plural(n, 'thing')} ${n === 1 ? 'needs' : 'need'} you before ${name} can get ${branch ?? 'your changes'}`,
-      detail: `${first}${n > 1 ? ` and ${n - 1} more` : ''}.${a && fixing ? ` Your agent is fixing ${plural(fixing, 'problem')} meanwhile.` : ''}`,
+      title,
+      detail: `${first}${n > 1 && !opts.valuesPending ? ` and ${n - 1} more` : ''}.${a && fixing ? ` Your agent is fixing ${plural(fixing, 'problem')} meanwhile.` : ''}`,
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+  // The agent waits for an answer or is stuck: the check needs the person, and a new check would start in its copy.
+  if (s.agent && ['waiting_for_you', 'stalled'].includes(s.agent.state)) {
+    return {
+      state: 'you',
+      wait: true,
+      primary: true,
+      title: `The check for ${name} needs you`,
+      detail:
+        s.agent.state === 'waiting_for_you'
+          ? (s.agent.question ?? 'Your agent has a question in its chat.')
+          : 'Your agent made no progress for a while. Open the check to read what it tried, or stop it.',
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }

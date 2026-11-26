@@ -25,6 +25,15 @@ export type Hub = {
   checking(delta: 1 | -1): void
   record(kind: string, id: string): unknown
   recordVersion(): number
+  /** The last `check` call's refusal for an environment, kept until the next check call of it. */
+  checkError(envId: string): WorkerError | null
+  setCheckError(envId: string, error: WorkerError | null): void
+  /** When the source of an environment's check was replaced (`project::use`): a check older than this is stale. */
+  movedAt(envId: string): number
+  markMoved(envId: string, at: number): void
+  /** The person stopped the agent of this environment: nothing starts one by itself until they check or ask again. */
+  stopped(envId: string): boolean
+  markStopped(envId: string, on: boolean): void
 }
 
 const hubs = new WeakMap<Host, Hub>()
@@ -76,6 +85,9 @@ export function hubOf(host: Host): Hub {
   let version = 0
   let seq = 0
   const records = new Map<string, unknown>()
+  const checkErrors = new Map<string, WorkerError>()
+  const moved = new Map<string, number>()
+  const stoppedBy = new Set<string>()
   const listeners = new Set<() => void>()
   let dispose: (() => void) | null = null
   const emit = () => {
@@ -103,6 +115,22 @@ export function hubOf(host: Host): Hub {
     get: () => state,
     record: (kind, id) => records.get(`${kind}:${id}`),
     recordVersion: () => version,
+    checkError: (envId) => checkErrors.get(envId) ?? null,
+    setCheckError(envId, error) {
+      if (error) checkErrors.set(envId, error)
+      else if (!checkErrors.delete(envId)) return
+      emit()
+    },
+    stopped: (envId) => stoppedBy.has(envId),
+    markStopped(envId, on) {
+      if (on) stoppedBy.add(envId)
+      else stoppedBy.delete(envId)
+    },
+    movedAt: (envId) => moved.get(envId) ?? 0,
+    markMoved(envId, at) {
+      moved.set(envId, at)
+      emit()
+    },
     checking(delta) {
       set({ checking: Math.max(0, state.checking + delta) })
     },
@@ -173,6 +201,16 @@ export function useChecking(host: Host): boolean {
   return useSyncExternalStore(hub.subscribe, () => hub.get().checking > 0)
 }
 
+/** The last refused `check` of an environment (kept after the card that asked is gone), and when its source moved. */
+export function useCheckError(host: Host, envId: string): WorkerError | null {
+  const hub = hubOf(host)
+  return useSyncExternalStore(hub.subscribe, () => hub.checkError(envId))
+}
+export function useMovedAt(host: Host, envId: string): number {
+  const hub = hubOf(host)
+  return useSyncExternalStore(hub.subscribe, () => hub.movedAt(envId))
+}
+
 export function useStatusSnapshot(host: Host): Status | null {
   const hub = hubOf(host)
   return useSyncExternalStore(hub.subscribe, () => hub.get()).status
@@ -205,7 +243,13 @@ export function useActions(host: Host) {
       setBusy(key)
       setError(null)
       const isCheck = id === 'iii-cloud::check'
-      if (isCheck) hubOf(host).checking(1)
+      const checkEnv = isCheck ? (hubOf(host).get().status?.project?.environment?.id ?? '') : ''
+      if (isCheck) {
+        hubOf(host).checking(1)
+        hubOf(host).setCheckError(checkEnv, null)
+        // A new check is the person asking again: the agent may start on what it finds.
+        hubOf(host).markStopped(checkEnv, false)
+      }
       try {
         const out = await host.iii.call<T>(id, payload, {
           timeoutMs: id === 'iii-cloud::check' || id === 'iii-cloud::deploy' ? LONG : 60_000,
@@ -214,7 +258,11 @@ export function useActions(host: Host) {
         void hubOf(host).refresh(false)
         return out
       } catch (err) {
-        if (alive.current) setError(workerError(err, errorCode(err), errorMessage(err)))
+        const refused = workerError(err, errorCode(err), errorMessage(err))
+        if (alive.current) setError(refused)
+        // The card that asked may be gone (the page went to the Deploy screen): the hub keeps the refusal.
+        // Keyed by the environment selected now: a `use` before the check may have changed it meanwhile.
+        if (isCheck) hubOf(host).setCheckError(hubOf(host).get().status?.project?.environment?.id ?? checkEnv, refused)
         return null
       } finally {
         if (isCheck) hubOf(host).checking(-1)

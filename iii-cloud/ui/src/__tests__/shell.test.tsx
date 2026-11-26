@@ -445,6 +445,8 @@ describe('the hand-over between places, end to end', () => {
         used = true
         return {}
       },
+      // The local run takes minutes: nothing waits for it before the Deploy screen opens.
+      'iii-cloud::check': () => new Promise(() => undefined),
     })
     await click(el.querySelector('button[data-variant=primary]'))
     await settle()
@@ -478,11 +480,24 @@ describe('the hand-over between places, end to end', () => {
       ...b.status,
       project: { ...b.status.project!, workspace: { ...ws, source: 'iii-cloud/ready-dev' } },
     }
-    await mount(status, ctx({ at: 'deploy', env: '' }), cloudAnswers(b.cloud ?? {}))
+    // A first deploy: both read the same values (nothing a file can fill here), so the counts are the same list.
+    const answers = {
+      ...cloudAnswers(b.cloud ?? {}),
+      'iii-cloud::values': {
+        environment_id: status.project?.environment?.id,
+        environment: 'dev',
+        manifest: 'api/worker-compose-prod.yaml',
+        read_from: 'workspace',
+        cloud: 'read',
+        save: 'ok',
+        items: [],
+      },
+    }
+    await mount(status, ctx({ at: 'deploy', env: '' }), answers)
     const onDeploy = count(el.querySelector('h2.iii-cloud-h')?.textContent)
     expect(onDeploy).toBeDefined()
     expect(text()).not.toContain('iii-cloud/ready-')
-    await mount(status, ctx({ at: 'env', env: '' }, 2), cloudAnswers(b.cloud ?? {}))
+    await mount(status, ctx({ at: 'env', env: '' }, 2), answers)
     await settle()
     expect(count(text().match(/\d+ things? needs? you/)?.[0])).toBe(onDeploy)
     expect(text()).not.toContain('iii-cloud/ready-')

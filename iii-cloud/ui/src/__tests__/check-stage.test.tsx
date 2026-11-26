@@ -10,7 +10,7 @@ import { boards } from '../fixtures'
 import { agent, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing } from '../fixtures/check'
 import { devValues } from '../fixtures/values'
-import { useStatus } from '../hub'
+import { hubOf, useStatus } from '../hub'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
@@ -532,6 +532,100 @@ describe('a narrow pane', () => {
     expect(el.querySelector('.iii-cloud-cs[data-narrow]')).toBeTruthy()
     expect(el.querySelector('.iii-cloud-cs-bar')?.textContent).toContain('Deploy 9c04e7f to dev')
     expect(el.querySelector('.iii-cloud-stephead-fwd')).toBeNull()
+  })
+})
+
+describe('the review: what a check that is not ready still offers', () => {
+  const noAgent = (s: Status) => ({ ...s, agent: null, handoff_brief: null })
+  const deployButtons = () => [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
+
+  it('Check again is on screen when nothing is in flight: primary with nothing else to do, beside Deploy otherwise', async () => {
+    const quiet = await stage(noAgent({ ...B('deploy-passed'), check: { ...passed, ready: false } }))
+    expect(btn('Check again')?.getAttribute('data-variant')).toBe('primary')
+    await click(btn('Check again'))
+    expect(lastCall(quiet.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    await stage(B('deploy-problems'))
+    expect(btn('Check again')?.getAttribute('data-variant')).toBe('secondary')
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+  })
+
+  it('"Deploy without it" obeys every lock of the primary deploy: another deployment, signed out, a deploy being sent', async () => {
+    const outdated = B('state-outdated')
+    const without = () => deployButtons().find((b) => b.textContent?.endsWith('without it'))
+    await stage(outdated)
+    expect(without()?.hasAttribute('disabled')).toBe(false)
+    await stage({ ...outdated, deploys: B('state-busy').deploys })
+    expect(without()?.hasAttribute('disabled')).toBe(true)
+    await stage({ ...outdated, connection: { ...outdated.connection, status: 'expired' } })
+    expect(without()?.hasAttribute('disabled')).toBe(true)
+    const sending = await stage(outdated, { 'iii-cloud::deploy': () => new Promise(() => undefined) })
+    await click(without())
+    expect(sending.calls.some((c) => c.id === 'iii-cloud::deploy')).toBe(true)
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+  })
+
+  it('an agent the person stopped is not started again when the check ends; "Fix with your agent" is', async () => {
+    const running = B('deploy-checking')
+    const h = await stage(running, marker)
+    hubOf(h.host).markStopped(running.project?.environment?.id ?? '', true)
+    await fire(h, { kind: 'check', id: 'chk-d1', terminal: true, summary: '', record: found } as ChangeEvent)
+    await flush()
+    expect(handoffs(h)).toHaveLength(0)
+    await click(btn('Fix with your agent'))
+    expect(handoffs(h)).toHaveLength(1)
+  })
+
+  it('a session that cannot write says who can, with no field: an API key, a Developer on production', async () => {
+    const base = B('deploy-problems')
+    const key = { secret: 'iii_x', team_id: 't', environment_id: 'e' }
+    await stage({ ...base, connection: { ...base.connection, api_key: key, method: 'api_key' } })
+    expect(youItems()[0].querySelector('input')).toBeNull()
+    expect(youItems()[0].textContent).toContain("An API key can't write secrets and variables.")
+    const prod = { ...base.project!, environment: { ...base.project!.environment!, production: true } }
+    const teams = base.connection.teams.map((t) => ({ ...t, role: 'Developer' }))
+    await stage({ ...base, project: prod, connection: { ...base.connection, teams } })
+    expect(youItems()[0].querySelector('input')).toBeNull()
+    expect(youItems()[0].textContent).toContain('takes Owner or Admin. You are Developer.')
+  })
+
+  it('an optional name can be skipped for now, and a skipped one is undone from Warnings', async () => {
+    const dev = { ...B('deploy-problems'), deploys: [] }
+    const h = await stage(dev, {
+      'iii-cloud::values': {
+        environment_id: dev.project?.environment?.id,
+        environment: 'dev',
+        manifest: 'api/worker-compose-prod.yaml',
+        read_from: 'workspace',
+        cloud: 'read',
+        save: 'ok',
+        items: [{ name: 'STRIPE_SECRET_KEY', need: 'optional', in_cloud: 'unset', suggestions: [] }],
+      },
+      'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+    })
+    await click([...youItems()[0].querySelectorAll('button')].find((b) => b.textContent === 'Skip for now'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
+      names: ['STRIPE_SECRET_KEY'],
+      skip: true,
+    })
+    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    const skipped = await stage(B('setup-fixing-skipped'), { 'iii-cloud::values::skip': {} })
+    await click(btn('Undo'))
+    expect(skipped.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({ skip: false })
+    expect(lastCall(skipped.calls)).toMatchObject({ id: 'iii-cloud::check' })
+  })
+
+  it('a secret row announces its saved state and its error', async () => {
+    await stage(B('deploy-problems'), {
+      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'STRIPE_SECRET_KEY', ok: true }] },
+    })
+    const row = youItems()[0]
+    await type(row.querySelector('input'), 'v')
+    await click(save(row))
+    expect(row.querySelector('[role=status]')?.textContent).toContain('Saved')
+    await stage(B('deploy-problems'), { 'iii-cloud::values::save': () => Promise.reject(new Error('down')) })
+    await type(youItems()[0].querySelector('input'), 'v')
+    await click(save(youItems()[0]))
+    expect(youItems()[0].querySelector('[role=alert]')).toBeTruthy()
   })
 })
 

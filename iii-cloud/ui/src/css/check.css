@@ -399,8 +399,12 @@
   padding: 12px 0 4px;
   background: var(--color-panel);
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > button {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > button,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > .iii-cloud-row {
   width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > .iii-cloud-row > button {
+  flex: 1;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-barnote {
   font-size: 12px;

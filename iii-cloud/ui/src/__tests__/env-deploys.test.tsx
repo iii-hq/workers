@@ -249,3 +249,22 @@ describe('on a narrow pane (Phone-Failed)', () => {
     expect(rowOf(2)?.textContent).toContain('Failed')
   })
 })
+
+describe('Open on a row', () => {
+  it('each Open names its deployment; a held one opens the Deploy screen, where Confirm is; a failed one its record', async () => {
+    const held = { ...devDeploys[0], status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
+    const status = { ...envPageStatus, deploys: [held, ...devDeploys.slice(1)] }
+    await mount(status, ctx({ at: 'env', env: DEV.id }), cloud)
+    await settle()
+    expect(btn(`Open deployment #${held.number}`)).toBeTruthy()
+    await click(btn(`Open deployment #${held.number}`))
+    await settle()
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+    expect(btn('Confirm deploy')).toBeTruthy()
+    await mount(envPageStatus, ctx({ at: 'env', env: DEV.id }, 2), cloud)
+    await settle()
+    await click(btn('Open deployment #2'))
+    await settle()
+    expect(path()).toBe('Projects / registry · dev / Deployment #2')
+  })
+})

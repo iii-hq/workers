@@ -378,8 +378,17 @@ describe('Paste a .env', () => {
     await settle()
     await click(btn('Paste a .env'))
     await typeArea(pasted)
-    expect(el.querySelector('[role=dialog]')?.textContent).toContain('2 names will be saved.')
+    expect(el.querySelector('[role=dialog]')?.textContent).toContain(
+      '2 names will be saved: STRIPE_SECRET_KEY, ASSET_BUCKET_KEY.',
+    )
     expect(el.querySelector('[role=dialog]')?.textContent).toContain('skipped: OTHER_NAME')
+    // STRIPE_SECRET_KEY is already set in dev: the person confirms the replacement before Save works.
+    expect(el.querySelector('[role=dialog]')?.textContent).toContain(
+      '1 name already set in dev will be replaced: STRIPE_SECRET_KEY.',
+    )
+    expect((btn('Save 2 secrets') as HTMLButtonElement).disabled).toBe(true)
+    await click(el.querySelector('[role=dialog] input[type=checkbox]'))
+    expect((btn('Save 2 secrets') as HTMLButtonElement).disabled).toBe(false)
     await click(btn('Save 2 secrets'))
     await settle()
     expect(of(h, 'iii-cloud::values::save')).toEqual([
@@ -414,6 +423,7 @@ describe('Paste a .env', () => {
     await settle()
     await click(btn('Paste a .env'))
     await typeArea(pasted)
+    await click(el.querySelector('[role=dialog] input[type=checkbox]'))
     await click(btn('Save 2 secrets'))
     await settle()
     expect(el.querySelector('[role=dialog]')?.textContent).toContain(
