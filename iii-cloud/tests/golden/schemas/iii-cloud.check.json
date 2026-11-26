@@ -13,6 +13,14 @@
           "null"
         ]
       },
+      "force": {
+        "default": null,
+        "description": "With `run`: run again even when a passed run of the same commit, compose file, engine and run environment exists.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "handoff_id": {
         "default": null,
         "description": "An agent works on its own hand-off: use that one's environment and worktree.",
@@ -457,6 +465,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "reused": {
+            "default": false,
+            "description": "A passed run of an earlier check answered this one: nothing ran again.",
+            "type": "boolean"
           },
           "routes": {
             "$ref": "#/definitions/RouteCount"

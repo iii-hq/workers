@@ -210,6 +210,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -224,6 +225,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -274,6 +276,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -305,6 +308,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -890,6 +894,7 @@ async fn a_skipped_name_is_no_local_problem_and_the_check_can_be_ready_until_und
                 not_covered: iii_cloud::check::default_not_covered(),
                 log_tail: vec![],
                 error: None,
+                reused: false,
             }),
             &c.commit,
         )
@@ -1001,4 +1006,198 @@ async fn a_skipped_cloud_warning_turns_to_info_until_undone_and_other_codes_are_
         .await
         .unwrap_err();
     assert_eq!(err.code, "ENVIRONMENT_CHANGED");
+}
+
+/// Every `git fetch` and `ls-remote` of `repo` goes through its upload-pack:
+/// a script that logs one line per call counts the GitHub round trips.
+fn count_round_trips(repo: &Repo) -> std::path::PathBuf {
+    let log = repo.root.path().join("trips.log");
+    let script = repo.root.path().join("count-upload-pack.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho x >> {}\nexec git upload-pack \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &repo.checkout,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap(),
+        ],
+    );
+    log
+}
+
+fn trips(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |t| t.lines().count())
+}
+
+#[tokio::test]
+async fn a_check_makes_one_round_trip_to_github_and_still_answers_the_three_questions() {
+    let server = MockServer::start().await;
+    let (h, repo, _ws) = ready(&server, 200).await;
+    let log = count_round_trips(&repo);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(trips(&log), 1, "one fetch of the environment's branch");
+    assert_eq!(c.plan.status, PlanStatus::Clean, "pushed");
+    assert_eq!(c.base, git(&repo.origin, &["rev-parse", "main"]));
+    assert!(
+        !codes(&c).contains(&"BASE_NOT_IN_HISTORY"),
+        "{:?}",
+        codes(&c)
+    );
+    // A commit only the cloud knows is the one case with a second fetch.
+    let before = trips(&log);
+    check(
+        &h.ctx,
+        CheckRequest {
+            commit: Some("abcdef1".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(trips(&log) - before, 2, "the branch and the commit");
+}
+
+#[tokio::test]
+async fn the_answers_after_the_one_fetch_follow_the_remote() {
+    let server = MockServer::start().await;
+    let (h, repo, ws) = ready(&server, 200).await;
+    let log = count_round_trips(&repo);
+    // Not pushed.
+    std::fs::write(ws.join("f.txt"), "f").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-m", "local"]);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(c.plan.status, PlanStatus::NotPushed);
+    assert!(!codes(&c).contains(&"BASE_NOT_IN_HISTORY"));
+    // The branch moved on the remote: the new head is the base, and not an ancestor.
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", repo.origin.to_str().unwrap(), "c"],
+    );
+    let other = t.path().join("c");
+    std::fs::write(other.join("x"), "x").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-m", "moved"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+    let moved = git(&other, &["rev-parse", "HEAD"]);
+    let before = trips(&log);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(trips(&log) - before, 1);
+    assert_eq!(c.base, moved);
+    assert!(codes(&c).contains(&"BASE_NOT_IN_HISTORY"));
+}
+
+/// A key-connected context whose `iii` reports the cloud's engine and whose
+/// run ends quickly; returns the commit's workspace.
+async fn with_fast_runs(h: &Harness) {
+    let script = h.dir.path().join("iii");
+    std::fs::write(&script, "#!/bin/sh\necho 'iii 0.27.0'\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = h.ctx.config().await;
+    *h.ctx.cfg.write().await = std::sync::Arc::new(iii_cloud::config::Config {
+        iii_bin: script.to_string_lossy().into(),
+        data_dir: h.dir.path().join("data").to_string_lossy().into(),
+        run_timeout_s: 30,
+        ..(*cfg).clone()
+    });
+}
+
+fn running(run: Option<&Run>) -> Run {
+    run.cloned().expect("the check carries a run")
+}
+
+/// The stored run ended; make it a pass, as a real engine would have.
+fn pass_stored_runs(h: &Harness) {
+    h.ctx.store.update(|s| {
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            if let Some(r) = c.run.as_mut() {
+                r.status = RunStatus::Passed;
+                r.error = None;
+            }
+        }
+    });
+}
+
+fn run_req() -> CheckRequest {
+    CheckRequest {
+        run: Some(true),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_passed_run_is_reused_until_something_it_was_made_from_changes() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    with_fast_runs(&h).await;
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let first_run = running(first.run.as_ref());
+    assert!(!first_run.reused);
+    assert_ne!(first_run.status, RunStatus::Passed, "the fake engine fails");
+    // A failed run is never reused.
+    let again = check(&h.ctx, run_req()).await.unwrap();
+    assert_ne!(running(again.run.as_ref()).id, first_run.id);
+    assert!(!running(again.run.as_ref()).reused);
+    // Once a run passed, the same commit, file and environment answer with it.
+    pass_stored_runs(&h);
+    let passed = running(again.run.as_ref()).id;
+    let reused = check(&h.ctx, run_req()).await.unwrap();
+    let r = running(reused.run.as_ref());
+    assert!(r.reused && r.id == passed && r.status == RunStatus::Passed);
+    assert_eq!(r.check_id, reused.id);
+    assert_eq!(r.commit, reused.commit);
+    // The reuse itself survives a second call.
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
+    // `force` runs again.
+    let forced = check(
+        &h.ctx,
+        CheckRequest {
+            force: Some(true),
+            ..run_req()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!running(forced.run.as_ref()).reused);
+    assert_ne!(running(forced.run.as_ref()).id, passed);
+    pass_stored_runs(&h);
+    // A changed env value runs again; the value is nowhere in the store.
+    std::fs::write(ws.join(".env"), "A=one-value-0042\n").unwrap();
+    let env1 = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(env1.run.as_ref()).reused);
+    pass_stored_runs(&h);
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
+    std::fs::write(ws.join(".env"), "A=other-value-0043\n").unwrap();
+    let env2 = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(env2.run.as_ref()).reused);
+    let state = h.ctx.store.read(|s| serde_json::to_string(s).unwrap());
+    assert!(!state.contains("one-value-0042") && !state.contains("other-value-0043"));
+    pass_stored_runs(&h);
+    // A changed compose file (committed) runs again.
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "containers: {}\n# changed\n",
+    )
+    .unwrap();
+    git(&ws, &["commit", "-qam", "compose"]);
+    let compose = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(compose.run.as_ref()).reused);
+    pass_stored_runs(&h);
+    // Another commit with the same compose file runs again.
+    std::fs::write(ws.join("other.txt"), "o").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "other"]);
+    let other = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(other.run.as_ref()).reused);
 }

@@ -64,6 +64,7 @@ fn a_run(id: &str, status: RunStatus, started: &str) -> Run {
         not_covered: vec![],
         log_tail: vec![],
         error: None,
+        reused: false,
     }
 }
 

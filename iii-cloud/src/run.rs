@@ -454,6 +454,7 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         not_covered: default_not_covered(),
         log_tail: vec![],
         error: None,
+        reused: false,
     };
     Ok(Exec {
         ctx: ctx.clone(),

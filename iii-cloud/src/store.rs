@@ -78,6 +78,10 @@ pub struct State {
     pub check: Option<Check>,
     /// Earlier checks, newest first, at most 20 (a deploy points at one).
     pub checks: Vec<Check>,
+    /// What each run was made from (a hash of the commit, compose file, engine
+    /// and run environment), by run id: a passed run with the same key is reused.
+    /// Only runs some kept check holds.
+    pub run_keys: std::collections::BTreeMap<String, String>,
     pub secrets: Vec<SecretRequest>,
     pub variables: Vec<VariableRow>,
     pub pr: Option<PullRequest>,

@@ -243,6 +243,7 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
         not_covered: vec![],
         log_tail: vec![],
         error: None,
+        reused: false,
     };
     h.ctx.store.update(|s| {
         s.put_check_for(
