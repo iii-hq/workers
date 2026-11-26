@@ -213,8 +213,9 @@ describe('Manage', () => {
     await mount(live, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
     expect(path()).toBe('Projects / registry · production / Deploy')
-    expect(rail('Deploy steps')).toEqual(['current', 'todo', 'todo', 'todo'])
-    expect(text()).toContain('What goes to production?')
+    // One screen, no step rail: the header says the next thing to do.
+    expect(rail('Deploy steps')).toEqual([])
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('2 things need you · 2 for your agent to fix')
   })
 
   it('Add a project… opens setup at the folder in add mode; Cancel comes back to Start', async () => {
@@ -247,7 +248,7 @@ describe('DeployPill: the way back to a deploy going on', () => {
   it('the click goes to its follow page, where it is no longer shown', async () => {
     await board('manage-overview-deploying')
     await click(pills()[0])
-    expect(steps('Deploy steps')).toContain('Live')
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toMatch(/^Deploying \w{7} to \w+$/)
     expect(pills()).toEqual([])
   })
 
@@ -316,7 +317,7 @@ describe('Start: the project in use with a deploy going on', () => {
     expect(btn('Follow deploy')?.getAttribute('data-variant')).toBe('primary')
     expect(btn('Open')?.getAttribute('data-variant')).toBe('ghost')
     await click(btn('Follow deploy'))
-    expect(el.querySelector('aside[aria-label="Deploy steps"] [aria-current=step]')?.textContent).toContain('Live')
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toMatch(/^Deploying \w{7} to \w+$/)
   })
 
   it('a phone: the row says Follow', async () => {

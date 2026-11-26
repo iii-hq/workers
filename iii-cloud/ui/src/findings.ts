@@ -18,6 +18,8 @@ export type Item = {
   name: string | null
   /** The cloud's words without "See file:line." and "(at …)": those make the location line. */
   detail: string | null
+  /** What to do about it, in the check's words (`Problem.fix`). */
+  fix: string | null
   owner: Problem['owner']
   /** A fixed row has no severity (the hand-off's brief does not keep it): it counts as blocking. */
   severity: Problem['severity']
@@ -123,6 +125,7 @@ function itemOf(
     target,
     name: targetName(target) ?? excerptKey(p) ?? (p ? variableName(p) : null),
     detail: text,
+    fix: p?.fix ?? null,
     owner,
     severity: p?.severity ?? 'block',
     fixed,
@@ -131,9 +134,9 @@ function itemOf(
 }
 
 export type Findings = {
-  /** "Only you can do this": the person's open problems, the ones they did, and the values the agent asked for. */
+  /** "You": the person's open problems, the ones they did, and the values the agent asked for. */
   person: Item[]
-  /** "What the check found": the agent's, open and fixed. */
+  /** "Your agent": the agent's, open and fixed. */
   agent: Item[]
   /** Information only: nobody acts on it, never counted. */
   notes: Item[]
@@ -183,6 +186,7 @@ export function findings(s: Status): Findings {
       target: null,
       name: r.name,
       detail: r.description,
+      fix: null,
       owner: 'person',
       severity: 'block',
       fixed: false,
@@ -230,6 +234,7 @@ export function findings(s: Status): Findings {
       target: null,
       name,
       detail: null,
+      fix: null,
       owner: 'person',
       severity: 'info',
       fixed: false,

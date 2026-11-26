@@ -189,9 +189,9 @@ describe('check events', () => {
       problems: [],
     }
     const title = () => el.querySelector('.iii-cloud-setup h2')?.textContent
-    expect(title()).toBe('At least 4 things to fix before production can get this')
+    expect(title()).toBe('2 things need you · 2 for your agent to fix')
     await fire(older)
-    expect(title()).toBe('At least 4 things to fix before production can get this')
+    expect(title()).toBe('2 things need you · 2 for your agent to fix')
     await fire({
       ...cur,
       id: 'chk-newer',
@@ -420,8 +420,6 @@ describe('Host without optional slots', () => {
     expect(el.querySelector('aside[aria-label="Setup steps"] [aria-current=step]')?.textContent).toContain(
       'Check before deploy',
     )
-    expect(el.querySelector('.iii-cloud-setup h2')?.textContent).toBe(
-      'At least 4 things to fix before production can get this',
-    )
+    expect(el.querySelector('.iii-cloud-setup h2')?.textContent).toBe('2 things need you · 2 for your agent to fix')
   })
 })

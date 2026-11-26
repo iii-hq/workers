@@ -48,6 +48,8 @@ export type Status = {
   override_choices?: Record<string, OverrideChoice>
   /** The cloud warning codes the person skipped for now (`problem::skip`) in the selected environment, sorted. */
   skipped_problems?: string[]
+  /** The worker's `auto_fix`: the page hands agent-owned problems to the agent by itself. Absent: on. */
+  auto_fix?: boolean
 }
 
 /** A deploy still moving, with where it was made from. A field is null when the worker never knew it (a deploy it first saw in another session). */
@@ -276,6 +278,8 @@ export type Run = {
   routes: { count: number; prefix: string | null }
   healthcheck: { path: string; status: number | null } | null
   not_covered: string[]
+  /** The commit's run had already passed and this answer is that run. A worker that does not send it: false. */
+  reused?: boolean
   log_tail: string[]
   error: { stage: Stage['name']; code: string; message: string } | null
 }
