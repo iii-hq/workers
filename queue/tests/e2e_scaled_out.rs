@@ -17,8 +17,8 @@ use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    CallAction, CallRequest, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source,
-    WorkerIdentityMode,
+    CallAction, CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source, WorkerIdentityMode,
 };
 use lapin::options::QueueDeclareOptions;
 use lapin::types::FieldTable;
@@ -699,4 +699,90 @@ async fn channel_errors_do_not_exhaust_the_channel_ids() {
         .await;
     app.stop().await;
     browsed.expect("an operation channel still opens after channel errors");
+}
+
+/// A subscription whose queue was made earlier with another `max_priority`
+/// fails that subscribe only. Its declare used to run on the shared channel,
+/// whose close rebuilt the adapter, ran the running job of another
+/// subscription again, and repeated on every resubscribe.
+#[tokio::test]
+#[serial]
+async fn a_conflicting_subscription_does_not_run_a_running_job_again() {
+    let Some(broker) = docker::start_rabbitmq().await else {
+        return;
+    };
+    let url = broker.amqp_url();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let busy_topic = format!("busy-{suffix}");
+    let new_topic = format!("new-{suffix}");
+    let busy = format!("app::busy_{suffix}");
+    let newcomer = format!("app::newcomer_{suffix}");
+    let newcomer_observer = format!("newcomer-{suffix}");
+    {
+        let connection = Connection::connect(&url, ConnectionProperties::default())
+            .await
+            .expect("connect to the broker");
+        let channel = connection.create_channel().await.expect("open a channel");
+        let mut args = FieldTable::default();
+        args.insert(
+            "x-max-priority".into(),
+            lapin::types::AMQPValue::ShortShortUInt(5),
+        );
+        channel
+            .queue_declare(
+                &format!("iii.{new_topic}.observer:{newcomer_observer}.queue"),
+                QueueDeclareOptions {
+                    durable: true,
+                    ..QueueDeclareOptions::default()
+                },
+                args,
+            )
+            .await
+            .expect("declare the newcomer's queue with another priority");
+        let _ = connection.close(0, "").await;
+    }
+    let Some(app) = instance(&format!("conflict-{suffix}"), config(&url, None), None).await else {
+        return;
+    };
+    let runs = Arc::new(AtomicUsize::new(0));
+    {
+        let runs = runs.clone();
+        app.iii.register_function(
+            busy.as_str(),
+            RegisterFunction::new_async(move |_payload: Value| {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok::<Value, Error>(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+    app.iii.register_function(
+        newcomer.as_str(),
+        RegisterFunction::new_async(|_payload: Value| async move {
+            Ok::<Value, Error>(json!({ "ok": true }))
+        }),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _busy = subscribe(&app, &busy, &busy_topic);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publish(&app, &busy_topic, "one").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while runs.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the job starts");
+
+    let _newcomer = app.iii.observe_with(
+        Source::function(ON_MESSAGE_FN)
+            .args(json!({ "topic": new_topic, "queue_config": { "max_priority": 10 } })),
+        newcomer.as_str(),
+        ObserverOptions::default().id(newcomer_observer),
+    );
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let runs = runs.load(Ordering::SeqCst);
+    app.stop().await;
+    assert_eq!(runs, 1, "the running job is not run again");
 }
