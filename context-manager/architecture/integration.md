@@ -121,9 +121,11 @@ All four are registered with JSON Schemas
 ### `context::assemble` — build the model-ready context
 
 The main entry point. Pipeline: cap oversized single results (always) → (if
-over budget) prune aged function outputs → (if still over) compact the head →
-(if still over) emergency-reduce → return the budgeted list, or a structured
-overflow if nothing fits.
+over the compaction threshold) prune aged function outputs → (if still over
+it) compact the head → (if over `usable`) emergency-reduce → return the
+budgeted list, or a structured overflow if nothing fits. The compaction
+threshold is `usable`, or `min(usable, options.compaction_budget)`: the budget
+is soft, so emergency reduction and the overflow error hold to `usable` alone.
 
 ```typescript
 {
@@ -141,6 +143,9 @@ overflow if nothing fits.
     response_format?: unknown;        // the turn's router::chat format, for the provider count
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id)
     previous_summary?: string;     // persisted summary from a prior compaction (round trip)
+    compaction_budget?: number;    // soft threshold: prune + compact past min(usable, it); 1.3.0
+    compaction_instructions?: string; // guidance for an inline summary, as compact's `instructions`; 1.3.0
+    provider_options?: Record<string, unknown>; // forwarded to every summariser router::chat; 1.3.0
   };
 }
 -> {
@@ -148,6 +153,12 @@ overflow if nothing fits.
   messages: AgentMessage[];        // budgeted, ready for router::chat (no custom roles)
   token_count: number;             // estimated tokens of the returned context
   usable: number;                  // the budget it was fit into
+  compaction_budget: number | null;  // the threshold applied, min(usable, the option); absent before 1.3.0
+  compaction?: {                   // present only when an inline compaction was tried
+    trigger: "budget" | "usable";  // the budget (within usable), or the model's limit
+    status: "compacted" | "failed" | "busy" | "skipped";
+    failure?: Failure;             // when failed
+  };
   model_resolved: "inline" | "router" | "fallback";
   applied: {
     pruned: boolean; pruned_tokens: number;
@@ -168,7 +179,28 @@ pruning, compaction, and emergency reduction). A busy lease, a failed/absent
 summariser, or `allow_prune`/`allow_compaction: false` are **best effort** short
 of that — whichever step they skip, emergency reduction still runs
 unconditionally, and the call only throws `context/overflow` if the context
-still doesn't fit afterward.
+still doesn't fit afterward. When the inline compaction failed, the overflow
+message ends with `; compaction failed: ` and the `Failure` as one JSON object;
+the message before it is unchanged.
+
+The provider's own count (`router::count_tokens`) replaces the estimate once
+the estimate reaches a third of `usable`, or 80 % of `compaction_budget` when
+that is lower; it scales both thresholds.
+
+```typescript
+type Failure = {
+  kind: "usage_limit" | "rate_limited" | "input_too_large" | "timeout" | "unavailable" | "other";
+  message: string;                 // the router's user-facing message when it said why
+  error_details?: {                // llm-router's, passed through (D147)
+    usage_limit: boolean; window?: "five_hour" | "week"; resets_at_ms?: number;
+  };
+};
+```
+
+`input_too_large` (a `router/context_overflow` refusal, or a history the
+summariser cannot split into its 32 calls) is the only kind a larger context
+window would fix. `error_details.usage_limit: true` makes the kind
+`usage_limit`.
 
 ### `context::count-tokens` — estimate usage
 
@@ -235,6 +267,7 @@ this directly — `assemble` applies compaction inline.
     preserve_recent_tokens?: number; // override the adaptive verbatim-tail budget
     lease_key?: string;              // mutual-exclusion key; default: hash of the message set
     instructions?: string;           // one-shot guidance: what to keep, drop, or emphasise
+    provider_options?: Record<string, unknown>; // forwarded to every summariser router::chat; 1.3.0
   };
 }
 -> // discriminated on `status`:
@@ -242,7 +275,8 @@ this directly — `assemble` applies compaction inline.
       tokens_before: number; tokens_after: number; used_prior_summary: boolean }
   | { status: "busy" }       // a compaction lease is held; retry later
   | { status: "empty" }      // nothing to compact: no head older than the kept tail
-  | { status: "overflow" };  // summariser unavailable (no llm-router), failed, or returned nothing
+  | { status: "overflow"; failure?: Failure };  // summariser unavailable (no llm-router), failed,
+                             // or returned nothing; `failure` (see assemble) on every overflow from 1.3.0
 ```
 
 The summary follows a fixed Markdown template (Goal / Constraints & Preferences

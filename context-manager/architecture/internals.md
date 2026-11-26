@@ -102,7 +102,8 @@ Load-bearing details:
 1. **Order is fixed: media-normalize → cap → prune → compact.** Media
    normalization and cap are unconditional: they run on every call, so even a
    within-budget request can have images replaced or a single oversized result
-   capped. Prune runs only once the request is over `usable`: it rewrites
+   capped. Prune runs only once the request is over the compaction threshold
+   (`usable`, or `min(usable, options.compaction_budget)`): it rewrites
    results an earlier request already sent, which costs the provider's prompt
    cache from that result on. Before accounting, a known catalog model receives image placeholders
    unless it explicitly declares vision support; a known vision model ages tool
@@ -110,9 +111,13 @@ Load-bearing details:
    turn follows a response. Inline limits and unresolved models keep images.
    Live images cost the fixed 4,096-token heuristic budget, never their base64
    payload length. Compaction and emergency
-   reduction are both gated on *still being over budget*; compaction is
-   additionally gated on `allow_compaction` and is the expensive one of the
-   two (an LLM call). Each step re-counts.
+   reduction are both gated on *still being over budget* — compaction over the
+   soft compaction threshold, emergency reduction over `usable` (D160), so a
+   failed summary at a low budget drops nothing the model could read;
+   compaction is additionally gated on `allow_compaction` and is the expensive
+   one of the two (an LLM call). Each step re-counts. When a compaction was
+   tried, the response's `compaction {trigger, status, failure?}` says which
+   threshold fired and how it ended.
    A request with no media-normalization replacements, nothing large enough to
    cap, nothing aged enough to prune, and nothing to compact passes through
    byte-identical —
@@ -429,7 +434,7 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
 | Port | Production adapter | Backed by | Failure posture |
 |---|---|---|---|
 | `ModelResolver` | `RouterModelResolver` | `router::models::budget` (5s timeout; `models::get` compatibility fallback) | `Ok(None)` = router up but model unknown; `Err` = router absent/unreachable. Both → fallback when allowed. |
-| `Summarizer` | `RouterSummarizer` | `router::chat` over an SDK channel | `Unavailable` (router not routable) vs `Failed` (provider/stream error) vs `Empty`. |
+| `Summarizer` | `RouterSummarizer` | `router::chat` over an SDK channel, with the caller's `provider_options` | `Unavailable` (router not routable) vs `Failed(Failure)` (provider/stream error, timeout, or a history too large to split, with its kind and the router's `error_details`) vs `ContextOverflow` (retried with less history) vs `Empty`; `SummarizeError::failure()` is what callers see. |
 | `LeaseStore` | `FsLeaseStore` | one JSON file per key under `lease_dir` (atomic `tmp + rename`; process-local `Mutex` for `swap`) | Errors surface as busy via `core::lease`. |
 | `Clock` | `SystemClock` | wall clock (ms since epoch) | — |
 
@@ -488,7 +493,7 @@ the code before the colon is the stable contract. One mapping point:
 | `InvalidRequest` | `context/invalid_request` | `messages` absent/null (`messages is required`); serde-survivable shape problems. |
 | `ModelUnresolved` | `context/model_unresolved` | No inline limits, router can't resolve, fallback disabled (`could not resolve model limits`). |
 | `State` | `context/state` | A filesystem call backing the lease failed (reserved; lease failures normally degrade to busy rather than throw). |
-| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). |
+| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). After a failed inline compaction the message ends with `; compaction failed: ` and the `Failure` as JSON. |
 
 `messages is required` and `could not resolve model limits` are kept word-for-word
 because callers match on them (`errors.feature`). Adding a variant means: add

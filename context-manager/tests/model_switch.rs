@@ -223,7 +223,7 @@ async fn a_summary_that_cannot_fit_as_an_anchor_fails_without_dropping_the_ancho
     )
     .await
     .unwrap();
-    assert!(matches!(result, compact::CompactResponse::Overflow));
+    assert!(matches!(result, compact::CompactResponse::Overflow { .. }));
     assert!(summarizer.calls.lock().unwrap().is_empty());
     assert!(leases.keys().is_empty());
 }
@@ -268,7 +268,7 @@ async fn excessive_chunk_counts_fail_closed_and_release_the_lease() {
         "messages":messages,"model":{"id":"tiny","limits":{"context_window":2000,"max_output_tokens":800}},
         "options":{"tail_turns":1}
     })).unwrap()).await.unwrap();
-    assert!(matches!(result, compact::CompactResponse::Overflow));
+    assert!(matches!(result, compact::CompactResponse::Overflow { .. }));
     assert_eq!(summarizer.calls.lock().unwrap().len(), 0);
     assert!(leases.keys().is_empty());
 }
@@ -333,7 +333,7 @@ async fn anchor_growth_reaches_the_runtime_chunk_guard_without_partial_summary()
     )
     .await
     .unwrap();
-    assert!(matches!(result, compact::CompactResponse::Overflow));
+    assert!(matches!(result, compact::CompactResponse::Overflow { .. }));
     assert_eq!(summarizer.calls.lock().unwrap().len(), 32);
     assert!(leases.keys().is_empty());
 }
@@ -364,7 +364,7 @@ async fn deadline_returns_overflow_and_releases_the_lease() {
     )
     .await
     .unwrap();
-    assert!(matches!(result, compact::CompactResponse::Overflow));
+    assert!(matches!(result, compact::CompactResponse::Overflow { .. }));
     assert!(leases.keys().is_empty());
 }
 

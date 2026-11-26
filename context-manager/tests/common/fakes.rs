@@ -16,7 +16,7 @@ use context_manager::ports::{
     Clock, LeaseRecord, LeaseStore, ModelBudget, ModelResolver, SummarizeError, SummarizeRequest,
     Summarizer, TurnKnobs,
 };
-use context_manager::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
+use context_manager::types::{AgentFunction, AgentMessage, Failure, Model, ThinkingLevel};
 
 // ---------------------------------------------------------------------------
 // Clock
@@ -169,6 +169,12 @@ pub enum SummarizerScript {
     Return(String),
     Unavailable,
     Fail(String),
+    /// A failure with a named cause (a usage limit, a timeout, …).
+    #[allow(dead_code)] // used by compaction_budget, not every test crate
+    FailWith(Failure),
+    /// The provider refused the request as larger than the window.
+    #[allow(dead_code)] // used by compaction_budget, not every test crate
+    ContextOverflow,
     Empty,
 }
 
@@ -222,7 +228,11 @@ impl Summarizer for FakeSummarizer {
             SummarizerScript::Unavailable => Err(SummarizeError::Unavailable(
                 "router::chat is not routable".to_string(),
             )),
-            SummarizerScript::Fail(reason) => Err(SummarizeError::Failed(reason)),
+            SummarizerScript::Fail(reason) => Err(SummarizeError::Failed(reason.into())),
+            SummarizerScript::FailWith(failure) => Err(SummarizeError::Failed(failure)),
+            SummarizerScript::ContextOverflow => Err(SummarizeError::ContextOverflow(
+                "router/context_overflow: prompt is too long".to_string(),
+            )),
             SummarizerScript::Empty => Err(SummarizeError::Empty),
         }
     }
