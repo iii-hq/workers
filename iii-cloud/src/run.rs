@@ -1,0 +1,1722 @@
+//! Run here like the cloud (spec §6): seven stages on the workspace's files,
+//! the production compose file, the cloud's engine version, a local Postgres
+//! for a database resource. Teardown always runs.
+//!
+//! Verified on iii 0.27.0 (a private engine, `engine::functions::list`):
+//! - `registered-triggers::list` (the cloud's own call, iii-cloud
+//!   `crates/core/src/engine.rs:16`) does not exist on a 0.27 engine: the
+//!   trigger builtins were removed in 0.26 (iii `engine/src/missing_function_hints.rs:75`,
+//!   `engine/tests/builtin_functions_e2e.rs:105`). An http route is an observer
+//!   of `http::on-request` with `args {method, path}`, so the routes stage reads
+//!   `engine::observers::list {function_id: "http::on-request"}`.
+//! - `engine::workers::list` rows carry `id name namespace runtime status
+//!   version isolation connected_at_ms function_count active_invocations os
+//!   ip_address description`; engine-internal workers have `runtime: "engine"`.
+//! - The cloud's healthcheck asks each replica of the http group
+//!   `http://<addr><path>` with the path as set, any 2xx passes (iii-cloud
+//!   `crates/platform/src/health.rs:80-142`): the path is never rewritten for
+//!   `web.api.prefix`, strip or not.
+//! - A managed Postgres is written as `{"databases": {"<alias>": {"url": ...}}}`
+//!   in the database worker's config (`crates/control-plane/src/stages.rs:1232`).
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use tokio::process::{Child, Command};
+
+use crate::check::{default_not_covered, selected, update_check};
+use crate::ctx::{Ctx, new_id, now, short};
+use crate::error::{CloudError, Res, cut};
+use crate::local::{
+    Manifest, database_binding, install_command, lock_for, runtime_base, worker_runtime,
+};
+use crate::tool;
+use crate::types::*;
+
+const MAX_RUNS_KEPT: usize = 20;
+const TAIL: usize = 40;
+
+struct Fail {
+    code: String,
+    message: String,
+}
+
+fn fail(code: &str, message: impl Into<String>) -> Fail {
+    Fail {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+struct Done {
+    status: StageStatus,
+    detail: Option<String>,
+}
+
+fn passed(detail: impl Into<Option<String>>) -> Result<Done, Fail> {
+    Ok(Done {
+        status: StageStatus::Passed,
+        detail: detail.into(),
+    })
+}
+
+// ------------------------------------------------------------ pure rules
+
+pub fn parse_duration(text: &str) -> Option<Duration> {
+    let text = text.trim();
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    let n: u64 = digits.parse().ok()?;
+    match &text[digits.len()..] {
+        "ms" => Some(Duration::from_millis(n)),
+        "s" | "" => Some(Duration::from_secs(n)),
+        "m" => Some(Duration::from_secs(n * 60)),
+        "h" => Some(Duration::from_secs(n * 3600)),
+        _ => None,
+    }
+}
+
+/// `${NAME}`, `${NAME:-default}` and `${NAME:default}` from `env`; unset is empty.
+pub fn interpolate(text: &str, env: &[(String, String)]) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let inner = &after[..end];
+        let (name, default) = match inner.split_once(":-").or_else(|| inner.split_once(':')) {
+            Some((n, d)) => (n, d),
+            None => (inner, ""),
+        };
+        out.push_str(
+            env.iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or(default),
+        );
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The path the healthcheck asks: as set, with its leading `/`. The cloud asks
+/// each replica directly, so `web.api.prefix` and `strip` change nothing.
+pub fn healthcheck_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+/// With a kept prefix (`strip: false`) every route must sit under it.
+pub fn routes_outside_prefix(routes: &[String], prefix: Option<&str>, strip: bool) -> Vec<String> {
+    let Some(prefix) = prefix.filter(|_| !strip) else {
+        return vec![];
+    };
+    let prefix = prefix.trim_end_matches('/');
+    routes
+        .iter()
+        .filter(|r| {
+            let path = r.split_once(' ').map(|(_, p)| p).unwrap_or(r);
+            let path = format!("/{}", path.trim_start_matches('/'));
+            path != prefix && !path.starts_with(&format!("{prefix}/"))
+        })
+        .cloned()
+        .collect()
+}
+
+/// A database the run starts: its container, alias and the URL it is given.
+pub struct Db {
+    pub container: String,
+    pub alias: String,
+    pub url: String,
+}
+
+/// The run copy of the compose file (spec §6): the engine and the worker
+/// manager move to `engine_port`, every `package://http` container moves to
+/// its free port on 127.0.0.1, and every database alias points at its local
+/// Postgres. Nothing else changes.
+pub fn rewrite_run_copy(
+    yaml: &Value,
+    engine_port: u16,
+    http_ports: &[(String, u16)],
+    dbs: &[Db],
+    extra_port: &mut dyn FnMut() -> u16,
+) -> Result<Value, String> {
+    validate_compose(yaml)?;
+    let mut out = yaml.clone();
+    let root = out.as_object_mut().ok_or("the compose file is not a map")?;
+    let engine = root.entry("engine").or_insert_with(|| json!({}));
+    if engine.is_null() {
+        *engine = json!({});
+    }
+    engine["url"] = json!(format!("ws://127.0.0.1:{engine_port}"));
+    if !engine.get("workers").is_some_and(Value::is_object) {
+        engine["workers"] = json!({});
+    }
+    engine["workers"]["iii-worker-manager"] = json!({ "host": "127.0.0.1", "port": engine_port });
+    // Every other engine worker that listens moves too, with or without a
+    // port in the file (iii-stream defaults to 3112): the run never meets the
+    // harness's ports.
+    if let Some(workers) = engine["workers"].as_object_mut() {
+        // Only iii-stream listens by default (3112); iii-http-functions takes no host or port.
+        workers.entry("iii-stream").or_insert_with(|| json!({}));
+        for (name, cfg) in workers.iter_mut() {
+            let listens = name == "iii-stream" || cfg.get("port").is_some();
+            if name != "iii-worker-manager" && listens {
+                if !cfg.is_object() {
+                    *cfg = json!({});
+                }
+                cfg["port"] = json!(extra_port());
+                cfg["host"] = json!("127.0.0.1");
+            }
+        }
+    }
+    if let Some(containers) = root.get_mut("containers").and_then(Value::as_object_mut) {
+        for (name, port) in http_ports {
+            if let Some(c) = containers.get_mut(name) {
+                set_override(c, &["port"], json!(port));
+                set_override(c, &["host"], json!("127.0.0.1"));
+            }
+        }
+        // The ADE console would take 3113.
+        for c in containers.values_mut() {
+            if Manifest::is_package(c, "ade") {
+                set_override(c, &["http_port"], json!(extra_port()));
+            }
+        }
+        for db in dbs {
+            if let Some(c) = containers.get_mut(&db.container) {
+                set_override(c, &["databases", &db.alias, "url"], json!(db.url));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The shapes the rewrite indexes into. A compose file that does not have
+/// them fails the run instead of panicking in the spawned task.
+pub fn validate_compose(yaml: &Value) -> Result<(), String> {
+    let map_or_absent = |v: Option<&Value>, what: &str| match v {
+        None | Some(Value::Null) | Some(Value::Object(_)) => Ok(()),
+        Some(_) => Err(format!("`{what}` in the compose file is not a map")),
+    };
+    if !yaml.is_object() {
+        return Err("the compose file is not a map".into());
+    }
+    map_or_absent(yaml.get("engine"), "engine")?;
+    map_or_absent(yaml.pointer("/engine/workers"), "engine.workers")?;
+    map_or_absent(yaml.get("containers"), "containers")?;
+    for (name, c) in yaml
+        .get("containers")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        if !c.is_object() {
+            return Err(format!("container `{name}` is not a map"));
+        }
+        map_or_absent(
+            c.get("config_override"),
+            &format!("containers.{name}.config_override"),
+        )?;
+        map_or_absent(
+            c.pointer("/config_override/databases"),
+            &format!("containers.{name}.config_override.databases"),
+        )?;
+        for (alias, db) in c
+            .pointer("/config_override/databases")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            if !(db.is_object() || db.is_null()) {
+                return Err(format!("database `{alias}` of `{name}` is not a map"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn set_override(container: &mut Value, path: &[&str], value: Value) {
+    if !container
+        .get("config_override")
+        .is_some_and(Value::is_object)
+    {
+        container["config_override"] = json!({});
+    }
+    let mut cur = &mut container["config_override"];
+    for key in &path[..path.len() - 1] {
+        if !cur.get(*key).is_some_and(Value::is_object) {
+            cur[*key] = json!({});
+        }
+        cur = &mut cur[*key];
+    }
+    cur[path[path.len() - 1]] = value;
+}
+
+/// Ports the harness uses: the run never takes them.
+pub const FORBIDDEN_PORTS: [u16; 4] = [3111, 3112, 3113, 49134];
+
+pub fn free_port() -> u16 {
+    loop {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .unwrap_or(0);
+        if !FORBIDDEN_PORTS.contains(&port) {
+            return port;
+        }
+    }
+}
+
+fn on_path(bin: &str) -> bool {
+    bin.contains('/')
+        || std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+}
+
+// ------------------------------------------------------------ the run
+
+struct Prep {
+    manifest: Manifest,
+    root: PathBuf,
+    settings: Value,
+    run_env: Vec<(String, String)>,
+    bindings: Vec<(String, String)>,
+    engine_port: u16,
+    http_ports: Vec<(String, u16)>,
+    dbs: Vec<Db>,
+    copy: PathBuf,
+}
+
+struct Exec {
+    ctx: Arc<Ctx>,
+    check_id: String,
+    run: Run,
+    dir: PathBuf,
+    iii_bin: String,
+    manifest_rel: Option<String>,
+    workspace: PathBuf,
+    env: EnvironmentInfo,
+    settings: Value,
+    problems: Vec<String>,
+    /// Values the run must never show: `.env` values and bindings.
+    secrets: Vec<String>,
+    prep: Option<Prep>,
+    pg: Vec<String>,
+    child: Option<Child>,
+    /// What `<manifest dir>/config/` held before the run's compose started:
+    /// the files it writes there are removed after.
+    config_before: Option<(PathBuf, Vec<String>)>,
+    stage_started: Instant,
+}
+
+/// Start a run for a stored check. One at a time: a second is `RUN_BUSY`.
+pub async fn start(ctx: &Arc<Ctx>, check_id: String) -> Res<Run> {
+    let sel = selected(ctx)?;
+    start_with(ctx, check_id, sel).await
+}
+
+/// Start a run for a check, on the environment and worktree `sel` names (a
+/// hand-off's own, which may not be the page's current selection).
+pub async fn start_with(ctx: &Arc<Ctx>, check_id: String, sel: crate::check::Selected) -> Res<Run> {
+    if !ctx.busy.lock().unwrap().insert("run".into()) {
+        // Say which run, and since when, so the page can show "already running since …".
+        let running = ctx.store.read(|s| {
+            s.check
+                .iter()
+                .chain(s.checks.iter())
+                .filter_map(|c| c.run.as_ref())
+                .find(|r| r.status == RunStatus::Running)
+                .map(|r| (r.id.clone(), r.started_at.clone()))
+        });
+        let message = match running {
+            Some((id, since)) => format!("A run is already going: run {id}, since {since}."),
+            None => "A run is already going.".to_string(),
+        };
+        return Err(CloudError::new("RUN_BUSY", message));
+    }
+    match prepare(ctx, &check_id, &sel).await {
+        Ok(mut exec) => {
+            exec.publish();
+            let run = exec.run.clone();
+            let ctx2 = ctx.clone();
+            let check_id = exec.check_id.clone();
+            tokio::spawn(async move {
+                // `busy` is cleared however the run ends, a panic included.
+                let _guard = BusyGuard(ctx2.clone(), "run".into());
+                if tokio::spawn(async move { exec.drive().await })
+                    .await
+                    .is_err()
+                {
+                    update_check(&ctx2, &check_id, |c| {
+                        if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running)
+                        {
+                            let stage = run
+                                .stages
+                                .iter()
+                                .find(|s| s.status == StageStatus::Running)
+                                .map(|s| s.name)
+                                .unwrap_or(StageName::Install);
+                            run.status = RunStatus::Failed;
+                            run.finished_at = Some(now());
+                            run.error = Some(RunError {
+                                stage,
+                                code: "RUN_PANIC".into(),
+                                message: "The run stopped on an internal error.".into(),
+                            });
+                        }
+                    });
+                }
+            });
+            Ok(run)
+        }
+        Err(e) => {
+            ctx.busy.lock().unwrap().remove("run");
+            Err(e)
+        }
+    }
+}
+
+/// Removes its key from `Ctx::busy` when dropped.
+struct BusyGuard(Arc<Ctx>, String);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.busy.lock().unwrap().remove(&self.1);
+    }
+}
+
+async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -> Res<Exec> {
+    let check = ctx
+        .store
+        .read(|s| s.find_check(check_id).cloned())
+        .ok_or_else(|| CloudError::invalid("no such check"))?;
+    let sel = sel.clone();
+    let cfg = ctx.config().await;
+    let env_body = ctx
+        .call(&crate::cloud::Req::get(format!(
+            "/teams/{}/environments/{}",
+            sel.team_id, sel.env.id
+        )))
+        // No environment settings, no run: a null here would skip the release,
+        // the root directory and the healthcheck without a word.
+        .await?;
+    let id = new_id();
+    let dir = cfg.data_path().join("runs").join(&id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| CloudError::new("GIT_FAILED", format!("cannot create the run folder: {e}")))?;
+    let engine = crate::check::local_iii_version(&cfg.iii_bin)
+        .await
+        .unwrap_or_else(|| "unknown".into());
+    // The run proves what the workspace holds now: its HEAD, and `+dirty` when
+    // anything is uncommitted. Ready needs it to equal the checked commit.
+    let head = crate::tool::git(&sel.workspace, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
+    let dirty = crate::tool::git(&sel.workspace, &["status", "--porcelain"])
+        .await
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(true);
+    let run = Run {
+        id,
+        check_id: check.id.clone(),
+        commit: if dirty { format!("{head}+dirty") } else { head },
+        engine,
+        status: RunStatus::Running,
+        started_at: now(),
+        finished_at: None,
+        stages: StageName::ALL
+            .iter()
+            .map(|n| Stage {
+                name: *n,
+                status: StageStatus::Pending,
+                detail: None,
+                duration_ms: None,
+            })
+            .collect(),
+        workers: WorkerCount { ready: 0, total: 0 },
+        routes: RouteCount {
+            count: 0,
+            prefix: None,
+        },
+        healthcheck: None,
+        not_covered: default_not_covered(),
+        log_tail: vec![],
+        error: None,
+    };
+    Ok(Exec {
+        ctx: ctx.clone(),
+        check_id: check.id.clone(),
+        run,
+        dir,
+        iii_bin: cfg.iii_bin.clone(),
+        // The file the check was of: another one than the environment's runs too.
+        // Else the cloud's setting as it is now (a null one is none, as in `check`).
+        manifest_rel: check.manifest.clone().or_else(|| {
+            env_body
+                .get("manifest")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }),
+        workspace: sel.workspace,
+        env: sel.env,
+        settings: env_body.get("settings").cloned().unwrap_or(Value::Null),
+        problems: check.problems.iter().map(|p| p.code.clone()).collect(),
+        secrets: vec![],
+        prep: None,
+        pg: vec![],
+        child: None,
+        config_before: None,
+        stage_started: Instant::now(),
+    })
+}
+
+impl Drop for Exec {
+    /// A panic skips `teardown`: remove what is left, without awaiting.
+    fn drop(&mut self) {
+        for name in std::mem::take(&mut self.pg) {
+            let _ = std::process::Command::new("docker")
+                .args(["rm", "-f", &name])
+                .output();
+        }
+        if let Some(p) = &self.prep {
+            clean_copy(&p.copy);
+        }
+    }
+}
+
+impl Exec {
+    fn persist_run(&self) {
+        let files = RunFiles {
+            containers: self.pg.clone(),
+            copy: self.prep.as_ref().map(|p| p.copy.clone()),
+            iii_bin: self.iii_bin.clone(),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&files) {
+            let _ = std::fs::write(self.dir.join("run.json"), bytes);
+        }
+    }
+
+    fn redact(&self, text: &str) -> String {
+        redact(text, &self.secrets)
+    }
+
+    fn publish(&mut self) {
+        self.run.log_tail = tail_of(&self.dir.join("run.log"))
+            .iter()
+            .map(|l| cut(&self.redact(l), 400))
+            .collect();
+        let mut run = self.run.clone();
+        for stage in &mut run.stages {
+            stage.detail = stage.detail.as_deref().map(|d| self.redact(d));
+        }
+        if let Some(e) = run.error.as_mut() {
+            e.message = self.redact(&e.message);
+        }
+        update_check(&self.ctx, &self.check_id, |c| c.run = Some(run.clone()));
+        let summary = match (&run.status, &run.error) {
+            (RunStatus::Failed, Some(e)) => format!(
+                "run {} failed at {:?}: {}",
+                short(&run.commit),
+                e.stage,
+                e.code
+            ),
+            (RunStatus::Passed, _) => format!("run {} passed", short(&run.commit)),
+            _ => format!("run {} is going", short(&run.commit)),
+        };
+        self.ctx.emit(
+            EventKind::Run,
+            &run.id,
+            run.status != RunStatus::Running,
+            summary,
+            &run,
+        );
+    }
+
+    fn set(&mut self, name: StageName, status: StageStatus, detail: Option<String>) {
+        let ms = self.stage_started.elapsed().as_millis() as u64;
+        if let Some(stage) = self.run.stages.iter_mut().find(|s| s.name == name) {
+            stage.status = status;
+            stage.detail = detail;
+            stage.duration_ms = (status != StageStatus::Running).then_some(ms);
+        }
+        self.stage_started = Instant::now();
+        self.publish();
+    }
+
+    fn note(&self, line: &str) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join("run.log"))
+        {
+            let _ = writeln!(f, "{}", self.redact(line));
+        }
+    }
+
+    /// A child's stdout and stderr into the run folder's `file`, redacted on
+    /// the way: no log file of the run holds a value it knows.
+    fn pump_output(&self, child: &mut Child, file: &str) -> Vec<tokio::task::JoinHandle<()>> {
+        let path = self.dir.join(file);
+        let secrets = Arc::new(self.secrets.clone());
+        let mut pumps = vec![];
+        if let Some(out) = child.stdout.take() {
+            pumps.push(tokio::spawn(pump(out, path.clone(), secrets.clone())));
+        }
+        if let Some(err) = child.stderr.take() {
+            pumps.push(tokio::spawn(pump(err, path, secrets)));
+        }
+        pumps
+    }
+
+    async fn drive(&mut self) {
+        let budget = Duration::from_secs(self.ctx.config().await.run_timeout_s);
+        let outcome = tokio::time::timeout(budget, self.stages()).await;
+        match outcome {
+            Ok(Ok(())) => self.run.status = RunStatus::Passed,
+            Ok(Err((stage, f))) => self.finish_failed(stage, f),
+            Err(_) => {
+                let stage = self
+                    .run
+                    .stages
+                    .iter()
+                    .find(|s| s.status == StageStatus::Running)
+                    .map(|s| s.name)
+                    .unwrap_or(StageName::Install);
+                self.finish_failed(
+                    stage,
+                    fail(
+                        "RUN_TIMEOUT",
+                        format!("The run passed {} s.", budget.as_secs()),
+                    ),
+                );
+            }
+        }
+        self.teardown().await;
+        self.run.finished_at = Some(now());
+        self.publish();
+    }
+
+    fn finish_failed(&mut self, stage: StageName, f: Fail) {
+        self.note(&format!("!! {:?} failed: {}: {}", stage, f.code, f.message));
+        self.set(stage, StageStatus::Failed, Some(cut(&f.message, 200)));
+        self.run.status = RunStatus::Failed;
+        self.run.error = Some(RunError {
+            stage,
+            code: f.code,
+            message: cut(&f.message, 600),
+        });
+    }
+
+    async fn stages(&mut self) -> Result<(), (StageName, Fail)> {
+        for name in StageName::ALL {
+            self.stage_started = Instant::now();
+            self.set(name, StageStatus::Running, None);
+            self.stage_started = Instant::now();
+            let result = match name {
+                StageName::Install => self.install().await,
+                StageName::Build => self.build().await,
+                StageName::Release => self.release().await,
+                StageName::ComposeUp => self.compose_up().await,
+                StageName::Workers => self.workers().await,
+                StageName::Routes => self.routes().await,
+                StageName::Healthcheck => self.healthcheck().await,
+            };
+            match result {
+                Ok(done) => self.set(name, done.status, done.detail),
+                Err(f) => return Err((name, f)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Everything the later stages share, computed in `install`.
+    fn prep(&mut self) -> Result<(), Fail> {
+        let manifest =
+            Manifest::load(&self.workspace, self.manifest_rel.as_deref()).ok_or_else(|| {
+                fail(
+                    "INSTALL_FAILED",
+                    "The compose file is missing or is not YAML.",
+                )
+            })?;
+        let root = self.workspace.join(
+            self.settings
+                .get("root_directory")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let mut run_env = crate::local::worktree_env(&self.workspace, &manifest);
+        // What the run's `.env` lacks, from the person's folder's env files:
+        // into the run's environment only, and known to redaction.
+        let checkout = self
+            .ctx
+            .store
+            .read(|s| s.project.as_ref().map(|p| PathBuf::from(&p.path)))
+            .unwrap_or_else(|| self.workspace.clone());
+        let filled = crate::values::here_values(
+            &checkout,
+            &self.workspace,
+            self.manifest_rel.as_deref(),
+            &self.env,
+        );
+        {
+            let mut known = self.ctx.known_secrets.lock().unwrap();
+            for (_, value, _) in &filled {
+                if value.len() >= 3 && !known.contains(value) {
+                    known.push(value.clone());
+                }
+            }
+        }
+        run_env.extend(filled.into_iter().map(|(name, value, _)| (name, value)));
+        // A name skipped for now with no value runs with an empty one (process env only).
+        for name in crate::values::skipped_of(&self.ctx, &self.env.id) {
+            if !run_env.iter().any(|(n, _)| *n == name) {
+                run_env.push((name, String::new()));
+            }
+        }
+        self.secrets.extend(run_env.iter().map(|(_, v)| v.clone()));
+        self.secrets
+            .extend(self.ctx.known_secrets.lock().unwrap().iter().cloned());
+        let http_ports = manifest
+            .containers()
+            .into_iter()
+            .filter(|(n, c)| manifest.is_http_worker(n, c))
+            .map(|(n, _)| (n, free_port()))
+            .collect();
+        let stem = manifest
+            .file
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let copy = manifest.dir.join(format!("{stem}.iii-cloud-run.yaml"));
+        self.prep = Some(Prep {
+            manifest,
+            root,
+            settings: self.settings.clone(),
+            run_env,
+            bindings: vec![],
+            engine_port: free_port(),
+            http_ports,
+            dbs: vec![],
+            copy,
+        });
+        Ok(())
+    }
+
+    fn base_env() -> Vec<(String, String)> {
+        ["PATH", "HOME", "TMPDIR"]
+            .iter()
+            .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+            .collect()
+    }
+
+    /// `sh -c cmd` with only PATH, HOME, TMPDIR and `extra`; output to `run.log`.
+    async fn sh(
+        &mut self,
+        cmd: &str,
+        cwd: &Path,
+        extra: &[(String, String)],
+        limit: Duration,
+    ) -> Result<i32, Fail> {
+        self.note(&format!("$ {cmd}"));
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", cmd])
+            .current_dir(cwd)
+            .env_clear()
+            .envs(Self::base_env())
+            .envs(extra.iter().cloned())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|e| fail("TOOL_MISSING", format!("cannot start sh: {e}")))?;
+        let pumps = self.pump_output(&mut child, "run.log");
+        match tokio::time::timeout(limit, child.wait()).await {
+            Ok(Ok(status)) => {
+                // Its output is in the log before its result counts; a process
+                // it left running in the background does not hold the run.
+                for p in pumps {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), p).await;
+                }
+                Ok(status.code().unwrap_or(-1))
+            }
+            Ok(Err(e)) => Err(fail("INSTALL_FAILED", e.to_string())),
+            Err(_) => {
+                let _ = child.kill().await;
+                Err(fail(
+                    "RUN_TIMEOUT",
+                    format!("`{}` did not end in {} s.", cut(cmd, 60), limit.as_secs()),
+                ))
+            }
+        }
+    }
+
+    async fn install(&mut self) -> Result<Done, Fail> {
+        if self.problems.iter().any(|c| c == "LOCAL_ENGINE_VERSION") {
+            return Err(fail(
+                "LOCAL_ENGINE_VERSION",
+                "The run here needs the cloud's engine version; see the check's problem.",
+            ));
+        }
+        self.prep()?;
+        // The plan's runtime of each worker (what the cloud will install), else
+        // `cloud.runtimes`, else the worker's own iii.worker.yaml.
+        let planned: Option<Vec<(String, Option<String>)>> =
+            std::fs::read_to_string(crate::deploy::plan_file(&self.ctx, &self.check_id))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|plan| {
+                    plan.get("workers").and_then(Value::as_array).map(|ws| {
+                        ws.iter()
+                            .filter_map(|w| {
+                                Some((
+                                    w.get("name")?.as_str()?.to_string(),
+                                    w.get("runtime").and_then(Value::as_str).map(str::to_owned),
+                                ))
+                            })
+                            .collect()
+                    })
+                });
+        let (manifest_dir_workers, unknown, root) = {
+            let p = self.prep.as_ref().unwrap();
+            let mut runtimes: Vec<String> = vec![];
+            let mut unknown: Vec<String> = vec![];
+            for (name, c) in p.manifest.containers() {
+                let Some(dir) = p.manifest.path_worker_dir(c) else {
+                    continue;
+                };
+                match worker_runtime(&p.manifest, &name, &dir, planned.as_deref()) {
+                    Some(r) => {
+                        let base = runtime_base(&r).to_string();
+                        if !runtimes.contains(&base) {
+                            runtimes.push(base);
+                        }
+                    }
+                    None => unknown.push(name),
+                }
+            }
+            (runtimes, unknown, p.root.clone())
+        };
+        // A worker whose runtime is not known would be skipped without a word:
+        // say so instead, since nothing would be installed for it.
+        if !unknown.is_empty() {
+            return Err(fail(
+                "INSTALL_FAILED",
+                format!(
+                    "The runtime of {} is not known (not in the plan, cloud.runtimes or its iii.worker.yaml), so nothing would be installed for it.",
+                    unknown.join(", ")
+                ),
+            ));
+        }
+        if manifest_dir_workers.is_empty() {
+            return Ok(Done {
+                status: StageStatus::Skipped,
+                detail: Some("no path:// worker".into()),
+            });
+        }
+        let mut shown = vec![];
+        for runtime in manifest_dir_workers {
+            let lock = lock_for(&runtime, &root).ok_or_else(|| {
+                fail(
+                    "INSTALL_FAILED",
+                    format!("The repository has no lock for {runtime}."),
+                )
+            })?;
+            let (cmd, extra) = install_command(lock);
+            let bin = cmd.split_whitespace().next().unwrap_or("sh");
+            if !on_path(bin) {
+                return Err(fail(
+                    "TOOL_MISSING",
+                    format!("`{bin}` is not installed or not on PATH."),
+                ));
+            }
+            let extra: Vec<(String, String)> = extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let limit = Duration::from_secs(self.ctx.config().await.run_timeout_s);
+            let code = self.sh(cmd, &root, &extra, limit).await?;
+            if code != 0 {
+                return Err(fail("INSTALL_FAILED", format!("`{cmd}` exited {code}.")));
+            }
+            shown.push(cmd.to_string());
+        }
+        passed(shown.join("; "))
+    }
+
+    async fn build(&mut self) -> Result<Done, Fail> {
+        let p = self.prep.as_ref().unwrap();
+        let cmd = p.manifest.cloud_build().or_else(|| {
+            p.settings
+                .get("build_command")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        let Some(cmd) = cmd else {
+            return Ok(Done {
+                status: StageStatus::Skipped,
+                detail: None,
+            });
+        };
+        let root = p.root.clone();
+        let limit = Duration::from_secs(self.ctx.config().await.run_timeout_s);
+        // The cloud's build has no variables: only PATH, HOME, TMPDIR.
+        let code = self.sh(&cmd, &root, &[], limit).await?;
+        if code != 0 {
+            return Err(fail("BUILD_FAILED", format!("`{cmd}` exited {code}.")));
+        }
+        passed(cmd)
+    }
+
+    async fn release(&mut self) -> Result<Done, Fail> {
+        let (aliases, image) = {
+            let p = self.prep.as_ref().unwrap();
+            (
+                p.manifest.database_aliases(),
+                self.ctx.config().await.postgres_image.clone(),
+            )
+        };
+        let mut started = false;
+        for (container, names) in aliases {
+            for alias in names {
+                let url = self.start_postgres(&image).await?;
+                self.secrets.push(url.clone());
+                started = true;
+                let p = self.prep.as_mut().unwrap();
+                // The cloud's `DATABASE_<A>_DIRECT_URL` is the same URL as the pooled one:
+                // the app's login (member of the owner role, `SET role`), never the owner itself.
+                p.bindings.push((database_binding(&alias), url.clone()));
+                p.bindings.push((
+                    database_binding(&alias).replace("_URL", "_DIRECT_URL"),
+                    url.clone(),
+                ));
+                p.dbs.push(Db {
+                    container: container.clone(),
+                    alias,
+                    url,
+                });
+            }
+        }
+        let (release, run_env, container_env, dir) = {
+            let p = self.prep.as_ref().unwrap();
+            let release = p.manifest.cloud_release().or_else(|| {
+                let r = p.settings.get("release")?;
+                Some(crate::local::Release {
+                    worker: r.get("worker")?.as_str()?.to_string(),
+                    command: r.get("command")?.as_str()?.to_string(),
+                    timeout: r.get("timeout").and_then(Value::as_str).map(str::to_owned),
+                })
+            });
+            let mut env = p.run_env.clone();
+            env.extend(p.bindings.iter().cloned());
+            let container = release.as_ref().and_then(|r| {
+                p.manifest
+                    .containers()
+                    .into_iter()
+                    .find(|(n, _)| *n == r.worker)
+            });
+            let cenv: Vec<(String, String)> = container
+                .as_ref()
+                .and_then(|(_, c)| c.get("environment").and_then(Value::as_object))
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                interpolate(v.as_str().unwrap_or(&v.to_string()), &env),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let dir = container
+                .as_ref()
+                .and_then(|(_, c)| p.manifest.path_worker_dir(c))
+                .unwrap_or_else(|| p.manifest.dir.clone());
+            (release, env, cenv, dir)
+        };
+        let Some(release) = release else {
+            return Ok(Done {
+                status: StageStatus::Skipped,
+                detail: started.then(|| "local Postgres".into()),
+            });
+        };
+        // The release worker's own environment, plus the bindings.
+        let mut env: Vec<(String, String)> = container_env;
+        env.extend(
+            run_env
+                .into_iter()
+                .filter(|(k, _)| k.starts_with("DATABASE_")),
+        );
+        let limit = release
+            .timeout
+            .as_deref()
+            .and_then(parse_duration)
+            .unwrap_or(Duration::from_secs(300));
+        let code = self.sh(&release.command, &dir, &env, limit).await?;
+        if code != 0 {
+            return Err(fail(
+                "RELEASE_FAILED",
+                format!("`{}` exited {code}.", release.command),
+            ));
+        }
+        passed(cut(&release.command, 80))
+    }
+
+    async fn start_postgres(&mut self, image: &str) -> Result<String, Fail> {
+        let name = format!("iii-cloud-run-pg-{}-{}", &self.run.id[..8], self.pg.len());
+        let password = hex::encode(rand::random::<[u8; 12]>());
+        let port = free_port();
+        let publish = format!("127.0.0.1:{port}:5432");
+        let pw = format!("POSTGRES_PASSWORD={password}");
+        let out = tool::run(
+            "docker",
+            &[
+                "run", "-d", "--rm", "--name", &name, "-e", &pw, "-p", &publish, image,
+            ],
+            None,
+            None,
+            "DOCKER_MISSING",
+        )
+        .await
+        .map_err(|e| fail(&e.code, e.message))?;
+        if !out.ok() {
+            return Err(fail(
+                "DOCKER_MISSING",
+                format!(
+                    "docker could not start Postgres: {}",
+                    cut(out.stderr.trim(), 600)
+                ),
+            ));
+        }
+        self.pg.push(name.clone());
+        self.secrets.push(password.clone());
+        self.persist_run();
+        self.note(&format!("started {name} on 127.0.0.1:{port}"));
+        let ready = async {
+            loop {
+                let probe = tool::run(
+                    "docker",
+                    &[
+                        "exec",
+                        &name,
+                        "pg_isready",
+                        "-h",
+                        "127.0.0.1",
+                        "-U",
+                        "postgres",
+                        "-d",
+                        "postgres",
+                    ],
+                    None,
+                    None,
+                    "DOCKER_MISSING",
+                )
+                .await;
+                if probe.is_ok_and(|o| o.ok()) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), ready)
+            .await
+            .map_err(|_| {
+                fail(
+                    "RELEASE_FAILED",
+                    "Postgres did not accept connections in 30 s.",
+                )
+            })?;
+        // The cloud's role model, so a migration that needs more than the app's
+        // login has fails here as it would there.
+        let login_password = hex::encode(rand::random::<[u8; 12]>());
+        self.secrets.push(login_password.clone());
+        setup_cloud_roles(&name, CLOUD_LOGIN, &login_password)
+            .await
+            .map_err(|m| fail("RELEASE_FAILED", m))?;
+        Ok(format!(
+            "postgres://{CLOUD_LOGIN}:{login_password}@127.0.0.1:{port}/app"
+        ))
+    }
+
+    async fn compose_up(&mut self) -> Result<Done, Fail> {
+        let (copy, lock_from, dir, env, names) = {
+            let p = self.prep.as_ref().unwrap();
+            let rewritten = rewrite_run_copy(
+                &p.manifest.yaml,
+                p.engine_port,
+                &p.http_ports,
+                &p.dbs,
+                &mut free_port,
+            )
+            .map_err(|m| fail("COMPOSE_FAILED", m))?;
+            let text = serde_yaml_ng::to_string(&rewritten)
+                .map_err(|e| fail("COMPOSE_FAILED", e.to_string()))?;
+            std::fs::write(&p.copy, text).map_err(|e| fail("COMPOSE_FAILED", e.to_string()))?;
+            let mut env = p.run_env.clone();
+            env.extend(p.bindings.iter().cloned());
+            let names: Vec<String> = p
+                .manifest
+                .containers()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect();
+            (
+                p.copy.clone(),
+                p.manifest.lock_path(),
+                p.manifest.dir.clone(),
+                env,
+                names,
+            )
+        };
+        if lock_from.exists() {
+            let _ = std::fs::copy(&lock_from, copy.with_extension("lock"));
+        }
+        self.run.workers.total = names.len() as u32;
+        self.config_before = Some((dir.join("config"), file_names(&dir.join("config"))));
+        self.persist_run();
+        std::fs::File::create(self.dir.join("compose.log"))
+            .map_err(|e| fail("COMPOSE_FAILED", e.to_string()))?;
+        let mut command = Command::new(&self.iii_bin);
+        command
+            .args(["compose", "--up", "-f"])
+            .arg(&copy)
+            .args(["-n", "iii-cloud-run", "--frozen"])
+            .current_dir(&dir)
+            .env_clear()
+            .envs(Self::base_env())
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                fail(
+                    "TOOL_MISSING",
+                    format!("`{}` is not installed or not on PATH.", self.iii_bin),
+                )
+            } else {
+                fail("COMPOSE_FAILED", e.to_string())
+            }
+        })?;
+        // They end with the compose process.
+        drop(self.pump_output(&mut child, "compose.log"));
+        self.child = Some(child);
+        passed(names.join(", "))
+    }
+
+    /// `<iii_bin> call --engine <run engine> <function> k=v...`, as JSON.
+    async fn engine_call(&self, function: &str, args: &[&str]) -> Option<Value> {
+        let port = self.prep.as_ref()?.engine_port;
+        let url = format!("ws://127.0.0.1:{port}");
+        let mut command = Command::new(&self.iii_bin);
+        command
+            .args(["call", "--engine", &url, function])
+            .args(args)
+            .env_clear()
+            .envs(Self::base_env())
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        let out = tokio::time::timeout(Duration::from_secs(10), command.output())
+            .await
+            .ok()?
+            .ok()?;
+        out.status
+            .success()
+            .then(|| serde_json::from_slice(&out.stdout).ok())
+            .flatten()
+    }
+
+    fn container_names(&self) -> Vec<String> {
+        self.prep
+            .as_ref()
+            .map(|p| {
+                p.manifest
+                    .containers()
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn compose_exited(&mut self) -> Option<i32> {
+        self.child
+            .as_mut()?
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|s| s.code().unwrap_or(-1))
+    }
+
+    async fn workers(&mut self) -> Result<Done, Fail> {
+        let startup = self
+            .prep
+            .as_ref()
+            .unwrap()
+            .manifest
+            .yaml
+            .get("startup_timeout")
+            .and_then(Value::as_str)
+            .and_then(parse_duration)
+            .unwrap_or(Duration::from_secs(60));
+        let total = self.run.workers.total;
+        let deadline = Instant::now() + startup;
+        let mut stable_since: Option<Instant> = None;
+        loop {
+            if let Some(code) = self.compose_exited() {
+                self.append_compose_log();
+                return Err(fail(
+                    "COMPOSE_FAILED",
+                    format!("`iii compose` exited {code} before the workers connected."),
+                ));
+            }
+            if Instant::now() >= deadline {
+                self.append_compose_log();
+                return Err(fail(
+                    "WORKERS_NOT_READY",
+                    format!(
+                        "{} of {total} workers connected in {} s.",
+                        self.run.workers.ready,
+                        startup.as_secs()
+                    ),
+                ));
+            }
+            // A container's worker registers under the container's name
+            // (verified on iii 0.27.0: `api`, `http`), with status `connected`.
+            let names = self.container_names();
+            let ready = self
+                .engine_call("engine::workers::list", &[])
+                .await
+                .and_then(|v| v.get("workers").and_then(Value::as_array).cloned())
+                .map(|ws| {
+                    names
+                        .iter()
+                        .filter(|n| {
+                            ws.iter().any(|w| {
+                                w.get("name").and_then(Value::as_str) == Some(n.as_str())
+                                    && matches!(
+                                        w.get("status").and_then(Value::as_str),
+                                        Some("connected" | "available")
+                                    )
+                            })
+                        })
+                        .count() as u32
+                })
+                .unwrap_or(0);
+            self.run.workers.ready = ready.min(total);
+            if ready >= total {
+                let since = *stable_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(2) {
+                    return passed(format!("{} of {total}", self.run.workers.ready));
+                }
+            } else {
+                stable_since = None;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    fn append_compose_log(&self) {
+        for line in tail_of(&self.dir.join("compose.log")) {
+            self.note(&line);
+        }
+    }
+
+    async fn routes(&mut self) -> Result<Done, Fail> {
+        let (has_http, prefix, strip) = {
+            let p = self.prep.as_ref().unwrap();
+            let (prefix, strip) = p.manifest.web_prefix();
+            (!p.http_ports.is_empty(), prefix, strip)
+        };
+        let routes: Vec<String> = self
+            .engine_call("engine::observers::list", &["function_id=http::on-request"])
+            .await
+            .and_then(|v| v.get("observers").and_then(Value::as_array).cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter(|o| o.get("state").and_then(Value::as_str) == Some("active"))
+            .filter_map(|o| {
+                let args = o.get("args")?;
+                Some(format!(
+                    "{} {}",
+                    args.get("method")?.as_str()?,
+                    args.get("path")?.as_str()?
+                ))
+            })
+            .collect();
+        self.run.routes = RouteCount {
+            count: routes.len() as u32,
+            prefix: prefix.clone(),
+        };
+        // The cloud serves routes only through `package://http`: a route with no
+        // such container is served by nothing (`ROUTE_OUTSIDE_HTTP_GROUP`).
+        if let (false, Some(first)) = (has_http, routes.first()) {
+            return Err(fail(
+                "ROUTE_OUTSIDE_HTTP_GROUP",
+                format!(
+                    "The route {first} is registered by a worker outside the http group: iii cloud routes traffic only to `package://http`, and this manifest has none."
+                ),
+            ));
+        }
+        if routes.is_empty() && !has_http {
+            return Ok(Done {
+                status: StageStatus::Skipped,
+                detail: Some("no http group".into()),
+            });
+        }
+        if routes.is_empty() {
+            // The cloud does not call it a failure when a web part answers
+            // (iii-cloud `control-plane/src/workers.rs:796`).
+            // The plan's own `settings.web` / `settings.site`, as the cloud reads
+            // them (`workers.rs:718-727`); without a saved plan, the file and the settings.
+            let planned =
+                std::fs::read_to_string(crate::deploy::plan_file(&self.ctx, &self.check_id))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+            let web = match planned {
+                Some(plan) => ["/settings/web", "/settings/site"]
+                    .iter()
+                    .any(|p| plan.pointer(p).is_some_and(|v| !v.is_null())),
+                None => {
+                    let p = self.prep.as_ref().unwrap();
+                    p.manifest
+                        .cloud()
+                        .and_then(|c| c.get("web"))
+                        .is_some_and(|w| !w.is_null())
+                        || !p.settings.get("web").is_none_or(Value::is_null)
+                }
+            };
+            if web {
+                return passed("0; the web part answers".to_string());
+            }
+            return Err(fail(
+                "NO_ROUTE",
+                "The http group serves no route: no worker registered one.",
+            ));
+        }
+        let outside = routes_outside_prefix(&routes, prefix.as_deref(), strip);
+        if !outside.is_empty() {
+            return Err(fail(
+                "ROUTE_OUTSIDE_PREFIX",
+                format!(
+                    "Routes outside {}: {}",
+                    prefix.unwrap_or_default(),
+                    cut(&outside.join(", "), 300)
+                ),
+            ));
+        }
+        passed(match &prefix {
+            Some(p) => format!("{} under {p}", routes.len()),
+            None => routes.len().to_string(),
+        })
+    }
+
+    async fn healthcheck(&mut self) -> Result<Done, Fail> {
+        let (check, port) = {
+            let p = self.prep.as_ref().unwrap();
+            let check = p.manifest.cloud_healthcheck().or_else(|| {
+                let h = p.settings.get("healthcheck")?;
+                Some(crate::local::Healthcheck {
+                    path: h.get("path")?.as_str()?.to_string(),
+                    timeout: h.get("timeout").and_then(Value::as_str).map(str::to_owned),
+                })
+            });
+            (check, p.http_ports.first().map(|(_, port)| *port))
+        };
+        let (Some(check), Some(port)) = (check, port) else {
+            return Ok(Done {
+                status: StageStatus::Skipped,
+                detail: None,
+            });
+        };
+        let path = healthcheck_path(&check.path);
+        let limit = check
+            .timeout
+            .as_deref()
+            .and_then(parse_duration)
+            .unwrap_or(Duration::from_secs(30));
+        let url = format!("http://127.0.0.1:{port}{path}");
+        let deadline = Instant::now() + limit;
+        let mut last = None;
+        loop {
+            if let Ok(r) = self
+                .ctx
+                .http
+                .get(&url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                let status = r.status().as_u16();
+                last = Some(status);
+                if r.status().is_success() {
+                    self.run.healthcheck = Some(HealthResult {
+                        path: path.clone(),
+                        status: Some(status),
+                    });
+                    return passed(format!("GET {path} {status}"));
+                }
+            }
+            if Instant::now() >= deadline {
+                self.run.healthcheck = Some(HealthResult {
+                    path: path.clone(),
+                    status: last,
+                });
+                return Err(fail(
+                    "HEALTHCHECK_FAILED",
+                    format!(
+                        "GET {path} did not answer 2xx in {} s (last: {}).",
+                        limit.as_secs(),
+                        last.map(|s| s.to_string()).unwrap_or("no answer".into())
+                    ),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Always: stop compose, remove Postgres, delete the run copy, prune old runs.
+    async fn teardown(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                // SAFETY: plain signal to our own child process.
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            }
+            if tokio::time::timeout(Duration::from_secs(30), child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.kill().await;
+            }
+        }
+        for name in std::mem::take(&mut self.pg) {
+            let _ = tool::run("docker", &["rm", "-f", &name], None, None, "DOCKER_MISSING").await;
+        }
+        if let Some(p) = &self.prep {
+            clean_copy(&p.copy);
+        }
+        if let Some((dir, before)) = self.config_before.take() {
+            remove_new_files(&dir, &before);
+        }
+        let _ = std::fs::remove_file(self.dir.join("run.json"));
+        if let Some(runs) = self.dir.parent() {
+            prune(runs, MAX_RUNS_KEPT);
+        }
+    }
+}
+
+/// What a crash would leave behind, for `recover`.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct RunFiles {
+    containers: Vec<String>,
+    copy: Option<PathBuf>,
+    iii_bin: String,
+}
+
+/// The names of the files in `dir` (empty when it does not exist).
+pub fn file_names(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Remove the YAML files that appeared in `dir` since `before` (the config the
+/// run's compose wrote next to the manifest), and the directory itself when the
+/// run made it and it is empty. Files that were there before stay.
+pub fn remove_new_files(dir: &Path, before: &[String]) {
+    for name in file_names(dir) {
+        if !before.contains(&name) && name.ends_with(".yaml") {
+            let _ = std::fs::remove_file(dir.join(&name));
+        }
+    }
+    if before.is_empty() {
+        let _ = std::fs::remove_dir(dir); // only when empty
+    }
+}
+
+/// The app's login on the local Postgres, as the cloud makes one for a binding.
+pub const CLOUD_LOGIN: &str = "app_login";
+
+/// Run one SQL string with `psql` inside the container, as the superuser, on `db`.
+async fn psql(container: &str, db: &str, sql: &str) -> Result<(), String> {
+    let out = tool::run(
+        "docker",
+        &[
+            "exec",
+            container,
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            "postgres",
+            "-d",
+            db,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-qAt",
+            "-c",
+            sql,
+        ],
+        None,
+        None,
+        "DOCKER_MISSING",
+    )
+    .await
+    .map_err(|e| e.message)?;
+    if out.ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "postgres setup failed ({sql:.40}): {}",
+            cut(out.stderr.trim(), 400)
+        ))
+    }
+}
+
+/// Give the local Postgres iii cloud's database roles (iii-cloud
+/// `crates/resources/src/postgres.rs`: `shared_database`, `login_generation`):
+/// the database `app` owned by a NOLOGIN role of the same name, `REVOKE ALL ON
+/// DATABASE FROM PUBLIC`, `vector` created in template1 only, and the app
+/// connecting as a separate login that is a member of the owner and whose
+/// sessions `SET role` to it, never as the superuser.
+pub async fn setup_cloud_roles(container: &str, login: &str, password: &str) -> Result<(), String> {
+    psql(container, "postgres", r#"CREATE ROLE "app" NOLOGIN"#).await?;
+    // pgvector lives in template1, so the new database has it (as in the cloud).
+    // An image without it fails here: the cloud's Postgres always has it.
+    psql(
+        container,
+        "template1",
+        "CREATE EXTENSION IF NOT EXISTS vector",
+    )
+    .await?;
+    psql(
+        container,
+        "postgres",
+        r#"CREATE DATABASE "app" OWNER "app""#,
+    )
+    .await?;
+    psql(
+        container,
+        "app",
+        r#"SET ROLE "app"; REVOKE ALL ON DATABASE "app" FROM PUBLIC; GRANT CONNECT ON DATABASE "app" TO SESSION_USER; REVOKE ALL ON SCHEMA public FROM PUBLIC; RESET ROLE"#,
+    )
+    .await?;
+    psql(
+        container,
+        "postgres",
+        &format!(r#"CREATE ROLE "{login}" LOGIN PASSWORD '{password}'"#),
+    )
+    .await?;
+    psql(
+        container,
+        "postgres",
+        &format!(r#"GRANT "app" TO "{login}" WITH INHERIT TRUE, SET TRUE"#),
+    )
+    .await?;
+    psql(
+        container,
+        "postgres",
+        &format!(r#"ALTER ROLE "{login}" IN DATABASE "app" SET role = 'app'"#),
+    )
+    .await
+}
+
+/// Delete the run copy, its lock and the compose state of the run's namespace.
+fn clean_copy(copy: &Path) {
+    let _ = std::fs::remove_file(copy);
+    let _ = std::fs::remove_file(copy.with_extension("lock"));
+    if let Some(dir) = copy.parent() {
+        let _ = std::fs::remove_dir_all(dir.join(".iii/compose/iii-cloud-run"));
+    }
+}
+
+/// On start: fail the runs a crash left `running`, remove their containers,
+/// `iii kill --compose` a copy that remains, and delete it.
+pub async fn recover(ctx: &Arc<Ctx>) {
+    let cfg = ctx.config().await;
+    let stuck: Vec<String> = ctx.store.read(|s| {
+        s.check
+            .iter()
+            .chain(s.checks.iter())
+            .filter(|c| {
+                c.run
+                    .as_ref()
+                    .is_some_and(|r| r.status == RunStatus::Running)
+            })
+            .map(|c| c.id.clone())
+            .collect()
+    });
+    let mut done: Vec<String> = vec![];
+    for id in stuck {
+        if done.contains(&id) {
+            continue;
+        }
+        done.push(id.clone());
+        update_check(ctx, &id, |c| {
+            if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
+                let stage = run
+                    .stages
+                    .iter()
+                    .find(|s| s.status == StageStatus::Running)
+                    .map(|s| s.name)
+                    .unwrap_or(StageName::Install);
+                run.status = RunStatus::Failed;
+                run.finished_at = Some(now());
+                run.error = Some(RunError {
+                    stage,
+                    code: "WORKER_RESTARTED".into(),
+                    message: "The worker restarted while the run was going.".into(),
+                });
+                for s in run
+                    .stages
+                    .iter_mut()
+                    .filter(|s| s.status == StageStatus::Running)
+                {
+                    s.status = StageStatus::Failed;
+                }
+            }
+        });
+    }
+    let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let file = entry.path().join("run.json");
+        let Some(files) = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+        else {
+            continue;
+        };
+        for name in &files.containers {
+            let _ = tool::run("docker", &["rm", "-f", name], None, None, "DOCKER_MISSING").await;
+        }
+        if let Some(copy) = files.copy.filter(|c| c.exists()) {
+            let _ = tool::run(
+                &files.iii_bin,
+                &["kill", "--compose", &copy.to_string_lossy()],
+                None,
+                None,
+                "TOOL_MISSING",
+            )
+            .await;
+            clean_copy(&copy);
+        }
+        let _ = std::fs::remove_file(file);
+    }
+}
+
+/// Hide the password of every `scheme://user:password@host` in `text`.
+pub fn redact_urls(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, after) = rest.split_at(at + 3);
+        out.push_str(head);
+        let end = after
+            .find(|c: char| c.is_whitespace() || c == '/' || c == '"' || c == '\'')
+            .unwrap_or(after.len());
+        let authority = &after[..end];
+        match (authority.rfind('@'), authority.find(':')) {
+            (Some(a), Some(c)) if c < a => {
+                out.push_str(&authority[..=c]);
+                out.push_str("[redacted]");
+                out.push_str(&authority[a..]);
+            }
+            _ => out.push_str(authority),
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Copy `out` into `file` (appended) a line at a time, each line redacted.
+// ponytail: a value split across a 64 KiB line cut is not caught; values are short.
+async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Arc<Vec<String>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Ok(mut log) = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .await
+    else {
+        return;
+    };
+    let mut out = out;
+    let (mut buf, mut line) = (vec![0u8; 8192], Vec::<u8>::new());
+    loop {
+        let n = out.read(&mut buf).await.unwrap_or(0);
+        line.extend_from_slice(&buf[..n]);
+        // Whole lines out; at the end (or past 64 KiB) the rest too.
+        let cut_at = match line.iter().rposition(|b| *b == b'\n') {
+            Some(i) => i + 1,
+            None if n == 0 || line.len() > 64 << 10 => line.len(),
+            None => continue,
+        };
+        let text = redact(&String::from_utf8_lossy(&line[..cut_at]), &secrets);
+        if log.write_all(text.as_bytes()).await.is_err() {
+            return;
+        }
+        line.drain(..cut_at);
+        if n == 0 {
+            return;
+        }
+    }
+}
+
+/// Replace every secret value (3 characters or more) with `[redacted]`.
+pub fn redact(text: &str, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        // Every non-empty value, so `s3cret` goes too; only 1-2 characters
+        // would turn the log into noise.
+        .filter(|s| s.len() >= 3)
+        .fold(text.to_string(), |acc, s| {
+            acc.replace(s.as_str(), "[redacted]")
+        })
+}
+
+fn tail_of(file: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    // Not cut here: a line is redacted whole first, then cut.
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    lines[lines.len().saturating_sub(TAIL)..].to_vec()
+}
+
+/// Keep the newest `keep` run folders.
+pub fn prune(runs: &Path, keep: usize) {
+    let Ok(read) = std::fs::read_dir(runs) else {
+        return;
+    };
+    let mut dirs: Vec<_> = read
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    dirs.sort();
+    let extra = dirs.len().saturating_sub(keep);
+    for (_, path) in dirs.into_iter().take(extra) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}

@@ -1,0 +1,86 @@
+{
+  "description": "Your hand-off's own worktree: {path, branch, base, created, merged_from, conflict}. Work only there, never in the person's folder. A hand-off that points at the person's folder gets one now (from the environment's branch, the person's branch merged in, their changed files brought, never their secrets) and works there from then on; the page's selection does not change. handoff_id defaults to the selected environment's open hand-off.",
+  "function_id": "iii-cloud::handoff::worktree",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::handoff::worktree` input.",
+    "properties": {
+      "handoff_id": {
+        "default": null,
+        "description": "The hand-off (default: the selected environment's open one). `id` works too.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "HandoffWorktreeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BriefBase": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "sha"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "The worktree a hand-off works in: never the person's checkout.",
+    "properties": {
+      "base": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BriefBase"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What the worktree started from: the person's commit it took, else the environment's head."
+      },
+      "branch": {
+        "description": "The fix branch, `iii-cloud/ready-<env>` (or `-2`, ...).",
+        "type": "string"
+      },
+      "conflict": {
+        "description": "The person's commits conflict with the environment's branch: the worktree is at the base, and this says what to merge.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "created": {
+        "description": "This call made the worktree; false: it was there.",
+        "type": "boolean"
+      },
+      "merged_from": {
+        "description": "The person's branch (or the check's `source`) this call merged in on top of the environment's branch; null when nothing came in.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "branch",
+      "created",
+      "path"
+    ],
+    "title": "HandoffWorktree",
+    "type": "object"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "description": "The page's own: skip a cloud warning for now in the selected environment (`skip: false` undoes it); only LOCAL_CONFIG_NOT_SET. The next check shows it skipped, as info. Agents never call it.",
+  "function_id": "iii-cloud::problem::skip",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::problem::skip` input: the page's own. Only the warnings in `values::SKIPPABLE_PROBLEMS` (`LOCAL_CONFIG_NOT_SET`).",
+    "properties": {
+      "code": {
+        "type": "string"
+      },
+      "environment_id": {
+        "description": "The selected environment, as a guard (`ENVIRONMENT_CHANGED`).",
+        "type": "string"
+      },
+      "skip": {
+        "description": "`false` undoes the skip.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "code",
+      "environment_id",
+      "skip"
+    ],
+    "title": "ProblemSkip",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The environment's skipped warning codes after `iii-cloud::problem::skip`, sorted.",
+    "properties": {
+      "codes": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "environment_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "codes",
+      "environment_id"
+    ],
+    "title": "ProblemsSkipped",
+    "type": "object"
+  }
+}

@@ -64,6 +64,52 @@ fn secret_values_and_writes_are_denied_in_root_and_worker_permissions() {
     }
 }
 
+/// iii-cloud (owner decision, 26/11): the agent may do anything but deploy,
+/// approve, merge, roll back or write to iii cloud. Those are the page's.
+#[test]
+fn iii_cloud_deploy_and_writes_are_person_only_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../iii-cloud/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "iii-cloud::deploy",
+            "iii-cloud::api::write",
+            "iii-cloud::secret::provide",
+            "iii-cloud::values::save",
+            "iii-cloud::values::skip",
+            "iii-cloud::problem::skip",
+            "iii-cloud::config::import",
+            "iii-cloud::override::choose",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
+                "{id} should be denied"
+            );
+        }
+        for id in [
+            "iii-cloud::api",
+            "iii-cloud::check",
+            "iii-cloud::check::get",
+            "iii-cloud::handoff::worktree",
+            "iii-cloud::values",
+            "iii-cloud::watch",
+            "iii-cloud::status",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Allow { .. }
+                ),
+                "{id} should be allowed"
+            );
+        }
+    }
+}
+
 /// The rules as written, for a call in `namespace`.
 fn in_ns(permissions: &Permissions, namespace: &str, id: &str) -> Decision {
     permissions.check_in(Some(namespace), id, &json!({}), PermissionMode::Manual)

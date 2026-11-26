@@ -1,0 +1,104 @@
+[
+  {
+    "code": "LOCK_MISSING",
+    "kind": "fix_in_repo",
+    "owner": "agent",
+    "severity": "block"
+  },
+  {
+    "code": "INVALID_COMPOSE_FILE",
+    "kind": "fix_in_repo",
+    "owner": "agent",
+    "severity": "block"
+  },
+  {
+    "code": "MISSING_WORKER_DIRECTORY",
+    "kind": "fix_in_repo",
+    "owner": "agent",
+    "severity": "block"
+  },
+  {
+    "code": "RUNTIME_UNSUPPORTED",
+    "kind": "fix_in_repo",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "LITERAL_CREDENTIAL",
+    "kind": "fix_in_repo",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "SECRET_MISSING",
+    "kind": "resolve_here",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "MULTIPLE_HTTP_GROUPS",
+    "kind": "fix_in_repo",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "WEB_CONTAINER_UNKNOWN",
+    "kind": "fix_in_repo",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "WEB_API_WITHOUT_HTTP",
+    "kind": null,
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "LOCAL_CONFIG_NOT_SET",
+    "kind": "fix_in_repo",
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "ENV_FILE_MISSING",
+    "kind": null,
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "EMPTY_DEFAULT_VARIABLE",
+    "kind": null,
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "SQLITE_DEFAULT_REPLACED",
+    "kind": null,
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "QUEUE_SEMANTICS_CHANGED",
+    "kind": null,
+    "owner": "person",
+    "severity": "warn"
+  },
+  {
+    "code": "ENGINE_SECTION_IGNORED",
+    "kind": null,
+    "owner": "none",
+    "severity": "info"
+  },
+  {
+    "code": "SOME_RESOLVE_CODE",
+    "kind": "resolve_here",
+    "owner": "person",
+    "severity": "block"
+  },
+  {
+    "code": "SOME_BLOCK_WITHOUT_KIND",
+    "kind": null,
+    "owner": "person",
+    "severity": "block"
+  }
+]

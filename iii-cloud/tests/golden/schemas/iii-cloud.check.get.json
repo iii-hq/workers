@@ -1,0 +1,697 @@
+{
+  "description": "Read one kept check by id (status.checks lists them, a deploy names its check_id), as it was recorded; nothing runs again.",
+  "function_id": "iii-cloud::check::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::check::get` input.",
+    "properties": {
+      "id": {
+        "description": "A check's id: `status.checks[].id`, a deploy's `check_id`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "CheckGetRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CommitLine": {
+        "properties": {
+          "message": {
+            "description": "The subject line.",
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "Confirmations": {
+        "properties": {
+          "overrides": {
+            "items": {
+              "$ref": "#/definitions/OverrideConfirmation"
+            },
+            "type": "array"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/definitions/ResourceConfirmation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "overrides",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "Excerpt": {
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "start_line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lines",
+          "start_line"
+        ],
+        "type": "object"
+      },
+      "HealthResult": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "HerePart": {
+        "properties": {
+          "accepts_cloud_block": {
+            "type": "boolean"
+          },
+          "iii_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "problems": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepts_cloud_block",
+          "problems"
+        ],
+        "type": "object"
+      },
+      "OverrideConfirmation": {
+        "properties": {
+          "console": true,
+          "file": true,
+          "setting": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "console",
+          "file",
+          "setting"
+        ],
+        "type": "object"
+      },
+      "Owner": {
+        "oneOf": [
+          {
+            "enum": [
+              "agent",
+              "person"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Info only: nothing to do.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PlanPart": {
+        "properties": {
+          "at_least": {
+            "description": "The plan stops at its first blocking step: more may follow.",
+            "type": "boolean"
+          },
+          "blocking": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "confirmations": {
+            "$ref": "#/definitions/Confirmations"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorkerError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/PlanStatus"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PlanSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What the plan runs: its workers and machine groups. Null without a plan."
+          },
+          "warnings": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "web_candidates": true
+        },
+        "required": [
+          "at_least",
+          "blocking",
+          "confirmations",
+          "status",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "PlanStatus": {
+        "enum": [
+          "clean",
+          "blocked",
+          "not_pushed",
+          "commit_not_planned",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "PlanSummary": {
+        "properties": {
+          "groups": {
+            "description": "The groups' names, in the plan's order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "workers": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "groups",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "Problem": {
+        "properties": {
+          "cloud_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Excerpt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "sha1(source, code, file, line), stable across checks.",
+            "type": "string"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner": {
+            "$ref": "#/definitions/Owner"
+          },
+          "severity": {
+            "$ref": "#/definitions/Severity"
+          },
+          "skipped": {
+            "description": "The person skipped its name for now (`values::skip`). `EMPTY_DEFAULT_VARIABLE` then has severity `info`; `SECRET_MISSING` stays `block`.",
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/definitions/Source"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "id",
+          "owner",
+          "severity",
+          "source",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ResourceConfirmation": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "binding": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "alias",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "RouteCount": {
+        "properties": {
+          "count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "prefix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "type": "object"
+      },
+      "Run": {
+        "properties": {
+          "check_id": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "healthcheck": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/HealthResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "log_tail": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "not_covered": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "routes": {
+            "$ref": "#/definitions/RouteCount"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/definitions/Stage"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/RunStatus"
+          },
+          "workers": {
+            "$ref": "#/definitions/WorkerCount"
+          }
+        },
+        "required": [
+          "check_id",
+          "commit",
+          "engine",
+          "id",
+          "log_tail",
+          "not_covered",
+          "routes",
+          "stages",
+          "started_at",
+          "status",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "RunError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/definitions/StageName"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "running",
+          "passed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "Severity": {
+        "enum": [
+          "block",
+          "warn",
+          "info"
+        ],
+        "type": "string"
+      },
+      "Source": {
+        "enum": [
+          "cloud_plan",
+          "check_here"
+        ],
+        "type": "string"
+      },
+      "Stage": {
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "$ref": "#/definitions/StageName"
+          },
+          "status": {
+            "$ref": "#/definitions/StageStatus"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "StageName": {
+        "enum": [
+          "install",
+          "build",
+          "release",
+          "compose_up",
+          "workers",
+          "routes",
+          "healthcheck"
+        ],
+        "type": "string"
+      },
+      "StageStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "passed",
+          "failed",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "WorkerCount": {
+        "properties": {
+          "ready": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ready",
+          "total"
+        ],
+        "type": "object"
+      },
+      "WorkerError": {
+        "description": "`{code, message, status?, fix?}` inside records.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "base": {
+        "description": "The environment branch's head when checked.",
+        "type": "string"
+      },
+      "checked_at": {
+        "type": "string"
+      },
+      "commit": {
+        "type": "string"
+      },
+      "commits": {
+        "default": [],
+        "description": "The commits of `base..commit`, newest first, at most 50. Empty when the base was not read or the commit is not on this machine.",
+        "items": {
+          "$ref": "#/definitions/CommitLine"
+        },
+        "type": "array"
+      },
+      "duration_ms": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "environment_id": {
+        "type": "string"
+      },
+      "handoff_id": {
+        "default": null,
+        "description": "The hand-off whose agent asked for it; null for the page's own checks.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "here": {
+        "$ref": "#/definitions/HerePart"
+      },
+      "id": {
+        "type": "string"
+      },
+      "manifest": {
+        "default": null,
+        "description": "The compose file it was checked with, from the repository root. When it is not the environment's, deploying this check switches the environment to it.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "plan": {
+        "$ref": "#/definitions/PlanPart"
+      },
+      "problems": {
+        "description": "Cloud plan first, then the checks here.",
+        "items": {
+          "$ref": "#/definitions/Problem"
+        },
+        "type": "array"
+      },
+      "ready": {
+        "type": "boolean"
+      },
+      "report": {
+        "type": "string"
+      },
+      "run": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Run"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "base",
+      "checked_at",
+      "commit",
+      "duration_ms",
+      "environment_id",
+      "here",
+      "id",
+      "plan",
+      "problems",
+      "ready",
+      "report"
+    ],
+    "title": "Check",
+    "type": "object"
+  }
+}

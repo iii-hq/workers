@@ -1,0 +1,98 @@
+{
+  "description": "Called after each iii-cloud record changes (connection, project, check, run, secret, deploy); returns the event. Takes no args; observe it with filters on input.kind and input.terminal. Only the iii-cloud worker calls it.",
+  "function_id": "iii-cloud::on-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EventKind": {
+        "enum": [
+          "agent",
+          "connection",
+          "project",
+          "check",
+          "run",
+          "secret",
+          "deploy"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::on-change` event: one record changed.",
+    "properties": {
+      "id": {
+        "description": "The record's id (`current` for `connection` and `project`).",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/definitions/EventKind"
+      },
+      "record": {
+        "description": "Connection, Project, Check, Run, SecretRequest or Deploy."
+      },
+      "summary": {
+        "description": "One line, e.g. \"deploy 7a1f3b2 failed at workers: OOMKilled\".",
+        "type": "string"
+      },
+      "terminal": {
+        "description": "A run or deploy finished, a secret resolved, the connection settled.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "id",
+      "kind",
+      "record",
+      "summary",
+      "terminal"
+    ],
+    "title": "ChangeEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EventKind": {
+        "enum": [
+          "agent",
+          "connection",
+          "project",
+          "check",
+          "run",
+          "secret",
+          "deploy"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::on-change` event: one record changed.",
+    "properties": {
+      "id": {
+        "description": "The record's id (`current` for `connection` and `project`).",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/definitions/EventKind"
+      },
+      "record": {
+        "description": "Connection, Project, Check, Run, SecretRequest or Deploy."
+      },
+      "summary": {
+        "description": "One line, e.g. \"deploy 7a1f3b2 failed at workers: OOMKilled\".",
+        "type": "string"
+      },
+      "terminal": {
+        "description": "A run or deploy finished, a secret resolved, the connection settled.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "id",
+      "kind",
+      "record",
+      "summary",
+      "terminal"
+    ],
+    "title": "ChangeEvent",
+    "type": "object"
+  }
+}

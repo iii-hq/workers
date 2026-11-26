@@ -1,0 +1,28 @@
+{
+  "can_deploy": false,
+  "fingerprint": "fp-abc",
+  "plan": {
+    "environment": "production",
+    "source": {"commit": "3c4d2e0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "branch": "main", "manifest": "worker-compose.yaml", "manifest_sha256": "m1", "lock_sha256": "l1"},
+    "settings": {"build": null, "release": {"worker": "api", "command": "pnpm migrate", "timeout": "5m", "source": "file"}, "healthcheck": null, "web_candidates": {"containers": [{"name": "api", "own": true, "console": false, "port": 3000}], "sites": [], "http": true}},
+    "workers": [{"name": "api", "kind": "path", "runtime": "node", "runtime_source": "detected"}],
+    "groups": [{"name": "web", "workers": ["http", "api"]}],
+    "resources": [
+      {"kind": "database", "alias": "primary", "mode": "managed", "action": "create", "via": "database", "binding": "DATABASE_PRIMARY_URL", "postgres": {"database": "new", "tier": "shared"}},
+      {"kind": "queue", "alias": "default", "mode": "managed", "action": "reuse", "via": "queue", "binding": null}
+    ],
+    "variables": [{"name": "SESSION_SECRET", "type": "secret", "required_by": ["api"], "applies": "all", "status": "missing"}],
+    "overrides": [{"setting": "healthcheck", "console": {"path": "/old"}, "file": {"path": "/health"}}],
+    "issues": [
+      {"code": "INVALID_COMPOSE_FILE", "severity": "block", "kind": "fix_in_repo", "context": {"iii_code": "MISSING_WORKER_DIRECTORY"}, "location": {"file": "worker-compose.yaml", "line": 12, "path": "containers.api.worker"}, "excerpt": {"start_line": 10, "lines": ["containers:", "  api:", "    worker: path://./workers/api"]}, "message": "The folder workers/api is not in the repository. Version it or use package://.", "fix": "Version the folder."},
+      {"code": "LOCK_MISSING", "severity": "block", "kind": "fix_in_repo", "location": {"file": "worker-compose.lock"}, "message": "The lock is missing.", "fix": "Run iii compose --lock."},
+      {"code": "SECRET_MISSING", "severity": "block", "kind": "fix_in_repo", "location": {"setting": "variables"}, "message": "SESSION_SECRET has no value."},
+      {"code": "WEB_CONTAINER_UNKNOWN", "severity": "block", "kind": "resolve_here", "location": {}, "message": "cloud.web names no container."},
+      {"code": "SQLITE_DEFAULT_REPLACED", "severity": "warn", "kind": null, "location": {"file": "worker-compose.yaml", "line": 20}, "message": "The cloud replaces SQLite with Postgres."},
+      {"code": "ENGINE_SECTION_IGNORED", "severity": "info", "kind": null, "location": {}, "message": "The engine section is ignored."}
+    ],
+    "deploy_issues": [
+      {"code": "LOCAL_CONFIG_NOT_SET", "severity": "warn", "kind": "fix_in_repo", "location": {}, "message": "A setting is not set. Set it."}
+    ]
+  }
+}

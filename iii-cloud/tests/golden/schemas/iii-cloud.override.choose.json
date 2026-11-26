@@ -1,0 +1,91 @@
+{
+  "description": "The page's own: keep the person's choice for a console override of the newest check (file: the file's value wins at deploy; console: keep the console's, which takes a change to the file). A changed console or file value drops it. Agents never call it.",
+  "function_id": "iii-cloud::override::choose",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "OverrideChoice": {
+        "description": "Which value of a console override the person keeps.",
+        "oneOf": [
+          {
+            "description": "The file's value wins at deploy (what the deploy does already).",
+            "enum": [
+              "file"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The console's value is kept, which takes a change to the file.",
+            "enum": [
+              "console"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`iii-cloud::override::choose` input: the page's own.",
+    "properties": {
+      "choice": {
+        "$ref": "#/definitions/OverrideChoice"
+      },
+      "environment_id": {
+        "description": "The selected environment, as a guard (`ENVIRONMENT_CHANGED`).",
+        "type": "string"
+      },
+      "setting": {
+        "description": "The override's setting (`web`), as the newest check lists it.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "choice",
+      "environment_id",
+      "setting"
+    ],
+    "title": "OverrideChoose",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "OverrideChoice": {
+        "description": "Which value of a console override the person keeps.",
+        "oneOf": [
+          {
+            "description": "The file's value wins at deploy (what the deploy does already).",
+            "enum": [
+              "file"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The console's value is kept, which takes a change to the file.",
+            "enum": [
+              "console"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The environment's choices after `iii-cloud::override::choose`, as `Status.override_choices`.",
+    "properties": {
+      "environment_id": {
+        "type": "string"
+      },
+      "override_choices": {
+        "additionalProperties": {
+          "$ref": "#/definitions/OverrideChoice"
+        },
+        "type": "object"
+      }
+    },
+    "required": [
+      "environment_id",
+      "override_choices"
+    ],
+    "title": "OverrideChosen",
+    "type": "object"
+  }
+}

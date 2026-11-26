@@ -1,0 +1,22 @@
+# Seed installed as `initial_value` with the configuration worker on first
+# registration; the live value is authoritative thereafter and hot-reloads.
+# The engine URL is bootstrap and lives on the --url flag, not here.
+
+# The console. The API is <cloud_url>/api/v1 and the device page <cloud_url>/device.
+# A change signs out: the token belongs to one cloud.
+cloud_url: https://cloud.iii.dev
+
+# The `iii` the run here uses. It must report the cloud's engine version.
+iii_bin: iii
+
+# `gh pr merge` flag: merge, squash or rebase.
+merge_method: squash
+
+# The local Postgres for a database resource (pgvector included, like the cloud).
+postgres_image: pgvector/pgvector:pg17
+
+# The whole run here, from install to healthcheck, in seconds.
+run_timeout_s: 900
+
+# Records and run logs, relative to III_COMPOSE_DIR.
+data_dir: data/iii-cloud

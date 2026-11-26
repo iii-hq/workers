@@ -1,0 +1,73 @@
+{
+  "description": "The page's own: change an iii cloud route as the person (POST, PUT, PATCH, DELETE); secret values are refused. Agents never call it.",
+  "function_id": "iii-cloud::api::write",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "HttpMethod": {
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::api` input.",
+    "properties": {
+      "body": {
+        "default": null
+      },
+      "idempotency_key": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "if_match": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "method": {
+        "$ref": "#/definitions/HttpMethod"
+      },
+      "path": {
+        "description": "Relative to `/api/v1`; starts with `/`, no `..`, `//` or scheme.",
+        "type": "string"
+      },
+      "query": {
+        "default": null
+      }
+    },
+    "required": [
+      "method",
+      "path"
+    ],
+    "title": "ApiRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::api` output: the cloud's answer, passed through.",
+    "properties": {
+      "body": true,
+      "status": {
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "body",
+      "status"
+    ],
+    "title": "ApiResponse",
+    "type": "object"
+  }
+}

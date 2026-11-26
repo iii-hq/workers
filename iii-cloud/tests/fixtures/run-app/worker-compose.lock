@@ -1,0 +1,49 @@
+version: 1
+containers:
+  http:
+    worker: package://http
+    requested: latest
+    resolved:
+      name: http
+      version: 0.23.6
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: a6b931b9f4208a4b088ee566b2490e3267a7eba631b03b53d14ba17e24e2e7c2
+          url: https://api.workers.iii.dev/download/http/0.23.6/aarch64-apple-darwin
+        aarch64-pc-windows-msvc:
+          sha256: 307b96870f39992112d3b9f3b1bab70fc5dfc11af60fa6e0eade5576e97cdb8e
+          url: https://api.workers.iii.dev/download/http/0.23.6/aarch64-pc-windows-msvc
+        aarch64-unknown-linux-gnu:
+          sha256: df53a6288dac7c76adfd71d7d6fa3d1edd51022d7667b2e4687e42b38505ee38
+          url: https://api.workers.iii.dev/download/http/0.23.6/aarch64-unknown-linux-gnu
+        armv7-unknown-linux-gnueabihf:
+          sha256: 707c1876a3f98358def806206af5e477390c5c0843e05f2ecf3211c79e3ff474
+          url: https://api.workers.iii.dev/download/http/0.23.6/armv7-unknown-linux-gnueabihf
+        x86_64-apple-darwin:
+          sha256: 6de45b0e9a5a21f99be053457db600ed9a30d5192c1cca81b27eef5c1355e63f
+          url: https://api.workers.iii.dev/download/http/0.23.6/x86_64-apple-darwin
+        x86_64-pc-windows-msvc:
+          sha256: 05fce046a7fc35fcb2da1088a3ca0702b9f30940ba49a5627670300ab5f789a3
+          url: https://api.workers.iii.dev/download/http/0.23.6/x86_64-pc-windows-msvc
+        x86_64-unknown-linux-gnu:
+          sha256: 5d15030f7a1c73431b5c8687f4b03e9a56426a559b7550b5a39f8482f17870a8
+          url: https://api.workers.iii.dev/download/http/0.23.6/x86_64-unknown-linux-gnu
+        x86_64-unknown-linux-musl:
+          sha256: 9cf97a1c2dd226d2eb6e72389b86ae1ac8ebf6479100137830df6700069ce7ac
+          url: https://api.workers.iii.dev/download/http/0.23.6/x86_64-unknown-linux-musl
+      default_config:
+        concurrency_request_limit: 1024
+        cors:
+          allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+          allowed_origins:
+          - '*'
+        default_timeout: 30000
+        host: 0.0.0.0
+        port: 3111
+        webhook_listener: null

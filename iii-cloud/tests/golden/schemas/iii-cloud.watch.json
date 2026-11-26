@@ -1,0 +1,343 @@
+{
+  "description": "Follow a deploy to Ready and bring back the evidence when it fails.",
+  "function_id": "iii-cloud::watch",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::watch` input.",
+    "properties": {
+      "deployment_id": {
+        "default": null,
+        "description": "Default: the newest deployment of the selected environment.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "handoff_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "WatchRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DeployCommit": {
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha"
+        ],
+        "type": "object"
+      },
+      "DeployError": {
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hint",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "DeployFailure": {
+        "description": "A failed deploy in plain words (spec: readable failures).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "log_tail": {
+            "description": "The last ~40 lines of the failing stage's log, oldest first, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "release_command": {
+            "default": null,
+            "description": "The release command from the manifest, for a release failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "silent": {
+            "default": false,
+            "description": "The log shows an exit status but no error text.",
+            "type": "boolean"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "title": {
+            "description": "Plain, per code: \"The release command failed: `pnpm migrate`\".",
+            "type": "string"
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hint",
+          "log_tail",
+          "stage",
+          "title"
+        ],
+        "type": "object"
+      },
+      "DeployStage": {
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "Outcome": {
+        "enum": [
+          "running",
+          "ready",
+          "failed",
+          "no_route",
+          "canceled",
+          "replaced"
+        ],
+        "type": "string"
+      },
+      "ReleaseRow": {
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/ReleaseRowStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReleaseRowStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "passed",
+          "failed"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "approved_by_worker": {
+        "type": "boolean"
+      },
+      "check_id": {
+        "default": null,
+        "description": "The check this worker deployed (`deploy {check_id}`); null for a deployment made elsewhere.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "checked_ready": {
+        "type": "boolean"
+      },
+      "commit": {
+        "$ref": "#/definitions/DeployCommit"
+      },
+      "console_url": {
+        "type": "string"
+      },
+      "created_at": {
+        "type": "string"
+      },
+      "environment_id": {
+        "type": "string"
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DeployError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DeployFailure"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "For a failed deploy: what failed, in plain words, with the failing stage's log."
+      },
+      "finished_at": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "from_console": {
+        "default": false,
+        "description": "This worker did not create it: made in the console (the cloud's `type` is `manual` for both).",
+        "type": "boolean"
+      },
+      "id": {
+        "type": "string"
+      },
+      "log_tail": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "number": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "outcome": {
+        "$ref": "#/definitions/Outcome"
+      },
+      "pr": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "release_row": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ReleaseRow"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "replaced_by": {
+        "default": null,
+        "description": "The deployment that replaced this one, when it is `replaced`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "stages": {
+        "items": {
+          "$ref": "#/definitions/DeployStage"
+        },
+        "type": "array"
+      },
+      "status": {
+        "type": "string"
+      },
+      "status_detail": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "approved_by_worker",
+      "checked_ready",
+      "commit",
+      "console_url",
+      "created_at",
+      "environment_id",
+      "id",
+      "log_tail",
+      "number",
+      "outcome",
+      "stages",
+      "status",
+      "type"
+    ],
+    "title": "Deploy",
+    "type": "object"
+  }
+}

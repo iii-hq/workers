@@ -1,0 +1,289 @@
+{
+  "version": 1,
+  "worker": {
+    "version": "0.1.0",
+    "iii_version": "0.27.0",
+    "cloud_engine": "0.27.0"
+  },
+  "connection": {
+    "status": "connected",
+    "method": "browser",
+    "cloud_url": "https://cloud.iii.dev",
+    "user": {
+      "id": "u1",
+      "email": "you@example.com",
+      "name": null
+    },
+    "teams": [
+      {
+        "id": "5b0d6f2e-0c1a-4e3b-9a77-1d2c3b4a5f60",
+        "name": "iii",
+        "slug": "iii",
+        "role": "Owner"
+      }
+    ],
+    "api_key": null,
+    "device": null,
+    "expires_at": "2027-02-24T11:08:49.016Z",
+    "error": null
+  },
+  "project": {
+    "path": "/home/you/workspaces/registry",
+    "repository": "iii-hq/registry",
+    "checkout": {
+      "branch": "main",
+      "head": "3c4d2e0a91b7f5d6c8e2a4b0917d3e5f6a8c1b2d",
+      "changed_files": ["api/worker-compose-prod.yaml", "README.md"],
+      "ahead": 0
+    },
+    "team": {
+      "id": "5b0d6f2e-0c1a-4e3b-9a77-1d2c3b4a5f60",
+      "name": "iii",
+      "slug": "iii"
+    },
+    "teams": [],
+    "cloud_project": {
+      "id": "p1",
+      "name": "registry",
+      "slug": "registry"
+    },
+    "environment": {
+      "id": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+      "name": "production",
+      "production": true,
+      "branch": "main",
+      "manifest": "api/worker-compose-prod.yaml",
+      "url": null
+    },
+    "environments": [
+      {
+        "id": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+        "name": "production",
+        "production": true,
+        "branch": "main"
+      }
+    ],
+    "importable": null,
+    "github_access": true,
+    "workspace": {
+      "mode": "worktree",
+      "path": "~/workspaces/registry-iii-cloud",
+      "branch": "iii-cloud/ready-production"
+    }
+  },
+  "check": {
+    "id": "chk-ready",
+    "environment_id": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+    "commit": "3c4d2e0a91b7f5d6c8e2a4b0917d3e5f6a8c1b2d",
+    "base": "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9",
+    "checked_at": "2026-11-26T11:06:49.016Z",
+    "duration_ms": 2100,
+    "plan": {
+      "status": "clean",
+      "fingerprint": "e1b7ccfe5a0d49c3b6f28a71d4e9035c8b16f2a7",
+      "digest": "d1",
+      "blocking": 0,
+      "warnings": 0,
+      "at_least": false,
+      "confirmations": {
+        "resources": [
+          {
+            "kind": "postgres",
+            "alias": "db",
+            "binding": "DATABASE_URL",
+            "tier": "shared"
+          }
+        ],
+        "overrides": [
+          {
+            "setting": "Web",
+            "console": true,
+            "file": false
+          },
+          {
+            "setting": "healthcheck",
+            "console": null,
+            "file": "/api/health"
+          },
+          {
+            "setting": "release command",
+            "console": null,
+            "file": "db:migrate"
+          }
+        ]
+      },
+      "web_candidates": null,
+      "error": null
+    },
+    "here": {
+      "problems": 0,
+      "iii_version": "0.27.0",
+      "accepts_cloud_block": true
+    },
+    "problems": [],
+    "run": {
+      "id": "run1",
+      "check_id": "chk-ready",
+      "commit": "3c4d2e0a91b7f5d6c8e2a4b0917d3e5f6a8c1b2d",
+      "engine": "0.27.0",
+      "status": "passed",
+      "started_at": "2026-11-26T11:05:49.016Z",
+      "finished_at": "2026-11-26T11:06:47.016Z",
+      "stages": [
+        {
+          "name": "install",
+          "status": "passed",
+          "detail": "pnpm install --frozen-lockfile",
+          "duration_ms": 21000
+        },
+        {
+          "name": "build",
+          "status": "passed",
+          "detail": "cloud.build",
+          "duration_ms": 9000
+        },
+        {
+          "name": "release",
+          "status": "passed",
+          "detail": "db:migrate",
+          "duration_ms": 4000
+        },
+        {
+          "name": "compose_up",
+          "status": "passed",
+          "detail": "registry, http, storage",
+          "duration_ms": 12000
+        },
+        {
+          "name": "workers",
+          "status": "passed",
+          "detail": null,
+          "duration_ms": 3000
+        },
+        {
+          "name": "routes",
+          "status": "passed",
+          "detail": null,
+          "duration_ms": 1000
+        },
+        {
+          "name": "healthcheck",
+          "status": "passed",
+          "detail": null,
+          "duration_ms": 1000
+        }
+      ],
+      "workers": {
+        "ready": 3,
+        "total": 3
+      },
+      "routes": {
+        "count": 14,
+        "prefix": "/api"
+      },
+      "healthcheck": {
+        "path": "/api/health",
+        "status": 200
+      },
+      "not_covered": ["The cloud's build container", "Production's secret values", "Its machine size", "Real traffic"],
+      "log_tail": [
+        "[http]     14 routes under /api",
+        "[registry] ready, catalog loaded",
+        "[engine]   3 of 3 workers registered",
+        "GET /api/health 200 4ms"
+      ],
+      "error": null
+    },
+    "ready": true,
+    "report": "## iii cloud readiness\nCloud plan for 3c4d2e0: no blocking issue."
+  },
+  "secrets": [],
+  "variables": [],
+  "pr": {
+    "number": 12,
+    "url": "https://github.com/iii-hq/registry/pull/12",
+    "title": "Make registry ready for iii cloud",
+    "state": "MERGED",
+    "head": "iii-cloud/ready-production",
+    "head_sha": "3c4d2e0a91b7f5d6c8e2a4b0917d3e5f6a8c1b2d",
+    "base": "main",
+    "body": "## iii cloud readiness\n\nCloud plan for 3c4d2e0: no blocking issue.\n\nRan here like the cloud: 3 of 3 workers, 14 routes under `/api`, healthcheck 200.\n\nChanges: compose lock, iii-sdk 0.27.0, `cloud.release`, `cloud.web`, `cloud.healthcheck`, the http and storage folders.\n\nNot covered: the cloud's build container, production's secret values, its machine size and real traffic.",
+    "checks": "pending",
+    "mergeable": "MERGEABLE",
+    "main_moved": false
+  },
+  "pr_error": null,
+  "deploys": [
+    {
+      "id": "dep-7a1f3b2",
+      "number": 41,
+      "environment_id": "9a1c2b3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d",
+      "commit": {
+        "sha": "7a1f3b2c9d8e0f1a2b3c4d5e6f7a8b9c0d1e2f3a",
+        "message": "Make registry ready for iii cloud (#12)"
+      },
+      "type": "push",
+      "status": "in_progress",
+      "status_detail": null,
+      "stages": [
+        {
+          "name": "validation",
+          "status": "passed",
+          "detail": "the plan matches the one you approved",
+          "started_at": "2026-11-26T10:58:49.016Z",
+          "finished_at": "2026-11-26T10:58:54.016Z"
+        },
+        {
+          "name": "build",
+          "status": "passed",
+          "detail": "registry, http, storage",
+          "started_at": "2026-11-26T10:58:49.016Z",
+          "finished_at": "2026-11-26T11:01:27.016Z"
+        },
+        {
+          "name": "resources",
+          "status": "passed",
+          "detail": "shared Postgres created",
+          "started_at": "2026-11-26T10:58:49.016Z",
+          "finished_at": "2026-11-26T10:59:30.016Z"
+        },
+        {
+          "name": "config_secrets",
+          "status": "passed",
+          "detail": null,
+          "started_at": "2026-11-26T10:58:49.016Z",
+          "finished_at": "2026-11-26T10:58:53.016Z"
+        },
+        {
+          "name": "workers",
+          "status": "in_progress",
+          "detail": "2 of 3 ready",
+          "started_at": "2026-11-26T11:07:49.016Z",
+          "finished_at": null
+        },
+        {
+          "name": "routes_tls",
+          "status": "pending",
+          "detail": "routes under /api and GET /api/health 200",
+          "started_at": null,
+          "finished_at": null
+        }
+      ],
+      "release_row": {
+        "status": "passed",
+        "duration_ms": 22000
+      },
+      "outcome": "running",
+      "error": null,
+      "log_tail": [],
+      "pr": 12,
+      "replaced_by": null,
+      "approved_by_worker": true,
+      "checked_ready": true,
+      "created_at": "2026-11-26T11:04:49.016Z",
+      "finished_at": null,
+      "console_url": "https://cloud.iii.dev/iii/registry/production/deployments/41"
+    }
+  ],
+  "refreshed_at": "2026-11-26T11:08:49.016Z"
+}

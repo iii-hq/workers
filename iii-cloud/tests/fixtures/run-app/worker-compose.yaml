@@ -1,0 +1,24 @@
+namespace: iii-cloud-fixture
+containers:
+  http:
+    worker: package://http
+    version: latest
+  api:
+    worker: path://./workers/api
+    scripts:
+      run: node index.mjs
+    environment:
+      LEAKY: ${LEAKY:-}
+cloud:
+  runtimes:
+    api: node@24
+  build:
+    command: echo building
+  release:
+    worker: api
+    command: node -e "console.log('released', process.env.LEAKY)"
+  healthcheck:
+    path: /api/health
+    timeout: 20s
+  web:
+    api: { prefix: /api }

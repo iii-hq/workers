@@ -1,0 +1,52 @@
+{
+  "description": "The page's own: skip names for now in the selected environment (`skip: false` undoes it). A skipped name gets an empty value in the run here and no LOCAL_VARIABLE_UNSET; EMPTY_DEFAULT_VARIABLE turns to info; SECRET_MISSING stays a block. Agents never call it.",
+  "function_id": "iii-cloud::values::skip",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::values::skip` input: the page's own. Names only.",
+    "properties": {
+      "environment_id": {
+        "description": "The selected environment, as a guard (`ENVIRONMENT_CHANGED`).",
+        "type": "string"
+      },
+      "names": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "skip": {
+        "description": "`false` undoes the skip.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "environment_id",
+      "names",
+      "skip"
+    ],
+    "title": "ValuesSkip",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The environment's skipped names after `iii-cloud::values::skip`, sorted.",
+    "properties": {
+      "environment_id": {
+        "type": "string"
+      },
+      "names": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "environment_id",
+      "names"
+    ],
+    "title": "ValuesSkipped",
+    "type": "object"
+  }
+}

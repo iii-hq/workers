@@ -1,0 +1,97 @@
+/* Settings tab (U8): Mng3 and the change-file dialog (Mng11). Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-set {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-form {
+  padding: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-skel {
+  display: block;
+  height: 120px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cf {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cf-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cf-foot > p {
+  flex: 1 1 240px;
+}
+/* O2/O4: the workers' config, per worker: file → worker, its fields, what is left out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-fields {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-out,
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-skipped {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-skipped {
+  padding: 0;
+  list-style: none;
+}

@@ -754,6 +754,38 @@ workers:
       binary: http
       targets: *id001
     publish: true
+  iii-cloud:
+    source:
+      path: iii-cloud
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: iii-cloud
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: iii-cloud/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   iii-directory:
     source:
       path: iii-directory

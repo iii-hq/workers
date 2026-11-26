@@ -1,0 +1,143 @@
+/* Deploys tab (U7): the list beside one deploy, its stages and log, the rollback dialog; FailureCard.
+   Every rule starts with [data-iii-ui='iii-cloud']. */
+/* The list is a flush 320 px column under the tabs, full height, a hairline on its right; the deploy beside it. */
+[data-iii-ui='iii-cloud'] .iii-cloud-body:has(> .iii-cloud-deploys) {
+  padding: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-deploys {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 320px minmax(0, 1fr);
+  align-items: stretch;
+  min-width: 0;
+  max-width: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-deploys > .iii-cloud-dlist {
+  border-right: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dpane {
+  min-width: 0;
+  padding: 20px 24px;
+}
+@container iii-cloud (max-width: 880px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-deploys {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-deploys > .iii-cloud-dlist {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-edge);
+  }
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dlist {
+  min-width: 0;
+  padding: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-drow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-drow .iii-cloud-mono {
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dnum {
+  min-width: 24px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-link {
+  color: var(--color-ink);
+  text-decoration: underline;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ddetail,
+[data-iii-ui='iii-cloud'] .iii-cloud-dmeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ddetail {
+  gap: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dmeta {
+  gap: 4px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dhead {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-failure .iii-cloud-h {
+  line-height: 1.4;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-fold {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-fold {
+  min-height: 44px;
+  font-size: 14px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-fold-title {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-fold-body {
+  padding: 0 8px 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-logbody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--color-edge);
+  line-height: 1.5;
+}
+@container (max-width: 420px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-rb-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb-row dt {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb-type {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rb-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+}

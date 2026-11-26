@@ -1,0 +1,61 @@
+[workspace]
+
+[package]
+name = "iii-cloud"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "iii-cloud"
+path = "src/main.rs"
+
+# Library target so tests/ can exercise the public contract; the binary is a
+# thin wiring shim.
+[lib]
+name = "iii_cloud"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.27.0"
+iii-console-ui = { path = "../crates/console-ui" }
+# Must stay on the same schemars major as iii-sdk so the derived schemas line up.
+schemars = { version = "0.8", features = ["chrono"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "signal",
+    "process",
+    "time",
+    "io-util",
+    "fs",
+    "net",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+anyhow = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

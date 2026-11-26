@@ -1,0 +1,524 @@
+//! What the adversarial reviews found: agent tools follow their own hand-off,
+//! old-attempt commits, a missing credential, an empty repository, a busy run,
+//! pruning, retiring, the device sign-in after a restart, and small contracts.
+
+mod support;
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use iii_cloud::check::check;
+use iii_cloud::handoff::{create, retired};
+use iii_cloud::project::use_project;
+use iii_cloud::types::*;
+use serde_json::{Value, json};
+use support::Harness;
+use support::repo::*;
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn plan_part() -> PlanPart {
+    iii_cloud::check::plan_part(&json!({"can_deploy": true, "plan": {}})).0
+}
+
+fn a_check(id: &str, commit: &str, run: Option<Run>) -> Check {
+    Check {
+        id: id.into(),
+        environment_id: ENV.into(),
+        commit: commit.into(),
+        base: String::new(),
+        checked_at: "t".into(),
+        duration_ms: 0,
+        plan: plan_part(),
+        here: HerePart {
+            problems: 0,
+            iii_version: None,
+            accepts_cloud_block: true,
+        },
+        problems: vec![],
+        run,
+        ready: false,
+        report: String::new(),
+        manifest: None,
+        handoff_id: None,
+        commits: vec![],
+    }
+}
+
+fn a_run(id: &str, status: RunStatus, started: &str) -> Run {
+    Run {
+        id: id.into(),
+        check_id: "chk".into(),
+        commit: "abc".into(),
+        engine: "0.27.0".into(),
+        status,
+        started_at: started.into(),
+        finished_at: None,
+        stages: vec![],
+        workers: WorkerCount { ready: 0, total: 0 },
+        routes: RouteCount {
+            count: 0,
+            prefix: None,
+        },
+        healthcheck: None,
+        not_covered: vec![],
+        log_tail: vec![],
+        error: None,
+    }
+}
+
+async fn setup() -> (Harness, MockServer, Repo, PathBuf) {
+    let server = MockServer::start().await;
+    let repo = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/support-matrix"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"engine": "0.27.0", "minimum_sdk": "0.26"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path_regex(r"/plan$")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"can_deploy": true, "fingerprint": "fp", "plan": {"settings": {}, "resources": [], "issues": [], "deploy_issues": []}}))).mount(&server).await;
+    let p = use_project(
+        &h.ctx,
+        UseRequest {
+            path: repo.checkout.to_string_lossy().into(),
+            environment_id: Some(ENV.into()),
+            mode: WorkspaceMode::Worktree,
+            bring_changes: None,
+            cloud_project_id: None,
+            from: None,
+            source: None,
+        },
+    )
+    .await
+    .unwrap();
+    let ws = PathBuf::from(p.workspace.unwrap().path);
+    h.ctx
+        .store
+        .update(|s| s.put_check(a_check("chk", "abc", None)));
+    (h, server, repo, ws)
+}
+
+fn ready_req() -> HandoffRequest {
+    HandoffRequest {
+        check_id: Some("chk".into()),
+        kind: HandoffKind::Ready,
+        deployment_id: None,
+        text: None,
+        candidate: None,
+    }
+}
+
+fn commit_at(ws: &std::path::Path, file: &str, date: &str) {
+    std::fs::write(ws.join(file), file).unwrap();
+    git(ws, &["add", "."]);
+    let out = std::process::Command::new("git")
+        .args(["commit", "-qm", file])
+        .current_dir(ws)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.test")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.test")
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
+#[tokio::test]
+async fn an_agent_tool_follows_its_own_handoff_and_refuses_another_branch() {
+    let (h, _s, _r, ws) = setup().await;
+    let a = create(&h.ctx, ready_req()).await.unwrap();
+    let with = |id: &str| CheckRequest {
+        handoff_id: Some(id.into()),
+        ..Default::default()
+    };
+    // The hand-off's own worktree is checked.
+    let c = check(&h.ctx, with(&a.id)).await.unwrap();
+    assert_eq!(c.commit, git(&ws, &["rev-parse", "HEAD"]));
+    // Someone switched the worktree to another branch: refused, for every tool.
+    git(&ws, &["checkout", "-q", "-b", "elsewhere"]);
+    assert_eq!(
+        check(&h.ctx, with(&a.id)).await.unwrap_err().code,
+        "WRONG_WORKTREE"
+    );
+    assert_eq!(
+        iii_cloud::watch::watch(
+            &h.ctx,
+            WatchRequest {
+                handoff_id: Some(a.id.clone()),
+                deployment_id: None
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "WRONG_WORKTREE"
+    );
+    assert_eq!(
+        check(&h.ctx, with("no-such")).await.unwrap_err().code,
+        "INVALID_REQUEST"
+    );
+}
+
+#[tokio::test]
+async fn progress_is_bound_to_the_callers_handoff() {
+    let (h, _s, _r, _ws) = setup().await;
+    let a = create(&h.ctx, ready_req()).await.unwrap();
+    let ok = iii_cloud::handoff::progress(
+        &h.ctx,
+        HandoffProgressRequest {
+            handoff_id: Some(a.id.clone()),
+            working_on: vec![],
+            note: Some("on it".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(ok.note.as_deref(), Some("on it"));
+    let err = iii_cloud::handoff::progress(
+        &h.ctx,
+        HandoffProgressRequest {
+            handoff_id: Some("another".into()),
+            working_on: vec![],
+            note: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "INVALID_REQUEST");
+}
+
+#[tokio::test]
+async fn commits_from_an_earlier_try_block_ready_and_the_brief_names_the_base() {
+    let (h, _s, repo, ws) = setup().await;
+    let a = create(&h.ctx, ready_req()).await.unwrap();
+    let base = git(&repo.origin, &["rev-parse", "main"]);
+    let brief = |h: &Harness| {
+        iii_cloud::handoff::brief(
+            &h.ctx.store.read(|s| s.clone()),
+            &h.ctx.store.read(|s| s.handoffs[0].clone()),
+            &[],
+        )
+    };
+    assert_eq!(
+        brief(&h).base,
+        Some(BriefBase {
+            branch: "main".into(),
+            sha: base.clone()
+        })
+    );
+    // A commit made before this worktree started, not on the base.
+    commit_at(&ws, "old.txt", "2020-01-01T00:00:00Z");
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "OLD_ATTEMPT_COMMITS")
+        .expect("an earlier try's commit is a problem");
+    assert_eq!((p.owner, p.severity), (Owner::Agent, Severity::Block));
+    assert!(p.title.contains("earlier try"));
+    assert!(
+        p.detail
+            .as_deref()
+            .unwrap()
+            .contains(&format!("git reset --hard main ({base})"))
+    );
+    assert!(!c.ready);
+    // Start from the base and redo it: a commit made now is this try's.
+    git(&ws, &["reset", "--hard", &base]);
+    commit_at(&ws, "new.txt", &chrono::Utc::now().to_rfc3339());
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(
+        !c.problems.iter().any(|p| p.code == "OLD_ATTEMPT_COMMITS"),
+        "{:?}",
+        c.problems.iter().map(|p| &p.code).collect::<Vec<_>>()
+    );
+    let _ = a;
+}
+
+#[tokio::test]
+async fn without_a_credential_check_still_runs_here_and_says_to_sign_in_once() {
+    let (h, _s, _r, _ws) = setup().await;
+    *h.ctx.cred.lock().unwrap() = None;
+    h.fake.secrets.lock().unwrap().clear();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(c.plan.status, PlanStatus::Unavailable);
+    let signin: Vec<_> = c
+        .problems
+        .iter()
+        .filter(|p| p.code == "SIGN_IN_REQUIRED")
+        .collect();
+    assert_eq!(signin.len(), 1);
+    assert_eq!(signin[0].owner, Owner::Person);
+    assert!(!c.ready);
+}
+
+#[tokio::test]
+async fn an_empty_repository_is_told_to_commit_first() {
+    let server = MockServer::start().await;
+    let h = connected(&server, "worker-compose.yaml").await;
+    let ws = h.dir.path().join("empty");
+    std::fs::create_dir_all(&ws).unwrap();
+    git(&ws, &["init", "-q", "-b", "main"]);
+    let env = EnvironmentInfo {
+        id: ENV.into(),
+        name: "production".into(),
+        production: true,
+        branch: "main".into(),
+        manifest: Some("worker-compose.yaml".into()),
+        url: None,
+    };
+    h.ctx.store.update(|s| {
+        s.project = Some(Project {
+            path: ws.to_string_lossy().into(),
+            repository: "ada/empty".into(),
+            checkout: Checkout {
+                branch: Some("main".into()),
+                head: String::new(),
+                changed_files: vec![],
+                ahead: 0,
+                not_served: None,
+                branches: vec![],
+            },
+            team: None,
+            teams: vec![],
+            cloud_project: None,
+            environment: Some(env),
+            environments: vec![],
+            importable: None,
+            github_access: None,
+            cloud_projects: vec![],
+            other_cloud_projects: vec![],
+            default_branch: None,
+            workspace: Some(Workspace {
+                mode: WorkspaceMode::Checkout,
+                path: ws.to_string_lossy().into(),
+                branch: "main".into(),
+                from_head: None,
+                not_brought: vec![],
+                source: None,
+                not_brought_reasons: Default::default(),
+                source_sha: None,
+            }),
+            fell_back_from: None,
+        });
+    });
+    let err = check(&h.ctx, CheckRequest::default()).await.unwrap_err();
+    assert_eq!(err.code, "NO_COMMITS");
+    assert!(err.message.contains("commit first"));
+}
+
+#[tokio::test]
+async fn a_run_already_going_says_which_and_since_when() {
+    let (h, _s, _r, _ws) = setup().await;
+    h.ctx.store.update(|s| {
+        s.put_check(a_check(
+            "chk",
+            "abc",
+            Some(a_run("run-77", RunStatus::Running, "2026-11-26T01:02:03Z")),
+        ))
+    });
+    h.ctx.busy.lock().unwrap().insert("run".into());
+    let err = iii_cloud::run::start(&h.ctx, "chk".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "RUN_BUSY");
+    assert!(err.message.contains("run-77") && err.message.contains("2026-11-26T01:02:03Z"));
+}
+
+#[tokio::test]
+async fn a_check_something_still_points_at_is_never_pruned() {
+    let (h, _s, _r, _ws) = setup().await;
+    // The oldest check has a pending merge; 25 newer ones follow.
+    h.ctx.store.update(|s| {
+        s.put_check_for(a_check("old-merge", "c0", None), false);
+        s.merges.push(iii_cloud::store::PendingMerge {
+            check_id: "old-merge".into(),
+            pr: 3,
+            target: "t".into(),
+            merged_at: None,
+        });
+        for i in 1..=25 {
+            s.put_check_for(a_check(&format!("c{i}"), &format!("sha{i}"), None), false);
+        }
+    });
+    h.ctx
+        .store
+        .read(|s| assert!(s.find_check("old-merge").is_some()));
+    h.ctx.store.read(|s| {
+        assert!(s.find_check("c1").is_none(), "an unreferenced old one goes");
+        assert!(s.checks.len() <= 21 + 1);
+    });
+}
+
+#[tokio::test]
+async fn a_done_handoff_is_retired_after_30_minutes_idle_and_the_record_stays() {
+    let (h, _s, _r, _ws) = setup().await;
+    let a = create(&h.ctx, ready_req()).await.unwrap();
+    let get = |h: &Harness| h.ctx.store.read(|s| s.handoffs[0].clone());
+    // Working is never retired, however old.
+    assert!(!retired(&h.ctx, &get(&h)));
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.state = AgentPhase::Done;
+        s.handoffs[0].agent.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
+    });
+    assert!(!retired(&h.ctx, &get(&h)), "just now");
+    // A test second is 10 ms: 30 minutes is 18 s. Activity 20 s ago.
+    let long_ago = chrono::Utc::now() - chrono::Duration::seconds(20);
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.last_activity_at = Some(long_ago.to_rfc3339());
+    });
+    assert!(retired(&h.ctx, &get(&h)));
+    assert_eq!(get(&h).id, a.id, "the record stays");
+}
+
+#[tokio::test]
+async fn a_waiting_sign_in_resumes_after_a_restart_or_expires() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/auth/device/token"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(json!({"code": "AUTHORIZATION_PENDING", "message": "wait"})),
+        )
+        .mount(&server)
+        .await;
+    let h = support::harness(&server.uri(), std::sync::Arc::new(support::Fake::default()));
+    let waiting = |expires: chrono::DateTime<chrono::Utc>| {
+        let mut conn = Connection::signed_out(&server.uri());
+        conn.status = ConnStatus::Waiting;
+        conn.method = Some(Method::Browser);
+        conn.device = Some(Device {
+            user_code: "ABCD-1234".into(),
+            verification_uri: "http://x".into(),
+            expires_at: expires.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        });
+        conn
+    };
+    // Still valid, and its code was kept: polling resumes.
+    h.ctx.store.update(|s| {
+        s.connection = Some(waiting(chrono::Utc::now() + chrono::Duration::seconds(600)));
+        s.pending_device = Some(("dev-code".into(), 1));
+    });
+    iii_cloud::connect::resume(&h.ctx);
+    let mut polled = false;
+    for _ in 0..100 {
+        if server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("/auth/device/token"))
+        {
+            polled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(polled, "the poll went on after the restart");
+    assert_eq!(
+        h.ctx.store.read(|s| s.connection.clone()).unwrap().status,
+        ConnStatus::Waiting
+    );
+    if let Some(task) = h.ctx.poller.lock().unwrap().take() {
+        task.abort();
+    }
+    // Past its expiry: it ends as an expired code.
+    h.ctx.store.update(|s| {
+        s.connection = Some(waiting(chrono::Utc::now() - chrono::Duration::seconds(5)));
+    });
+    iii_cloud::connect::resume(&h.ctx);
+    let conn = h.ctx.store.read(|s| s.connection.clone()).unwrap();
+    assert_eq!(conn.status, ConnStatus::Error);
+    assert_eq!(conn.error.unwrap().code, "DEVICE_CODE_EXPIRED");
+}
+
+#[test]
+fn concurrent_env_writes_all_land_and_use_the_dot_env_tmp_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(".env");
+    let threads: Vec<_> = (0..16)
+        .map(|i| {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                iii_cloud::secret::set_env_line(&file, &format!("K{i}"), &format!("v{i}")).unwrap()
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let text = std::fs::read_to_string(&file).unwrap();
+    for i in 0..16 {
+        assert!(text.contains(&format!("K{i}=v{i}\n")), "{text}");
+    }
+    assert!(!dir.path().join(".env.tmp").exists());
+    assert!(!dir.path().join(".env.env.tmp").exists());
+}
+
+#[tokio::test]
+async fn sse_events_read_line_by_line_and_accept_spaced_json() {
+    let server = MockServer::start().await;
+    let h = connected(&server, "worker-compose.yaml").await;
+    let body = "event: x\ndata: {\"type\": \"line\", \"message\": \"one\"}\n\ndata:{\"type\":\"line\",\"message\":\"two\"}\n\n: comment\ndata: {\"type\": \"ping\"}\n\ndata: {\"type\":\"line\",\"message\":\"after\"}\n\n";
+    Mock::given(method("GET"))
+        .and(path("/api/v1/stream"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let events: Vec<Value> = h
+        .ctx
+        .sse_events("/stream", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let messages: Vec<&str> = events
+        .iter()
+        .filter_map(|e| e["message"].as_str())
+        .collect();
+    assert_eq!(messages, vec!["one", "two"], "the ping ends the read");
+}
+
+#[tokio::test]
+async fn refresh_fills_the_default_branch_and_deleting_environments_are_dropped() {
+    let (h, server, _r, _ws) = setup().await;
+    h.ctx
+        .store
+        .update(|s| s.project.as_mut().unwrap().default_branch = None);
+    iii_cloud::status::status(
+        &h.ctx,
+        StatusRequest {
+            refresh: Some(true),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        h.ctx
+            .store
+            .read(|s| s.project.as_ref().unwrap().default_branch.clone()),
+        Some("main".into())
+    );
+    Mock::given(method("GET"))
+        .and(path("/api/v1/teams/x/projects/p/environments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"environments": [
+            {"id": "e1", "name": "dev", "branch": "dev", "production": false},
+            {"id": "e2", "name": "staging", "branch": "s", "production": false, "status": "deleting"}
+        ]})))
+        .mount(&server)
+        .await;
+    let envs = iii_cloud::project::read_environments(&h.ctx, "x", "p")
+        .await
+        .unwrap();
+    assert_eq!(
+        envs.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+        vec!["dev"]
+    );
+}

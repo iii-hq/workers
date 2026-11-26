@@ -1,0 +1,233 @@
+/* Manage (U5+U6): Home, the environment pages and their shared grid. Every rule starts with [data-iii-ui='iii-cloud']. */
+
+/* Every Manage page body is the container its grid answers to. */
+[data-iii-ui='iii-cloud'] .iii-cloud-mng {
+  container-type: inline-size;
+  container-name: iii-cloud-mng;
+}
+/* The env tabs' grid: two columns, one below 880 px of page. */
+[data-iii-ui='iii-cloud'] .iii-cloud-mng-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+  min-width: 0;
+}
+@container iii-cloud-mng (max-width: 879px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-mng-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* An env tab panel's 12 px body (its header is shell.css's). */
+[data-iii-ui='iii-cloud'] .iii-cloud-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+
+[data-iii-ui='iii-cloud'] .iii-cloud-notes {
+  padding-bottom: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-skeleton-row {
+  display: block;
+  width: 60%;
+  height: 16px;
+}
+/* An in-sentence link to another tab. */
+[data-iii-ui='iii-cloud'] .iii-cloud-linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-ink);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-linkbtn:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+/* Out of date: statuses are greyed out until the worker answers again. */
+[data-iii-ui='iii-cloud'] [data-stale] .iii-cloud-state {
+  opacity: 0.5;
+}
+
+/* The page header (Home, an environment, New environment): 44 px on the panel, the title in sans 14/500,
+   what belongs to it right after, "as of" and Refresh pushed to the end. */
+[data-iii-ui='iii-cloud'] .iii-cloud-envhead {
+  height: 44px;
+  gap: 10px;
+  padding: 0 24px;
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-envhead[data-rule] {
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-envhead {
+  height: 56px;
+  padding: 0 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-head-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* "project / env": the ancestor faint and a link, the current one ink. */
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs-up {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs-up:hover {
+  color: var(--color-ink);
+  text-decoration: underline;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs-up:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs .iii-cloud-head-title {
+  color: var(--color-ink);
+}
+/* A status word: ink 12/500 on its status tint; the dot stays. */
+[data-iii-ui='iii-cloud'] .iii-cloud-state {
+  border-color: transparent;
+  border-radius: var(--radius-full);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='ok'] {
+  background: var(--color-ok-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='alert'] {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='warn'] {
+  background: var(--color-warn-muted);
+}
+/* Production: an outlined pill. */
+[data-iii-ui='iii-cloud'] .iii-cloud-prodchip {
+  gap: 4px;
+  border-color: var(--color-ink);
+  border-radius: var(--radius-full);
+  background: none;
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-prodchip svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* A table sits flush in its panel: no second frame, headers 12/500 faint, cells 13 px that wrap, mono 12. */
+[data-iii-ui='iii-cloud'] .iii-cloud-table {
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-table th {
+  height: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  white-space: normal;
+  vertical-align: bottom;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-table td {
+  padding: 7px 12px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  vertical-align: middle;
+}
+/* Machine values (names, paths, commands) may break anywhere, so every column stays in the panel. */
+[data-iii-ui='iii-cloud'] .iii-cloud-table td .iii-cloud-mono {
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-table th:first-child,
+[data-iii-ui='iii-cloud'] .iii-cloud-table td:first-child {
+  padding-left: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-table th:last-child,
+[data-iii-ui='iii-cloud'] .iii-cloud-table td:last-child {
+  padding-right: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-table .iii-cloud-mono {
+  font-size: 12px;
+}
+/* A link in a panel's header or at the foot of its body: underlined 12 px. */
+[data-iii-ui='iii-cloud'] .iii-cloud-panel-end .iii-cloud-linkbtn,
+[data-iii-ui='iii-cloud'] .iii-cloud-linkbtn.iii-cloud-small {
+  font-size: 12px;
+  font-weight: 400;
+}
+/* A card's title that opens it. */
+[data-iii-ui='iii-cloud'] .iii-cloud-titlelink {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-titlelink:hover {
+  text-decoration: underline;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-titlelink:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+/* Health: a check mark, ink. */
+[data-iii-ui='iii-cloud'] .iii-cloud-health svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Phone: segments of equal width that fill the row, row titles 16/600. */
+[data-iii-ui='iii-cloud'] .iii-cloud-seg {
+  display: flex;
+  width: auto;
+  max-width: none;
+  margin: 8px 12px 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-seg-item {
+  flex: 1 1 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-phonelist .iii-ui-list-item__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-phonelist .iii-cloud-row {
+  flex-wrap: nowrap;
+}

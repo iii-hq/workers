@@ -1,0 +1,31 @@
+/* Checks tab (U9): the Now line, the earlier checks and an opened one. Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-now {
+  flex-wrap: wrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-now > svg,
+[data-iii-ui='iii-cloud'] .iii-cloud-earlier .iii-cloud-row > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-two {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark-ok {
+  color: var(--color-ok);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-earlier {
+  padding: 4px;
+}
