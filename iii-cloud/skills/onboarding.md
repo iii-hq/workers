@@ -120,7 +120,7 @@ harness::observe {function_id: "iii-cloud::on-change",
   lifecycle: {expires_in_ms: 900000}}
 ```
 
-On a failed stage, read `run.error` and `run.log_tail`, and the code in `iii-cloud/plan-codes` ("Local run failures"). Fix in the worktree and run again. The run copy moves every engine, http and ade port to a free one, and never uses 3111, 3112, 3113 or 49134. One run per workspace: a new run of another commit replaces the going one, and the same commit with the same compose file attaches to it.
+On a failed stage, read `run.error` and `run.log_tail`, and the code in `iii-cloud/plan-codes` ("Local run failures"). Fix in the worktree and run again. The run copy moves every engine, http and ade port to a free one, and never uses 3111, 3112, 3113 or 49134. One run per workspace: a run of the same environment and inputs attaches to the going one, and any other replaces it.
 
 ## 9. Commit, push and open the pull request
 

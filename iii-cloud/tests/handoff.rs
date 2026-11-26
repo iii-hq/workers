@@ -1249,6 +1249,7 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
                 message: "x".into(),
             }),
             reused: false,
+            waiting_on: None,
         });
         s.put_check(c);
     });
