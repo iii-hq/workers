@@ -89,7 +89,10 @@ fn reaped(dir: &Path) {
 
 #[tokio::test]
 async fn concurrent_acquire_is_idempotent_and_independent_leases_keep_child_alive() {
-    let (dir, config) = fixture("ready");
+    let (dir, mut config) = fixture("ready");
+    // Not a timeout test: on a loaded CI runner the child can need more than
+    // the fixture's 500 ms to print its URL, which fails the tunnel before Ready.
+    config.startup_timeout_ms = 5_000;
     let manager = Manager::open(config).unwrap();
     let mut events = manager.subscribe();
     let calls = (0..20).map(|_| manager.acquire(request("github", 5000)));
