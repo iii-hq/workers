@@ -206,7 +206,7 @@ test('lists projects and sessions with their effective size, and opens them', as
   await expect(rows).toHaveCount(4)
   await expect(rows.nth(0)).toContainText('acme-web')
   await expect(rows.nth(0)).toContainText(
-    '160k on Sonnet 5.5 · Opus 5.5 at its own limit',
+    '160k on Claude Sonnet 5.5 (Claude Code) · Claude Opus 5.5 (Claude Code) at its own limit',
   )
   await expect(rows.nth(1)).toContainText('Global (400k)')
   await expect(rows.nth(2)).toContainText("The model's limit only")
@@ -237,6 +237,44 @@ test('lists projects and sessions with their effective size, and opens them', as
       { id: 'prj_billing', autocompact: { mode: 'tokens', tokens: 200_000 } },
     ])
 })
+
+// The live acceptance at 1440×900 (env-p3): the long Effective text ran
+// past the dialog's edge. Where and Effective wrap; nothing is clipped.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 700, height: 900 },
+]) {
+  test(`the overrides table fits the dialog at ${viewport.width}×${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport)
+    await openHarness(page)
+    const d = dialog(page)
+    await expect(d.locator('tr[data-autocompact-override]')).toHaveCount(4)
+    const fit = await d
+      .locator('[data-slot="table-frame"]')
+      .evaluate((frame) => {
+        const table = frame.querySelector('table')
+        const box = frame.getBoundingClientRect()
+        const cells = [
+          ...frame.querySelectorAll(
+            '[data-autocompact-effective], [data-autocompact-where]',
+          ),
+        ].map((cell) => cell.getBoundingClientRect())
+        return {
+          overflow: (table?.scrollWidth ?? 0) - frame.clientWidth,
+          outside: cells.filter(
+            (cell) => cell.left < box.left || cell.right > box.right + 0.5,
+          ).length,
+          wrapped: cells.some((cell) => cell.height > 24),
+        }
+      })
+    expect(fit.overflow).toBeLessThanOrEqual(0)
+    expect(fit.outside).toBe(0)
+    // The long names wrap rather than run on.
+    expect(fit.wrapped).toBe(true)
+  })
+}
 
 test('a history row opens the conversation', async ({ page }) => {
   await openHarness(page)
