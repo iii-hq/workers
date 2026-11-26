@@ -58,9 +58,25 @@ describe('workflow input card', () => {
     await render('{"status":"done","fanoutItem":"a","count":3,"ok":true,"none":null}')
     expect(container.querySelector('article')?.getAttribute('aria-label')).toBe('Workflow input')
     expect(container.textContent).toContain('Workflow input')
-    expect(rows()).toEqual(['Status: done', 'Fanout item: a', 'Count: 3', 'Ok: true', 'None: null'])
+    expect(rows()).toEqual(['Status: done', 'Fanout item: a', 'Count: 3', 'Ok: true'])
     const mono = [...container.querySelectorAll('.wf-input-mono')].map((el) => el.textContent)
-    expect(mono).toEqual(['3', 'true', 'null'])
+    expect(mono).toEqual(['3', 'true'])
+  })
+
+  it('leaves out null fields, at any depth, and keeps them in the JSON', async () => {
+    await render('{"status":"done","question":null,"claim":{"commit":"abc","reason":null}}')
+    expect(rows().map((row) => row.split(':')[0])).toEqual(['Status', 'Claim'])
+    expect(container.textContent).not.toContain('Question')
+    expect(container.textContent).not.toContain('Reason')
+    expect(container.querySelector('[data-json]')?.textContent).toContain('"question": null')
+  })
+
+  it('shows no card when the input is null throughout', async () => {
+    await render('{"input":null,"loop_previous":null,"own_previous":null}')
+    expect(container.querySelector('article')).toBeNull()
+    expect(container.textContent).toBe('')
+    await render('null')
+    expect(container.querySelector('article')).toBeNull()
   })
 
   it('puts nested values under their label, indented', async () => {

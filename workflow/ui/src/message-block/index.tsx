@@ -39,6 +39,18 @@ function Quiet({ children }: { children: string }) {
   return <span className="wf-input-quiet">{children}</span>
 }
 
+/**
+ * Null tells a reader nothing (a node with no input, no earlier attempt): such
+ * a field is left out, and an input that is null throughout is no card at all.
+ * Show JSON still has every field.
+ */
+function isAllNull(value: unknown): boolean {
+  if (value === null) return true
+  if (typeof value !== 'object' || Array.isArray(value)) return false
+  const values = Object.values(value)
+  return values.length > 0 && values.every((item) => item === null)
+}
+
 /** An object or a non-empty array: laid out under its label, not beside it. */
 function isBlock(value: unknown): boolean {
   return value !== null && typeof value === 'object' && Object.keys(value).length > 0
@@ -70,7 +82,7 @@ function Value({ value }: { value: unknown }) {
       </List>
     )
   }
-  const entries = Object.entries(value)
+  const entries = Object.entries(value).filter(([, item]) => item !== null)
   if (entries.length === 0) return <Quiet>empty</Quiet>
   return (
     <dl className="wf-input-facts">
@@ -103,6 +115,7 @@ function parseBody(body: string): { value: unknown; json: string } | null {
 export const WorkflowInputBlock = memo(function WorkflowInputBlock({ attributes, body }: MessageBlockProps) {
   const note = attributes.note || undefined
   const parsed = useMemo(() => parseBody(body), [body])
+  if (parsed && isAllNull(parsed.value)) return null
   // The note speaks to the model (treat this as data); the reader gets it on
   // the title, not as an alarm on every node session.
   const title = (
