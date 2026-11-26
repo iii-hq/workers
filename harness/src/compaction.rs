@@ -1,15 +1,18 @@
-//! Explicit conversation compaction: the `/compact` command sent through
-//! `harness::send` by any client, and `harness::compact` for callers that
-//! wait for the outcome (the console's model switch). Not to be confused with
-//! [`crate::turn_compaction`], which slims finished turn records.
+//! Conversation compaction: the `/compact` command sent through
+//! `harness::send` by any client, `harness::compact` for callers that wait
+//! for the outcome (the console's model switch), and the automatic
+//! end-of-turn compaction ([`crate::autocompact`], `trigger: "auto"`). Not to
+//! be confused with [`crate::turn_compaction`], which slims finished turn
+//! records.
 //!
 //! The harness owns it so the command means the same thing from every client
 //! (the mobile apps sent `/compact` to the model as a prompt) and every device
 //! watching the session learns about it, not just the one that asked:
 //!
-//! - a `notice` row "compacting the conversation…" lands in the transcript
-//!   when it starts — under the sender's `e_idem_` id, so its optimistic
-//!   `/compact` row reconciles into it;
+//! - a `notice` row "compacting the conversation…" (an automatic one:
+//!   "Auto-compacting at 160k…") lands in the transcript when it starts —
+//!   under the sender's `e_idem_` id, so its optimistic `/compact` row
+//!   reconciles into it;
 //! - a `/compact` send shows the session `working` / "compacting context"
 //!   while it runs (unless a live turn owns the status line);
 //! - it ends with one row: the `compaction` record, or a `notice` saying why
@@ -31,8 +34,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::autocompact::Rule;
 use crate::clients::SessionClient;
-use crate::clients::context::{CompactOutput, CompactParams, CountTokensParams};
+use crate::clients::context::{CompactFailure, CompactOutput, CompactParams, CountTokensParams};
 use crate::clients::session::LoadedEntry;
 use crate::context_snapshot::{self, SnapshotMessagesV1};
 use crate::deps::Deps;
@@ -51,6 +55,15 @@ const ALREADY_RUNNING: &str = "compaction skipped — this conversation is alrea
 const LEASE_BUSY: &str = "compaction skipped — another compaction of this conversation is in progress; try /compact again when it finishes.";
 const NOTHING_TO_COMPACT: &str =
     "nothing to compact yet — the conversation still fits word for word.";
+const AUTO_STOPPED: &str =
+    "Auto-compact stopped. The conversation goes on and compacts at the model's limit.";
+const AUTO_FAILED_TAIL: &str = "The conversation goes on and compacts at the model's limit.";
+/// A usage limit starts no back-off: the next turn's end tries again (D162).
+const AUTO_FAILED_LIMIT_TAIL: &str =
+    "The conversation goes on and compacts again after its next turn.";
+/// How often an automatic compaction checks for a Stop that landed on
+/// another harness instance (the in-process signal covers this one).
+const STOP_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A `/compact` command and its guidance for the summariser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +143,32 @@ impl Drop for Running {
     }
 }
 
+/// What started a compaction (chat-projects contract C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Trigger {
+    /// `/compact` or `harness::compact`.
+    Command,
+    /// The end of a turn past the autocompact threshold.
+    Auto,
+    /// A turn's assembly, at the autocompact budget.
+    Inline,
+    /// A turn's assembly, at the model's own limit (as before autocompact).
+    Limit,
+}
+
+impl Trigger {
+    /// The record's `source`, kept for older readers.
+    pub fn source(self) -> &'static str {
+        match self {
+            Trigger::Command => "command",
+            Trigger::Auto => "auto",
+            Trigger::Inline => "auto_inline",
+            Trigger::Limit => "limit",
+        }
+    }
+}
+
 /// One compaction to run.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -146,6 +185,68 @@ pub struct Request {
     /// console's model switch) leaves the status alone: a `working` session
     /// reads as busy there and would void the switch it compacts for.
     pub mark_working: bool,
+    /// `command` or `auto`.
+    pub trigger: Trigger,
+    /// The threshold an automatic compaction crossed.
+    pub threshold_tokens: Option<u64>,
+    /// The rule that set it.
+    pub rule: Option<Rule>,
+    /// Forwarded to the summariser's `router::chat`: the conversation's
+    /// Claude Code account (D161).
+    pub provider_options: Option<Value>,
+    /// The Claude Code account the summary runs on, to name it in a usage
+    /// limit's notice.
+    pub account: Option<String>,
+    /// The whole context before (the caller measured it); `None` reads the
+    /// stored snapshot.
+    pub context_before: Option<u64>,
+    /// The turn whose Stop abandons the summary (an end-of-turn compaction).
+    pub stop_turn: Option<String>,
+}
+
+impl Request {
+    /// A `/compact` or `harness::compact` request.
+    pub fn command(session_id: String, model: String, provider: Option<String>) -> Self {
+        Self {
+            session_id,
+            model,
+            provider,
+            instructions: None,
+            entry_id: None,
+            mark_working: false,
+            trigger: Trigger::Command,
+            threshold_tokens: None,
+            rule: None,
+            provider_options: None,
+            account: None,
+            context_before: None,
+            stop_turn: None,
+        }
+    }
+
+    /// Run the summary on the conversation's Claude Code account, resolved
+    /// now (D161): `/compact` and `harness::compact` have no turn whose
+    /// account they could take.
+    pub async fn on_conversation_account(mut self, deps: &Deps) -> Self {
+        let session = deps.session().await;
+        if let Some(account) = crate::accounts::compaction_account(
+            deps,
+            &session,
+            &self.session_id,
+            self.provider.as_deref(),
+            &self.model,
+        )
+        .await
+        {
+            self.provider_options = Some(account.provider_options);
+            self.account = Some(account.id);
+        }
+        self
+    }
+
+    fn is_auto(&self) -> bool {
+        self.trigger != Trigger::Command
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -159,10 +260,12 @@ pub enum Status {
     Empty,
     /// The summariser failed or the result could not be saved.
     Failed,
+    /// A Stop abandoned an automatic compaction: no record was written.
+    Cancelled,
 }
 
-/// How an explicit compaction ended — also what `harness::on-compaction`
-/// carries on completion.
+/// How a compaction ended — also what `harness::on-compaction` carries on
+/// completion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Outcome {
     pub session_id: String,
@@ -179,6 +282,24 @@ pub struct Outcome {
     /// The transcript rows it wrote, in order: the start notice (absent when
     /// it never started) and the outcome row.
     pub entry_ids: Vec<String>,
+    /// What started it.
+    pub trigger: Trigger,
+    /// [`Trigger::source`], for readers older than `trigger`.
+    pub source: String,
+    /// The threshold an automatic compaction crossed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_tokens: Option<u64>,
+    /// The rule that set the threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Rule>,
+    /// The whole context's tokens before and after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<u64>,
+    /// Why the summariser failed, when context-manager said (1.3.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<CompactFailure>,
 }
 
 /// A summary `context::compact` produced, ready to persist.
@@ -200,7 +321,9 @@ enum Summarised {
     Done(Summary),
     Busy,
     Empty,
-    Failed(String),
+    /// Why, as a reason; and context-manager's failure when it gave one.
+    Failed(String, Option<CompactFailure>),
+    Cancelled,
 }
 
 /// Run one compaction to completion. Never fails: whatever goes wrong becomes
@@ -218,11 +341,14 @@ pub async fn run(deps: &Deps, req: Request, compaction_id: String) -> Outcome {
         .entry_id
         .clone()
         .unwrap_or_else(|| ids::compaction_started_entry_id(&compaction_id));
+    let started_text = started_message(&req);
+    let mut started_data = notice_data(&compaction_id, "compacting", &started_text, "info");
+    annotate(&mut started_data, &req);
     if let Err(error) = session
         .append_custom(
             &req.session_id,
             NOTICE,
-            notice_data(&compaction_id, "compacting", STARTED, "info"),
+            started_data,
             &started_entry,
             Some(&origin(&compaction_id)),
         )
@@ -262,12 +388,29 @@ pub async fn run(deps: &Deps, req: Request, compaction_id: String) -> Outcome {
             .set_status(&req.session_id, "working", Some(STATUS_REASON))
             .await
             .is_ok();
-    let started = outcome(&req, &compaction_id, Status::Ok, STARTED.into());
+    let started = outcome(&req, &compaction_id, Status::Ok, started_text);
     deps.events
         .emit_compaction(&req.session_id, event_payload("started", &started))
         .await;
 
-    let summarised = summarise(deps, &session, &req, live_turn.as_deref()).await;
+    // The whole context before: what the caller measured, else the stored
+    // snapshot (plus its last output, which the next request carries).
+    let context_before = match req.context_before {
+        Some(tokens) => Some(tokens),
+        None => context_snapshot::get(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await
+            .ok()
+            .flatten()
+            .map(|snapshot| crate::autocompact::measure(&snapshot)),
+    };
+    let summarise = summarise(deps, &session, &req, live_turn.as_deref());
+    let summarised = match &req.stop_turn {
+        Some(turn_id) => tokio::select! {
+            summarised = summarise => summarised,
+            () = stopped(deps, &req.session_id, turn_id) => Summarised::Cancelled,
+        },
+        None => summarise.await,
+    };
     let outcome = persist(
         deps,
         &session,
@@ -275,6 +418,7 @@ pub async fn run(deps: &Deps, req: Request, compaction_id: String) -> Outcome {
         &compaction_id,
         &outcome_entry,
         summarised,
+        context_before,
     )
     .await;
     drop(running);
@@ -294,6 +438,32 @@ pub async fn run(deps: &Deps, req: Request, compaction_id: String) -> Outcome {
     outcome
 }
 
+/// Resolves once `turn_id` is stopped: this process's cancel signal, or the
+/// abort flag a Stop on another instance wrote (polled), or the turn gone.
+async fn stopped(deps: &Deps, session_id: &str, turn_id: &str) {
+    let mut signal = deps.cancels.watch(turn_id);
+    let timeout = deps.cfg().await.session_timeout_ms;
+    loop {
+        if *signal.borrow() {
+            return;
+        }
+        tokio::select! {
+            changed = signal.changed() => {
+                if changed.is_err() {
+                    // The signal was cleared: only the store can tell now.
+                    tokio::time::sleep(STOP_POLL).await;
+                }
+            }
+            () = tokio::time::sleep(STOP_POLL) => {}
+        }
+        if let Ok(record) = crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout).await
+            && record.is_none_or(|record| record.turn_id != turn_id || record.abort)
+        {
+            return;
+        }
+    }
+}
+
 /// Write the notice for an outcome that has no `compaction` record, then
 /// tell the live subscribers.
 async fn finish(
@@ -303,7 +473,7 @@ async fn finish(
     mut written: Vec<String>,
     entry: String,
 ) -> Outcome {
-    let tone = if outcome.status == Status::Empty {
+    let tone = if matches!(outcome.status, Status::Empty | Status::Cancelled) {
         "info"
     } else {
         "warn"
@@ -313,9 +483,21 @@ async fn finish(
         Status::Busy => "compaction_busy",
         Status::Empty => "compaction_empty",
         Status::Failed => "compaction_failed",
+        Status::Cancelled => "compaction_cancelled",
     };
     let mut data = notice_data(&outcome.compaction_id, reason, &outcome.message, tone);
     data["status"] = json!(outcome.status);
+    data["trigger"] = json!(outcome.trigger);
+    data["source"] = json!(outcome.source);
+    if let Some(threshold) = outcome.threshold_tokens {
+        data["threshold_tokens"] = json!(threshold);
+    }
+    if let Some(rule) = &outcome.rule {
+        data["rule"] = json!(rule);
+    }
+    if let Some(failure) = &outcome.failure {
+        data["failure"] = json!(failure);
+    }
     match session
         .append_custom(
             &outcome.session_id,
@@ -348,7 +530,7 @@ async fn summarise(
     let entries = match session.messages(&req.session_id, true).await {
         Ok(entries) => entries,
         Err(error) => {
-            return Summarised::Failed(format!("could not read the conversation: {error}"));
+            return Summarised::Failed(format!("could not read the conversation: {error}"), None);
         }
     };
     let anchor = crate::turn_loop::compaction_anchor(&req.session_id, &entries);
@@ -372,6 +554,7 @@ async fn summarise(
             previous_summary: anchor.summary.clone(),
             instructions: req.instructions.clone(),
             lease_key: req.session_id.clone(),
+            provider_options: req.provider_options.clone(),
         })
         .await;
     match response {
@@ -390,12 +573,68 @@ async fn summarise(
         }),
         Ok(CompactOutput::Busy) => Summarised::Busy,
         Ok(CompactOutput::Empty) => Summarised::Empty,
-        Ok(CompactOutput::Overflow) => Summarised::Failed(format!(
-            "the summariser could not produce a summary with {}; try again, or switch to a model with a larger context window",
-            req.model
-        )),
-        Err(error) => Summarised::Failed(error),
+        Ok(CompactOutput::Overflow { failure }) => {
+            Summarised::Failed(failure_reason(deps, req, failure.as_ref()).await, failure)
+        }
+        Err(error) => {
+            let failure = CompactFailure::from_error(&error);
+            let reason = match &failure {
+                Some(failure) => failure_reason(deps, req, Some(failure)).await,
+                None => error,
+            };
+            Summarised::Failed(reason, failure)
+        }
     }
+}
+
+/// Why the summariser failed, in words (D162), with the account's name
+/// read from tmux for a usage limit.
+async fn failure_reason(deps: &Deps, req: &Request, failure: Option<&CompactFailure>) -> String {
+    let name = match (failure, &req.account) {
+        (Some(failure), Some(id)) if failure.is_usage_limit() => {
+            Some(crate::accounts::account_name(deps, id).await)
+        }
+        _ => None,
+    };
+    failure_words(req, failure, name.as_deref())
+}
+
+/// Why the summariser failed: the cause context-manager named, and "a
+/// larger context window" only when the input did not fit. An older
+/// context-manager names none: today's words. A usage limit names the
+/// account (`name`, from tmux) and no clock time: the engine's time zone
+/// is not the reader's.
+fn failure_words(req: &Request, failure: Option<&CompactFailure>, name: Option<&str>) -> String {
+    let Some(failure) = failure else {
+        return too_large(&req.model);
+    };
+    if failure.is_usage_limit() {
+        let who = name
+            .or(req.account.as_deref())
+            .unwrap_or("The Claude Code account");
+        return format!("{who} reached its usage limit");
+    }
+    if failure.kind == "input_too_large" {
+        return too_large(&req.model);
+    }
+    // Router messages come verbatim, sometimes with a final period.
+    let message = failure.message.trim().trim_end_matches('.').trim_end();
+    if message.is_empty() {
+        format!(
+            "the summariser could not produce a summary with {}",
+            req.model
+        )
+    } else {
+        message.to_string()
+    }
+}
+
+/// Today's words for a summary that does not fit the summariser: the only
+/// failure that names the window.
+fn too_large(model: &str) -> String {
+    format!(
+        "the summariser could not produce a summary with {model}; try again, or switch to a model with a larger context window"
+    )
 }
 
 /// Persist a summary as the `compaction` record (and refresh the context
@@ -407,34 +646,78 @@ async fn persist(
     compaction_id: &str,
     entry: &str,
     summarised: Summarised,
+    context_before: Option<u64>,
 ) -> Outcome {
+    let with_before = |outcome: Outcome| Outcome {
+        context_before,
+        ..outcome
+    };
     let summary = match summarised {
         Summarised::Done(summary) => summary,
-        Summarised::Busy => return outcome(req, compaction_id, Status::Busy, LEASE_BUSY.into()),
+        Summarised::Busy => {
+            return with_before(outcome(req, compaction_id, Status::Busy, busy_message(req)));
+        }
         Summarised::Empty => {
-            return outcome(req, compaction_id, Status::Empty, NOTHING_TO_COMPACT.into());
+            return with_before(outcome(
+                req,
+                compaction_id,
+                Status::Empty,
+                NOTHING_TO_COMPACT.into(),
+            ));
         }
-        Summarised::Failed(reason) => {
-            return outcome(req, compaction_id, Status::Failed, failed(&reason));
+        Summarised::Failed(reason, failure) => {
+            let message = failed_message(req, &reason, failure.as_ref());
+            return Outcome {
+                failure,
+                ..with_before(outcome(req, compaction_id, Status::Failed, message))
+            };
         }
+        Summarised::Cancelled => {
+            return with_before(outcome(
+                req,
+                compaction_id,
+                Status::Cancelled,
+                AUTO_STOPPED.into(),
+            ));
+        }
+    };
+    let failure = |reason: String| {
+        with_before(outcome(
+            req,
+            compaction_id,
+            Status::Failed,
+            failed_message(req, &reason, None),
+        ))
+    };
+    let entries = match session.messages(&req.session_id, true).await {
+        Ok(entries) => entries,
+        Err(error) => return failure(format!("could not read the conversation: {error}")),
     };
     // Everything read was summarised: a turn that appended meanwhile must
     // stay in the window, so the tail opens at its first entry.
-    let tail_start_entry_id = match &summary.tail_start_entry_id {
-        Some(id) => Some(id.clone()),
-        None => match session.messages(&req.session_id, true).await {
-            Ok(entries) => first_after(&entries, summary.read_up_to.as_deref()),
-            Err(error) => {
-                return outcome(
-                    req,
-                    compaction_id,
-                    Status::Failed,
-                    failed(&format!("could not read the conversation: {error}")),
-                );
-            }
-        },
+    let tail_start_entry_id = summary
+        .tail_start_entry_id
+        .clone()
+        .or_else(|| first_after(&entries, summary.read_up_to.as_deref()));
+    // The window the next turn assembles once the record lands, counted
+    // before it is written so the record can say how large it is.
+    let snapshot = match refreshed_snapshot(
+        deps,
+        &req.session_id,
+        &entries,
+        tail_start_entry_id.as_deref(),
+        &summary,
+    )
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(session_id = %req.session_id, %error, "context snapshot not refreshed after compaction");
+            None
+        }
     };
-    let data = json!({
+    let context_after = snapshot.as_ref().map(|snapshot| snapshot.total);
+    let mut data = json!({
         "summary": summary.text,
         "tail_start_entry_id": tail_start_entry_id,
         "tokens_before": summary.tokens_before,
@@ -443,8 +726,21 @@ async fn persist(
         "timestamp": AgentMessage::now_ms(),
         "compaction_id": compaction_id,
         "model": req.model,
-        "source": "command",
+        "source": req.trigger.source(),
+        "trigger": req.trigger,
     });
+    if let Some(threshold) = req.threshold_tokens {
+        data["threshold_tokens"] = json!(threshold);
+    }
+    if let Some(rule) = &req.rule {
+        data["rule"] = json!(rule);
+    }
+    if let Some(before) = context_before {
+        data["context_before"] = json!(before);
+    }
+    if let Some(after) = context_after {
+        data["context_after"] = json!(after);
+    }
     if let Err(error) = session
         .append_custom(
             &req.session_id,
@@ -455,47 +751,64 @@ async fn persist(
         )
         .await
     {
-        return outcome(
-            req,
-            compaction_id,
-            Status::Failed,
-            failed(&format!("the summary could not be saved: {error}")),
-        );
+        return failure(format!("the summary could not be saved: {error}"));
     }
-    if let Err(error) = refresh_snapshot(deps, session, &req.session_id, &summary).await {
-        tracing::warn!(session_id = %req.session_id, %error, "context snapshot not refreshed after compaction");
+    if let Some(next) = &snapshot {
+        let timeout = deps.cfg().await.session_timeout_ms;
+        if let Err(error) = context_snapshot::put(&deps.iii, next, timeout).await {
+            tracing::warn!(session_id = %req.session_id, %error, "context snapshot not stored after compaction");
+        }
     }
-    let message = format!("compacted {} tokens", grouped(summary.tokens_before));
+    let message = match req.trigger {
+        Trigger::Command => format!("compacted {} tokens", grouped(summary.tokens_before)),
+        trigger => marker(
+            trigger,
+            req.threshold_tokens,
+            context_before,
+            context_after,
+            req.rule.as_ref(),
+        ),
+    };
     Outcome {
         tokens_before: Some(summary.tokens_before),
         tokens_after: summary.tokens_after,
         summary: Some(summary.text),
+        context_before,
+        context_after,
         ..outcome(req, compaction_id, Status::Ok, message)
     }
 }
 
-/// Rewrite the session's context snapshot for the compacted window: the last
-/// generate step's categories with the new summary and the verbatim tail.
-async fn refresh_snapshot(
+/// The session's context snapshot for the compacted window, on top of the
+/// last generate step's: its categories with the new summary and the
+/// verbatim tail from `tail_start_entry_id` (none: everything was
+/// summarised). `None` before any generate step, and from a context-manager
+/// without the by-role split (the next generate step corrects it).
+async fn refreshed_snapshot(
     deps: &Deps,
-    session: &SessionClient,
     session_id: &str,
+    entries: &[LoadedEntry],
+    tail_start_entry_id: Option<&str>,
     summary: &Summary,
-) -> Result<(), String> {
+) -> Result<Option<context_snapshot::ContextSnapshotV1>, String> {
     let cfg = deps.cfg().await;
     let Some(last) = context_snapshot::get(&deps.iii, session_id, cfg.session_timeout_ms)
         .await
         .map_err(|e| e.to_string())?
     else {
         // No generate step yet: the chip has nothing to correct.
-        return Ok(());
+        return Ok(None);
     };
-    let entries = session
-        .messages(session_id, true)
-        .await
-        .map_err(|e| e.to_string())?;
-    let anchor = crate::turn_loop::compaction_anchor(session_id, &entries);
-    let window = crate::window::build(session_id, &entries, anchor.window_start, None, None);
+    // Where the window opens once the record is the latest on the path, as
+    // `compaction_anchor` will read it.
+    let window_start = match tail_start_entry_id {
+        Some(tail) => entries
+            .iter()
+            .position(|entry| entry.entry_id == tail)
+            .unwrap_or(entries.len()),
+        None => entries.len(),
+    };
+    let window = crate::window::build(session_id, entries, window_start, None, None);
     let context = deps.context().await;
     let count = |messages: Vec<Value>, system_prompt: &str| {
         context.count_tokens(CountTokensParams {
@@ -518,7 +831,7 @@ async fn refresh_snapshot(
     // A context-manager without the by-role split cannot tell the summary
     // from the messages; leave the snapshot to the next generate step.
     let Some(by_role) = counted.by_role else {
-        return Ok(());
+        return Ok(None);
     };
     let messages = SnapshotMessagesV1::from(by_role);
     let summary_tokens = counted.tokens.saturating_sub(messages.total());
@@ -526,17 +839,14 @@ async fn refresh_snapshot(
         Some(text) if last.compacted => count(Vec::new(), text).await.map(|c| c.tokens)?,
         _ => 0,
     };
-    let next = context_snapshot::after_compaction(
+    Ok(Some(context_snapshot::after_compaction(
         &last,
         messages,
         previous_summary_tokens,
         summary_tokens,
         summary.tokens_before,
         AgentMessage::now_ms(),
-    );
-    context_snapshot::put(&deps.iii, &next, cfg.session_timeout_ms)
-        .await
-        .map_err(|e| e.to_string())
+    )))
 }
 
 /// How much of the window is settled: everything before the first reply of
@@ -602,6 +912,121 @@ fn outcome(req: &Request, compaction_id: &str, status: Status, message: String) 
         tokens_after: None,
         summary: None,
         entry_ids: Vec::new(),
+        trigger: req.trigger,
+        source: req.trigger.source().to_string(),
+        threshold_tokens: req.threshold_tokens,
+        rule: req.rule.clone(),
+        context_before: None,
+        context_after: None,
+        failure: None,
+    }
+}
+
+/// The outcome of a compaction `context::assemble` ran inside a turn
+/// (`inline` or `limit`): its record was written with the step, and only its
+/// completed phase is emitted (contract C).
+#[allow(clippy::too_many_arguments)]
+pub fn inline_outcome(
+    session_id: &str,
+    compaction_id: &str,
+    trigger: Trigger,
+    threshold_tokens: Option<u64>,
+    rule: Option<Rule>,
+    tokens_before: Option<u64>,
+    context_before: Option<u64>,
+    context_after: Option<u64>,
+    entry_ids: Vec<String>,
+) -> Outcome {
+    Outcome {
+        session_id: session_id.to_string(),
+        compaction_id: compaction_id.to_string(),
+        status: Status::Ok,
+        message: marker(
+            trigger,
+            threshold_tokens,
+            context_before,
+            context_after,
+            rule.as_ref(),
+        ),
+        tokens_before,
+        tokens_after: context_after,
+        summary: None,
+        entry_ids,
+        trigger,
+        source: trigger.source().to_string(),
+        threshold_tokens,
+        rule,
+        context_before,
+        context_after,
+        failure: None,
+    }
+}
+
+/// The start notice: "compacting the conversation…", or for an automatic
+/// compaction "Auto-compacting at 160k…" (D163).
+fn started_message(req: &Request) -> String {
+    match (req.trigger, req.threshold_tokens) {
+        (Trigger::Command, _) => STARTED.into(),
+        (_, Some(threshold)) => format!(
+            "Auto-compacting at {}…",
+            crate::autocompact::short_tokens(threshold)
+        ),
+        (_, None) => "Auto-compacting…".into(),
+    }
+}
+
+fn busy_message(req: &Request) -> String {
+    if req.is_auto() {
+        "Auto-compact skipped: another compaction of this conversation is in progress.".into()
+    } else {
+        LEASE_BUSY.into()
+    }
+}
+
+fn failed_message(req: &Request, reason: &str, failure: Option<&CompactFailure>) -> String {
+    if !req.is_auto() {
+        return failed(reason);
+    }
+    let tail = if failure.is_some_and(CompactFailure::is_usage_limit) {
+        AUTO_FAILED_LIMIT_TAIL
+    } else {
+        AUTO_FAILED_TAIL
+    };
+    format!("Auto-compact failed: {reason}. {tail}")
+}
+
+/// The marker every client shows for an automatic compaction (D163):
+/// "Auto-compacted at 160k · 161k → 34k tokens · acme-web rule".
+pub fn marker(
+    trigger: Trigger,
+    threshold: Option<u64>,
+    before: Option<u64>,
+    after: Option<u64>,
+    rule: Option<&Rule>,
+) -> String {
+    use crate::autocompact::short_tokens;
+    let sizes = match (before, after) {
+        (Some(before), Some(after)) => {
+            format!(
+                " · {} → {} tokens",
+                short_tokens(before),
+                short_tokens(after)
+            )
+        }
+        _ => String::new(),
+    };
+    let at = threshold
+        .map(|threshold| format!(" at {}", short_tokens(threshold)))
+        .unwrap_or_default();
+    let rule = rule
+        .filter(|_| trigger != Trigger::Limit)
+        .map(|rule| format!(" · {}", rule.name()))
+        .unwrap_or_default();
+    match trigger {
+        Trigger::Limit => format!("Compacted at the model's limit{sizes}"),
+        Trigger::Inline => format!("Auto-compacted during the turn{at}{sizes}{rule}"),
+        Trigger::Auto => format!("Auto-compacted{at}{sizes}{rule}"),
+        Trigger::Command => format!("Compacted{sizes}"),
     }
 }
 
@@ -618,6 +1043,21 @@ fn notice_data(compaction_id: &str, reason: &str, message: &str, tone: &str) -> 
     })
 }
 
+/// The fields an automatic compaction's start notice carries.
+fn annotate(data: &mut Value, req: &Request) {
+    if !req.is_auto() {
+        return;
+    }
+    data["trigger"] = json!(req.trigger);
+    data["source"] = json!(req.trigger.source());
+    if let Some(threshold) = req.threshold_tokens {
+        data["threshold_tokens"] = json!(threshold);
+    }
+    if let Some(rule) = &req.rule {
+        data["rule"] = json!(rule);
+    }
+}
+
 fn origin(compaction_id: &str) -> Value {
     json!({ "compaction_id": compaction_id })
 }
@@ -629,7 +1069,15 @@ pub fn event_payload(phase: &str, outcome: &Outcome) -> Value {
         "compaction_id": outcome.compaction_id,
         "phase": phase,
         "timestamp": AgentMessage::now_ms(),
+        "trigger": outcome.trigger,
+        "source": outcome.source,
     });
+    if let Some(threshold) = outcome.threshold_tokens {
+        payload["threshold_tokens"] = json!(threshold);
+    }
+    if let Some(rule) = &outcome.rule {
+        payload["rule"] = json!(rule);
+    }
     if phase == "completed" {
         payload["status"] = json!(outcome.status);
         payload["message"] = json!(outcome.message);
@@ -639,6 +1087,15 @@ pub fn event_payload(phase: &str, outcome: &Outcome) -> Value {
         }
         if let Some(tokens) = outcome.tokens_after {
             payload["tokens_after"] = json!(tokens);
+        }
+        if let Some(tokens) = outcome.context_before {
+            payload["context_before"] = json!(tokens);
+        }
+        if let Some(tokens) = outcome.context_after {
+            payload["context_after"] = json!(tokens);
+        }
+        if let Some(failure) = &outcome.failure {
+            payload["failure"] = json!(failure);
         }
     }
     payload
@@ -825,18 +1282,229 @@ mod tests {
             tokens_after: Some(9_000),
             summary: Some("S".into()),
             entry_ids: vec!["e_idem_m1".into(), "e_cmp_1_outcome".into()],
+            trigger: Trigger::Command,
+            source: "command".into(),
+            threshold_tokens: None,
+            rule: None,
+            context_before: Some(480_000),
+            context_after: Some(12_000),
+            failure: None,
         };
         let started = event_payload("started", &outcome);
         assert_eq!(started["phase"], "started");
+        assert_eq!(started["trigger"], "command");
+        assert_eq!(started["source"], "command");
         assert!(started.get("status").is_none());
+        assert!(started.get("context_before").is_none());
         let done = event_payload("completed", &outcome);
         assert_eq!(done["status"], "ok");
         assert_eq!(done["message"], "compacted 471,486 tokens");
         assert_eq!(done["tokens_before"], 471_486);
+        assert_eq!(done["context_before"], 480_000);
+        assert_eq!(done["context_after"], 12_000);
         assert_eq!(done["entry_ids"], json!(["e_idem_m1", "e_cmp_1_outcome"]));
+        assert!(done.get("threshold_tokens").is_none());
+        assert!(done.get("rule").is_none());
         assert!(
             done.get("summary").is_none(),
             "the summary rides the record, not the event"
+        );
+    }
+
+    fn acme_rule() -> Rule {
+        Rule {
+            scope: crate::autocompact::RuleScope::Project,
+            project_id: Some("prj_1".into()),
+            project_name: Some("acme-web".into()),
+        }
+    }
+
+    fn auto_request() -> Request {
+        Request {
+            trigger: Trigger::Auto,
+            threshold_tokens: Some(160_000),
+            rule: Some(acme_rule()),
+            account: Some("work".into()),
+            ..Request::command("s1".into(), "claude-code/opus".into(), None)
+        }
+    }
+
+    /// Contract C: the record's and the event's `trigger`, `source`,
+    /// `threshold_tokens`, `rule` and the context sizes.
+    #[test]
+    fn an_automatic_outcome_carries_the_contract_c_fields() {
+        let req = auto_request();
+        let started = outcome(&req, "cmp_1", Status::Ok, started_message(&req));
+        let payload = event_payload("started", &started);
+        assert_eq!(
+            payload,
+            json!({
+                "session_id": "s1",
+                "compaction_id": "cmp_1",
+                "phase": "started",
+                "timestamp": payload["timestamp"],
+                "trigger": "auto",
+                "source": "auto",
+                "threshold_tokens": 160_000,
+                "rule": { "scope": "project", "project_id": "prj_1", "project_name": "acme-web" },
+            })
+        );
+        let failure = CompactFailure {
+            kind: "timeout".into(),
+            message: "The summary request timed out.".into(),
+            error_details: None,
+        };
+        let failed = Outcome {
+            failure: Some(failure.clone()),
+            context_before: Some(161_000),
+            ..outcome(&req, "cmp_1", Status::Failed, "x".into())
+        };
+        let done = event_payload("completed", &failed);
+        assert_eq!(done["status"], "failed");
+        assert_eq!(done["failure"], json!(failure));
+        assert_eq!(done["context_before"], 161_000);
+        assert!(done.get("context_after").is_none());
+    }
+
+    #[test]
+    fn the_notices_name_the_trigger_the_threshold_and_the_rule() {
+        let req = auto_request();
+        assert_eq!(started_message(&req), "Auto-compacting at 160k…");
+        assert_eq!(
+            started_message(&Request::command("s1".into(), "m".into(), None)),
+            STARTED
+        );
+        let rule = acme_rule();
+        assert_eq!(
+            marker(
+                Trigger::Auto,
+                Some(160_000),
+                Some(161_000),
+                Some(34_000),
+                Some(&rule)
+            ),
+            "Auto-compacted at 160k · 161k → 34k tokens · acme-web rule"
+        );
+        assert_eq!(
+            marker(
+                Trigger::Inline,
+                Some(160_000),
+                Some(181_000),
+                Some(30_000),
+                Some(&Rule::global())
+            ),
+            "Auto-compacted during the turn at 160k · 181k → 30k tokens · global rule"
+        );
+        assert_eq!(
+            marker(Trigger::Limit, None, Some(116_000), Some(30_000), None),
+            "Compacted at the model's limit · 116k → 30k tokens"
+        );
+        assert_eq!(
+            marker(
+                Trigger::Auto,
+                Some(600_000),
+                Some(612_000),
+                Some(41_000),
+                Some(&Rule::session())
+            ),
+            "Auto-compacted at 600k · 612k → 41k tokens · this conversation's rule"
+        );
+        assert_eq!(Trigger::Inline.source(), "auto_inline");
+        assert_eq!(Trigger::Limit.source(), "limit");
+    }
+
+    /// D162 and the spec revision: "a larger context window" only for an
+    /// input too large; a usage limit names the account and no clock time,
+    /// and the conversation compacts again after its next turn.
+    #[test]
+    fn a_failed_auto_compaction_says_why_by_its_cause() {
+        let req = auto_request();
+        let usage = CompactFailure {
+            kind: "usage_limit".into(),
+            message: "This Claude Code account reached its usage limit.".into(),
+            error_details: Some(crate::types::message::ErrorDetails {
+                usage_limit: true,
+                window: Some("five_hour".into()),
+                resets_at_ms: Some(1_700_000_000_000),
+            }),
+        };
+        assert_eq!(
+            failed_message(&req, "Personal reached its usage limit", Some(&usage)),
+            "Auto-compact failed: Personal reached its usage limit. The conversation goes on and compacts again after its next turn."
+        );
+        let other = CompactFailure {
+            kind: "rate_limited".into(),
+            message: "Too many requests.".into(),
+            error_details: None,
+        };
+        assert_eq!(
+            failed_message(&req, "Too many requests", Some(&other)),
+            "Auto-compact failed: Too many requests. The conversation goes on and compacts at the model's limit."
+        );
+        // `/compact` keeps its own words.
+        let command = Request::command("s1".into(), "m".into(), None);
+        assert_eq!(
+            failed_message(&command, "Too many requests", Some(&other)),
+            "compaction failed — Too many requests"
+        );
+        assert!(too_large("m").contains("larger context window"));
+    }
+
+    #[test]
+    fn the_cause_comes_from_context_managers_failure() {
+        let req = auto_request();
+        let failure = |kind: &str, message: &str, usage_limit: bool| CompactFailure {
+            kind: kind.into(),
+            message: message.into(),
+            error_details: usage_limit.then(|| crate::types::message::ErrorDetails {
+                usage_limit: true,
+                window: Some("week".into()),
+                resets_at_ms: Some(1_700_000_000_000),
+            }),
+        };
+        let limit = failure("usage_limit", "limit", true);
+        assert_eq!(
+            failure_words(&req, Some(&limit), Some("Personal")),
+            "Personal reached its usage limit"
+        );
+        // The name could not be read: the id.
+        assert_eq!(
+            failure_words(&req, Some(&limit), None),
+            "work reached its usage limit"
+        );
+        // A usage limit reported under `rate_limited` with its details.
+        assert_eq!(
+            failure_words(
+                &req,
+                Some(&failure("rate_limited", "x", true)),
+                Some("Personal")
+            ),
+            "Personal reached its usage limit"
+        );
+        assert_eq!(
+            failure_words(
+                &req,
+                Some(&failure("input_too_large", "too big", false)),
+                None
+            ),
+            "the summariser could not produce a summary with claude-code/opus; try again, or switch to a model with a larger context window"
+        );
+        assert_eq!(
+            failure_words(
+                &req,
+                Some(&failure("timeout", "The request timed out.", false)),
+                None
+            ),
+            "The request timed out"
+        );
+        assert_eq!(
+            failure_words(&req, Some(&failure("other", "  ", false)), None),
+            "the summariser could not produce a summary with claude-code/opus"
+        );
+        // An older context-manager: today's words.
+        assert_eq!(
+            failure_words(&req, None, None),
+            too_large("claude-code/opus")
         );
     }
 

@@ -36,12 +36,15 @@ pub const LIST_DESC: &str = "List the chat projects: named, coloured groups of f
      list, kept for apps released before projects.";
 pub const CREATE_ID: &str = "harness::projects::create";
 pub const CREATE_DESC: &str = "Internal control-plane: create a chat project { name, color, folders, account?, \
-     bring_existing? }; account is { mode: \"global\" } (the default) or { mode: \"pinned\", \
-     account_id } (invalid_account otherwise); bring_existing stamps the root conversations \
-     already in its folders. Answers { project, moved }.";
+     autocompact?, bring_existing? }; account is { mode: \"global\" } (the default) or { mode: \"pinned\", \
+     account_id } (invalid_account otherwise); autocompact is { mode: \"inherit\" } (the default), \
+     { mode: \"off\" } or { mode: \"tokens\", tokens } with 20,000-2,000,000 tokens (bad_setting, \
+     bad_tokens otherwise); bring_existing stamps the root conversations already in its folders. \
+     Answers { project, moved }.";
 pub const UPDATE_ID: &str = "harness::projects::update";
 pub const UPDATE_DESC: &str = "Internal control-plane: change a chat project (a patch: only the fields sent change); \
-     bring_existing applies to the folders added in this call. Answers { project, moved }.";
+     autocompact is checked as on create (bad_setting, bad_tokens); bring_existing applies to the \
+     folders added in this call. Answers { project, moved }.";
 pub const DELETE_ID: &str = "harness::projects::delete";
 pub const DELETE_DESC: &str = "Internal control-plane: delete a chat project { id }; its conversations go to No project \
      ({ released }). { path } without an id forwards to harness::folders::delete (apps released \
@@ -104,6 +107,13 @@ pub struct ProjectCreateRequest {
     #[serde(default)]
     #[schemars(with = "Option<Map<String, Value>>")]
     pub account: Option<Value>,
+    /// The project's autocompact setting (chat-projects phase 3):
+    /// `{mode: "inherit"}` (the default), `{mode: "off"}` or
+    /// `{mode: "tokens", tokens}` with 20,000-2,000,000 tokens. Anything else
+    /// is `bad_setting` or `bad_tokens`.
+    #[serde(default)]
+    #[schemars(with = "Option<Map<String, Value>>")]
+    pub autocompact: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -121,7 +131,8 @@ pub struct ProjectUpdateRequest {
     #[serde(default)]
     #[schemars(with = "Option<Map<String, Value>>")]
     pub account: Option<Value>,
-    /// Phase 3: `{mode: "inherit" | "tokens" | "off", tokens?}`.
+    /// The project's autocompact setting (chat-projects phase 3), checked
+    /// as on create: `{mode: "inherit" | "off"}` or `{mode: "tokens", tokens}`.
     #[serde(default)]
     #[schemars(with = "Option<Map<String, Value>>")]
     pub autocompact: Option<Value>,
@@ -261,6 +272,7 @@ pub async fn create(
                 color: request.color,
                 folders: request.folders,
                 account: request.account,
+                autocompact: request.autocompact,
             },
             home.as_deref(),
         )
@@ -769,6 +781,7 @@ mod tests {
                 folders: vec!["/w/acme/web".into()],
                 bring_existing: None,
                 account: None,
+                autocompact: None,
             },
         )
         .await
@@ -820,6 +833,7 @@ mod tests {
                 folders: vec!["/w/other".into()],
                 bring_existing: None,
                 account: None,
+                autocompact: None,
             },
         )
         .await
@@ -979,6 +993,7 @@ mod tests {
                 folders: vec!["/w/web".into(), "/w/api".into()],
                 bring_existing: Some(true),
                 account: None,
+                autocompact: None,
             },
         )
         .await
@@ -1012,6 +1027,7 @@ mod tests {
                 folders: vec!["/w/elsewhere".into()],
                 bring_existing: None,
                 account: None,
+                autocompact: None,
             },
         )
         .await

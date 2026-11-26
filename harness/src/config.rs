@@ -191,6 +191,48 @@ pub struct WorkerConfig {
     /// Read and written by devices through `harness::chat-settings::get|set`.
     #[serde(default)]
     pub descriptions: DescriptionsConfig,
+
+    /// The global autocompact setting (chat-projects phase 3): a conversation
+    /// compacts by itself at the end of a turn once its context passes
+    /// `tokens`, or at the model's own limit when that comes first. Projects
+    /// and conversations override it. Read and written by devices through
+    /// `harness::chat-settings::get|set`. Left out of the stored entry while
+    /// it is the default, so a harness older than 1.13 still boots on it.
+    #[serde(default, skip_serializing_if = "AutocompactConfig::is_default")]
+    pub autocompact: AutocompactConfig,
+}
+
+/// [`WorkerConfig::autocompact`]'s mode.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutocompactMode {
+    /// Compact only at the model's own limit, as before autocompact.
+    #[default]
+    Off,
+    /// Compact at `tokens` (or the model's limit, when smaller).
+    Tokens,
+}
+
+/// [`WorkerConfig::autocompact`]. `tokens` and `instructions` are kept while
+/// the mode is `off`, so turning it back on restores them.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutocompactConfig {
+    #[serde(default)]
+    pub mode: AutocompactMode,
+    /// The threshold in tokens, 20,000 to 2,000,000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// What the summary keeps, up to 1,000 characters: sent with every
+    /// automatic compaction, as the text after `/compact` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+impl AutocompactConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// [`WorkerConfig::descriptions`].
@@ -475,6 +517,7 @@ impl Default for WorkerConfig {
             projects_file_path: default_projects_file_path(),
             folders_file_path: default_folders_file_path(),
             descriptions: DescriptionsConfig::default(),
+            autocompact: AutocompactConfig::default(),
         }
     }
 }
@@ -533,6 +576,29 @@ mod tests {
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
         assert_eq!(cfg.folders_file_path, "data/harness-folders.json");
         assert!(cfg.descriptions.agent_writes);
+        assert_eq!(cfg.autocompact.mode, AutocompactMode::Off);
+    }
+
+    /// The default stays out of the stored entry: a harness older than 1.13
+    /// (`deny_unknown_fields`) still boots on a configuration nobody changed.
+    #[test]
+    fn the_default_autocompact_is_not_stored() {
+        let json = WorkerConfig::default().to_json();
+        assert!(json.get("autocompact").is_none(), "{json}");
+        let set = WorkerConfig::from_json(&serde_json::json!({
+            "autocompact": { "mode": "tokens", "tokens": 160_000, "instructions": "Keep the PR numbers." }
+        }))
+        .unwrap();
+        assert_eq!(set.autocompact.mode, AutocompactMode::Tokens);
+        assert_eq!(set.autocompact.tokens, Some(160_000));
+        assert_eq!(
+            set.to_json()["autocompact"],
+            serde_json::json!({ "mode": "tokens", "tokens": 160_000, "instructions": "Keep the PR numbers." })
+        );
+        assert!(
+            WorkerConfig::from_json(&serde_json::json!({ "autocompact": { "mode": "sometimes" } }))
+                .is_err()
+        );
     }
 
     #[test]

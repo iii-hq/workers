@@ -404,6 +404,9 @@ pub struct NewProject {
     pub folders: Vec<String>,
     /// `{mode: "global"}` (the default) or `{mode: "pinned", account_id}`.
     pub account: Option<Value>,
+    /// `{mode: "inherit"}` (the default), `{mode: "off"}` or
+    /// `{mode: "tokens", tokens}` (chat-projects phase 3).
+    pub autocompact: Option<Value>,
 }
 
 /// The fields an update changes; `None` keeps the stored value.
@@ -454,6 +457,12 @@ impl ProjectsStore {
             .map(validate_account)
             .transpose()?
             .unwrap_or_else(default_account);
+        let autocompact = input
+            .autocompact
+            .as_ref()
+            .map(crate::autocompact::validate_override)
+            .transpose()?
+            .unwrap_or_else(default_autocompact);
         let path = storage_path(file_path)?;
         let _guard = self.gate.lock().await;
         let mut document = load(&path).await?;
@@ -466,7 +475,7 @@ impl ProjectsStore {
             color,
             folders: folders.clone(),
             account,
-            autocompact: default_autocompact(),
+            autocompact,
             created_at_ms: now,
             updated_at_ms: now,
             extra: Map::new(),
@@ -499,15 +508,11 @@ impl ProjectsStore {
             .map(|folders| normalize_folders(folders, home))
             .transpose()?;
         let account = patch.account.as_ref().map(validate_account).transpose()?;
-        for (field, value) in [("autocompact", &patch.autocompact)] {
-            if value.as_ref().is_some_and(|value| !value.is_object()) {
-                return Err(HarnessError::rejected(
-                    "bad_request",
-                    format!("{field} must be an object"),
-                    json!({ "field": field }),
-                ));
-            }
-        }
+        let autocompact = patch
+            .autocompact
+            .as_ref()
+            .map(crate::autocompact::validate_override)
+            .transpose()?;
         let path = storage_path(file_path)?;
         let _guard = self.gate.lock().await;
         let mut document = load(&path).await?;
@@ -542,7 +547,7 @@ impl ProjectsStore {
         if let Some(account) = account {
             project.account = account;
         }
-        if let Some(autocompact) = patch.autocompact {
+        if let Some(autocompact) = autocompact {
             project.autocompact = autocompact;
         }
         if *project == before {
@@ -795,6 +800,7 @@ mod tests {
                     color: "teal".into(),
                     folders: vec!["/w/acme".into()],
                     account: Some(pinned.clone()),
+                    autocompact: None,
                 },
                 None,
             )
@@ -809,6 +815,7 @@ mod tests {
                     color: "teal".into(),
                     folders: vec!["/w/other".into()],
                     account: Some(json!({ "mode": "pinned" })),
+                    autocompact: None,
                 },
                 None,
             )
@@ -869,6 +876,7 @@ mod tests {
                     color: "teal".into(),
                     folders: vec!["/w/acme/web".into(), "/w/acme/api/".into()],
                     account: None,
+                    autocompact: None,
                 },
                 None,
             )
@@ -930,6 +938,108 @@ mod tests {
         assert_eq!(deleted.revision, 3);
         assert!(deleted.projects.is_empty());
         assert_eq!(store.list(file_str).await.unwrap().revision, 3);
+    }
+
+    /// Phase 3 (D167): create takes `autocompact` (it used to write the
+    /// default whatever was sent) and both writes refuse a bad one with
+    /// typed codes.
+    #[tokio::test]
+    async fn create_and_update_check_the_autocompact_setting() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("harness-projects.json");
+        let file_str = file.to_str().unwrap();
+        let store = ProjectsStore::default();
+        let input = |name: &str, folder: &str, autocompact: Option<Value>| NewProject {
+            name: name.into(),
+            color: "teal".into(),
+            folders: vec![folder.into()],
+            account: None,
+            autocompact,
+        };
+        let created = store
+            .create(
+                file_str,
+                input(
+                    "acme-web",
+                    "/w/acme",
+                    Some(json!({ "mode": "tokens", "tokens": 160_000 })),
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.project.autocompact,
+            json!({ "mode": "tokens", "tokens": 160_000 })
+        );
+        for (value, code) in [
+            (json!({ "mode": "tokens" }), "bad_setting"),
+            (json!({ "mode": "sometimes" }), "bad_setting"),
+            (json!("off"), "bad_setting"),
+            (json!({ "mode": "tokens", "tokens": 10_000 }), "bad_tokens"),
+            (
+                json!({ "mode": "tokens", "tokens": 3_000_000 }),
+                "bad_tokens",
+            ),
+        ] {
+            let refused = store
+                .create(
+                    file_str,
+                    input("other", "/w/other", Some(value.clone())),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.rejected_code().as_deref(), Some(code), "{value}");
+            let refused = store
+                .update(
+                    file_str,
+                    &created.project.id,
+                    ProjectPatch {
+                        autocompact: Some(value.clone()),
+                        ..ProjectPatch::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.rejected_code().as_deref(), Some(code), "{value}");
+        }
+        // Nothing refused was written.
+        assert_eq!(store.list(file_str).await.unwrap().revision, 1);
+        // Stored normalized: a stray `tokens` on another mode is dropped.
+        let off = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    autocompact: Some(json!({ "mode": "off", "tokens": 160_000 })),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(off.project.autocompact, json!({ "mode": "off" }));
+        // Clearing the project's value sends `{mode: "inherit"}`.
+        let cleared = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    autocompact: Some(json!({ "mode": "inherit" })),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.project.autocompact, json!({ "mode": "inherit" }));
+        let inherit = store
+            .create(file_str, input("plain", "/w/plain", None), None)
+            .await
+            .unwrap();
+        assert_eq!(inherit.project.autocompact, json!({ "mode": "inherit" }));
     }
 
     #[tokio::test]

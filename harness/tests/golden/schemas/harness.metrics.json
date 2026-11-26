@@ -46,6 +46,17 @@
       "ContextSnapshotV1": {
         "description": "One generation's context accounting. `free = usable - total`, floored at zero: once provider usage lands, `total` is what was billed, which can exceed the `usable` budget the window was fit into — that budget was derived before the generation from an estimate.",
         "properties": {
+          "autocompact": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SnapshotAutocompactV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The autocompact threshold the meters mark (chat-projects phase 3): the setting this step followed, where the end of a turn compacts and the inline budget context-manager applied. Absent from a harness that predates it."
+          },
           "categories": {
             "$ref": "#/definitions/SnapshotCategoriesV1"
           },
@@ -337,6 +348,50 @@
           "turn_id"
         ],
         "type": "object"
+      },
+      "Rule": {
+        "description": "The rule that decided a conversation's setting.",
+        "properties": {
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "description": "The project's name when the rule was read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/definitions/RuleScope"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
+      "RuleScope": {
+        "description": "Which level's setting applies.",
+        "oneOf": [
+          {
+            "enum": [
+              "global",
+              "project"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The conversation's own (a side chat's: its conversation's).",
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "SessionTraceMetricsV1": {
         "additionalProperties": false,
@@ -655,6 +710,50 @@
           "session_id",
           "turns"
         ],
+        "type": "object"
+      },
+      "SnapshotAutocompactV1": {
+        "description": "`ContextSnapshotV1.autocompact`: the threshold the meters mark.",
+        "properties": {
+          "cap_tokens": {
+            "description": "The budget inside a turn, `setting + max(10 %, 20k)`; `null` without a setting. context-manager compacts inline at `min(usable, cap)`.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "effective_tokens": {
+            "description": "Where the conversation compacts at the end of a turn: the setting when it is below `usable`; `null` when the model's own limit applies.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Rule"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The level that decided; `null` when none was resolved."
+          },
+          "setting_tokens": {
+            "description": "The resolved setting; `null` for off.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "SnapshotCategoriesV1": {

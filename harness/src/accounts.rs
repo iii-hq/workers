@@ -114,10 +114,14 @@ impl TurnAccount {
 
 /// Whether a turn with these options runs on the `claude-code` provider.
 pub fn runs_on_claude_code(options: &TurnOptions) -> bool {
-    match options.provider.as_deref() {
+    is_claude_code(options.provider.as_deref(), &options.model)
+}
+
+/// Whether `model` (on `provider`, when named) is a `claude-code` model.
+pub fn is_claude_code(provider: Option<&str>, model: &str) -> bool {
+    match provider {
         Some(provider) => provider == PROVIDER,
-        None => options
-            .model
+        None => model
             .strip_prefix(PROVIDER)
             .is_some_and(|rest| rest.starts_with('/')),
     }
@@ -192,6 +196,9 @@ struct TmuxClaude {
 #[derive(Debug, Clone, Deserialize)]
 struct TmuxAccount {
     id: String,
+    /// The name people gave it.
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     usage: Option<TmuxUsage>,
 }
@@ -565,6 +572,82 @@ pub async fn resolve_turn(
             Ok(TurnResolution::Unknown)
         }
     }
+}
+
+// ── compaction (chat-projects phase 3, D161) ──
+
+/// The account a compaction outside a turn runs on (`/compact`,
+/// `harness::compact`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionAccount {
+    /// The tmux account id.
+    pub id: String,
+    /// `{"claude-code": {"account": id}}`, for `context::compact`.
+    pub provider_options: Value,
+}
+
+/// The Claude Code account a `/compact` or `harness::compact` summary with
+/// `model` runs on, resolved at the call as a turn's would be (D161): the
+/// conversation's own, its project's pin, else the global; a side chat's
+/// lock's. `None` when the summariser is not a `claude-code` model, when no
+/// tmux runs accounts, or when they cannot be read now (the summary then
+/// runs on the provider's own sign-in, as before phase 3).
+pub async fn compaction_account(
+    deps: &Deps,
+    session: &SessionClient,
+    session_id: &str,
+    provider: Option<&str>,
+    model: &str,
+) -> Option<CompactionAccount> {
+    if !is_claude_code(provider, model) {
+        return None;
+    }
+    let resolved = async {
+        let metadata = session_metadata(session, session_id).await?;
+        Ok::<_, HarnessError>(match crate::side_chat::side_chat_parent(&metadata) {
+            Some(parent) => side_chat_account(deps, session, session_id, parent, &metadata).await?,
+            None => resolve_session(deps, &metadata).await,
+        })
+    }
+    .await;
+    match resolved {
+        Ok(Resolved::Account(account)) => {
+            let mut options = None;
+            set_account_option(&mut options, &account.id);
+            Some(CompactionAccount {
+                provider_options: serde_json::to_value(options).unwrap_or(Value::Null),
+                id: account.id,
+            })
+        }
+        Ok(Resolved::None) => None,
+        Ok(Resolved::Unknown(account)) => {
+            tracing::warn!(session_id, account = %account.id, "the conversation's Claude Code account is gone; the compaction runs on the provider's own sign-in");
+            None
+        }
+        Ok(Resolved::Unavailable(error)) => {
+            tracing::warn!(session_id, %error, "the compaction's Claude Code account could not be decided; it runs on the provider's own sign-in");
+            None
+        }
+        Err(error) => {
+            tracing::warn!(session_id, %error, "the compaction's Claude Code account could not be decided; it runs on the provider's own sign-in");
+            None
+        }
+    }
+}
+
+/// The name people gave the Claude Code account `id` (`tmux::accounts::list`),
+/// else the id itself.
+pub async fn account_name(deps: &Deps, id: &str) -> String {
+    let named = match tmux_accounts(deps).await {
+        Ok(Tmux::Accounts(list)) => list
+            .accounts
+            .into_iter()
+            .find(|account| account.id == id)
+            .map(|account| account.name)
+            .filter(|name| !name.trim().is_empty()),
+        _ => None,
+    };
+    named.unwrap_or_else(|| id.to_string())
 }
 
 /// The public message of a turn pinned to an account that is gone.
