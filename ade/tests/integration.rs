@@ -1526,6 +1526,79 @@ async fn ws_channel_route_relays_a_reader_with_its_close_reason() {
     }
 }
 
+/// On a channel the close frame is the end of the data, so a writer whose
+/// socket is lost before its close must reach the engine as an abort, never
+/// as a clean end that would pass the cut-off stream as whole.
+#[tokio::test]
+async fn ws_channel_route_aborts_the_engine_end_when_the_writer_is_lost() {
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}")).await;
+    let (mut client, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws/ws/channels/{}?key=k&dir=write",
+        Uuid::new_v4()
+    ))
+    .await
+    .expect("connect to the channel route");
+    let (_, mut engine_ws) = accept_engine_dial(&engine).await;
+
+    client
+        .send(Message::binary(vec![1, 2, 3]))
+        .await
+        .expect("send the binary frame");
+    drop(client);
+
+    match next_frame(&mut engine_ws, "the binary frame").await {
+        Message::Binary(bytes) => assert_eq!(bytes.as_ref(), [1, 2, 3]),
+        other => panic!("expected the binary frame, got {other:?}"),
+    }
+    match next_frame(&mut engine_ws, "the abort").await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Error);
+            assert_eq!(frame.reason.as_str(), "stream socket lost");
+        }
+        other => panic!("expected an error close, got {other:?}"),
+    }
+}
+
+/// The reading end gets a 1011 close, not a clean end, when the engine's
+/// socket is lost mid-stream.
+#[tokio::test]
+async fn ws_channel_route_aborts_the_reader_when_the_engine_is_lost() {
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}")).await;
+    let (mut client, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws/ws/channels/{}?key=k&dir=read",
+        Uuid::new_v4()
+    ))
+    .await
+    .expect("connect to the channel route");
+    let (_, mut engine_ws) = accept_engine_dial(&engine).await;
+
+    engine_ws
+        .send(Message::binary(vec![1, 2, 3]))
+        .await
+        .expect("send the binary frame");
+    drop(engine_ws);
+
+    match next_frame(&mut client, "the binary frame").await {
+        Message::Binary(bytes) => assert_eq!(bytes.as_ref(), [1, 2, 3]),
+        other => panic!("expected the binary frame, got {other:?}"),
+    }
+    match next_frame(&mut client, "the abort").await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Error);
+            assert_eq!(frame.reason.as_str(), "stream socket lost");
+        }
+        other => panic!("expected an error close, got {other:?}"),
+    }
+}
+
 /// A cross-origin page, a request that names no channel end, and any path
 /// beside `/ws/ws/channels/<one segment>` never dial the engine.
 #[tokio::test]

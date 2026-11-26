@@ -42,6 +42,7 @@ use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
 use iii_sdk::protocol::ChannelDirection;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 
 /// Connection settings required by the `/ws` proxy.
@@ -188,6 +189,10 @@ enum Upstream {
     Channel(String),
 }
 
+/// The reason of the error close a channel leg gets when the other leg ended
+/// without its peer's close frame.
+const STREAM_LOST: &str = "stream socket lost";
+
 async fn handle_ws(client: WebSocket, upstream: Upstream) {
     let (url, engine_ws_config, dial_failed) = match &upstream {
         Upstream::Worker(config) => (
@@ -233,8 +238,13 @@ async fn handle_ws(client: WebSocket, upstream: Upstream) {
 
     let (mut client_tx, mut client_rx) = client.split();
     let (mut engine_tx, mut engine_rx) = engine.split();
+    // On a channel the close frame is the end of the data, so a leg that ends
+    // without its peer's close (read error, EOF, failed send) must abort the
+    // other leg: a bare close would pass a cut-off stream as whole.
+    let channel = matches!(upstream, Upstream::Channel(_));
 
     let client_to_engine = async {
+        let mut closed = false;
         while let Some(msg) = client_rx.next().await {
             let msg = match msg {
                 Ok(m) => m,
@@ -271,13 +281,24 @@ async fn handle_ws(client: WebSocket, upstream: Upstream) {
                 break;
             }
             if is_close {
+                closed = true;
                 break;
             }
         }
-        let _ = engine_tx.close().await;
+        if channel && !closed {
+            let _ = engine_tx
+                .send(TungMessage::Close(Some(TungCloseFrame {
+                    code: CloseCode::Error,
+                    reason: STREAM_LOST.into(),
+                })))
+                .await;
+        } else {
+            let _ = engine_tx.close().await;
+        }
     };
 
     let engine_to_client = async {
+        let mut closed = false;
         while let Some(msg) = engine_rx.next().await {
             let msg = match msg {
                 Ok(m) => m,
@@ -294,10 +315,20 @@ async fn handle_ws(client: WebSocket, upstream: Upstream) {
                 break;
             }
             if is_close {
+                closed = true;
                 break;
             }
         }
-        let _ = client_tx.close().await;
+        if channel && !closed {
+            let _ = client_tx
+                .send(AxumMessage::Close(Some(AxumCloseFrame {
+                    code: 1011,
+                    reason: STREAM_LOST.into(),
+                })))
+                .await;
+        } else {
+            let _ = client_tx.close().await;
+        }
     };
 
     tokio::select! {
