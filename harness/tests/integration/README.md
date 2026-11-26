@@ -64,6 +64,7 @@ No provider key or network access is required.
 | UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
 | UI-006 | `console-set-description` | playground | a Console turn whose reply comes with `harness::set-description`: the description reaches the header and the sidebar, the transcript shows no call, and the turn makes one model call |
 | UI-007 | `console-side-chat` | playground | after the conversation's turn, the Console opens a side chat at its reply (`harness::side-chat::open`) and sends in it with no model or effort; the run waits for that second generation (`await_generations`). Its request carries the conversation's system prompt, system sections and tools, its history starts with the conversation's, nothing reaches the conversation, and the run makes exactly two model calls |
+| UI-008 | `console-account-usage-limit` | playground | Playwright stands in for tmux (`tmux::accounts::list` and the rest, registered with iii-browser-sdk; the fixture has no stand-in of its own) with `personal` global, and a setup call creates the project `acme-web` over the send's folder, following the global. The turn runs on `personal` and the router answers its five-hour usage limit; the Console's limit card ("Continue in Work") writes `claude_account: default` and calls `harness::retry`, and the turn runs again on `default` with no second user message. `verify` is INT-048's |
 | UI-SEC-001 | `adversarial-content-rendering` | playground | hostile-looking user, model, function-argument, and function-result content remains inert across persistence, rendering, and reload |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
@@ -165,7 +166,7 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 through UI-007 and UI-SEC-001 must use
+all direct scenarios; UI-001 through UI-008 and UI-SEC-001 must use
 `playground`. INT-003 produces
 two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,

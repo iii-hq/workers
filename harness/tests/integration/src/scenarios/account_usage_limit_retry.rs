@@ -20,13 +20,13 @@ use crate::evidence_data::RunEvidence;
 use crate::fixtures::ScenarioFixture;
 
 const ID: &str = "INT-048";
-const MESSAGE: &str = "Summarize the release notes.";
-const REPLY: &str = "The release adds account pinning.";
-const LIMIT_MESSAGE: &str = "Claude usage limit reached for the five-hour window";
+pub(super) const MESSAGE: &str = "Summarize the release notes.";
+pub(super) const REPLY: &str = "The release adds account pinning.";
+pub(super) const LIMIT_MESSAGE: &str = "Claude usage limit reached for the five-hour window";
 const FOLDER: &str = "/int-048/acme";
 const PINNED: &str = "personal";
 const OTHER: &str = "work";
-const RESETS_AT_MS: u64 = 4_102_444_800_000;
+pub(super) const RESETS_AT_MS: u64 = 4_102_444_800_000;
 
 fn accounts() -> Value {
     json!({
@@ -37,7 +37,9 @@ fn accounts() -> Value {
     })
 }
 
-fn request(account: &str) -> Request {
+/// The turn's step-0 request (the send's, then the retry's): the one user
+/// message and the account the turn resolved.
+pub(super) fn request(account: &str) -> Request {
     Request::new()
         .turn_request_step(0)
         // The project's folder is the turn's working directory: the runtime
@@ -107,6 +109,16 @@ pub(super) fn scenario() -> ScenarioFixture {
 }
 
 fn verify(run: &RunEvidence) -> anyhow::Result<()> {
+    verify_limit_then_retry(run, PINNED, OTHER)
+}
+
+/// The turn failed once on `limited`'s usage limit, with no resume, and
+/// `harness::retry` ran it again on `other`, which the conversation names.
+pub(super) fn verify_limit_then_retry(
+    run: &RunEvidence,
+    limited: &str,
+    other: &str,
+) -> anyhow::Result<()> {
     run.expect_assistant_texts([REPLY])?;
     // One user message: the retry re-runs it, it does not send it again.
     let (users, _, _) = run.message_counts();
@@ -139,26 +151,26 @@ fn verify(run: &RunEvidence) -> anyhow::Result<()> {
                     "usage_limit": true,
                     "window": "five_hour",
                     "resets_at_ms": RESETS_AT_MS,
-                    "account": PINNED
+                    "account": limited
                 }),
         "unexpected usage-limit failure: {error}"
     );
 
-    // The router saw the pinned account, then the one the conversation names.
+    // The router saw the limited account, then the one the conversation names.
     let accounts = run
         .step_zero_requests()
         .iter()
         .map(|request| request["provider_options"]["claude-code"]["account"].clone())
         .collect::<Vec<_>>();
     anyhow::ensure!(
-        accounts == [json!(PINNED), json!(OTHER)],
+        accounts == [json!(limited), json!(other)],
         "unexpected accounts on the router requests: {accounts:?}"
     );
 
     // The retried turn is the run's last: the verbose status names its
     // account and where it came from; it completed without a failure.
     anyhow::ensure!(
-        run.status["account"] == json!({ "id": OTHER, "source": "session" })
+        run.status["account"] == json!({ "id": other, "source": "session" })
             && run.status["failure"].is_null(),
         "unexpected status after the retry: {}",
         run.status

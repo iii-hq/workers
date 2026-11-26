@@ -17,6 +17,7 @@ mod call_argument_reconciliation;
 mod child_discovery_granted;
 mod compaction_anchor;
 mod condition_failure_notice;
+mod console_account_usage_limit;
 mod console_set_description;
 mod console_side_chat;
 mod console_streamed_text;
@@ -81,6 +82,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         child_discovery_granted::scenario(),
         compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
+        console_account_usage_limit::scenario(),
         console_set_description::scenario(),
         console_side_chat::scenario(),
         console_streamed_text::scenario(),
@@ -129,7 +131,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 53);
+        assert_eq!(fixtures.len(), 54);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
