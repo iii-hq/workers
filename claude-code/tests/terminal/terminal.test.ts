@@ -14,7 +14,11 @@ import { CLAUDE, fakeClaude } from '../_helpers/fake-claude.js';
 
 type Handler = (payload: unknown) => Promise<Record<string, unknown>>;
 
-function setup(hostOver: Partial<HostPrepared> = {}, inventory?: () => CliRow[]) {
+function setup(
+  hostOver: Partial<HostPrepared> = {},
+  inventory?: () => CliRow[],
+  visibilityEpoch: () => number | null = () => 1,
+) {
   const claude = fakeClaude();
   const handlers = new Map<string, { handler: Handler; options: Record<string, unknown> }>();
   const iii = {
@@ -68,7 +72,7 @@ function setup(hostOver: Partial<HostPrepared> = {}, inventory?: () => CliRow[])
       () => ({ ...host, args: [], workspace: '' }),
       () => true,
       { has: () => false },
-      () => 1,
+      visibilityEpoch,
     );
     resolveOpen.mockImplementation(agents.resolveOpen);
   }
@@ -77,6 +81,7 @@ function setup(hostOver: Partial<HostPrepared> = {}, inventory?: () => CliRow[])
     () => host,
     () => TerminalConfigSchema.parse({}),
     resolveOpen,
+    visibilityEpoch,
   );
   const describeFn = handlers.get('claude::terminal::describe');
   if (!describeFn) throw new Error('claude::terminal::describe was not registered');
@@ -193,6 +198,46 @@ describe('claude::terminal::describe', () => {
         args: expect.arrayContaining(['--resume', id, '--fork-session']),
       });
     }
+  });
+
+  it.each([
+    null,
+    2,
+  ])('redacts a missing-directory failure after an in-flight permission change to %s', async (next) => {
+    const cwd = '/fixture/private-fork-directory';
+    let epoch: number | null = 1;
+    const row: CliRow = { sessionId: id, kind: 'interactive', cwd, state: 'idle' };
+    const { claude, describeFn } = setup(
+      {},
+      () => [row],
+      () => epoch,
+    );
+    claude.missing.add(cwd);
+    // A caller who still has access receives the actionable preparation error.
+    await expect(describeFn.handler(fork)).rejects.toThrow(`the folder ${cwd} is not reachable`);
+
+    const run = claude.run;
+    let release = () => {};
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const checkingFolder = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(claude, 'run').mockImplementation(async (program, args, folder) => {
+      if (program === 'pwd' && folder === cwd) {
+        entered();
+        await paused;
+      }
+      return run(program, args, folder);
+    });
+    const opening = describeFn.handler(fork);
+    await checkingFolder;
+    epoch = next;
+    release();
+    await expect(opening).rejects.toThrow(/^session visibility changed; refresh the list$/);
+    expect(claude.installs).toEqual([]);
   });
 
   it('refuses a fork if fresh inventory changes after preparation', async () => {

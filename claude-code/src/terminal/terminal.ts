@@ -55,6 +55,7 @@ export function registerTerminal(
   host: () => HostPrepared,
   config: () => TerminalConfig,
   resolveOpen: ResolveOpen,
+  visibilityEpoch: () => number | null,
 ): void {
   iii.registerFunction(
     'claude::terminal::describe',
@@ -67,33 +68,47 @@ export function registerTerminal(
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
       const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
-      const open = session
-        ? request
-          ? await resolveOpen(session, request)
-          : await resolveOpen(session)
-        : undefined;
-      if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
-      const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
-      if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
-      if (!open) return spec;
-      // Plugin preparation can take minutes. Revalidate the explicit fork before returning it.
-      if (session && request) {
-        const samePlan = (fresh: OpenSpec) =>
-          fresh.cwd === open.cwd &&
-          fresh.copy === open.copy &&
-          fresh.args.length === open.args.length &&
-          fresh.args.every((arg, i) => arg === open.args[i]);
-        const fresh = await resolveOpen(session, request);
-        if (!samePlan(fresh)) {
-          throw new Error('the session changed while opening; refresh the list');
+      const epoch = request ? visibilityEpoch() : null;
+      const verifyVisibility = () => {
+        if (request && epoch !== visibilityEpoch()) {
+          throw new Error('session visibility changed; refresh the list');
         }
-      }
-      return {
-        ...spec,
-        args: openArgs(spec.args, open),
-        ...(request ? { claude_session_id: request.claude_session_id } : {}),
-        ...(open.copy ? { copy: true } : {}),
       };
+      try {
+        const open = session
+          ? request
+            ? await resolveOpen(session, request)
+            : await resolveOpen(session)
+          : undefined;
+        if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
+        verifyVisibility();
+        const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
+        // Plugin preparation can take minutes. Revalidate the explicit fork before returning it.
+        if (session && request && open) {
+          const fresh = await resolveOpen(session, request);
+          if (
+            fresh.cwd !== open.cwd ||
+            fresh.copy !== open.copy ||
+            fresh.args.length !== open.args.length ||
+            !fresh.args.every((arg, i) => arg === open.args[i])
+          ) {
+            throw new Error('the session changed while opening; refresh the list');
+          }
+        }
+        verifyVisibility();
+        if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
+        if (!open) return spec;
+        return {
+          ...spec,
+          args: openArgs(spec.args, open),
+          ...(request ? { claude_session_id: request.claude_session_id } : {}),
+          ...(open.copy ? { copy: true } : {}),
+        };
+      } catch (error) {
+        // Preparation errors can contain the external directory too, not just a successful spec.
+        verifyVisibility();
+        throw error;
+      }
     },
     {
       description:

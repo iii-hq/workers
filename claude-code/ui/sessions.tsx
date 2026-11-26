@@ -72,6 +72,7 @@ interface AgentList {
 }
 
 const LIST_TIMEOUT_MS = 20_000;
+const WATCH_CHECK_MS = 5_000;
 // Describe prepares the session in its folder, installing the iii plugin there
 // when it is missing (a marketplace clone): longer than a listing.
 const DESCRIBE_TIMEOUT_MS = 180_000;
@@ -164,7 +165,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const generation = useRef(0);
   const configPending = useRef(false);
   const [visibility, setVisibility] = useState(0);
-  const [watchedConfig, setWatchedConfig] = useState<string>();
+  const [watch, setWatch] = useState<{ iii: ExtensionIii; configId: string }>();
   const sessions = useWorkerLive<AgentList & { generation: number }>({
     iii,
     sources: SOURCES,
@@ -195,7 +196,12 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const handler = 'iii::claude-ui::inventory-visibility';
     const settled = `${handler}-settled`;
     const target = (id: string) => `${id}::${iii.browserId}`;
+    const observerId = sessionActionNonce();
     const off: (() => void)[] = [];
+    let connected = true;
+    let watched = false;
+    let checking = false;
+    let probe = 0;
     const invalidate = () => {
       setVisibility(++generation.current);
       setAnnouncement((current) => (current?.externalId ? null : current));
@@ -204,6 +210,38 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const reload = () => {
       configPending.current = false;
       refresh();
+    };
+    const acceptWatch = (active: boolean) => {
+      if (watched === active) return;
+      watched = active;
+      invalidate();
+      setWatch(active ? { iii, configId } : undefined);
+      // The visible list must start after the engine confirmed admission.
+      if (active) refresh();
+    };
+    const checkWatch = async () => {
+      if (!connected || checking) return;
+      checking = true;
+      const current = probe;
+      let active = false;
+      try {
+        const watch = await iii.call<{
+          id?: string;
+          function_id?: string;
+          target?: { function_id?: string };
+          state?: string;
+        }>('engine::observers::get', { id: observerId }, { timeoutMs: WATCH_CHECK_MS });
+        active =
+          watch?.id === observerId &&
+          watch.function_id === 'configuration::on-updated' &&
+          watch.target?.function_id === target(handler) &&
+          watch.state === 'active';
+      } catch {
+        // A pending, denied, or missing watch cannot keep external data visible.
+      }
+      if (current !== probe) return;
+      checking = false;
+      acceptWatch(active);
     };
     const change = {
       function_id: 'configuration::on-updated',
@@ -217,23 +255,41 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           invalidate();
         }),
       );
-      off.push(iii.on(settled, reload));
-      off.push(iii.observe(change, target(handler)));
+      off.push(
+        iii.on(settled, () => {
+          invalidate();
+          reload();
+        }),
+      );
+      off.push(iii.observe(change, target(handler), { id: observerId }));
       off.push(iii.observe('claude::on-config-change', target(settled)));
       off.push(
         iii.addConnectionStateListener((state) => {
-          if (state !== 'connected') invalidate();
-          else reload();
+          connected = state === 'connected';
+          if (!connected) {
+            probe++;
+            checking = false;
+            acceptWatch(false);
+          } else {
+            reload();
+            void checkWatch();
+          }
         }),
       );
-      // Confirm again after subscribing so the initial list cannot span a missed update.
-      invalidate();
-      setWatchedConfig(configId);
-      refresh();
+      // ADE returns only a disposer, not the SDK's asynchronous admission state.
+      // Check that state without rerunning the terminal host inventory on a timer.
+      const timer = window.setInterval(() => void checkWatch(), WATCH_CHECK_MS);
+      off.push(() => window.clearInterval(timer));
+      void checkWatch();
     } catch {
-      setWatchedConfig(undefined);
+      connected = false;
+      probe++;
+      acceptWatch(false);
     }
     return () => {
+      connected = false;
+      probe++;
+      setWatch(undefined);
       for (const dispose of off.reverse()) dispose();
     };
   }, [iii, configId, refresh]);
@@ -263,7 +319,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
 
   const currentVisibility =
     !!configId &&
-    watchedConfig === configId &&
+    watch?.iii === iii &&
+    watch.configId === configId &&
     sessions.data?.generation === visibility &&
     !sessions.error;
   const listed = sessions.data?.agents ?? [];

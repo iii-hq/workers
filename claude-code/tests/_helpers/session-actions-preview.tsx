@@ -40,6 +40,7 @@ const handlers = new Map<string, (event: unknown) => void>();
 const watches = new Set<{
   source: Source;
   target: string;
+  id?: string;
 }>();
 const configId = 'fixture-claude';
 let allowed = true;
@@ -48,6 +49,7 @@ let backgroundFinished = false;
 const currentRow = (row: (typeof rows)[number]) =>
   row === rows[2] && backgroundFinished ? { ...row, alive: false, status: 'done' } : row;
 
+const refuseConfigWatch = new URLSearchParams(window.location.search).has('refuse-config-watch');
 const missingForkDirectory = new URLSearchParams(window.location.search).has(
   'missing-fork-directory',
 );
@@ -83,14 +85,23 @@ const host = {
       handlers.set(`${id}::fixture`, fn);
       return () => handlers.delete(`${id}::fixture`);
     },
-    observe(source: string | Source, target: string) {
-      const w = { source: typeof source === 'string' ? { function_id: source } : source, target };
+    observe(source: string | Source, target: string, options?: { id?: string }) {
+      const w = {
+        source: typeof source === 'string' ? { function_id: source } : source,
+        target,
+        id: options?.id,
+      };
       let removed = false;
       const admit = () => {
         if (!removed) watches.add(w);
         replyWatchCount();
       };
-      if (delayAdmission && w.source.function_id === 'claude::agents::on-reply')
+      if (refuseConfigWatch && w.source.function_id === 'configuration::on-updated') {
+        // Like ADE, return a disposer before the engine decides admission.
+        queueMicrotask(() => {
+          if (!removed) document.documentElement.dataset.configWatch = 'refused';
+        });
+      } else if (delayAdmission && w.source.function_id === 'claude::agents::on-reply')
         afterLookup = admit;
       else admit();
       return () => {
@@ -108,9 +119,20 @@ const host = {
         mode?: string;
         cursor?: string;
         include_config_id?: boolean;
+        id?: string;
         all?: boolean;
       },
     ) {
+      if (fn === 'engine::observers::get') {
+        const watch = [...watches].find((w) => w.id === p.id);
+        if (!watch) throw new Error('Observer not found');
+        return {
+          id: watch.id,
+          function_id: watch.source.function_id,
+          target: { function_id: watch.target },
+          state: 'active',
+        };
+      }
       if (fn === 'claude::agents::list') {
         return {
           agents: rows
@@ -260,6 +282,18 @@ function Preview() {
       allowed = false;
       emit('configuration::on-updated', { id: configId, event_type: 'configuration:updated' });
       // The worker's reload is still pending; there is no completion notification.
+    }
+    if (e.code === 'KeyV') {
+      // Model dropped browser observers while the worker gate still receives updates.
+      for (const watch of watches) {
+        if (
+          ['configuration::on-updated', 'claude::on-config-change'].includes(
+            watch.source.function_id,
+          )
+        )
+          watches.delete(watch);
+      }
+      allowed = false;
     }
     if (e.code === 'KeyS') scenario('stale');
     if (e.code === 'KeyN') scenario('sibling');

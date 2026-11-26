@@ -104,10 +104,19 @@ async function testSessionActions(code) {
   const { default: assert } = await import('node:assert/strict');
   const { test } = await import('node:test');
   const { JSDOM } = require('jsdom');
-  function setup(t, { heartbeat = true, plainHttp = false, missingForkDirectory = false } = {}) {
+  function setup(
+    t,
+    {
+      heartbeat = true,
+      plainHttp = false,
+      missingForkDirectory = false,
+      refuseConfigWatch = false,
+    } = {},
+  ) {
     const url = new URL('http://127.0.0.1/');
     if (plainHttp) url.searchParams.set('no-random-uuid', '');
     if (missingForkDirectory) url.searchParams.set('missing-fork-directory', '');
+    if (refuseConfigWatch) url.searchParams.set('refuse-config-watch', '');
     const { window } = new JSDOM('<div id="root"></div>', {
       url: url.href,
       pretendToBeVisual: true,
@@ -343,6 +352,35 @@ async function testSessionActions(code) {
     await click('Toggle access');
     await until(() => document.querySelector(original));
     assert.equal(status().textContent, '');
+  });
+
+  await test('withholds external-only inventory when the browser config observer is refused', async (t) => {
+    const { click, document, shortcut, text } = setup(t, { refuseConfigWatch: true });
+    await text('Console original');
+    await click('Refresh sessions');
+    // Give the mock list and the asynchronous admission decision a render turn.
+    await new Promise((resolve) => document.defaultView.requestAnimationFrame(resolve));
+    assert.equal(document.documentElement.dataset.configWatch, 'refused');
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+
+    shortcut('KeyR');
+    await new Promise((resolve) => document.defaultView.requestAnimationFrame(resolve));
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.body.textContent, /Console original/);
+  });
+
+  await test('clears cached external inventory and its Fork failure after the browser watch is lost', async (t) => {
+    const { click, document, shortcut, text, until } = setup(t, { missingForkDirectory: true });
+    await text('Design review');
+    await click('Fork Design review');
+    await click('Create fork');
+    await text('the folder /fixture/external-only is not reachable');
+
+    shortcut('KeyV');
+    await until(() => !document.querySelector('[aria-label="Open original: Design review"]'));
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.body.textContent, /Console original/);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
   await test('clears an external fork failure on access revocation without affecting console notices', async (t) => {

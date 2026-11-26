@@ -162,6 +162,7 @@ registerTerminal(
   () => prepared,
   () => holder.current.terminal,
   agents.resolveOpen,
+  () => replyPermission.epoch,
 );
 registerAuth(iii, () => prepared);
 registerUi(iii);
