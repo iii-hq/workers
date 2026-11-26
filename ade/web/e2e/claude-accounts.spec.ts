@@ -9,20 +9,30 @@ import {
 
 /*
  * chat-projects §4.3 (phase 4): Claude Code accounts in the Chat, against
- * an isolated stack the fixture starts. tmux and the phase-4 harness
- * functions are fakes registered here with iii-browser-sdk:
- * `tmux::accounts::{list,credential,global}`, `tmux::usage::read`,
- * `harness::retry` and `harness::metrics::account-split`. The failed turn is
- * a fake too: a harness `error` record with `code: "llm.usage_limit"` and
- * its details, appended to the session after the scenario's real turn, on a
- * conversation whose model is `claude-code::…` (a real one needs the
- * provider and the harness's phase 4). Nothing reaches Anthropic or a real
- * account.
+ * the isolated stack of UI-008 (`console-account-usage-limit`), whose
+ * harness is this branch's: the account resolution, `harness::retry`, the
+ * usage ledger and `harness::metrics::account-split` are real, and so are
+ * the turns, on the scripted `claude-code` model `claude-opus-4-5`. The
+ * conversation is in the project `acme-web` (the scenario's setup call),
+ * which follows the global account.
+ *
+ * Only tmux is fake (the stack runs no tmux worker): its account functions
+ * are registered here with iii-browser-sdk before the send —
+ * `tmux::accounts::{list,credential,global}`, `tmux::usage::read` and
+ * `tmux::usage::claude_outside` — offering Work (`default`), Personal
+ * (`personal`, the global) and a signed-out Side project. So the turn runs
+ * on Personal and the scripted router answers its five-hour usage limit;
+ * "Continue in Work" pins the conversation and the real retry runs the turn
+ * again on Work, where the router answers. Nothing reaches Anthropic or a
+ * real account.
  */
 
 const HOUR = 3_600_000
 const NOW = Date.now()
+/** The playground's session model (UI-008's `Model::claude_code`). */
 const CLAUDE_MODEL = 'claude-code::claude-opus-4-5'
+/** UI-008's reply on Work, after the retry. */
+const REPLY = 'The release adds account pinning.'
 
 interface PendingGlobal {
   account: string
@@ -109,34 +119,15 @@ function usage(global: string, pending: PendingGlobal | null = null) {
   }
 }
 
-const SPLITS = [
-  {
-    account: 'default',
-    week_percent: 64,
-    resets_at_ms: NOW + 50 * HOUR,
-    outside_measured: true,
-    segments: [
-      {
-        kind: 'project',
-        project_id: 'prj_acme_web',
-        name: 'acme-web',
-        color: 'blue',
-        percent: 41,
-      },
-      { kind: 'no_project', percent: 9 },
-      { kind: 'outside', percent: 14 },
-    ],
-  },
-  {
-    account: 'personal',
-    week_percent: 22,
-    resets_at_ms: NOW + 90 * HOUR,
-    outside_measured: false,
-    segments: [{ kind: 'no_project', percent: 22 }],
-  },
-]
+/**
+ * What tmux measured of Work's week outside the Chat: a third of the
+ * retried turn's tokens (30 in, 6 out) on the same model, so the real split
+ * gives acme-web three quarters of Work's 64% and the outside a quarter,
+ * whatever the model's price. Personal's outside isn't measured.
+ */
+const OUTSIDE_BY_MODEL = [{ model: 'claude-opus-4-5', input: 10, output: 2 }]
 
-/** tmux and the phase-4 harness functions, as fakes that record their calls. */
+/** tmux, as fakes that record their calls. */
 function registerFakes(engineUrl: string): Fakes {
   const sdk: ISdk = registerWorker(engineUrl)
   let disposed = false
@@ -197,10 +188,33 @@ function registerFakes(engineUrl: string): Fakes {
         waiting_for: [],
       }
     }),
-    fake('harness::metrics::account-split', () => SPLITS),
-    fake('harness::retry', () => ({ turn_id: 'fake-retry' })),
+    fake('tmux::usage::claude_outside', (input) => {
+      if (input.account !== 'default') throw new Error('not measured (fake)')
+      return {
+        account: 'default',
+        since_ms: Number(input.since_ms ?? 0),
+        as_of_ms: Date.now(),
+        attributed: 0,
+        by_model: OUTSIDE_BY_MODEL,
+      }
+    }),
   ]
   return fakes
+}
+
+/** The fakes are on the engine: the harness resolves the turn's account with them. */
+async function fakesRegistered(stack: HarnessStack): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const list = (await stack
+          .invoke('tmux::accounts::list', {})
+          .catch(() => null)) as { global?: string } | null
+        return list?.global ?? null
+      },
+      { timeout: 15_000 },
+    )
+    .toBe('personal')
 }
 
 async function sessionMetadata(
@@ -216,7 +230,8 @@ const shot = (name: string) =>
   test.info().outputPath(`claude-accounts-${name}.png`)
 
 test.describe('Claude Code accounts in the Chat (§4.3)', () => {
-  test.use({ scenario: 'streamed-text' })
+  // UTC: the card's reset line reads the scenario's reset as a date.
+  test.use({ scenario: 'console-account-usage-limit', timezoneId: 'UTC' })
 
   test('the limit card, the account chip and row, the screen and a project pin', async ({
     page,
@@ -224,42 +239,22 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
   }) => {
     const fakes = registerFakes(stack.ready.engine_url)
     try {
-      const completed = stack.waitForTurnCompleted()
-      await stack.send()
-      expect(await completed).toMatchObject({ status: 'completed' })
-
+      await fakesRegistered(stack)
       const sessionId = stack.ready.session.id
-      // A Claude Code conversation whose next turn hit Personal's 5-hour limit.
-      await stack.invoke('session::patch-meta', {
-        session_id: sessionId,
-        set: { model: CLAUDE_MODEL },
-      })
-      await stack.invoke('session::append', {
-        session_id: sessionId,
-        entry_id: 'e-fake-usage-limit',
-        custom: {
-          custom_type: 'error',
-          data: {
-            status: 'error',
-            code: 'llm.usage_limit',
-            class: 'llm.usage_limit',
-            summary: 'Claude Code usage limit reached.',
-            provider: 'claude-code',
-            details: {
-              usage_limit: true,
-              window: 'five_hour',
-              resets_at_ms: NOW + HOUR,
-              account: 'personal',
-            },
-            timestamp: Date.now(),
-          },
-        },
-      })
-      const project = (await stack.invoke('harness::projects::create', {
-        name: 'acme-web',
-        color: 'blue',
-        folders: ['/srv/acme-web'],
-      })) as { project: { id: string } }
+      // The turn runs on the global, Personal, and hits its 5-hour limit.
+      const failed = stack.waitForTurnCompleted()
+      await stack.send()
+      expect(await failed).toMatchObject({ status: 'failed' })
+      const projects = (await stack.invoke('harness::projects::list', {
+        version: 2,
+      })) as { projects: { id: string; name: string }[] }
+      const project = projects.projects.find((p) => p.name === 'acme-web')
+      expect(project).toBeDefined()
+      const joined = await sessionMetadata(stack)
+      // The send's folder filed it into the project (D8); it follows the global.
+      expect(joined.project_id).toBe(project?.id)
+      expect(joined.claude_account).toBeUndefined()
+      expect(joined.model).toBe(CLAUDE_MODEL)
 
       await page.setViewportSize({ width: 1280, height: 860 })
       await openSession(page, stack)
@@ -270,7 +265,10 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await expect(card.getByRole('heading')).toHaveText(
         'Personal reached its 5-hour limit',
       )
-      await expect(card).toContainText('Resets')
+      // The window and the reset come from the failure (UI-008's router).
+      await expect(
+        card.getByText('Resets Jan 1', { exact: true }),
+      ).toBeVisible()
       await expect(card).toContainText(
         'Changing account starts a new prompt cache for this conversation.',
       )
@@ -279,13 +277,15 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
         'Make Work the global',
       )
       // The transcript says it's the plan's limit, not a billing failure.
+      const failure = page.locator('[data-message-role="turn-failure"]')
       await expect(
-        page.getByText('This Claude Code account reached its usage limit'),
+        failure.getByRole('heading', {
+          name: 'This Claude Code account reached its usage limit',
+          exact: true,
+        }),
       ).toBeVisible()
       // Its steps still hold once another account has taken over.
-      await expect(
-        page.locator('[data-message-role="turn-failure"]'),
-      ).toContainText(
+      await expect(failure).toContainText(
         'Another account can take over from the limit card above the composer.',
       )
       // The chip in the header says where the conversation runs.
@@ -320,31 +320,53 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
           .filter((c) => c.functionId === 'tmux::accounts::global')
           .map((c) => c.payload.account),
       ).toEqual(['default'])
+      // No turn ran again: the last one is still the failed one, on Personal.
       expect(
-        fakes.calls.filter((c) => c.functionId === 'harness::retry'),
-      ).toEqual([])
+        await stack.invoke('harness::status', {
+          session_id: sessionId,
+          verbose: true,
+        }),
+      ).toMatchObject({
+        status: 'failed',
+        account: { id: 'personal', source: 'global' },
+        failure: { code: 'llm.usage_limit' },
+      })
       await card.screenshot({ path: shot('limit-card-waiting') })
 
-      // "Continue in Work": pins the conversation, then re-runs the turn.
+      // The X puts the card away, and "Turn ended · Continue" doesn't come in
+      // its place: it would run the same turn into the same limit.
+      await card.locator('[data-limit-dismiss]').click()
+      await expect(card).toHaveCount(0)
+      await expect(page.getByText('Turn ended.')).toHaveCount(0)
+      await expect(
+        page.getByRole('button', { name: 'Continue', exact: true }),
+      ).toHaveCount(0)
+      // Put away in this tab only: opened again, the conversation shows it.
+      await openSession(page, stack)
+      await expect(card).toHaveAttribute('data-limit-card', 'failed')
+
+      // "Continue in Work": pins the conversation, then re-runs the turn
+      // (the real `harness::retry`), which the router answers on Work.
       await card.locator('[data-limit-continue="default"]').click()
+      await expect(page.getByText(REPLY, { exact: true })).toBeVisible()
+      // The re-run turn took the card away.
+      await expect(card).toHaveCount(0)
       await expect
         .poll(() =>
-          fakes.calls
-            .filter((c) => c.functionId === 'harness::retry')
-            .map((c) => c.payload.session_id),
+          stack.invoke('harness::status', {
+            session_id: sessionId,
+            verbose: true,
+          }),
         )
-        .toEqual([sessionId])
+        .toMatchObject({
+          status: 'completed',
+          account: { id: 'default', source: 'session' },
+        })
       const meta = await sessionMetadata(stack)
       expect(meta.claude_account).toBe('default')
       // The account alone was written: the model stays.
       expect(meta.model).toBe(CLAUDE_MODEL)
       await expect(chip).toHaveText('Work')
-      // Until the re-run turn changes the card, nothing more to press.
-      await expect(card.locator('[data-limit-continue]')).toBeDisabled()
-      await expect(card.locator('[data-limit-other]')).toBeDisabled()
-      // The X puts it away (the fake retry ran no turn, so it is still there).
-      await card.locator('[data-limit-dismiss]').click()
-      await expect(card).toHaveCount(0)
 
       /* The chip opens Conversation details on the account row (§4.3.5). */
       await chip.click()
@@ -358,12 +380,8 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await details.screenshot({ path: shot('details-row') })
       await page.keyboard.press('Escape')
       await expect(details).toHaveCount(0)
-      // The card put away, "Turn ended · Continue" doesn't come in its place:
-      // it would run the same turn into the same limit.
-      await expect(page.getByText('Turn ended.')).toHaveCount(0)
-      await expect(
-        page.getByRole('button', { name: 'Continue', exact: true }),
-      ).toHaveCount(0)
+      // The turn ran again: the conversation rests as after any turn.
+      await expect(page.getByText('Turn ended.')).toBeVisible()
 
       /* The sidebar footer opens the screen (§4.3.1, §4.3.3): one button,
          the Claude Code mark and a ring per account, the global (Personal)
@@ -392,10 +410,11 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await expect(screen).toBeVisible()
       const work = screen.locator('[data-account-card="default"]')
       await expect(work).toContainText('Team')
+      // The real split: Work's 64% between the retried turn in acme-web
+      // (from the harness's ledger) and the outside (the fake tmux), 3 to 1.
       await expect(work.locator('[data-split-item]')).toHaveText([
-        'acme-web 41%',
-        'no project 9%',
-        'Outside the Chat 14%',
+        'acme-web 48%',
+        'Outside the Chat 16%',
       ])
       await expect(
         screen.locator('[data-account-card="personal"] [data-split-note]'),
@@ -427,7 +446,7 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
           const list = (await stack.invoke('harness::projects::list', {
             version: 2,
           })) as { projects: { id: string; account?: unknown }[] }
-          return list.projects.find((p) => p.id === project.project.id)?.account
+          return list.projects.find((p) => p.id === project?.id)?.account
         })
         .toEqual({ mode: 'pinned', account_id: 'default' })
       await expect(row).toContainText('Work (pinned)')
