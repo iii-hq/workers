@@ -77,7 +77,7 @@ Mantenha `state_path` em volume persistente privado e exclusivo por instância. 
 
 ## Contratos
 
-Todos os handlers registram descrição e schemas tipados via serde/schemars, SDK **`=0.26.0`**.
+Todos os handlers registram descrição e schemas tipados via serde/schemars, SDK **`=0.27.0`**.
 
 ### `tunnel::acquire`
 
@@ -154,6 +154,6 @@ CARGO_TARGET_DIR="$PWD/target/isolated" cargo clippy --locked --all-targets --al
 CARGO_TARGET_DIR="$PWD/target/isolated" cargo test --locked --all-features
 ```
 
-`tests/provider.rs` cobre o manager com um provider falso, inclusive o modo `proxy_protocol` gravado na lease (uma troca de modo descarta a lease) e o JSON do cloudflared sem campos novos; os testes unitários de `src/provider/opentunnel.rs` cobrem o arquivo `route` e conferem o header PROXY v2 contra o mesmo vetor que o hub do mesh usa. `tests/opentunnel.rs` usa o crate real com a porta da API fechada em loopback e storage temporário, sem relay falso nem rede; leva ~30 s porque o crate repete chamadas à API por até ~16 s. Os testes de processo Unix requerem Python 3 em `/usr/bin/python3` e `/bin/kill`; usam somente fake cloudflared, sem sockets externos. O teste de contratos usa engine WebSocket simulado em loopback. Incluem concorrência/idempotência, leases independentes, expiração autônoma, timeout/limite de retries, crash, reconexão, restart, exclusão de estado, cleanup e sinais. SDK/lockfile usam somente a versão acordada; regenerar lockfile sem pin transitivo pode selecionar duas versões via config-client: mantenha o lockfile entregue.
+`tests/provider.rs` cobre o manager com um provider falso, inclusive o modo `proxy_protocol` gravado na lease (uma troca de modo descarta a lease) e o JSON do cloudflared sem campos novos; os testes unitários de `src/provider/opentunnel.rs` cobrem o arquivo `route` e conferem o header PROXY v2 contra o mesmo vetor que o hub do mesh usa. `tests/opentunnel.rs` usa o crate real com a porta da API fechada em loopback e storage temporário, sem relay falso nem rede; leva ~30 s porque o crate repete chamadas à API por até ~16 s. Os testes de processo Unix requerem `/bin/sh` e `/bin/kill`; usam somente fake cloudflared, sem sockets externos. O teste de contratos usa engine WebSocket simulado em loopback. Incluem concorrência/idempotência, leases independentes, expiração autônoma, timeout/limite de retries, crash, reconexão, restart, exclusão de estado, cleanup e sinais. SDK/lockfile usam somente a versão acordada; regenerar lockfile sem pin transitivo pode selecionar duas versões via config-client: mantenha o lockfile entregue.
 
 O worker está registrado no catálogo privado `.deploy/workers.yaml` e nas permissões agregadas. A publicação inicial é para Unix; o ambiente do processo filho e seus testes ainda não suportam Windows. `iii-permissions.yaml` permite somente status sem aprovação, deixando acquire/release no default de aprovação obrigatória. Não há install script que finja prover cloudflared.
