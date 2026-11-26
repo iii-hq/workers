@@ -713,6 +713,36 @@
   padding: 0 10px 10px;
 }
 
+/* The row's "More" button is for a composer too narrow to name every
+   picker. With a worker's control in the row (the judge), the named pills
+   need about 45rem; without one, about 36rem. Under that the pickers after
+   the model leave the row for the popover, and the button appears. */
+.composer-desktop-toolbar .composer-toolbar-more {
+  display: none;
+}
+
+@container (max-width: 45rem) {
+  .composer-desktop-toolbar[data-toolbar-extras="worker"]
+    .composer-toolbar-pickers {
+    display: none;
+  }
+  .composer-desktop-toolbar[data-toolbar-extras="worker"]
+    .composer-toolbar-more {
+    display: inline-flex;
+  }
+}
+
+@container (max-width: 36rem) {
+  .composer-desktop-toolbar[data-toolbar-extras="base"]
+    .composer-toolbar-pickers {
+    display: none;
+  }
+  .composer-desktop-toolbar[data-toolbar-extras="base"]
+    .composer-toolbar-more {
+    display: inline-flex;
+  }
+}
+
 /* The voice worker's recording bar takes over the toolbar row while you
    dictate; the toolbar is its containing block, inset by its padding. */
 .composer-shell .composer-mobile-toolbar {
@@ -815,13 +845,10 @@
     justify-content: flex-start;
     padding-block: 16px;
   }
-}
 
-/* One toolbar row at any width (Cursor's side chat, Grok's narrow window).
-   The pickers give way in reverse order of importance, so the model's name
-   is the last to truncate: the judge's label goes first (its own sheet,
-   under 45rem), then the agent's here, and attach/send never wrap below. */
-@container (max-width: 37.5rem) {
+  /* One toolbar row at any width (Cursor's side chat, Grok's narrow
+     window): the agent picker drops to its icon, the model name truncates,
+     and attach/send never wrap below. */
   .composer-agent-label,
   .composer-agent-trigger > .lucide-chevron-down {
     display: none;

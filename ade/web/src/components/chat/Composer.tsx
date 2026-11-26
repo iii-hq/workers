@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardCheck,
+  Ellipsis,
   Loader2,
   Plus,
   Square,
@@ -64,6 +65,11 @@ import { BankPicker } from './BankPicker'
 import { SendGlyph } from './ChatGlyphs'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import './conversation-design.css'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
@@ -982,6 +988,35 @@ export function Composer({
   }, [])
 
   const reduceMotion = useReducedMotion()
+  /* The pickers after the model: a worker's controls (the judge), the
+   * agent, the memory bank and the permission mode. They sit in the row
+   * when it is wide enough and in the "More" popover when it is not. */
+  const extraPickers =
+    !!composerControls ||
+    !!agentPicker ||
+    (showMemoryBank && !!onMemoryBankChange) ||
+    showPermissionMode
+  const renderExtraPickers = () => (
+    <>
+      {composerControls}
+      <ComposerActionsSlot layout="wide">{agentPicker}</ComposerActionsSlot>
+      {showMemoryBank && onMemoryBankChange ? (
+        <BankPicker
+          value={memoryBank ?? null}
+          onChange={onMemoryBankChange}
+          disabled={optionsDisabled}
+        />
+      ) : null}
+      {showPermissionMode ? (
+        <PermissionModePicker
+          value={permissionMode}
+          onChange={onPermissionModeChange}
+          disabled={optionsDisabled || !!permissionModeLoading}
+        />
+      ) : null}
+    </>
+  )
+
   const renderActionButton = () =>
     isStreaming &&
     !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
@@ -1260,10 +1295,18 @@ export function Composer({
  the model (with its provider), a worker's controls, then the
  agent, memory and permission pickers; what you do with it on the right — injected
  actions, attach, and send, where the eye lands after typing. */}
-          {/* One row at every pane width: in a narrow pane (a side panel, a
- split) the pickers shrink — the model name truncates, the agent
- drops to its icon — and the send button stays in view. */}
-          <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
+          {/* One row at every pane width. When the composer is too narrow
+ for every named picker, the ones after the model fold into a
+ "More" popover rather than shrinking to bare icons: the row keeps
+ the model and send, and the popover keeps the labels. The fold
+ point depends on how much sits in the row (a worker's control such
+ as the judge adds a named pill); see conversation-design.css. */}
+          <div
+            className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex"
+            data-toolbar-extras={
+              extraPickers ? (composerControls ? 'worker' : 'base') : undefined
+            }
+          >
             <div className="flex min-w-0 flex-1 items-center gap-1">
               {lockedModel ? (
                 <LockedModelLabel
@@ -1289,23 +1332,30 @@ export function Composer({
               {/* A worker's per-session controls (the judge) sit between the
  model and the agent: what the message goes out with, in the
  order it is decided. */}
-              {composerControls}
-              <ComposerActionsSlot layout="wide">
-                {agentPicker}
-              </ComposerActionsSlot>
-              {showMemoryBank && onMemoryBankChange ? (
-                <BankPicker
-                  value={memoryBank ?? null}
-                  onChange={onMemoryBankChange}
-                  disabled={optionsDisabled}
-                />
-              ) : null}
-              {showPermissionMode ? (
-                <PermissionModePicker
-                  value={permissionMode}
-                  onChange={onPermissionModeChange}
-                  disabled={optionsDisabled || !!permissionModeLoading}
-                />
+              <div className="composer-toolbar-pickers flex min-w-0 items-center gap-1">
+                {renderExtraPickers()}
+              </div>
+              {extraPickers ? (
+                <Popover>
+                  <PopoverTrigger
+                    aria-label="More options"
+                    title="More options"
+                    className={cn(
+                      toolbarIconButtonClass,
+                      'composer-toolbar-more',
+                    )}
+                  >
+                    <Ellipsis aria-hidden className="size-4" />
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="start"
+                    side="top"
+                    sideOffset={8}
+                    className="flex w-64 flex-col items-stretch gap-1 p-2 [&>*]:justify-start"
+                  >
+                    {renderExtraPickers()}
+                  </PopoverContent>
+                </Popover>
               ) : null}
             </div>
 
