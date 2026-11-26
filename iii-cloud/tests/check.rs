@@ -12,6 +12,15 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn ready(server: &MockServer, plan_status: u16) -> (Harness, Repo, std::path::PathBuf) {
+    ready_with(server, plan_status, std::time::Duration::ZERO).await
+}
+
+/// `ready`, with the cloud answering the plan after `plan_delay`.
+async fn ready_with(
+    server: &MockServer,
+    plan_status: u16,
+    plan_delay: std::time::Duration,
+) -> (Harness, Repo, std::path::PathBuf) {
     let repo = repo();
     let h = connected(server, "worker-compose.yaml").await;
     Mock::given(method("GET"))
@@ -29,7 +38,11 @@ async fn ready(server: &MockServer, plan_status: u16) -> (Harness, Repo, std::pa
     };
     Mock::given(method("GET"))
         .and(path_regex(r"/plan$"))
-        .respond_with(ResponseTemplate::new(plan_status).set_body_json(body))
+        .respond_with(
+            ResponseTemplate::new(plan_status)
+                .set_body_json(body)
+                .set_delay(plan_delay),
+        )
         .mount(server)
         .await;
     let p = use_project(
@@ -1269,10 +1282,15 @@ async fn each_part_of_the_reuse_key_changes_it() {
 
 /// An `iii` whose run never gets its worker: it says who it waits on after the window.
 async fn with_waiting_runs(h: &Harness, ws: &std::path::Path) {
+    waiting_runs_stopping_as(h, ws, "exec sleep 20").await
+}
+
+/// The same, with the compose process's own body (a slow stop, say).
+async fn waiting_runs_stopping_as(h: &Harness, ws: &std::path::Path, compose: &str) {
     let script = h.dir.path().join("iii-waiting");
     std::fs::write(
         &script,
-        "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) exec sleep 300;;\n  call) echo '{\"workers\":[]}';;\nesac\n",
+        format!("#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) {compose};;\n  call) echo '{{\"workers\":[]}}';;\nesac\n"),
     )
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -1330,4 +1348,55 @@ async fn a_clean_workspace_attaches_to_its_run_and_a_dirty_one_never_does() {
         .read(|s| s.find_check(&first.id).and_then(|c| c.run.clone()))
         .unwrap();
     assert_eq!(old.error.unwrap().code, "RUN_REPLACED");
+}
+
+/// The call's deadline starts with the call: a slow plan read leaves the run's wait
+/// only what is left of it (2.4 s under the test tick), not a whole new one.
+#[tokio::test]
+async fn a_slow_plan_read_takes_its_time_from_the_calls_deadline() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready_with(&server, 200, std::time::Duration::from_millis(2200)).await;
+    with_waiting_runs(&h, &ws).await;
+    // Pushed, so the cloud's plan is read (and takes its 2.2 s).
+    git(&ws, &["push", "-q", "origin", "HEAD:main"]);
+    let begun = std::time::Instant::now();
+    let c = check(&h.ctx, run_req()).await.unwrap();
+    // The run says who it waits on 0.6 s after it starts (about 2.8 s in), after the
+    // deadline: the call ends at the deadline with the run still going.
+    assert!(
+        begun.elapsed() < std::time::Duration::from_millis(2650),
+        "{:?}",
+        begun.elapsed()
+    );
+    let run = running(c.run.as_ref());
+    assert_eq!(run.status, RunStatus::Running);
+    assert!(
+        run.waiting_on.is_none(),
+        "{:?} {:?}",
+        begun.elapsed(),
+        run.waiting_on
+    );
+}
+
+/// A replaced run that is still stopping at the deadline is not this call's run: the
+/// call fails, and no reuse key is saved for the old run.
+#[tokio::test]
+async fn a_replaced_run_still_stopping_at_the_deadline_gets_no_reuse_key() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    waiting_runs_stopping_as(&h, &ws, "trap 'sleep 4; exit 0' TERM; sleep 20 & wait").await;
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let old = running(first.run.as_ref());
+    assert!(old.waiting_on.is_some());
+    let key_before = h.ctx.store.read(|s| s.run_keys.get(&old.id).cloned());
+    assert!(key_before.is_some());
+    // Another value: another key, so the old run is replaced, and it takes 4 s to stop.
+    std::fs::write(ws.join(".env"), "A=changed-value-0099\n").unwrap();
+    let err = check(&h.ctx, run_req()).await.unwrap_err();
+    assert_eq!(err.code, "RUN_TIMEOUT");
+    assert_eq!(
+        h.ctx.store.read(|s| s.run_keys.get(&old.id).cloned()),
+        key_before,
+        "the new key was saved for the old run"
+    );
 }

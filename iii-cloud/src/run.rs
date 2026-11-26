@@ -47,6 +47,35 @@ const NO_PROGRESS_S: u64 = 60;
 pub const CALL_WAIT: Duration = Duration::from_secs(240);
 /// Where `iii compose` keeps the run's namespace, under the compose file's folder.
 const COMPOSE_STATE: &str = ".iii/compose/iii-cloud-run";
+/// How long one external command of the teardown or of `recover` (docker, `iii kill`) may take.
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `CALL_WAIT` on the test tick's scale.
+pub fn call_wait(ctx: &Ctx) -> Duration {
+    ctx.secs(CALL_WAIT.as_secs())
+}
+
+/// When the process began, as `ps` prints it: with its pid, what names that very
+/// process (a pid is reused after a reboot). Same on Linux and macOS.
+pub fn proc_start(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Remove a container; true when it is gone (a name docker does not know counts).
+async fn remove_container(name: &str) -> bool {
+    let args = ["rm", "-f", name];
+    let rm = tool::run("docker", &args, None, None, "DOCKER_MISSING");
+    match tokio::time::timeout(CLEANUP_TIMEOUT, rm).await {
+        Ok(Ok(out)) => out.ok() || out.stderr.contains("No such container"),
+        _ => false,
+    }
+}
 
 /// The containers dead in this look and in the one before; `before` becomes this look's.
 pub fn confirm_exited(before: &mut Vec<String>, now: Vec<String>) -> Vec<String> {
@@ -403,12 +432,14 @@ struct Exec {
     /// The process group of the stage command now running, kept in `run.json`
     /// so `recover` can stop it after a crash.
     stage_group: Option<u32>,
+    /// When that group's leader began (`proc_start`): it names the process itself.
+    stage_start: Option<String>,
 }
 
 /// Start a run for a stored check. One at a time per workspace.
 pub async fn start(ctx: &Arc<Ctx>, check_id: String) -> Res<Run> {
     let sel = selected(ctx)?;
-    let until = Instant::now() + CALL_WAIT;
+    let until = Instant::now() + call_wait(ctx);
     start_with(ctx, check_id, sel, None, until).await
 }
 
@@ -474,24 +505,14 @@ pub async fn start_with(
         match step {
             Ok(own) => break own,
             // Replaced: wait for its teardown, then take its place.
-            Err((old, mut done, true)) => {
+            Err((_, mut done, true)) => {
                 let waited = tokio::time::timeout_at(until.into(), done.wait_for(|d| *d)).await;
                 if waited.is_err() {
-                    // The deadline came first: the run as it is, still stopping.
-                    return ctx
-                        .store
-                        .read(|s| {
-                            s.checks
-                                .iter()
-                                .filter_map(|c| c.run.clone())
-                                .find(|r| r.id == old)
-                        })
-                        .ok_or_else(|| {
-                            CloudError::new(
-                                "RUN_TIMEOUT",
-                                "The earlier run is still stopping; check again.",
-                            )
-                        });
+                    // Not this call's run: nothing started, and nothing may be keyed to the old one.
+                    return Err(CloudError::new(
+                        "RUN_TIMEOUT",
+                        "The previous run is still stopping; check again.",
+                    ));
                 }
             }
             Err((id, done, false)) => {
@@ -717,6 +738,7 @@ async fn prepare(
         followers: Arc::new(Mutex::new(vec![])),
         ports: vec![],
         stage_group: None,
+        stage_start: None,
     })
 }
 
@@ -724,6 +746,12 @@ impl Drop for Exec {
     /// A panic skips `teardown`: remove what is left, without awaiting.
     fn drop(&mut self) {
         self.give_back_ports();
+        // A graceful stop drops the task: the stage's group was killed with it, so
+        // `run.json` must not keep an id that may name another process by the next start.
+        if self.stage_group.take().is_some() {
+            self.stage_start = None;
+            self.persist_run();
+        }
         for name in std::mem::take(&mut self.pg) {
             let _ = std::process::Command::new("docker")
                 .args(["rm", "-f", &name])
@@ -749,6 +777,7 @@ impl Exec {
             copy: self.prep.as_ref().map(|p| p.copy.clone()),
             iii_bin: self.iii_bin.clone(),
             stage_group: self.stage_group,
+            stage_start: self.stage_start.clone(),
         };
         if let Ok(bytes) = serde_json::to_vec(&files) {
             let _ = std::fs::write(self.dir.join("run.json"), bytes);
@@ -996,6 +1025,7 @@ impl Exec {
         let mut group = GroupKill(child.id());
         // On disk while it runs: after a crash `recover` kills the group.
         self.stage_group = child.id();
+        self.stage_start = child.id().and_then(proc_start);
         self.persist_run();
         let pumps = self.pump_output(&mut child, "run.log");
         let result = match tokio::time::timeout(limit, child.wait()).await {
@@ -1019,6 +1049,7 @@ impl Exec {
             }
         };
         self.stage_group = None;
+        self.stage_start = None;
         self.persist_run();
         result
     }
@@ -1807,12 +1838,17 @@ impl Exec {
                 let _ = child.kill().await;
             }
         }
+        self.stage_group = None;
+        self.stage_start = None;
+        // A stuck docker daemon must not hold the workspace's slot for ever, nor make
+        // the container forgotten: what could not be removed stays on record.
+        let mut left = vec![];
         for name in std::mem::take(&mut self.pg) {
-            // A stuck docker daemon must not hold the workspace's slot for ever.
-            let args = ["rm", "-f", name.as_str()];
-            let rm = tool::run("docker", &args, None, None, "DOCKER_MISSING");
-            let _ = tokio::time::timeout(Duration::from_secs(30), rm).await;
+            if !remove_container(&name).await {
+                left.push(name);
+            }
         }
+        self.pg = left;
         self.give_back_ports();
         if let Some(p) = &self.prep {
             clean_copy(&p.copy);
@@ -1820,7 +1856,12 @@ impl Exec {
         if let Some((dir, before)) = self.config_before.take() {
             remove_new_files(&dir, &before);
         }
-        let _ = std::fs::remove_file(self.dir.join("run.json"));
+        if self.pg.is_empty() {
+            let _ = std::fs::remove_file(self.dir.join("run.json"));
+        } else {
+            // The next `recover` tries again; `Drop` tries once more too.
+            self.persist_run();
+        }
         if let Some(runs) = self.dir.parent() {
             prune(runs, MAX_RUNS_KEPT);
         }
@@ -1836,6 +1877,9 @@ struct RunFiles {
     /// The process group of a stage command that was running.
     #[serde(default)]
     stage_group: Option<u32>,
+    /// `proc_start` of that group's leader: `recover` kills only a process that still shows it.
+    #[serde(default)]
+    stage_start: Option<String>,
 }
 
 /// The names of the files in `dir` (empty when it does not exist).
@@ -1960,7 +2004,7 @@ fn clean_copy(copy: &Path) {
 
 /// On start: fail the runs a crash left `running`, remove their containers,
 /// `iii kill --compose` a copy that remains, and delete it.
-pub async fn recover(ctx: &Arc<Ctx>) {
+pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
     let cfg = ctx.config().await;
     let stuck: Vec<String> = ctx.store.read(|s| {
         s.check
@@ -2010,35 +2054,68 @@ pub async fn recover(ctx: &Arc<Ctx>) {
             emit_run(ctx, &run);
         }
     }
-    let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) else {
-        return;
-    };
-    for entry in read.flatten() {
-        let file = entry.path().join("run.json");
-        let Some(files) = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
-        else {
-            continue;
-        };
+    let mut stale = vec![];
+    if let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) {
+        for entry in read.flatten() {
+            let file = entry.path().join("run.json");
+            if let Some(files) = std::fs::read(&file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+            {
+                stale.push((file, files));
+            }
+        }
+    }
+    Stale(stale)
+}
+
+/// What earlier runs left behind, read at the start (before any run of this process).
+pub struct Stale(Vec<(PathBuf, RunFiles)>);
+
+/// `recover_runs` and `clean_stale` one after the other.
+pub async fn recover(ctx: &Arc<Ctx>) {
+    let stale = recover_runs(ctx).await;
+    clean_stale(stale).await;
+}
+
+/// Stop what the crashed runs left (their stage, `iii compose`, containers). Each
+/// external command has a timeout; a container that could not be removed stays
+/// on record for the next start.
+pub async fn clean_stale(stale: Stale) {
+    for (file, files) in stale.0 {
         // A stage command the crash left running (its own group, so the worker's
-        // death did not reach it).
-        drop(GroupKill(files.stage_group));
+        // death did not reach it): only when that pid is still the very process
+        // that was recorded, since a pid is reused after a reboot.
+        if let (Some(pid), Some(start)) = (files.stage_group, files.stage_start.as_deref())
+            && proc_start(pid).as_deref() == Some(start)
+        {
+            drop(GroupKill(Some(pid)));
+        }
+        let mut left = vec![];
         for name in &files.containers {
-            let _ = tool::run("docker", &["rm", "-f", name], None, None, "DOCKER_MISSING").await;
+            if !remove_container(name).await {
+                left.push(name.clone());
+            }
         }
         if let Some(copy) = files.copy.filter(|c| c.exists()) {
-            let _ = tool::run(
-                &files.iii_bin,
-                &["kill", "--compose", &copy.to_string_lossy()],
-                None,
-                None,
-                "TOOL_MISSING",
-            )
-            .await;
+            let copy_arg = copy.to_string_lossy().into_owned();
+            let args = ["kill", "--compose", copy_arg.as_str()];
+            let kill = tool::run(&files.iii_bin, &args, None, None, "TOOL_MISSING");
+            let _ = tokio::time::timeout(CLEANUP_TIMEOUT, kill).await;
             clean_copy(&copy);
         }
-        let _ = std::fs::remove_file(file);
+        if left.is_empty() {
+            let _ = std::fs::remove_file(file);
+        } else {
+            let rest = RunFiles {
+                containers: left,
+                iii_bin: files.iii_bin,
+                ..Default::default()
+            };
+            if let Ok(bytes) = serde_json::to_vec(&rest) {
+                let _ = std::fs::write(file, bytes);
+            }
+        }
     }
 }
 

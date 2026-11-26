@@ -91,10 +91,14 @@ async fn run() -> Result<()> {
     configuration::reconcile(&iii, &cell).await;
 
     let ctx = Ctx::new(cell, store, Arc::new(IiiPlatform { iii: iii.clone() }));
-    iii_cloud::run::recover(&ctx).await;
+    // The runs left `running` are closed first; the clean-up of what they left
+    // (docker, `iii kill`) goes on after the functions are registered, so a hung
+    // docker daemon cannot keep them unregistered.
+    let stale = iii_cloud::run::recover_runs(&ctx).await;
     iii_cloud::connect::resume(&ctx);
     iii_cloud::handoff::resume(&ctx);
     iii_cloud::functions::register_all(&iii, &ctx);
+    tokio::spawn(iii_cloud::run::clean_stale(stale));
     iii_cloud::ui::register(&iii);
     // Resume the deploys that were still running, and follow pushes made elsewhere.
     iii_cloud::watch::ensure_poller(&ctx);

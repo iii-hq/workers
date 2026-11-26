@@ -297,7 +297,7 @@ fn fake_iii(h: &support::Harness, compose_body: &str) -> std::path::PathBuf {
     std::fs::write(
         &bin,
         format!(
-            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) {compose_body}\n    exec sleep 300;;\n  call) case \"$4\" in\n    engine::workers::list) cat '{w}';;\n    *) echo '{{\"observers\":[]}}';;\n  esac;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) {compose_body}\n    exec sleep 20;;\n  call) case \"$4\" in\n    engine::workers::list) cat '{w}';;\n    *) echo '{{\"observers\":[]}}';;\n  esac;;\nesac\n",
             w = dir.join("workers.json").display()
         ),
     )
@@ -724,7 +724,7 @@ async fn the_replacing_run_is_of_the_commit_the_workspace_has_when_it_takes_the_
     let server = MockServer::start().await;
     let (h, ws) = with_check(&server, TWO_WORKERS).await;
     // The old run takes a second to stop: a commit made meanwhile must be the new run's.
-    let bin = fake_iii(&h, "trap 'sleep 1; exit 0' TERM; sleep 300 & wait;");
+    let bin = fake_iii(&h, "trap 'sleep 1; exit 0' TERM; sleep 20 & wait;");
     use_iii(&h, &server, &bin).await;
     std::fs::write(
         ws.join(".git/info/exclude"),
@@ -765,7 +765,7 @@ fn alive(pid: u32) -> bool {
 #[tokio::test]
 async fn a_replaced_run_leaves_no_process_of_its_stage_behind() {
     let server = MockServer::start().await;
-    let compose = "containers:\n  alpha:\n    worker: package://foo\ncloud:\n  build:\n    command: echo $$ > child.pid; sleep 300 & echo $! > grandchild.pid; wait\n";
+    let compose = "containers:\n  alpha:\n    worker: package://foo\ncloud:\n  build:\n    command: echo $$ > child.pid; sleep 20 & echo $! > grandchild.pid; wait\n";
     let (h, ws) = with_check(&server, compose).await;
     let bin = fake_iii(&h, "");
     use_iii(&h, &server, &bin).await;
@@ -796,7 +796,7 @@ async fn a_replaced_run_leaves_no_process_of_its_stage_behind() {
 }
 
 /// Compose takes 3 s to stop once told to.
-const SLOW_TEARDOWN: &str = "trap 'sleep 3; exit 0' TERM; sleep 300 & wait;";
+const SLOW_TEARDOWN: &str = "trap 'sleep 3; exit 0' TERM; sleep 20 & wait;";
 
 #[tokio::test]
 async fn a_slow_teardown_does_not_hold_the_call_past_its_deadline() {
@@ -810,7 +810,7 @@ async fn a_slow_teardown_does_not_hold_the_call_past_its_deadline() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let begun = Instant::now();
     let until = begun + Duration::from_millis(300);
-    let run = iii_cloud::run::start_with(
+    let err = iii_cloud::run::start_with(
         &h.ctx,
         "chk2".into(),
         selected_of(&h, &ws),
@@ -818,12 +818,16 @@ async fn a_slow_teardown_does_not_hold_the_call_past_its_deadline() {
         until,
     )
     .await
-    .unwrap();
+    .unwrap_err();
     assert!(
         begun.elapsed() < Duration::from_secs(2),
         "not the 3 s of the teardown"
     );
-    assert_eq!(run.id, first.id, "the run as it is, still stopping");
+    // The old run is not this call's run: nothing started, and the answer says so.
+    assert_eq!(err.code, "RUN_TIMEOUT");
+    assert!(err.message.contains("still stopping"), "{}", err.message);
+    assert!(run_of(&h, "chk2").is_none());
+    let _ = first;
 }
 
 #[tokio::test]
@@ -907,4 +911,139 @@ fn a_container_counts_as_exited_only_when_seen_dead_twice_in_a_row() {
     );
     assert!(confirm_exited(&mut before, dead(&["beta"])).is_empty());
     assert_eq!(confirm_exited(&mut before, dead(&["beta"])), vec!["beta"]);
+}
+
+/// Through the workers loop: `iii compose`'s record shows a container dead once, then
+/// alive, then dead for good. The run must not fail at the first sight.
+#[tokio::test]
+async fn the_loop_fails_a_container_only_after_two_looks_in_a_row_find_it_dead() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let dead_pid = gone.id();
+    gone.wait().unwrap();
+    let state = ws.join(".iii/compose/iii-cloud-run/state.json");
+    let rec = |pid: u32| {
+        format!("{{\"containers\":{{\"beta\":{{\"pid\":{pid},\"status\":\"ready\"}}}}}}")
+    };
+    let dir = h.dir.path().join("fake-iii");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("dead.json"), rec(dead_pid)).unwrap();
+    // A pid that is alive: this test process's.
+    std::fs::write(dir.join("alive.json"), rec(std::process::id())).unwrap();
+    let bin = dir.join("iii");
+    // Each poll of the engine moves the record on: the 1st call says alive, the rest dead.
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) mkdir -p '{st}'; cp '{d}/dead.json' '{s}'; exec sleep 20;;\n  call) n=$(cat '{d}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{d}/n'\n    if [ $n = 1 ]; then cp '{d}/alive.json' '{s}'; else cp '{d}/dead.json' '{s}'; fi\n    cat '{d}/workers.json';;\nesac\n",
+            st = state.parent().unwrap().display(),
+            s = state.display(),
+            d = dir.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_workers(&h, ONLY_ALPHA);
+    use_iii(&h, &server, &bin).await;
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    let error = run.error.unwrap();
+    assert_eq!(error.code, "WORKERS_NOT_READY");
+    assert!(
+        error
+            .message
+            .contains("beta exited before all workers connected"),
+        "{}",
+        error.message
+    );
+    // Calls 1 and 2 (an alive look, a first dead look) and 3 came before the verdict.
+    let calls: u32 = std::fs::read_to_string(dir.join("n"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(calls >= 3, "failed at the first dead look: {calls} polls");
+}
+
+/// What the run saves while a stage runs is what `recover` kills by: the real save,
+/// not a hand-written file.
+#[tokio::test]
+async fn recover_kills_the_stage_the_run_itself_recorded() {
+    let server = MockServer::start().await;
+    let compose = "containers:\n  alpha:\n    worker: package://foo\ncloud:\n  build:\n    command: echo $$ > child.pid; sleep 20 & echo $! > grandchild.pid; wait\n";
+    let (h, ws) = with_check(&server, compose).await;
+    let bin = fake_iii(&h, "");
+    use_iii(&h, &server, &bin).await;
+    let run = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    let read = |name: &str| {
+        std::fs::read_to_string(ws.join(name))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (child, grandchild) = loop {
+        if let (Some(c), Some(g)) = (read("child.pid"), read("grandchild.pid")) {
+            break (c, g);
+        }
+        assert!(Instant::now() < deadline, "the build never started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let saved: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            h.dir
+                .path()
+                .join("data/runs")
+                .join(&run.id)
+                .join("run.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["stage_group"], child);
+    assert!(saved["stage_start"].is_string(), "{saved}");
+    iii_cloud::run::recover(&h.ctx).await;
+    // SIGKILL takes a moment to land.
+    let until = Instant::now() + Duration::from_secs(3);
+    while (alive(child) || alive(grandchild)) && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !alive(child) && !alive(grandchild),
+        "the recorded stage was left running"
+    );
+}
+
+/// A graceful stop of the worker drops the run's task: `run.json` then keeps no id of
+/// the stage whose group went with it (after a reboot the id could be another process).
+#[test]
+fn a_graceful_stop_leaves_no_stage_id_in_run_json() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (h, run_json, child) = rt.block_on(async {
+        let server = MockServer::start().await;
+        let compose = "containers:\n  alpha:\n    worker: package://foo\ncloud:\n  build:\n    command: echo $$ > child.pid; sleep 20 & wait\n";
+        let (h, ws) = with_check(&server, compose).await;
+        let bin = fake_iii(&h, "");
+        use_iii(&h, &server, &bin).await;
+        let run = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+        let run_json = h.dir.path().join("data/runs").join(&run.id).join("run.json");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let started = std::fs::read_to_string(&run_json).is_ok_and(|t| t.contains("\"stage_group\":") && !t.contains("\"stage_group\":null"));
+            if started && ws.join("child.pid").exists() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the build never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let child: u32 = std::fs::read_to_string(ws.join("child.pid")).unwrap().trim().parse().unwrap();
+        (h, run_json, child)
+    });
+    drop(rt);
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&run_json).unwrap()).unwrap();
+    assert!(saved["stage_group"].is_null(), "{saved}");
+    assert!(!alive(child), "the stage's group went with the task");
+    drop(h);
 }
