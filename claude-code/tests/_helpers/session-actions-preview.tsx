@@ -8,20 +8,23 @@ import '../../../ade/web/src/index.css';
 import '../../ui/styles.css';
 import { SessionsRail } from '../../ui/sessions';
 
-const rows = ['Design review', 'Console original', 'Background indexing'].map((name, i) => {
-  const id = `1234567${i}-1234-4321-8123-000000000001`;
-  return {
-    id,
-    claude_session_id: id,
-    name,
-    kind: i === 2 ? 'background' : 'interactive',
-    alive: true,
-    status: i === 2 ? 'busy' : 'idle',
-    cwd: '/fixture/workspace',
-    ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
-    ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
-  };
-});
+const rows = ['Design review', 'Console original', 'Background indexing', 'Other console'].map(
+  (name, i) => {
+    const id = `1234567${i}-1234-4321-8123-000000000001`;
+    return {
+      id,
+      claude_session_id: id,
+      name,
+      kind: i === 2 ? 'background' : 'interactive',
+      alive: true,
+      status: i === 2 ? 'busy' : 'idle',
+      cwd: '/fixture/workspace',
+      ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
+      ...(i === 3 ? { pty_session_id: 'fixture-other-console' } : {}),
+      ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
+    };
+  },
+);
 const handlers = new Map<string, (event: unknown) => void>();
 const watches = new Set<{
   source: { function_id: string; args?: { claude_session_id?: string } };
@@ -55,7 +58,8 @@ const host = {
     async call(fn: string, p: { session?: string; claude_session_id?: string; mode?: string }) {
       if (fn === 'claude::agents::list') return { agents: allowed ? rows : [rows[1]] };
       const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
-      if (!row || (!allowed && !row.pty_session_id)) throw new Error('Session unavailable');
+      if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
+        throw new Error('Session unavailable');
       if (fn === 'claude::agents::get') return { ...row, last_reply: reply() };
       if (fn === 'claude::terminal::describe') {
         if (p.mode === 'original' && row.pty_session_id)
@@ -85,7 +89,9 @@ function emit(id: string, event: { claude_session_id?: string; reply?: ReturnTyp
       (w.source.args && w.source.args.claude_session_id !== event.claude_session_id)
     )
       continue;
-    handlers.get(w.target)?.(event);
+    // The reply source delivers captured output without an observer_id, so ADE
+    // passes the envelope through rather than projecting the output field.
+    handlers.get(w.target)?.(id === 'claude::agents::on-reply' ? { output: event } : event);
   }
 }
 function Preview() {
@@ -99,6 +105,8 @@ function Preview() {
     has: (key) => leases.has(key),
     claim: () => {},
     async open({ key, pty, spec }) {
+      if (pty === 'fixture-other-console')
+        throw new Error('It is open in another console tab or window.');
       const held = leases.get(key);
       const args = spec?.args ?? [];
       const text =

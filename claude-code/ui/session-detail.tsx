@@ -5,25 +5,34 @@ import {
   DialogDescription,
   DialogTitle,
   type ExtensionIii,
+  type StatusDotProps,
   StatusPanel,
 } from '@iii-dev/console-ui';
 import { type RefObject, useEffect, useRef, useState } from 'react';
 
+export type Status = 'busy' | 'idle' | 'waiting' | 'done' | 'error' | 'stopped' | 'unknown';
+
+export const STATUS: Record<
+  Status,
+  { word: string; tone: NonNullable<StatusDotProps['tone']>; pulse?: boolean }
+> = {
+  busy: { word: 'Working', tone: 'accent', pulse: true },
+  waiting: { word: 'Waiting', tone: 'warn' },
+  idle: { word: 'Idle', tone: 'ghost' },
+  done: { word: 'Done', tone: 'ok' },
+  error: { word: 'Failed', tone: 'alert' },
+  stopped: { word: 'Stopped', tone: 'ghost' },
+  unknown: { word: 'Unknown', tone: 'ghost' },
+};
+
+type ReplySignal = { claude_session_id: string };
 type Snapshot = {
   claude_session_id: string;
   name: string | null;
-  status: string;
+  status: Status;
   last_reply: { id: string; text: string } | null;
 };
 type View = { state: 'loading' | 'unavailable' } | { state: 'ready'; data: Snapshot };
-const states: Record<string, string> = {
-  busy: 'Working',
-  idle: 'Idle',
-  waiting: 'Waiting',
-  done: 'Done',
-  error: 'Failed',
-  stopped: 'Stopped',
-};
 
 function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
   const [view, setView] = useState<View>({ state: 'loading' });
@@ -72,7 +81,9 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
     setView({ state: 'loading' });
     try {
       cleanup.push(
-        iii.on<{ claude_session_id?: string }>(base, (event) => {
+        iii.on<ReplySignal | { output: ReplySignal }>(base, (delivery) => {
+          // Custom deliveries carry captured output; ADE may also project it.
+          const event = delivery && 'output' in delivery ? delivery.output : delivery;
           // Treat delivery only as a change signal. A queued reply cannot bypass
           // the current permission check, or overwrite a newer lookup with old text.
           if (event?.claude_session_id === id) void read();
@@ -121,7 +132,7 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
   return (
     <div className="claude-follow-content">
       <p className="claude-follow-state">
-        {data.name ?? id.slice(0, 8)} · {states[data.status] ?? 'Unknown'}
+        {data.name ?? id.slice(0, 8)} · {(STATUS[data.status] ?? STATUS.unknown).word}
       </p>
       <h3>Latest assistant reply</h3>
       <p aria-live="polite" className="claude-follow-text">
@@ -153,12 +164,7 @@ export function SessionDetail({
         if (!open) onClose();
       }}
     >
-      <DialogContent
-        className="claude-follow"
-        showCloseButton={false}
-        initialFocus={close}
-        finalFocus={opener}
-      >
+      <DialogContent showCloseButton={false} initialFocus={close} finalFocus={opener}>
         <DialogTitle>Follow original</DialogTitle>
         <DialogDescription>
           Read only. This session has no terminal you can attach to here. Use its original terminal

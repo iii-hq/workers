@@ -30,7 +30,6 @@ import {
   Skeleton,
   StatusBar,
   StatusDot,
-  type StatusDotProps,
   StatusPanel,
   useConfirm,
 } from '@iii-dev/console-ui';
@@ -39,13 +38,11 @@ import { useWorkerLive } from '@iii-dev/console-ui/hooks';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
 import { MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
-import { SessionDetail } from './session-detail';
+import { SessionDetail, STATUS, type Status } from './session-detail';
 
 /** The console injects an untyped host object; this is the boundary. */
 // biome-ignore lint/suspicious/noExplicitAny: the injected host is untyped
 type Host = any;
-
-type Status = 'busy' | 'idle' | 'waiting' | 'done' | 'error' | 'stopped' | 'unknown';
 
 interface AgentRow {
   id: string;
@@ -92,19 +89,6 @@ const SOURCES = [
     },
   },
 ];
-
-const STATUS: Record<
-  Status,
-  { word: string; tone: NonNullable<StatusDotProps['tone']>; pulse?: boolean }
-> = {
-  busy: { word: 'Working', tone: 'accent', pulse: true },
-  waiting: { word: 'Waiting', tone: 'warn' },
-  idle: { word: 'Idle', tone: 'ghost' },
-  done: { word: 'Done', tone: 'ok' },
-  error: { word: 'Failed', tone: 'alert' },
-  stopped: { word: 'Stopped', tone: 'ghost' },
-  unknown: { word: 'Unknown', tone: 'ghost' },
-};
 
 /** The last two path segments: enough to tell checkouts apart in a 300px rail. */
 function shortPath(cwd: string): string {
@@ -264,7 +248,18 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       // here: older pages used that ID for copies too.
       let opened: boolean;
       if (mode === 'original' && spec.pty_session_id) {
-        opened = await terminal.open({ key, pty: spec.pty_session_id });
+        const take = terminal.open({ key, pty: spec.pty_session_id });
+        if (row.kind === 'interactive' && row.claude_session_id) {
+          // A listed PTY may belong to another browser. Follow the same UUID
+          // through the gated lookup instead of trying a different writer.
+          opened = await take.catch(() => false);
+          if (!opened) {
+            setFollow(row.claude_session_id);
+            return;
+          }
+        } else {
+          opened = await take;
+        }
       } else {
         if (
           !spec.program ||
