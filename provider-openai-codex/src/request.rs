@@ -33,17 +33,20 @@ pub struct BodyArgs {
 }
 
 /// Responses body: `input` items, `stream`, `store:false` (stateless — the
-/// full transcript is sent each turn), `max_output_tokens`, optional tools and
-/// reasoning. No `temperature` (reasoning models reject non-default values).
+/// full transcript, encrypted reasoning items included, is sent each turn),
+/// `include: ["reasoning.encrypted_content"]` (so the stream returns that
+/// payload), optional tools and reasoning. No `max_output_tokens` and no
+/// `temperature` (reasoning models reject non-default values).
 pub fn build_body(args: &BodyArgs) -> Value {
     // NOTE: the Codex backend rejects `max_output_tokens` ("Unsupported
     // parameter") — verified live. The subscription backend caps output itself.
     let _ = args.max_tokens;
     let mut body = json!({
         "model": args.model,
-        "input": to_wire_messages(&args.messages, &args.system_prompt),
+        "input": to_wire_messages(&args.messages, &args.system_prompt, &args.model),
         "stream": true,
         "store": false,
+        "include": ["reasoning.encrypted_content"],
     });
     let wire_tools = functions_to_wire(&args.tools);
     if !wire_tools.is_empty() {
@@ -141,7 +144,10 @@ pub fn build_headers(cfg: &CodexConfig) -> Vec<(&'static str, String)> {
 mod tests {
     use super::*;
     use llm_router::types::content::ContentBlock;
-    use llm_router::types::messages::{UserMessage, UserRoleTag};
+    use llm_router::types::events::StopReason;
+    use llm_router::types::messages::{
+        AssistantMessage, AssistantRoleTag, UserMessage, UserRoleTag,
+    };
 
     fn args() -> BodyArgs {
         BodyArgs {
@@ -185,6 +191,7 @@ mod tests {
         assert_eq!(body["reasoning"]["summary"], "auto");
         assert!(body["reasoning"].get("effort").is_none());
         assert!(body.get("temperature").is_none());
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
     #[test]
@@ -211,6 +218,53 @@ mod tests {
         let body = build_body(&a);
         assert!(body["reasoning"].get("summary").is_none());
         assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn body_replays_reasoning_only_for_its_own_model() {
+        let item = json!({
+            "type": "reasoning",
+            "id": "rs_1",
+            "summary": [],
+            "encrypted_content": "BLOB",
+        });
+        let reply = AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content: vec![
+                ContentBlock::Thinking {
+                    text: String::new(),
+                    signature: crate::wire::messages::pack_reasoning(&item, "codex/gpt-5.5"),
+                },
+                ContentBlock::FunctionCall {
+                    id: "c1".into(),
+                    function_id: "shell::exec".into(),
+                    arguments: json!({}),
+                },
+            ],
+            stop_reason: StopReason::FunctionCall,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "codex/gpt-5.5".into(),
+            provider: "openai-codex".into(),
+            timestamp: 2,
+        });
+        let reasoning_items = |model: &str| {
+            let mut a = args();
+            a.model = model.into();
+            a.messages.push(reply.clone());
+            build_body(&a)["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count()
+        };
+        assert_eq!(reasoning_items("gpt-5.5"), 1);
+        assert_eq!(reasoning_items("gpt-5.4"), 0);
     }
 
     #[test]

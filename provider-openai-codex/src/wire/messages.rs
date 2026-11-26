@@ -2,6 +2,7 @@
 //! tool-call sanitization from the Chat Completions provider (each rule traces
 //! to a production incident): the Codex backend 400s on an unanswered or
 //! duplicated `call_id` just like Chat Completions does.
+use crate::config::upstream_model_id;
 use crate::wire::names::encode_tool_name;
 use llm_router::types::content::ContentBlock;
 use llm_router::types::messages::{AgentMessage, FunctionResultMessage};
@@ -34,11 +35,10 @@ fn format_function_result_content(m: &FunctionResultMessage) -> String {
     }
 }
 
-/// User content parts: `input_text` + `input_image` (data URIs). Always at
-/// least one part (empty `input_text`) so the backend never sees empty content.
-fn user_content_parts(content: &[ContentBlock]) -> Vec<Value> {
+/// Content parts: `input_text` + `input_image` (data URIs). Always at least
+/// one part (empty `input_text`) so the backend never sees empty content.
+fn content_parts(text: String, content: &[ContentBlock]) -> Vec<Value> {
     let mut parts = Vec::new();
-    let text = text_of(content);
     if !text.is_empty() {
         parts.push(json!({ "type": "input_text", "text": text }));
     }
@@ -56,27 +56,57 @@ fn user_content_parts(content: &[ContentBlock]) -> Vec<Value> {
     parts
 }
 
-fn function_call_output(call_id: &str, output: String) -> Value {
+fn function_call_output(call_id: &str, output: Value) -> Value {
     json!({ "type": "function_call_output", "call_id": call_id, "output": output })
 }
 
-/// `function_call_output.output` is a flat string, so Image blocks inside a
-/// FunctionResult are hoisted into one synthetic user message emitted after
-/// the contiguous run of tool outputs (never between a function_call and its
-/// output, and never splitting sibling tool rows).
-fn flush_result_images(out: &mut Vec<Value>, buf: &mut Vec<(String, Vec<Value>)>) {
-    if buf.is_empty() {
-        return;
-    }
-    let mut parts = Vec::new();
-    for (call_id, images) in buf.drain(..) {
-        parts.push(json!({
-            "type": "input_text",
-            "text": format!("[image result of tool call {call_id}]")
-        }));
-        parts.extend(images);
-    }
-    out.push(json!({ "role": "user", "content": parts }));
+/// A finished `reasoning` output item as a `Thinking` signature: a JSON
+/// envelope naming its model, so replay can tell it from another provider's
+/// signature or another model's blob. None without `encrypted_content`.
+pub(crate) fn pack_reasoning(item: &Value, model: &str) -> Option<String> {
+    let encrypted = item["encrypted_content"]
+        .as_str()
+        .filter(|blob| !blob.is_empty())?;
+    let summary = item
+        .get("summary")
+        .filter(|summary| summary.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    Some(
+        json!({
+            "type": "reasoning",
+            "model": upstream_model_id(model),
+            "id": item["id"].as_str(),
+            "summary": summary,
+            "encrypted_content": encrypted,
+        })
+        .to_string(),
+    )
+}
+
+/// The `reasoning` input item for a Thinking block packed for `model`, built
+/// from picked fields; the stored `id` is kept but never sent.
+fn reasoning_item(block: &ContentBlock, model: &str) -> Option<Value> {
+    let ContentBlock::Thinking {
+        signature: Some(signature),
+        ..
+    } = block
+    else {
+        return None;
+    };
+    let sealed: Value = serde_json::from_str(signature).ok()?;
+    let encrypted = sealed["encrypted_content"]
+        .as_str()
+        .filter(|blob| !blob.is_empty())?;
+    let summary = sealed["summary"].as_array()?;
+    (sealed["type"] == "reasoning" && sealed["model"] == upstream_model_id(model)).then(|| {
+        json!({
+            "type": "reasoning",
+            "summary": summary,
+            "content": null,
+            "encrypted_content": encrypted,
+        })
+    })
 }
 
 /// Latest-wins dedup for a `function_call_output` with the same `call_id`.
@@ -94,8 +124,9 @@ fn upsert_output(out: &mut Vec<Value>, row: Value) {
 
 /// Build the Responses `input` array. `system_prompt`, when non-empty, is the
 /// first `system` input item (Codex also accepts top-level `instructions`; a
-/// system item keeps ordering explicit and matches the reference).
-pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<Value> {
+/// system item keeps ordering explicit and matches the reference). `model`
+/// selects which stored reasoning items are replayed.
+pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str, model: &str) -> Vec<Value> {
     // Results displaced behind an interleaved user message (notification /
     // steering injected mid call-window) must be pulled back next to their
     // call: the Responses API rejects a user item between a function_call
@@ -118,16 +149,30 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
         })
         .collect();
 
-    // call_id -> hoisted input_image parts, flushed when a result run ends.
-    let mut image_buf: Vec<(String, Vec<Value>)> = Vec::new();
     for m in messages {
         match m {
             AgentMessage::User(u) => {
-                flush_result_images(&mut out, &mut image_buf);
-                out.push(json!({ "role": "user", "content": user_content_parts(&u.content) }));
+                out.push(json!({
+                    "role": "user",
+                    "content": content_parts(text_of(&u.content), &u.content),
+                }));
             }
             AgentMessage::Assistant(a) => {
-                flush_result_images(&mut out, &mut image_buf);
+                // Leading reasoning goes before the reply's text, later reasoning
+                // before its next call; reasoning with nothing after it (a cut
+                // reply) is the Responses 400 class, so it is dropped.
+                let start = out.len();
+                let lead = a
+                    .content
+                    .iter()
+                    .take_while(|c| matches!(c, ContentBlock::Thinking { .. }))
+                    .count();
+                out.extend(
+                    a.content[..lead]
+                        .iter()
+                        .filter_map(|c| reasoning_item(c, model)),
+                );
+                let reasoned = out.len();
                 // The API asks for each reply's phase back and the message does
                 // not store it, so it is derived. The Codex CLI also knows
                 // `partial_answer`, which this never sends.
@@ -156,69 +201,55 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                         }));
                     }
                 }
-                for c in &a.content {
-                    if let ContentBlock::FunctionCall {
-                        id,
-                        function_id,
-                        arguments,
-                    } = c
-                    {
-                        out.push(json!({
-                            "type": "function_call",
-                            "call_id": id,
-                            "name": encode_tool_name(function_id),
-                            "arguments": arguments.to_string(),
-                        }));
-                        // Orphan (no result anywhere): synthetic output so the
-                        // backend never sees an unanswered call_id.
-                        if !resolved_ids.contains(id) {
-                            out.push(function_call_output(
-                                id,
-                                ORPHAN_TOOL_PLACEHOLDER.to_string(),
-                            ));
-                            resolved_ids.insert(id.clone());
+                let mut pending: Vec<Value> = Vec::new();
+                for c in &a.content[lead..] {
+                    match c {
+                        ContentBlock::Thinking { .. } => pending.extend(reasoning_item(c, model)),
+                        ContentBlock::Text { .. } => pending.clear(),
+                        ContentBlock::FunctionCall {
+                            id,
+                            function_id,
+                            arguments,
+                        } => {
+                            out.append(&mut pending);
+                            out.push(json!({
+                                "type": "function_call",
+                                "call_id": id,
+                                "name": encode_tool_name(function_id),
+                                "arguments": arguments.to_string(),
+                            }));
+                            // Orphan (no result anywhere): synthetic output so
+                            // the backend never sees an unanswered call_id.
+                            if !resolved_ids.contains(id) {
+                                out.push(function_call_output(id, json!(ORPHAN_TOOL_PLACEHOLDER)));
+                                resolved_ids.insert(id.clone());
+                            }
                         }
+                        _ => {}
                     }
+                }
+                if out.len() == reasoned {
+                    out.truncate(start);
                 }
             }
             AgentMessage::FunctionResult(r) => {
-                upsert_output(
-                    &mut out,
-                    function_call_output(&r.function_call_id, format_function_result_content(r)),
-                );
-                let images: Vec<Value> = r
+                let text = format_function_result_content(r);
+                // Images ride inside the output as Codex sends them: a user
+                // item after each result would end the turn for the backend.
+                let output = if r
                     .content
                     .iter()
-                    .filter_map(|c| match c {
-                        ContentBlock::Image { mime, data, .. } => Some(json!({
-                            "type": "input_image",
-                            "image_url": format!("data:{mime};base64,{data}")
-                        })),
-                        _ => None,
-                    })
-                    .collect();
-                // Latest-wins per call_id, mirroring upsert_output.
-                // ponytail: a duplicate replayed after its images were
-                // flushed re-emits them; cross-flush dedup would need a
-                // seen-id set.
-                let existing = image_buf
-                    .iter()
-                    .position(|(id, _)| id == &r.function_call_id);
-                match existing {
-                    Some(i) if images.is_empty() => {
-                        image_buf.remove(i);
-                    }
-                    Some(i) => image_buf[i].1 = images,
-                    None if !images.is_empty() => {
-                        image_buf.push((r.function_call_id.clone(), images));
-                    }
-                    None => {}
-                }
+                    .any(|c| matches!(c, ContentBlock::Image { .. }))
+                {
+                    Value::Array(content_parts(text, &r.content))
+                } else {
+                    Value::String(text)
+                };
+                upsert_output(&mut out, function_call_output(&r.function_call_id, output));
             }
             AgentMessage::Custom(_) => {}
         }
     }
-    flush_result_images(&mut out, &mut image_buf);
     out
 }
 
@@ -296,6 +327,7 @@ mod tests {
                 result("t1", "ok", json!({})),
             ],
             "",
+            "m",
         );
         assert_eq!(wire[0]["type"], "function_call");
         assert_eq!(
@@ -311,6 +343,7 @@ mod tests {
         let wire = to_wire_messages(
             &[user(vec![ContentBlock::Text { text: "hi".into() }])],
             "be brief",
+            "m",
         );
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[0]["content"][0]["type"], "input_text");
@@ -326,6 +359,7 @@ mod tests {
                 result("t1", "ok", json!({})),
             ],
             "",
+            "m",
         );
         assert_eq!(wire[0]["role"], "assistant");
         assert_eq!(wire[0]["content"][0]["type"], "output_text");
@@ -383,7 +417,7 @@ mod tests {
             (vec![], vec![]),
         ];
         for (content, want) in cases {
-            let mut wire = to_wire_messages(&[assistant(content.clone())], "");
+            let mut wire = to_wire_messages(&[assistant(content.clone())], "", "m");
             wire.retain(|item| item["role"] == "assistant");
             assert_eq!(wire, want, "{content:?}");
         }
@@ -399,6 +433,7 @@ mod tests {
                 assistant(vec![text("found it"), text("done")]),
             ],
             "be brief",
+            "m",
         );
         assert_eq!(
             wire,
@@ -421,18 +456,17 @@ mod tests {
 
     #[test]
     fn orphan_call_gets_synthetic_output() {
-        let wire = to_wire_messages(&[assistant(vec![call("orphan")])], "");
+        let wire = to_wire_messages(&[assistant(vec![call("orphan")])], "", "m");
         assert_eq!(wire[0]["type"], "function_call");
         assert_eq!(wire[1]["type"], "function_call_output");
         assert!(wire[1]["output"].as_str().unwrap().contains("interrupted"));
     }
 
     #[test]
-    fn result_images_hoisted_into_user_message_after_output() {
+    fn result_images_ride_inside_the_function_call_output() {
         // Incident class: base64 screenshots inside a FunctionResult were
-        // silently dropped (output is a flat string), so the model never saw
-        // them. Images must reach the model as a synthetic user item that
-        // never lands between a function_call and its output.
+        // silently dropped, so the model never saw them. They ride inside
+        // the output, as Codex sends them, so no user item ends the turn.
         let wire = to_wire_messages(
             &[
                 assistant(vec![call("t1")]),
@@ -446,27 +480,26 @@ mod tests {
                 }]),
             ],
             "",
+            "m",
         );
         assert_eq!(wire[0]["type"], "function_call");
-        assert_eq!(wire[1]["type"], "function_call_output");
-        assert_eq!(wire[1]["output"], "ok", "output stays a flat text string");
-        assert_eq!(wire[2]["role"], "user", "hoisted images, got: {wire:?}");
         assert_eq!(
-            wire[2]["content"][0]["text"],
-            "[image result of tool call t1]"
+            wire[1],
+            json!({
+                "type": "function_call_output",
+                "call_id": "t1",
+                "output": [
+                    { "type": "input_text", "text": "ok" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,AAAA" },
+                ],
+            })
         );
-        assert_eq!(wire[2]["content"][1]["type"], "input_image");
-        assert_eq!(
-            wire[2]["content"][1]["image_url"],
-            "data:image/png;base64,AAAA"
-        );
-        assert_eq!(wire[3]["content"][0]["text"], "next");
+        assert_eq!(wire[2]["content"][0]["text"], "next");
+        assert_eq!(wire.len(), 3, "no hoisted user item: {wire:?}");
     }
 
     #[test]
-    fn sibling_result_images_flush_as_one_user_message_at_end() {
-        // Sibling tool rows must stay contiguous; images from a run of
-        // results flush as ONE user item, including at end-of-transcript.
+    fn sibling_results_each_carry_their_own_image() {
         let wire = to_wire_messages(
             &[
                 assistant(vec![call("t1"), call("t2")]),
@@ -474,23 +507,20 @@ mod tests {
                 result_blocks("t2", vec![image("BBBB")], json!({})),
             ],
             "",
+            "m",
         );
-        assert_eq!(wire[2]["type"], "function_call_output");
-        assert_eq!(wire[3]["type"], "function_call_output");
-        assert_eq!(wire[4]["role"], "user");
-        let parts = wire[4]["content"].as_array().unwrap();
-        assert_eq!(parts.len(), 4, "text+image per call, got: {wire:?}");
-        assert_eq!(parts[0]["text"], "[image result of tool call t1]");
-        assert_eq!(parts[1]["image_url"], "data:image/png;base64,AAAA");
-        assert_eq!(parts[2]["text"], "[image result of tool call t2]");
-        assert_eq!(parts[3]["image_url"], "data:image/png;base64,BBBB");
-        assert_eq!(wire.len(), 5);
+        let only_image = |data: &str| json!([{ "type": "input_image", "image_url": format!("data:image/png;base64,{data}") }]);
+        assert_eq!(wire[2]["call_id"], "t1");
+        assert_eq!(wire[2]["output"], only_image("AAAA"));
+        assert_eq!(wire[3]["call_id"], "t2");
+        assert_eq!(wire[3]["output"], only_image("BBBB"));
+        assert_eq!(wire.len(), 4, "{wire:?}");
     }
 
     #[test]
-    fn duplicate_result_images_latest_wins_before_flush() {
-        // Deferred-resolve replay upserts the tool row latest-wins; buffered
-        // images must follow the same rule.
+    fn duplicate_result_latest_wins_with_its_images() {
+        // Deferred-resolve replay upserts the tool row latest-wins, images
+        // included.
         let wire = to_wire_messages(
             &[
                 assistant(vec![call("t1")]),
@@ -498,12 +528,13 @@ mod tests {
                 result_blocks("t1", vec![image("NEW1")], json!({})),
             ],
             "",
+            "m",
         );
-        assert_eq!(wire[2]["role"], "user");
-        let parts = wire[2]["content"].as_array().unwrap();
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[1]["image_url"], "data:image/png;base64,NEW1");
-        assert_eq!(wire.len(), 3);
+        assert_eq!(
+            wire[1]["output"],
+            json!([{ "type": "input_image", "image_url": "data:image/png;base64,NEW1" }])
+        );
+        assert_eq!(wire.len(), 2, "{wire:?}");
     }
 
     #[test]
@@ -515,6 +546,7 @@ mod tests {
                 result("t1", "second", json!({})),
             ],
             "",
+            "m",
         );
         let outputs: Vec<&Value> = wire
             .iter()
@@ -522,5 +554,179 @@ mod tests {
             .collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["output"], "second");
+    }
+
+    fn reasoning_done(id: Option<&str>, blob: &str) -> Value {
+        let mut item = json!({
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [
+                { "type": "summary_text", "text": "**A**" },
+                { "type": "summary_text", "text": "**B**" },
+            ],
+            "encrypted_content": blob,
+        });
+        if let Some(id) = id {
+            item["id"] = json!(id);
+        }
+        item
+    }
+    fn thought(item: &Value, model: &str) -> ContentBlock {
+        ContentBlock::Thinking {
+            text: "**A**\n\n**B**".into(),
+            signature: pack_reasoning(item, model),
+        }
+    }
+
+    #[test]
+    fn signed_reasoning_goes_back_before_the_item_it_preceded() {
+        let item = reasoning_done(Some("rs_1"), "BLOB1");
+        let sealed: Value =
+            serde_json::from_str(&pack_reasoning(&item, "codex/m").unwrap()).unwrap();
+        assert_eq!(sealed["id"], "rs_1");
+        assert_eq!(sealed["model"], "m");
+        assert!(sealed.get("status").is_none(), "{sealed}");
+        let unnamed = reasoning_done(None, "BLOB1");
+        let sealed: Value =
+            serde_json::from_str(&pack_reasoning(&unnamed, "codex/m").unwrap()).unwrap();
+        assert_eq!(sealed.get("id"), Some(&Value::Null));
+        assert!(pack_reasoning(&reasoning_done(None, ""), "codex/m").is_none());
+        let mut bare = reasoning_done(None, "BLOB1");
+        bare.as_object_mut().unwrap().remove("summary");
+        let sealed: Value =
+            serde_json::from_str(&pack_reasoning(&bare, "codex/m").unwrap()).unwrap();
+        assert_eq!(sealed["summary"], json!([]));
+
+        let reasoning = |blob: &str| {
+            json!({
+                "type": "reasoning",
+                "summary": item["summary"],
+                "content": null,
+                "encrypted_content": blob,
+            })
+        };
+        let function_call = |id: &str| {
+            json!({
+                "type": "function_call",
+                "call_id": id,
+                "name": "shell__exec",
+                "arguments": "{\"cmd\":\"ls\"}",
+            })
+        };
+        let output = |id: &str, output: &str| json!({ "type": "function_call_output", "call_id": id, "output": output });
+        let th1 = thought(&item, "codex/m");
+        let th2 = thought(&reasoning_done(Some("rs_2"), "BLOB2"), "codex/m");
+        let cases = [
+            (
+                vec![assistant(vec![th1.clone(), call("t1")])],
+                vec![
+                    reasoning("BLOB1"),
+                    function_call("t1"),
+                    output("t1", ORPHAN_TOOL_PLACEHOLDER),
+                ],
+            ),
+            (
+                vec![assistant(vec![thought(&unnamed, "codex/m"), call("t1")])],
+                vec![
+                    reasoning("BLOB1"),
+                    function_call("t1"),
+                    output("t1", ORPHAN_TOOL_PLACEHOLDER),
+                ],
+            ),
+            (
+                vec![assistant(vec![th1.clone(), text("a")])],
+                vec![reasoning("BLOB1"), message_item("final_answer", "a")],
+            ),
+            (
+                vec![assistant(vec![
+                    th1.clone(),
+                    text("a"),
+                    th2.clone(),
+                    call("t1"),
+                ])],
+                vec![
+                    reasoning("BLOB1"),
+                    message_item("commentary", "a"),
+                    reasoning("BLOB2"),
+                    function_call("t1"),
+                    output("t1", ORPHAN_TOOL_PLACEHOLDER),
+                ],
+            ),
+            (
+                vec![
+                    assistant(vec![th1.clone(), call("t1"), th2.clone(), call("t2")]),
+                    result("t1", "one", json!({})),
+                    result("t2", "two", json!({})),
+                ],
+                vec![
+                    reasoning("BLOB1"),
+                    function_call("t1"),
+                    reasoning("BLOB2"),
+                    function_call("t2"),
+                    output("t1", "one"),
+                    output("t2", "two"),
+                ],
+            ),
+        ];
+        for (messages, want) in cases {
+            assert_eq!(to_wire_messages(&messages, "", "m"), want, "{messages:?}");
+        }
+    }
+
+    #[test]
+    fn reasoning_that_cannot_be_replayed_is_dropped() {
+        let item = reasoning_done(Some("rs_1"), "BLOB1");
+        let signed = thought(&item, "codex/m");
+        let sealed = |signature: String| ContentBlock::Thinking {
+            text: "x".into(),
+            signature: Some(signature),
+        };
+        let rows = [
+            vec![
+                ContentBlock::Thinking {
+                    text: "x".into(),
+                    signature: None,
+                },
+                call("t1"),
+            ],
+            vec![sealed("EqQBCkgIARABGAIiQLb3c2lnbmF0dXJl".into()), call("t1")],
+            vec![
+                sealed(json!({ "type": "reasoning", "model": "m", "summary": [] }).to_string()),
+                call("t1"),
+            ],
+            vec![
+                sealed(
+                    json!({ "type": "thinking", "model": "m", "summary": [], "encrypted_content": "B" })
+                        .to_string(),
+                ),
+                call("t1"),
+            ],
+            vec![
+                sealed(
+                    json!({ "type": "reasoning", "model": "m", "summary": [], "encrypted_content": "" })
+                        .to_string(),
+                ),
+                call("t1"),
+            ],
+            vec![
+                sealed(
+                    json!({ "type": "reasoning", "model": "m", "encrypted_content": "B" })
+                        .to_string(),
+                ),
+                call("t1"),
+            ],
+            vec![thought(&item, "codex/other"), call("t1")],
+            vec![signed.clone()],
+            vec![call("t1"), signed.clone()],
+            vec![signed.clone(), text("")],
+            vec![text("a"), signed.clone(), text("b")],
+        ];
+        for content in rows {
+            let wire = to_wire_messages(&[assistant(content.clone())], "", "m");
+            assert!(
+                !wire.iter().any(|i| i["type"] == "reasoning"),
+                "{content:?}: {wire:?}"
+            );
+        }
     }
 }
