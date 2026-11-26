@@ -37,7 +37,7 @@ type Snapshot = {
 };
 type View = { state: 'loading' | 'unavailable' } | { state: 'ready'; data: Snapshot };
 
-function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
+function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId: string }) {
   const [view, setView] = useState<View>({ state: 'loading' });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -111,7 +111,14 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
         }),
       );
       cleanup.push(iii.on(`${base}-config`, unavailable));
-      cleanup.push(iii.observe('claude::on-config-change', `${base}-config::${iii.browserId}`));
+      // The worker closes its gate when refresh starts, not when its reload
+      // handler returns. Observe the same event, without its config values.
+      const configChange = {
+        function_id: 'configuration::on-updated',
+        filters: { 'input.id': { $eq: configId } },
+        capture: [],
+      };
+      cleanup.push(iii.observe(configChange, `${base}-config::${iii.browserId}`));
       cleanup.push(
         iii.observe(
           { function_id: 'claude::agents::on-reply', args: { claude_session_id: id } },
@@ -132,7 +139,7 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
       unavailable();
     }
     return stop;
-  }, [iii, id, attempt]);
+  }, [iii, id, configId, attempt]);
 
   if (view.state === 'unavailable')
     return (
@@ -176,12 +183,14 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
 export function SessionDetail({
   iii,
   id,
+  configId,
   available,
   opener,
   onClose,
 }: {
   iii: ExtensionIii;
   id: string;
+  configId?: string;
   available: boolean;
   opener: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
@@ -200,8 +209,8 @@ export function SessionDetail({
           Read only. This session has no terminal you can attach to here. Use its original terminal
           to send input.
         </DialogDescription>
-        {available ? (
-          <Follow iii={iii} id={id} />
+        {available && configId ? (
+          <Follow key={configId} iii={iii} id={id} configId={configId} />
         ) : (
           <StatusPanel
             role="alert"

@@ -104,7 +104,7 @@ async function testSessionActions(code) {
   const { default: assert } = await import('node:assert/strict');
   const { test } = await import('node:test');
   const { JSDOM } = require('jsdom');
-  function setup(t) {
+  function setup(t, { heartbeat = true } = {}) {
     const { window } = new JSDOM('<div id="root"></div>', {
       url: 'http://127.0.0.1/',
       pretendToBeVisual: true,
@@ -113,8 +113,10 @@ async function testSessionActions(code) {
     const { document } = window;
     t.after(() => window.close());
     const interval = window.setInterval.bind(window);
-    window.setInterval = (callback, delay, ...args) =>
-      interval(callback, Math.min(delay, 50), ...args);
+    if (heartbeat) {
+      window.setInterval = (callback, delay, ...args) =>
+        interval(callback, Math.min(delay, 50), ...args);
+    }
     window.eval(code);
     const until = (read) =>
       new Promise((resolve, reject) => {
@@ -157,6 +159,19 @@ async function testSessionActions(code) {
     };
     return { document, click, text, shortcut, follow };
   }
+
+  await test('hides replies on the config event without waiting for refresh or polling', async (t) => {
+    const { follow, shortcut, text, document } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyC');
+    shortcut('KeyU');
+    await text('Review update 2:');
+    shortcut('KeyR');
+    await text('Replies unavailable');
+    assert.equal(document.querySelector('[role="log"]'), null);
+    assert.doesNotMatch(document.body.textContent, /Review update 2:/);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+  });
 
   await test('does not render an abandoned reply when the active branch is empty', async (t) => {
     const { follow, shortcut, text, document } = setup(t);

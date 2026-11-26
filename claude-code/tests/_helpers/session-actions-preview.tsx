@@ -29,11 +29,18 @@ const rows = [
     ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
   };
 });
+type Source = {
+  function_id: string;
+  args?: { claude_session_id?: string };
+  filters?: { 'input.id'?: { $eq: string } };
+  capture?: string[];
+};
 const handlers = new Map<string, (event: unknown) => void>();
 const watches = new Set<{
-  source: { function_id: string; args?: { claude_session_id?: string } };
+  source: Source;
   target: string;
 }>();
+const configId = 'fixture-claude';
 let allowed = true;
 let finishedPty: { id: string; confirmed: boolean } | undefined;
 let mismatchedDescribe = false;
@@ -59,10 +66,7 @@ const host = {
       handlers.set(`${id}::fixture`, fn);
       return () => handlers.delete(`${id}::fixture`);
     },
-    observe(
-      source: string | { function_id: string; args?: { claude_session_id?: string } },
-      target: string,
-    ) {
+    observe(source: string | Source, target: string) {
       const w = { source: typeof source === 'string' ? { function_id: source } : source, target };
       let removed = false;
       const admit = () => {
@@ -84,9 +88,15 @@ const host = {
         claude_session_id?: string;
         mode?: string;
         cursor?: string;
+        include_config_id?: boolean;
       },
     ) {
-      if (fn === 'claude::agents::list') return { agents: allowed ? rows : [rows[1]] };
+      if (fn === 'claude::agents::list') {
+        return {
+          agents: allowed ? rows : [rows[1]],
+          ...(p.include_config_id ? { config_id: configId } : {}),
+        };
+      }
       const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
       if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
         throw new Error('Session unavailable');
@@ -138,16 +148,27 @@ const host = {
     },
   },
 };
-function emit(id: string, event: { claude_session_id?: string; reply?: ReturnType<typeof reply> }) {
+function emit(
+  id: string,
+  event: { id?: string; event_type?: string; claude_session_id?: string; reply?: Reply },
+) {
   for (const w of watches) {
+    const entry = w.source.filters?.['input.id']?.$eq;
     if (
       w.source.function_id !== id ||
+      (entry !== undefined && entry !== event.id) ||
       (w.source.args && w.source.args.claude_session_id !== event.claude_session_id)
     )
       continue;
     // The reply source delivers captured output without an observer_id, so ADE
     // passes the envelope through rather than projecting the output field.
-    handlers.get(w.target)?.(id === 'claude::agents::on-reply' ? { output: event } : event);
+    const delivery =
+      w.source.capture?.length === 0
+        ? { observer_id: w.target }
+        : id === 'claude::agents::on-reply'
+          ? { output: event }
+          : event;
+    handlers.get(w.target)?.(delivery);
   }
 }
 function Preview() {
@@ -239,6 +260,14 @@ function Preview() {
   window.onkeydown = (e) => {
     if (!e.altKey || e.repeat) return;
     if (e.code === 'KeyU') deliver();
+    if (e.code === 'KeyC') {
+      emit('configuration::on-updated', { id: 'unrelated', event_type: 'configuration:updated' });
+    }
+    if (e.code === 'KeyR') {
+      allowed = false;
+      emit('configuration::on-updated', { id: configId, event_type: 'configuration:updated' });
+      // The worker's reload is still pending; there is no completion notification.
+    }
     if (e.code === 'KeyS') scenario('stale');
     if (e.code === 'KeyN') scenario('sibling');
     if (e.code === 'KeyA') {
@@ -280,7 +309,10 @@ function Preview() {
               type="button"
               onClick={() => {
                 allowed = !allowed;
-                emit('configuration::on-updated', {});
+                emit('configuration::on-updated', {
+                  id: configId,
+                  event_type: 'configuration:updated',
+                });
                 emit('claude::on-config-change', {});
               }}
             >

@@ -6,7 +6,7 @@
 
 import type { IIIClient } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
-import type { ResolveOpen } from '../../src/agents.js';
+import { type CliRow, registerAgents, type ResolveOpen } from '../../src/agents.js';
 import { TerminalConfigSchema } from '../../src/config.js';
 import { registerTerminal } from '../../src/terminal/terminal.js';
 import type { HostPrepared } from '../../src/terminal/workspace.js';
@@ -14,7 +14,7 @@ import { CLAUDE, fakeClaude } from '../_helpers/fake-claude.js';
 
 type Handler = (payload: unknown) => Promise<Record<string, unknown>>;
 
-function setup(hostOver: Partial<HostPrepared> = {}) {
+function setup(hostOver: Partial<HostPrepared> = {}, inventory?: () => CliRow[]) {
   const claude = fakeClaude();
   const handlers = new Map<string, { handler: Handler; options: Record<string, unknown> }>();
   const iii = {
@@ -27,7 +27,14 @@ function setup(hostOver: Partial<HostPrepared> = {}) {
       switch (request.function_id) {
         case 'shell::exec':
           if (Array.isArray(p.args)) return claude.run(p.command, p.args, p.cwd);
+          if (inventory && String(p.command).endsWith(' agents --json --all')) {
+            return { stdout: JSON.stringify(inventory()), stderr: '', exit_code: 0 };
+          }
           return { stdout: '', stderr: '', exit_code: 1 };
+        case 'state::list':
+          return [];
+        case 'shell::pty::sessions':
+          return { sessions: [] };
         case 'http::status':
           return { url: 'http://127.0.0.1:3111' };
         case 'engine::functions::list':
@@ -55,6 +62,15 @@ function setup(hostOver: Partial<HostPrepared> = {}) {
     ...hostOver,
   };
   const resolveOpen = vi.fn<ResolveOpen>();
+  if (inventory) {
+    const agents = registerAgents(
+      iii,
+      () => ({ ...host, args: [], workspace: '' }),
+      () => true,
+      { has: () => false },
+    );
+    resolveOpen.mockImplementation(agents.resolveOpen);
+  }
   registerTerminal(
     iii,
     () => host,
@@ -195,12 +211,37 @@ describe('claude::terminal::describe', () => {
     expect(resolveOpen).toHaveBeenCalledTimes(2);
   });
 
+  it('can immediately describe a finished original after refusing a stale attach', async () => {
+    const live: CliRow = {
+      id: 'abcd1234',
+      sessionId: id,
+      kind: 'background',
+      cwd: '/fixture',
+      pid: 41,
+      state: 'working',
+    };
+    const finished = { ...live, pid: undefined, state: 'done' };
+    let samples = 0;
+    const { describeFn } = setup({}, () => [samples++ === 0 ? live : finished]);
+
+    await expect(describeFn.handler(original)).rejects.toThrow(/changed while opening/);
+    const reopened = await describeFn.handler(original);
+    expect(reopened).toMatchObject({ cwd: '/fixture', claude_session_id: id });
+    expect((reopened.args as string[]).slice(-2)).toEqual(['--resume', id]);
+    expect(reopened).not.toHaveProperty('copy');
+    await expect(describeFn.handler(original)).rejects.toThrow(/already open/);
+  });
+
   it('describes an explicit copy only for the verified target', async () => {
     const { describeFn, resolveOpen } = setup();
     const args = ['--resume', id, '--fork-session'];
     resolveOpen.mockResolvedValue({ args, cwd: '/fixture', copy: true });
     const spec = await describeFn.handler({ ...original, mode: 'fork' });
-    expect(resolveOpen).toHaveBeenLastCalledWith(id, { mode: 'fork', claude_session_id: id });
+    expect(resolveOpen).toHaveBeenLastCalledWith(
+      id,
+      { mode: 'fork', claude_session_id: id },
+      expect.any(Function),
+    );
     expect(spec).toMatchObject({ copy: true, claude_session_id: id });
     expect((spec.args as string[]).slice(-3)).toEqual(args);
   });

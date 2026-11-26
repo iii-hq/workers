@@ -61,6 +61,7 @@ interface AgentRow {
 
 interface AgentList {
   agents: AgentRow[];
+  config_id?: string;
   detail?: string;
 }
 
@@ -136,7 +137,7 @@ const listing: { current: Promise<AgentList> | null; next: Promise<AgentList> | 
 function listAgents(host: Host): Promise<AgentList> {
   const run = (): Promise<AgentList> => {
     const request: Promise<AgentList> = host.iii
-      .call('claude::agents::list', {}, { timeoutMs: LIST_TIMEOUT_MS })
+      .call('claude::agents::list', { include_config_id: true }, { timeoutMs: LIST_TIMEOUT_MS })
       .finally(() => {
         listing.current = null;
       });
@@ -530,6 +531,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           key={follow}
           iii={host.iii}
           id={follow}
+          configId={sessions.data?.config_id}
           available={!!followed && !sessions.error}
           opener={followOpener}
           onClose={() => setFollow(null)}

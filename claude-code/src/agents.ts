@@ -70,14 +70,21 @@ export type OpenPlan =
 export type ResolveOpen = (
   id: string,
   request?: OpenRequest,
-  reserve?: boolean,
+  reserve?: boolean | ((plan: OpenSpec) => boolean),
 ) => Promise<OpenPlan>;
+
+// Match the effective entry ID used by the worker's configuration observer.
+const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || 'claude-code';
 
 const ListPayloadSchema = z.object({
   all: z
     .boolean()
     .optional()
     .describe('Also list completed background sessions (`claude agents --json --all`)'),
+  include_config_id: z
+    .boolean()
+    .optional()
+    .describe('Include the configuration entry ID for the console viewer.'),
 });
 
 const StopPayloadSchema = z.object({
@@ -322,7 +329,7 @@ export function registerAgents(
   iii.registerFunction(
     'claude::agents::list',
     async (payload: unknown) => {
-      const { all } = ListPayloadSchema.parse(payload ?? {});
+      const { all, include_config_id } = ListPayloadSchema.parse(payload ?? {});
       const { agents, hidden, detail } = await inventory(all === true);
       const details = detail ? [detail] : [];
       if (hidden > 0) {
@@ -330,14 +337,22 @@ export function registerAgents(
           `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
         );
       }
-      return { agents, ...(details.length ? { detail: details.join('; ') } : {}) };
+      return {
+        agents,
+        ...(include_config_id ? { config_id: CONFIG_ID } : {}),
+        ...(details.length ? { detail: details.join('; ') } : {}),
+      };
     },
     {
       description:
         "List Claude Code sessions: this worker's headless runs (claude_sessions) plus the interactive and background sessions on the terminal host, read from its `claude agents --json`. Host sessions this worker never saw are hidden unless the external_sessions setting is on.",
       request_format: jsonSchema(ListPayloadSchema),
       response_format: jsonSchema(
-        z.object({ agents: z.array(AgentRowSchema), detail: z.string().optional() }),
+        z.object({
+          agents: z.array(AgentRowSchema),
+          config_id: z.string().optional(),
+          detail: z.string().optional(),
+        }),
       ),
     },
   );
@@ -506,8 +521,12 @@ export function registerAgents(
         }))
     )
       throw new Error('could not verify which conversation a console terminal is running');
-    if (reserve) opening.set(claudeId, Date.now() + OPENING_MS);
-    return { args, cwd: row.cwd };
+    const plan = { args, cwd: row.cwd };
+    // Revalidation can find a resume in place of the attach being prepared.
+    // Don't reserve it unless the caller is actually returning that plan.
+    if (typeof reserve === 'function' ? reserve(plan) : reserve)
+      opening.set(claudeId, Date.now() + OPENING_MS);
+    return plan;
   };
 
   const heldElsewhere = async (claudeId: string) => {

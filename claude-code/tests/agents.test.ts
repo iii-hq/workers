@@ -294,11 +294,20 @@ const ok = (rows: unknown) => () => ({ stdout: JSON.stringify(rows), stderr: '',
 async function list(fake: FakeIii, payload: unknown = {}) {
   return (await fake.registered.get('claude::agents::list')?.(payload)) as {
     agents: Array<{ id: string; pty_session_id?: string }>;
+    config_id?: string;
     detail?: string;
   };
 }
 
 describe('claude::agents::list', () => {
+  it('only returns the effective configuration entry ID when requested', async () => {
+    const fake = host(ok([]), { external: true });
+    expect(await list(fake)).not.toHaveProperty('config_id');
+    expect((await list(fake, { include_config_id: true })).config_id).toBe(
+      process.env.III_CONFIG_NAME?.trim() || 'claude-code',
+    );
+  });
+
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
     const fake = host(ok([]), { external: true });
     await list(fake);

@@ -84,13 +84,13 @@ export function registerTerminal(
       // Plugin preparation can take minutes. Never give out an earlier attach,
       // resume or copy if the inventory now calls for something different.
       if (session && request) {
-        const fresh = await resolveOpen(session, request);
-        if (
-          !('args' in fresh) ||
-          fresh.cwd !== open.cwd ||
-          fresh.copy !== open.copy ||
-          JSON.stringify(fresh.args) !== JSON.stringify(open.args)
-        ) {
+        const samePlan = (fresh: OpenSpec) =>
+          fresh.cwd === open.cwd &&
+          fresh.copy === open.copy &&
+          fresh.args.length === open.args.length &&
+          fresh.args.every((arg, i) => arg === open.args[i]);
+        const fresh = await resolveOpen(session, request, samePlan);
+        if (!('args' in fresh) || !samePlan(fresh)) {
           throw new Error('the session changed while opening; refresh the list');
         }
       }
