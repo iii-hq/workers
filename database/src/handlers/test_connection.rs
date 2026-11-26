@@ -615,19 +615,6 @@ fn pg_error(e: &tokio_postgres::Error) -> ConnectError {
     // The Display of a connect error is terse ("error connecting to
     // server: …"); keep its source chain, which says why.
     let mut message = crate::driver::postgres::pg_error_text(e);
-    let mut source = if e.as_db_error().is_some() {
-        None
-    } else {
-        std::error::Error::source(e)
-    };
-    while let Some(s) = source {
-        let text = s.to_string();
-        if !message.contains(&text) {
-            message.push_str(": ");
-            message.push_str(&text);
-        }
-        source = s.source();
-    }
     if message.contains("server does not support TLS") {
         message.push_str(" (tls.mode prefer or disable connects without it)");
     }
