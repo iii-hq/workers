@@ -125,7 +125,10 @@ provider id `openai`.
   backend itself accepts input up to ~922K on current models, so the ceiling
   is the larger limit that is still safe to advertise.
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
-  optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
+  optional `tools` and `reasoning: { effort }`. Each assistant message item
+  carries a `phase`, derived from the stored reply: `commentary` when the reply
+  has a function call. Without a call, the last text is `final_answer` and any
+  earlier text is a separate `commentary` item. Headers: `Authorization: Bearer`,
   `chatgpt-account-id`, Codex compatibility `version`,
   `openai-beta: responses=experimental`,
   `originator: codex_cli_rs`.
