@@ -365,13 +365,29 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
         page.getByRole('button', { name: 'Continue', exact: true }),
       ).toHaveCount(0)
 
-      /* The sidebar footer opens the screen (§4.3.1, §4.3.3). */
+      /* The sidebar footer opens the screen (§4.3.1, §4.3.3): one button,
+         the Claude Code mark and a ring per account, the global (Personal)
+         first, its words in the button's name and each ring's tooltip (D178). */
       const footer = page.locator('[data-usage-footer]')
-      await expect(footer).toContainText('Usage this week')
-      await expect(
-        footer.locator('[data-footer-account="personal"]'),
-      ).toContainText('Personal · global')
-      await footer.locator('[data-footer-account="default"]').click()
+      const rings = footer.getByRole('button', {
+        name: 'Claude Code usage this week: Personal, global, 22%; Work, 64%; Side project, Not signed in. Opens Claude Code accounts.',
+      })
+      await expect(rings).toBeVisible()
+      await expect(rings).toHaveText('')
+      await expect(rings.locator('[data-footer-account]')).toHaveCount(3)
+      expect(
+        await rings
+          .locator('[data-footer-account]')
+          .evaluateAll((els) =>
+            els.map((el) => el.getAttribute('data-footer-account')),
+          ),
+      ).toEqual(['personal', 'default', 'side-project'])
+      await rings.locator('[data-footer-account="personal"]').hover()
+      await expect(page.locator('[data-slot="tooltip-content"]')).toHaveText(
+        'Personal · global · 22%',
+      )
+      await footer.screenshot({ path: shot('footer-rings') })
+      await rings.click()
       const screen = page.getByRole('dialog', { name: 'Claude Code accounts' })
       await expect(screen).toBeVisible()
       const work = screen.locator('[data-account-card="default"]')
