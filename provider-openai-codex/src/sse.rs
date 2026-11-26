@@ -3,6 +3,7 @@
 //! threads it through PartialState, returns 0+ events. Keeps the same public
 //! API as the Chat Completions provider so `upstream.rs` is unchanged.
 //! Unknown event types are ignored (forward-compat: the backend adds events).
+use crate::wire::messages::pack_reasoning;
 use crate::wire::names::decode_tool_name;
 use crate::{PROVIDER_ID, now_ms};
 use llm_router::provider_scaffold::sse_transport::{StreamEndView, arguments_incomplete};
@@ -26,10 +27,9 @@ struct PartialToolCall {
 }
 
 pub struct PartialState {
-    /// One entry per assistant `message` output item, in stream order, with
-    /// the number of tool calls before it.
-    texts: Vec<(usize, String)>,
-    thinking: String,
+    /// One entry per assistant `message` or `reasoning` output item, in
+    /// stream order, with the number of tool calls before it.
+    blocks: Vec<(usize, ContentBlock)>,
     tool_calls: Vec<PartialToolCall>,
     open_block: Option<OpenBlock>,
     usage: Usage,
@@ -43,8 +43,7 @@ pub struct PartialState {
 impl PartialState {
     pub fn new(warnings: Vec<String>) -> Self {
         PartialState {
-            texts: Vec::new(),
-            thinking: String::new(),
+            blocks: Vec::new(),
             tool_calls: Vec::new(),
             open_block: None,
             usage: Usage::default(),
@@ -63,7 +62,12 @@ impl PartialState {
     /// Whether any output accumulated (text, thinking, or tool calls) —
     /// distinguishes legitimate close-framing from a truncated/empty stream.
     pub fn has_content(&self) -> bool {
-        !self.texts.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
+        // A signed reasoning item with no summary is not a reply by itself.
+        !self.tool_calls.is_empty()
+            || self
+                .blocks
+                .iter()
+                .any(|(_, b)| !matches!(b, ContentBlock::Thinking { text, .. } if text.is_empty()))
     }
 }
 
@@ -104,19 +108,14 @@ pub fn empty_assistant(model: &str) -> AssistantMessage {
 
 fn build_content(state: &PartialState) -> Vec<ContentBlock> {
     let mut out = Vec::new();
-    if !state.thinking.is_empty() {
-        out.push(ContentBlock::Thinking {
-            text: state.thinking.clone(),
-            signature: None,
-        });
-    }
-    // Text blocks keep their stream position among the calls. The only empty
-    // one is the block its own TextStart just opened, and it sits past every
-    // call, so readers seed it as the open block.
-    let mut texts = state.texts.iter().peekable();
+    // Text and thinking blocks keep their stream position among the calls.
+    // The open block (text or thinking) is the only empty one besides an
+    // unsummarised reasoning item, and it sits last, so readers seed it as
+    // the open block.
+    let mut blocks = state.blocks.iter().peekable();
     for (i, tc) in state.tool_calls.iter().enumerate() {
-        while let Some((_, text)) = texts.next_if(|(at, _)| *at <= i) {
-            out.push(ContentBlock::Text { text: text.clone() });
+        while let Some((_, block)) = blocks.next_if(|(at, _)| *at <= i) {
+            out.push(block.clone());
         }
         if tc.function_id.is_empty() {
             continue;
@@ -138,7 +137,14 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
             arguments,
         });
     }
-    out.extend(texts.map(|(_, text)| ContentBlock::Text { text: text.clone() }));
+    out.extend(blocks.map(|(_, block)| block.clone()));
+    // Unsummarised reasoning at the end is not shown until something follows
+    // it, so a reasoning-only reply stays empty.
+    if state.open_block != Some(OpenBlock::Thinking) {
+        while matches!(out.last(), Some(ContentBlock::Thinking { text, .. }) if text.is_empty()) {
+            out.pop();
+        }
+    }
     out
 }
 
@@ -246,7 +252,12 @@ fn open_text(state: &mut PartialState, model: &str, events: &mut Vec<AssistantMe
         state.open_block = Some(OpenBlock::Text);
         // A message item's deltas are contiguous, so (re)opening text always
         // means a new output item.
-        state.texts.push((state.tool_calls.len(), String::new()));
+        state.blocks.push((
+            state.tool_calls.len(),
+            ContentBlock::Text {
+                text: String::new(),
+            },
+        ));
         events.push(AssistantMessageEvent::TextStart {
             partial: build_partial(state, model),
         });
@@ -257,6 +268,15 @@ fn open_thinking(state: &mut PartialState, model: &str, events: &mut Vec<Assista
     if state.open_block != Some(OpenBlock::Thinking) {
         close_open_block(state, model, events);
         state.open_block = Some(OpenBlock::Thinking);
+        // Pushed before ThinkingStart: readers pop the last Thinking block of
+        // that snapshot as the open one.
+        state.blocks.push((
+            state.tool_calls.len(),
+            ContentBlock::Thinking {
+                text: String::new(),
+                signature: None,
+            },
+        ));
         events.push(AssistantMessageEvent::ThinkingStart {
             partial: build_partial(state, model),
         });
@@ -333,7 +353,7 @@ pub fn handle_chunk(
                 return events;
             }
             open_text(state, model, &mut events);
-            if let Some((_, text)) = state.texts.last_mut() {
+            if let Some((_, ContentBlock::Text { text })) = state.blocks.last_mut() {
                 text.push_str(&delta);
             }
             events.push(AssistantMessageEvent::TextDelta {
@@ -347,7 +367,9 @@ pub fn handle_chunk(
                 return events;
             }
             open_thinking(state, model, &mut events);
-            state.thinking.push_str(&delta);
+            if let Some((_, ContentBlock::Thinking { text, .. })) = state.blocks.last_mut() {
+                text.push_str(&delta);
+            }
             events.push(AssistantMessageEvent::ThinkingDelta {
                 partial: None,
                 delta,
@@ -401,10 +423,56 @@ pub fn handle_chunk(
                     .filter(|p| p.get("type").and_then(Value::as_str) == Some("output_text"))
                     .filter_map(|p| p.get("text").and_then(Value::as_str))
                     .collect();
-                if let (false, Some((_, text))) = (done.is_empty(), state.texts.last_mut()) {
+                if let (false, Some((_, ContentBlock::Text { text }))) =
+                    (done.is_empty(), state.blocks.last_mut())
+                {
                     *text = done;
                 }
                 close_open_block(state, model, &mut events);
+            }
+            // The finished reasoning item carries the encrypted payload replay
+            // needs; its signature is set here, where readers snapshot it.
+            if let Some(item) =
+                item.filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+            {
+                let signature = pack_reasoning(item, model);
+                let open = state.open_block == Some(OpenBlock::Thinking);
+                if !open {
+                    if signature.is_none() {
+                        return events;
+                    }
+                    state.blocks.push((
+                        state.tool_calls.len(),
+                        ContentBlock::Thinking {
+                            text: String::new(),
+                            signature: None,
+                        },
+                    ));
+                }
+                let summary = item
+                    .get("summary")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if let Some((
+                    _,
+                    ContentBlock::Thinking {
+                        text,
+                        signature: sig,
+                    },
+                )) = state.blocks.last_mut()
+                {
+                    if !summary.is_empty() {
+                        *text = summary;
+                    }
+                    *sig = signature;
+                }
+                if open {
+                    close_open_block(state, model, &mut events);
+                }
             }
             if let Some(item) = item
                 .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
@@ -432,6 +500,9 @@ pub fn handle_chunk(
         }
         "response.completed" => {
             state.terminated = true;
+            if let Some(t) = chunk.pointer("/response/input_transformations") {
+                tracing::debug!(%t, "codex input transformations");
+            }
             merge_usage(chunk, &mut state.usage);
             state.usage_seen = state.usage != Usage::default();
             state.stop_reason = if state.tool_calls.is_empty() {
@@ -851,5 +922,238 @@ mod tests {
             other => panic!("want error, got {other:?}"),
         }
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    fn summary_delta(id: &str, delta: &str) -> Value {
+        json!({"type":"response.reasoning_summary_text.delta","item_id":id,"delta":delta})
+    }
+    fn reasoning_done(item: Value) -> Value {
+        json!({"type":"response.output_item.done","item":item})
+    }
+    fn two_part_reasoning(id: &str, blob: &str) -> Value {
+        json!({"type":"reasoning","id":id,"summary":[
+            {"type":"summary_text","text":"**A**"},
+            {"type":"summary_text","text":"**B**"}
+        ],"encrypted_content":blob})
+    }
+    fn signed_thinking(text: &str, item: &Value) -> ContentBlock {
+        ContentBlock::Thinking {
+            text: text.into(),
+            signature: pack_reasoning(item, "codex/gpt-5.5"),
+        }
+    }
+    /// Feeds `chunks` through the state machine and a live accumulator, as
+    /// the router and the harness read the frames.
+    fn run_live(
+        chunks: &[Value],
+    ) -> (
+        Vec<AssistantMessageEvent>,
+        llm_router::chat::accumulate::PartialAccumulator,
+    ) {
+        let mut state = PartialState::new(vec![]);
+        let mut live = llm_router::chat::accumulate::PartialAccumulator::default();
+        let mut events = Vec::new();
+        for c in chunks {
+            for ev in handle_chunk(c, &mut state, "codex/gpt-5.5") {
+                live.apply(&ev);
+                events.push(ev);
+            }
+        }
+        (events, live)
+    }
+    fn done_content(events: &[AssistantMessageEvent]) -> Vec<ContentBlock> {
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => message.content.clone(),
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_reasoning_item_is_its_own_signed_thinking_block_in_stream_order() {
+        let rs1 = two_part_reasoning("rs_1", "BLOB1");
+        let rs2 = json!({"type":"reasoning","id":"rs_2","summary":[],"encrypted_content":"BLOB2"});
+        let chunks = [
+            json!({"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1","summary":[]}}),
+            summary_delta("rs_1", "**A**"),
+            summary_delta("rs_1", "**B**"),
+            reasoning_done(rs1.clone()),
+            json!({"type":"response.output_text.delta","item_id":"msg_1","delta":"Looking."}),
+            json!({"type":"response.output_item.done","item":{"type":"message","content":[
+                {"type":"output_text","text":"Looking."}
+            ]}}),
+            json!({"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_2","summary":[]}}),
+            reasoning_done(rs2.clone()),
+            json!({"type":"response.output_item.added","item":{"type":"function_call","call_id":"c1","name":"shell__exec"}}),
+            json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c1","arguments":"{\"cmd\":\"ls\"}"}}),
+            json!({"type":"response.completed"}),
+        ];
+        let (events, live) = run_live(&chunks);
+        let content = done_content(&events);
+        assert_eq!(
+            content,
+            vec![
+                signed_thinking("**A**\n\n**B**", &rs1),
+                ContentBlock::Text {
+                    text: "Looking.".into()
+                },
+                signed_thinking("", &rs2),
+                ContentBlock::FunctionCall {
+                    id: "c1".into(),
+                    function_id: "shell::exec".into(),
+                    arguments: json!({"cmd": "ls"}),
+                },
+            ]
+        );
+        let ContentBlock::Thinking {
+            signature: Some(sig1),
+            ..
+        } = &content[0]
+        else {
+            unreachable!()
+        };
+        let sealed: Value = serde_json::from_str(sig1).unwrap();
+        assert_eq!(sealed["id"], "rs_1");
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, AssistantMessageEvent::ThinkingStart { .. }))
+            .count();
+        assert_eq!(starts, 1);
+        let ends: Vec<&AssistantMessage> = events
+            .iter()
+            .filter_map(|e| match e {
+                AssistantMessageEvent::ThinkingEnd { partial } => Some(partial),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0].content.last(), Some(&content[0]));
+        assert_eq!(live.current().unwrap().content, content);
+    }
+
+    #[test]
+    fn a_new_reasoning_block_opens_last_and_keeps_the_previous_signature() {
+        let rs1 = two_part_reasoning("rs_1", "BLOB1");
+        let rs2 = two_part_reasoning("rs_2", "BLOB2");
+        let chunks = [
+            summary_delta("rs_1", "**A**"),
+            reasoning_done(rs1.clone()),
+            summary_delta("rs_2", "**B**"),
+            reasoning_done(rs2.clone()),
+            json!({"type":"response.completed"}),
+        ];
+        let (events, live) = run_live(&chunks);
+        let starts: Vec<&AssistantMessage> = events
+            .iter()
+            .filter_map(|e| match e {
+                AssistantMessageEvent::ThinkingStart { partial } => Some(partial),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(
+            starts[1].content,
+            vec![
+                signed_thinking("**A**\n\n**B**", &rs1),
+                ContentBlock::Thinking {
+                    text: String::new(),
+                    signature: None,
+                },
+            ],
+            "the opening block sits last; the finished one keeps its signature"
+        );
+        let content = done_content(&events);
+        assert_eq!(
+            content,
+            vec![
+                signed_thinking("**A**\n\n**B**", &rs1),
+                signed_thinking("**A**\n\n**B**", &rs2),
+            ]
+        );
+        assert_eq!(live.current().unwrap().content, content);
+    }
+
+    #[test]
+    fn a_streamed_thought_keeps_its_text_when_the_finished_item_has_no_summary() {
+        let rs1 = json!({"type":"reasoning","id":"rs_1","summary":[],
+            "content":[{"type":"reasoning_text","text":"raw"}],"encrypted_content":"BLOB1"});
+        let (events, live) = run_live(&[
+            json!({"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"raw"}),
+            reasoning_done(rs1.clone()),
+            json!({"type":"response.output_item.added","item":{"type":"function_call","call_id":"c1","name":"shell__exec"}}),
+            json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"c1","arguments":"{}"}}),
+            json!({"type":"response.completed"}),
+        ]);
+        let thought = signed_thinking("raw", &rs1);
+        let end = events.iter().find_map(|e| match e {
+            AssistantMessageEvent::ThinkingEnd { partial } => Some(partial),
+            _ => None,
+        });
+        assert_eq!(end.and_then(|p| p.content.last()), Some(&thought));
+        let content = done_content(&events);
+        assert_eq!(content.first(), Some(&thought));
+        assert_eq!(live.current().unwrap().content, content);
+    }
+
+    #[test]
+    fn reasoning_without_its_payload_or_finished_item_stays_unsigned() {
+        let unsigned = |text: &str| ContentBlock::Thinking {
+            text: text.into(),
+            signature: None,
+        };
+        let (_, events) = run(&[
+            summary_delta("rs_1", "**A**"),
+            json!({"type":"response.failed","response":{"error":{"message":"boom"}}}),
+        ]);
+        let Some(AssistantMessageEvent::Error { error }) = events.last() else {
+            panic!("want error, got {:?}", events.last());
+        };
+        assert_eq!(error.content, vec![unsigned("**A**")]);
+
+        let mut no_payload = two_part_reasoning("rs_1", "");
+        no_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("encrypted_content");
+        let (_, events) = run(&[
+            summary_delta("rs_1", "**A**"),
+            reasoning_done(no_payload.clone()),
+            json!({"type":"response.completed"}),
+        ]);
+        assert_eq!(done_content(&events), vec![unsigned("**A**\n\n**B**")]);
+
+        let (_, events) = run(&[
+            reasoning_done(no_payload),
+            json!({"type":"response.completed"}),
+        ]);
+        assert_eq!(done_content(&events), vec![]);
+    }
+
+    #[test]
+    fn a_reasoning_only_reply_stays_empty() {
+        let silent =
+            json!({"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"BLOB1"});
+        let (state, events) = run(&[reasoning_done(silent.clone())]);
+        assert!(!state.has_content());
+        assert!(events.is_empty(), "{events:?}");
+        let (_, events) = run(&[
+            reasoning_done(silent.clone()),
+            json!({"type":"response.completed"}),
+        ]);
+        assert_eq!(done_content(&events), vec![]);
+
+        let (_, events) = run(&[
+            json!({"type":"response.output_item.added","item":{"type":"function_call","call_id":"c1","name":"shell__exec"}}),
+            json!({"type":"response.function_call_arguments.done","arguments":"{}"}),
+            reasoning_done(silent),
+            json!({"type":"response.completed"}),
+        ]);
+        assert_eq!(
+            done_content(&events),
+            vec![ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "shell::exec".into(),
+                arguments: json!({}),
+            }]
+        );
     }
 }

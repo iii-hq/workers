@@ -917,7 +917,7 @@ async fn generate_step(
         prev_watermark.as_deref(),
         Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
     );
-    if crate::window::binds_thinking(&record.options.model) {
+    if crate::window::strips_thinking_at_compaction(&record.options.model) {
         crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
     }
 
@@ -4803,14 +4803,14 @@ async fn assemble_context(
 }
 
 /// Everything a compacting step kept was produced before its own compaction:
-/// on a binding model strip its thinking, the same strip every later step
+/// on a model that strips thinking at compaction strip it, the same strip every later step
 /// applies (crate::window::strip_thinking_logged_before). True when it
 /// stripped, so the caller re-counts.
 fn strip_compacted_thinking(
     out: &mut crate::clients::context::AssembleOutput,
     model: &str,
 ) -> bool {
-    if !(out.applied.compacted && crate::window::binds_thinking(model)) {
+    if !(out.applied.compacted && crate::window::strips_thinking_at_compaction(model)) {
         return false;
     }
     out.messages
@@ -6019,12 +6019,14 @@ mod tests {
                 _ => false,
             })
         };
-        let mut out = assembled(true);
-        assert!(super::strip_compacted_thinking(
-            &mut out,
-            "claude-sonnet-5-5"
-        ));
-        assert!(!thinking(&out), "stale thinking would reach the request");
+        for model in ["claude-sonnet-5-5", "codex/gpt-6.2-sol"] {
+            let mut out = assembled(true);
+            assert!(super::strip_compacted_thinking(&mut out, model));
+            assert!(
+                !thinking(&out),
+                "{model}: stale thinking would reach the request"
+            );
+        }
         for (compacted, model) in [(false, "claude-opus-5-5"), (true, "claude-sonnet-4-6")] {
             let mut out = assembled(compacted);
             assert!(!super::strip_compacted_thinking(&mut out, model));

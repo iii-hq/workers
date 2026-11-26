@@ -495,7 +495,11 @@ async fn refresh_snapshot(
         .await
         .map_err(|e| e.to_string())?;
     let anchor = crate::turn_loop::compaction_anchor(session_id, &entries);
-    let window = crate::window::build(session_id, &entries, anchor.window_start, None, None);
+    let mut window = crate::window::build(session_id, &entries, anchor.window_start, None, None);
+    // Count what the next step sends: it strips thinking logged before the record.
+    if crate::window::strips_thinking_at_compaction(&last.model) {
+        crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
+    }
     let context = deps.context().await;
     let count = |messages: Vec<Value>, system_prompt: &str| {
         context.count_tokens(CountTokensParams {

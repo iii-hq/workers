@@ -26,7 +26,7 @@ in tests.
 | [src/functions/mod.rs](../src/functions/mod.rs) | Function ids + descriptions, `resolve_model` (the spec's resolution order), the generic typed `register` helper, `register_all`, and the schema `catalog()` (golden-tested). |
 | [src/functions/&lt;verb&gt;.rs](../src/functions) | One file per function: request/response structs (serde + `JsonSchema`, doc comments become schema descriptions) and a `pub async fn handle(deps, req)`. BDD calls these `handle` fns directly, so engine-free tests exercise the exact production path. |
 | [src/core/budget.rs](../src/core/budget.rs) | `ResolvedModel`, the `usable` math, `default_reserved`, `preserve_recent_budget`, `fallback_model`. |
-| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image), `estimator_for_model`, per-role tallies. |
+| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image and one token per 16 bytes of an encrypted reasoning envelope), `estimator_for_model`, per-role tallies. |
 | [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite) and the unconditional per-result cap pass (`cap_results_with_sizes`: head + marker + tail rewrite). |
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
@@ -105,9 +105,15 @@ Load-bearing details:
    capped. Prune runs only once the request is over `usable`: it rewrites
    results an earlier request already sent, which costs the provider's prompt
    cache from that result on. Before accounting, a known catalog model receives image placeholders
-   unless it explicitly declares vision support; a known vision model ages tool
-   images after the next assistant response and user images when a later user
-   turn follows a response. Inline limits and unresolved models keep images.
+   unless it explicitly declares vision support. A known vision model keeps the
+   tool images it has seen until 16 are live, then replaces the 8 oldest with a
+   marker in one request, and again every 8; the window shrinks below about
+   262k usable tokens and is 0 below about 33k, where every seen tool image is
+   replaced. From about 65k usable tokens (window 2 or more) media
+   normalization therefore rewrites a sent tool result once per window images
+   instead of on every image step; at window 1 (about 33k-65k) it still
+   rewrites one on every image step, one step later. User images age when a later user turn
+   follows a response. Inline limits and unresolved models keep images.
    Live images cost the fixed 4,096-token heuristic budget, never their base64
    payload length. Compaction and emergency
    reduction are both gated on *still being over budget*; compaction is
@@ -190,7 +196,10 @@ tail is "the last little bit kept raw", not a second copy of the window.
 - **v1 ships one implementation: `HeuristicEstimator` = serialized non-image
   `chars / 4` plus 4,096 tokens per image.** It counts the serialized message's
   structure and metadata, but image payload bytes are replaced with a fixed
-  allowance, and it is deterministic and model-independent.
+  allowance and an encrypted reasoning envelope (a JSON thinking signature of
+  type `reasoning`) counts one token per 16 bytes (a replayed Codex reasoning
+  blob bills about one token per 18-29 bytes; other signatures stay chars/4), and it is
+  deterministic and model-independent.
   `estimator_for_model` ignores the model id today and always returns the
   heuristic; `count-tokens` reports `estimator: "heuristic"`.
 - The trait is the seam for a real per-model tokenizer later: slot it into

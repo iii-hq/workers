@@ -1079,6 +1079,7 @@ function assistantSegments(
     }
     switch (block.type) {
       case 'thinking':
+        if (block.text.length === 0) break
         out.push({
           id,
           role: 'thought',
