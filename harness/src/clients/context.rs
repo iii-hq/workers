@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use iii_sdk::IIIClient;
 use iii_sdk::protocol::CallRequest;
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
 use crate::types::message::AgentMessage;
@@ -32,7 +33,85 @@ pub struct AssembleOutput {
     /// context-manager predates the breakdown response.
     #[serde(default)]
     pub breakdown: Option<AssembleBreakdown>,
+    /// The `compaction_budget` context-manager applied (chat-projects D160):
+    /// `None` when the field is missing (a context-manager older than 1.3.0,
+    /// which ignored the budget), `Some(None)` when it applied none.
+    #[serde(default, deserialize_with = "present")]
+    pub compaction_budget: Option<Option<u64>>,
+    /// The compaction this assembly tried, when it tried one (1.3.0).
+    #[serde(default)]
+    pub compaction: Option<AssembleCompaction>,
 }
+
+/// A field that may be `null`, told apart from a missing one.
+fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<u64>>, D::Error> {
+    Option::<u64>::deserialize(d).map(Some)
+}
+
+/// `context::assemble`'s `compaction` (D160).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AssembleCompaction {
+    /// `budget` (the harness's `compaction_budget`) or `usable` (the model's
+    /// own limit).
+    pub trigger: String,
+    /// `compacted`, `failed`, `busy` or `skipped`.
+    pub status: String,
+    #[serde(default)]
+    pub failure: Option<CompactFailure>,
+}
+
+impl AssembleCompaction {
+    /// The budget fired the compaction, not the model's limit.
+    pub fn by_budget(&self) -> bool {
+        self.trigger == "budget"
+    }
+
+    /// An attempt that should not be repeated in this turn.
+    pub fn failed_or_busy(&self) -> bool {
+        matches!(self.status.as_str(), "failed" | "busy")
+    }
+}
+
+/// Why the summariser failed (context-manager 1.3.0, D162).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CompactFailure {
+    /// `usage_limit`, `rate_limited`, `input_too_large`, `timeout`,
+    /// `unavailable` or `other`.
+    pub kind: String,
+    pub message: String,
+    /// A usage limit's details (D147).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<crate::types::message::ErrorDetails>,
+}
+
+impl CompactFailure {
+    /// The failure a `context::compact` error carries in its message, when
+    /// it carries one: a JSON object that is the failure, or holds it under
+    /// `failure`.
+    /// A `context/overflow` message ends with `; compaction failed: ` and
+    /// the failure.
+    pub fn from_error(error: &str) -> Option<Self> {
+        let json = match error.split_once(OVERFLOW_FAILURE_MARKER) {
+            Some((_, json)) => json,
+            None => &error[error.find('{')?..],
+        };
+        let value: Value = serde_json::from_str(json.trim()).ok()?;
+        let failure = value.get("failure").cloned().unwrap_or(value);
+        serde_json::from_value(failure).ok()
+    }
+
+    /// The account reached its plan's usage limit (the kind, or the router's
+    /// details on another kind).
+    pub fn is_usage_limit(&self) -> bool {
+        self.kind == "usage_limit"
+            || crate::types::message::ErrorDetails::usage_limit(self.error_details.as_ref())
+                .is_some()
+    }
+}
+
+/// What precedes the JSON failure at the end of a `context/overflow`
+/// message whose inline compaction failed (context-manager 1.3.0).
+const OVERFLOW_FAILURE_MARKER: &str = "; compaction failed: ";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AssembleBreakdown {
@@ -99,6 +178,14 @@ pub struct AssembleParams {
     /// Ask for `input_indices` / `summary_origin`: the generation capture
     /// witness only, never a production assembly.
     pub provenance: bool,
+    /// The autocompact budget (D160): gate, prune and compaction use
+    /// `min(usable, budget)`; emergency reduction stays at `usable`.
+    pub compaction_budget: Option<u64>,
+    /// What an inline compaction's summary keeps (the global setting's text).
+    pub compaction_instructions: Option<String>,
+    /// The turn's provider options, for the summariser's `router::chat` (the
+    /// conversation's Claude Code account, D161).
+    pub provider_options: Option<Value>,
 }
 
 pub struct CountTokensParams {
@@ -125,6 +212,8 @@ pub struct CompactParams {
     /// One-shot guidance for the summariser (the text after `/compact`).
     pub instructions: Option<String>,
     pub lease_key: String,
+    /// Forwarded to the summariser's `router::chat` (D161).
+    pub provider_options: Option<Value>,
 }
 
 /// `context::compact`'s response, discriminated on `status`.
@@ -143,7 +232,11 @@ pub enum CompactOutput {
     },
     Busy,
     Empty,
-    Overflow,
+    /// The summariser failed; `failure` says why (1.3.0).
+    Overflow {
+        #[serde(default)]
+        failure: Option<CompactFailure>,
+    },
 }
 
 #[derive(Clone)]
@@ -191,6 +284,9 @@ impl ContextClient {
         }
         if let Some(i) = &params.instructions {
             options["instructions"] = json!(i);
+        }
+        if let Some(provider_options) = params.provider_options.as_ref().filter(|v| v.is_object()) {
+            options["provider_options"] = provider_options.clone();
         }
         let resp = self
             .iii
@@ -273,6 +369,16 @@ fn assemble_payload(params: AssembleParams) -> Value {
     if params.provenance {
         options["provenance"] = json!(true);
     }
+    if let Some(budget) = params.compaction_budget {
+        options["compaction_budget"] = json!(budget);
+    }
+    if let Some(instructions) = &params.compaction_instructions {
+        options["compaction_instructions"] = json!(instructions);
+    }
+    // context-manager takes an object only (namespaced by provider id).
+    if let Some(provider_options) = params.provider_options.filter(Value::is_object) {
+        options["provider_options"] = provider_options;
+    }
     let mut payload = json!({
         "messages": params.messages,
         "model": model,
@@ -308,6 +414,9 @@ mod tests {
             request_overhead_tokens: 0,
             allow_prune: None,
             provenance: false,
+            compaction_budget: None,
+            compaction_instructions: None,
+            provider_options: None,
         };
         let payload = assemble_payload(params(Some(json!({ "type": "json" }))));
         assert!(payload["options"].get("provenance").is_none(), "{payload}");
@@ -321,6 +430,113 @@ mod tests {
         assert!(
             payload["options"].get("response_format").is_none(),
             "{payload}"
+        );
+        for key in [
+            "compaction_budget",
+            "compaction_instructions",
+            "provider_options",
+        ] {
+            assert!(payload["options"].get(key).is_none(), "{payload}");
+        }
+    }
+
+    /// The autocompact options ride `options` (context-manager 1.3.0).
+    #[test]
+    fn assemble_carries_the_autocompact_budget_instructions_and_account() {
+        let payload = assemble_payload(AssembleParams {
+            messages: vec![],
+            model_id: "m".into(),
+            provider: None,
+            system_prompt: None,
+            parts: None,
+            previous_summary: None,
+            lease_key: "s".into(),
+            thinking_level: None,
+            response_format: None,
+            tools: vec![],
+            request_overhead_tokens: 0,
+            allow_prune: None,
+            provenance: false,
+            compaction_budget: Some(180_000),
+            compaction_instructions: Some("Keep the PR numbers.".into()),
+            provider_options: Some(json!({ "claude-code": { "account": "work" } })),
+        });
+        assert_eq!(payload["options"]["compaction_budget"], 180_000);
+        assert_eq!(
+            payload["options"]["compaction_instructions"],
+            "Keep the PR numbers."
+        );
+        assert_eq!(
+            payload["options"]["provider_options"]["claude-code"]["account"],
+            "work"
+        );
+    }
+
+    /// A missing echo is an older context-manager; `null` is no budget.
+    #[test]
+    fn the_budget_echo_tells_an_older_context_manager_apart() {
+        let base = json!({ "token_count": 1, "usable": 2, "effective_max_output_tokens": 3 });
+        let old: AssembleOutput = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(old.compaction_budget, None);
+        assert!(old.compaction.is_none());
+        let mut none = base.clone();
+        none["compaction_budget"] = Value::Null;
+        let none: AssembleOutput = serde_json::from_value(none).unwrap();
+        assert_eq!(none.compaction_budget, Some(None));
+        let mut applied = base;
+        applied["compaction_budget"] = json!(180_000);
+        applied["compaction"] = json!({
+            "trigger": "budget", "status": "failed",
+            "failure": { "kind": "usage_limit", "message": "limit",
+                "error_details": { "usage_limit": true, "window": "week", "resets_at_ms": 9 } }
+        });
+        let applied: AssembleOutput = serde_json::from_value(applied).unwrap();
+        assert_eq!(applied.compaction_budget, Some(Some(180_000)));
+        let compaction = applied.compaction.unwrap();
+        assert!(compaction.by_budget() && compaction.failed_or_busy());
+        let failure = compaction.failure.unwrap();
+        assert_eq!(failure.kind, "usage_limit");
+        assert_eq!(
+            failure
+                .error_details
+                .and_then(|details| details.resets_at_ms),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn an_overflow_carries_its_failure_when_there_is_one() {
+        let old: CompactOutput = serde_json::from_value(json!({ "status": "overflow" })).unwrap();
+        assert!(matches!(old, CompactOutput::Overflow { failure: None }));
+        let new: CompactOutput = serde_json::from_value(json!({
+            "status": "overflow", "failure": { "kind": "input_too_large", "message": "too big" }
+        }))
+        .unwrap();
+        let CompactOutput::Overflow {
+            failure: Some(failure),
+        } = new
+        else {
+            panic!("a failure")
+        };
+        assert_eq!(failure.kind, "input_too_large");
+        assert_eq!(
+            CompactFailure::from_error(
+                r#"context::compact: handler: {"failure":{"kind":"timeout","message":"slow"}}"#
+            )
+            .map(|failure| failure.kind),
+            Some("timeout".into())
+        );
+        assert_eq!(CompactFailure::from_error("context::compact: boom"), None);
+        let overflow = CompactFailure::from_error(
+            r#"context::assemble: remote error (context/overflow): context/overflow: assembled context requires 101 tokens but usable budget is 100; compaction failed: {"kind":"usage_limit","message":"limit reached","error_details":{"usage_limit":true,"window":"five_hour","resets_at_ms":1700000000000}}"#,
+        )
+        .expect("the overflow's failure");
+        assert!(overflow.is_usage_limit());
+        assert_eq!(
+            overflow
+                .error_details
+                .and_then(|details| details.resets_at_ms),
+            Some(1_700_000_000_000)
         );
     }
 }

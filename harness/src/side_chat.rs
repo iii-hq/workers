@@ -601,7 +601,9 @@ pub async fn open(
     let Some(record) = crate::state::get_turn(&deps.iii, parent_id, timeout).await? else {
         return Err(nothing_to_fork(parent_id));
     };
-    let streaming = (!record.status.is_terminal())
+    // A turn compacting at its end (chat-projects D158) has replied: its
+    // reply is final, so the fork takes it.
+    let streaming = (!record.status.is_terminal() && record.compacting.is_none())
         .then(|| crate::ids::assistant_entry_id(&record.turn_id, record.step));
     let entry_id = match req
         .entry_id
@@ -1075,6 +1077,9 @@ pub async fn keep(deps: &Deps, req: SideChatRequest) -> Result<SideChatKeepRespo
     Ok(SideChatKeepResponse { meta })
 }
 
+/// `side_chat_busy` while the side chat's turn compacts at its end (D158).
+pub const SIDE_CHAT_COMPACTING: &str = "Wait for the side chat to finish compacting.";
+
 pub async fn summarize(
     deps: &Deps,
     req: SideChatRequest,
@@ -1082,15 +1087,20 @@ pub async fn summarize(
     let session = deps.session().await;
     side_chat(&session, &req.session_id).await?;
     let timeout = deps.cfg().await.session_timeout_ms;
-    if crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, timeout)
+    if let Some(record) = crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, timeout)
         .await?
-        .is_some_and(|record| !record.status.is_terminal())
+        .filter(|record| !record.status.is_terminal())
     {
         // Merged into the running turn, the prompt would not be a turn of
         // its own and its reply would never be marked as the summary.
+        let message = if record.compacting.is_some() {
+            SIDE_CHAT_COMPACTING
+        } else {
+            "Wait for the side chat's reply, then ask for a summary."
+        };
         return Err(HarnessError::rejected(
             "side_chat_busy",
-            "Wait for the side chat's reply, then ask for a summary.",
+            message,
             json!({ "session_id": req.session_id }),
         ));
     }

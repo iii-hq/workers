@@ -524,6 +524,16 @@ pub struct TurnRecord {
     /// provider, and with no tmux worker to resolve it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<crate::accounts::TurnAccount>,
+    /// The autocompact setting this turn follows (chat-projects phase 3),
+    /// resolved at its first step: the inline budget it sends and the
+    /// threshold its snapshot marks. Absent before the first step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact: Option<crate::autocompact::TurnAutocompact>,
+    /// The compaction the end of this turn runs (D158), while it runs: the
+    /// record stays `running`, so sends queue, and a side chat reads its
+    /// reply as final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacting: Option<String>,
     /// Function ids the spawn granted at dispatch level only (the discovery
     /// pair, the skills fetch): callable by id, never surfaced as native
     /// tools, so a narrowed child's toolset stays exactly its work functions.
@@ -716,6 +726,8 @@ pub(crate) mod tests {
             stop_reason: None,
             failure: None,
             account: None,
+            autocompact: None,
+            compacting: None,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,

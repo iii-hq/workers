@@ -651,6 +651,24 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { crate::accounts::account_split(&d, r).await },
     );
 
+    // Autocompact (chat-projects phase 3, D165, D166): control-plane for the
+    // settings page, denied to agents. `harness::autocompact::models` is how
+    // the surfaces detect phase 3 (D168).
+    register_internal(
+        iii,
+        deps,
+        crate::autocompact::MODELS_ID,
+        crate::autocompact::MODELS_DESC,
+        |d, r| async move { crate::autocompact::models(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::autocompact::LOG_ID,
+        crate::autocompact::LOG_DESC,
+        |d, r| async move { crate::autocompact::log(&d, r).await },
+    );
+
     // Internal cron target — registered, but kept off the public catalog.
     register_internal(
         iii,

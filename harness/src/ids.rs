@@ -123,6 +123,18 @@ pub fn new_compaction_id() -> String {
     format!("cmp_{}", short_uuid())
 }
 
+/// The id of the compaction a turn step's assembly made (chat-projects
+/// phase 3): one per `(turn, step)`, so a redelivered step names it again.
+pub fn inline_compaction_id(turn_id: &str, step: u64) -> String {
+    format!("cmp_{}_{step}", sanitize(turn_id))
+}
+
+/// A state key safe for any provider/model pair (the autocompact models
+/// index): readable where the ids are, escaped where they are not.
+pub fn model_key(provider: &str, model: &str) -> String {
+    format!("{}__{}", sanitize(provider), sanitize(model))
+}
+
 /// The notice an explicit compaction appends when it starts, unless the
 /// request names the entry (the sender's `e_idem_` row).
 pub fn compaction_started_entry_id(compaction_id: &str) -> String {

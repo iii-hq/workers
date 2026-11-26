@@ -39,6 +39,105 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CompactFailure": {
+        "description": "Why the summariser failed (context-manager 1.3.0, D162).",
+        "properties": {
+          "error_details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A usage limit's details (D147)."
+          },
+          "kind": {
+            "description": "`usage_limit`, `rate_limited`, `input_too_large`, `timeout`, `unavailable` or `other`.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ErrorDetails": {
+        "description": "The details of a provider error that its kind does not carry (chat-projects contract C). The kind stays `rate_limited`: a usage limit is that kind with `usage_limit: true`, and neither the router nor the harness's transient resume retries it.",
+        "properties": {
+          "resets_at_ms": {
+            "description": "When the window resets, in unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "default": false,
+            "description": "The account reached its plan's usage limit: retrying before the reset cannot succeed.",
+            "type": "boolean"
+          },
+          "window": {
+            "description": "The limit's window: `five_hour` or `week`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Rule": {
+        "description": "The rule that decided a conversation's setting.",
+        "properties": {
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "description": "The project's name when the rule was read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/definitions/RuleScope"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
+      "RuleScope": {
+        "description": "Which level's setting applies.",
+        "oneOf": [
+          {
+            "enum": [
+              "global",
+              "project"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The conversation's own (a side chat's: its conversation's).",
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "Status": {
         "oneOf": [
           {
@@ -68,14 +167,71 @@
               "failed"
             ],
             "type": "string"
+          },
+          {
+            "description": "A Stop abandoned an automatic compaction: no record was written.",
+            "enum": [
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Trigger": {
+        "description": "What started a compaction (chat-projects contract C).",
+        "oneOf": [
+          {
+            "description": "`/compact` or `harness::compact`.",
+            "enum": [
+              "command"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The end of a turn past the autocompact threshold.",
+            "enum": [
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A turn's assembly, at the autocompact budget.",
+            "enum": [
+              "inline"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A turn's assembly, at the model's own limit (as before autocompact).",
+            "enum": [
+              "limit"
+            ],
+            "type": "string"
           }
         ]
       }
     },
-    "description": "How an explicit compaction ended — also what `harness::on-compaction` carries on completion.",
+    "description": "How a compaction ended — also what `harness::on-compaction` carries on completion.",
     "properties": {
       "compaction_id": {
         "type": "string"
+      },
+      "context_after": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "context_before": {
+        "description": "The whole context's tokens before and after.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "entry_ids": {
         "description": "The transcript rows it wrote, in order: the start notice (absent when it never started) and the outcome row.",
@@ -84,11 +240,37 @@
         },
         "type": "array"
       },
+      "failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CompactFailure"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Why the summariser failed, when context-manager said (1.3.0)."
+      },
       "message": {
         "description": "The outcome as every client shows it.",
         "type": "string"
       },
+      "rule": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Rule"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The rule that set the threshold."
+      },
       "session_id": {
+        "type": "string"
+      },
+      "source": {
+        "description": "[`Trigger::source`], for readers older than `trigger`.",
         "type": "string"
       },
       "status": {
@@ -97,6 +279,15 @@
       "summary": {
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "threshold_tokens": {
+        "description": "The threshold an automatic compaction crossed.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
           "null"
         ]
       },
@@ -115,6 +306,14 @@
           "integer",
           "null"
         ]
+      },
+      "trigger": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Trigger"
+          }
+        ],
+        "description": "What started it."
       }
     },
     "required": [
@@ -122,7 +321,9 @@
       "entry_ids",
       "message",
       "session_id",
-      "status"
+      "source",
+      "status",
+      "trigger"
     ],
     "title": "Outcome",
     "type": "object"

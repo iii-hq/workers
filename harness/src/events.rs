@@ -3,8 +3,10 @@
 //! boot, `harness::on-turn-started` / `harness::on-turn-completed` at turn
 //! boundaries, `harness::on-message-queued` when a message parks in the
 //! mid-turn queue, `harness::on-observers-changed` when a session's observer
-//! set or fire count changes, and `harness::on-compaction` when an explicit
-//! compaction starts and finishes (harness.md § Events emitted). Consumers
+//! set or fire count changes, and `harness::on-compaction` when a
+//! compaction starts and finishes (`/compact`, autocompact at the end of a
+//! turn, and a compaction inside a turn, which emits only its completion)
+//! (harness.md § Events emitted). Consumers
 //! observe them to react without polling.
 //!
 //! The harness emits an event by calling its function with `CallAction::Void`,
@@ -125,15 +127,30 @@ pub struct ObserversChangedEvent {
     pub timestamp: i64,
 }
 
-/// `harness::on-compaction`: an explicit compaction's progress.
+/// `harness::on-compaction`: a compaction's progress (chat-projects
+/// contract C).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CompactionEvent {
     pub session_id: String,
     pub compaction_id: String,
-    /// `started` or `completed`.
+    /// `started` or `completed`. A compaction inside a turn (`inline`,
+    /// `limit`) emits only `completed`.
     pub phase: String,
     pub timestamp: i64,
-    /// `completed` only: `ok`, `busy`, `empty` or `failed`.
+    /// What started it: `command`, `auto`, `inline` or `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<crate::compaction::Trigger>,
+    /// `command`, `auto`, `auto_inline` or `limit`, for older readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `auto` and `inline`: the threshold crossed (`effective_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_tokens: Option<u64>,
+    /// `auto` and `inline`: the rule that set the threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<crate::autocompact::Rule>,
+    /// `completed` only: `ok`, `busy`, `empty`, `failed` or `cancelled` (a
+    /// Stop abandoned an automatic compaction).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// `completed` only: the user-facing message.
@@ -145,6 +162,15 @@ pub struct CompactionEvent {
     pub tokens_before: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_after: Option<u64>,
+    /// `completed` only: the whole context's tokens before and after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<u64>,
+    /// `completed` with `failed` only: why the summariser failed, as
+    /// context-manager said (1.3.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::clients::context::CompactFailure>,
 }
 
 /// Registers one event function: private, and its handler returns the event.
@@ -309,9 +335,12 @@ impl TurnEvents {
         register_event(
             iii,
             ON_COMPACTION_FN,
-            "An explicit compaction of a session started (`phase: started`) or finished \
-             (`phase: completed`, with `status` ok/busy/empty/failed and the user-facing \
-             `message`). Filter on input.session_id or input.compaction_id.",
+            "A compaction of a session started (`phase: started`) or finished \
+             (`phase: completed`, with `status` ok/busy/empty/failed/cancelled and the \
+             user-facing `message`). `trigger` says what started it: command (/compact), auto \
+             (the end of a turn past the autocompact threshold), inline (a turn's assembly at \
+             the autocompact budget) or limit (at the model's limit); inline and limit emit only \
+             `completed`. Filter on input.session_id or input.compaction_id.",
             schema_value::<CompactionEvent>(),
         );
         register_event(
