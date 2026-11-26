@@ -2191,6 +2191,7 @@ pub(crate) async fn seed_new(
         // Resolved at the first step.
         autocompact: None,
         compacting: None,
+        compaction_stopped: false,
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         native_names: Default::default(),
         validation_retries: 0,
@@ -2933,6 +2934,7 @@ mod tests {
             account: None,
             autocompact: None,
             compacting: None,
+            compaction_stopped: false,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,

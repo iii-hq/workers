@@ -55,12 +55,14 @@ const ALREADY_RUNNING: &str = "compaction skipped — this conversation is alrea
 const LEASE_BUSY: &str = "compaction skipped — another compaction of this conversation is in progress; try /compact again when it finishes.";
 const NOTHING_TO_COMPACT: &str =
     "nothing to compact yet — the conversation still fits word for word.";
-const AUTO_STOPPED: &str =
-    "Auto-compact stopped. The conversation goes on and compacts at the model's limit.";
 const AUTO_FAILED_TAIL: &str = "The conversation goes on and compacts at the model's limit.";
 /// A usage limit starts no back-off: the next turn's end tries again (D162).
 const AUTO_FAILED_LIMIT_TAIL: &str =
     "The conversation goes on and compacts again after its next turn.";
+/// A Stop starts no back-off either: the next turn's end compacts at the
+/// threshold again.
+const AUTO_STOPPED: &str =
+    "Auto-compact stopped. The conversation goes on and compacts again after its next turn.";
 /// How often an automatic compaction checks for a Stop that landed on
 /// another harness instance (the in-process signal covers this one).
 const STOP_POLL: std::time::Duration = std::time::Duration::from_secs(2);

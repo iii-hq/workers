@@ -394,6 +394,19 @@ fn an_override_is_checked_with_typed_codes() {
         validate_override(&json!({ "mode": "off" })).unwrap(),
         json!({ "mode": "off" })
     );
+    // Off keeps a size, inert, as the global level does.
+    assert_eq!(
+        validate_override(&json!({ "mode": "off", "tokens": 160_000 })).unwrap(),
+        json!({ "mode": "off", "tokens": 160_000 })
+    );
+    assert_eq!(
+        validate_override(&json!({ "mode": "off", "tokens": null })).unwrap(),
+        json!({ "mode": "off" })
+    );
+    assert_eq!(
+        level_of(Some(&json!({ "mode": "off", "tokens": 160_000 }))),
+        Level::Off
+    );
     assert_eq!(
         validate_override(&json!({ "mode": "tokens", "tokens": 20_000 })).unwrap(),
         json!({ "mode": "tokens", "tokens": 20_000 })
@@ -422,6 +435,14 @@ fn an_override_is_checked_with_typed_codes() {
     );
     assert_eq!(
         code(json!({ "mode": "tokens", "tokens": 1.5e5 })),
+        "bad_tokens"
+    );
+    assert_eq!(
+        code(json!({ "mode": "off", "tokens": 19_999 })),
+        "bad_tokens"
+    );
+    assert_eq!(
+        code(json!({ "mode": "off", "tokens": "160k" })),
         "bad_tokens"
     );
     let HarnessError::Rejected(wire) =
@@ -465,15 +486,44 @@ fn the_global_setting_is_checked_with_typed_codes() {
     assert_eq!(code(json!({ "instructions": 5 })), "bad_instructions");
 }
 
+/// The ADE's `formatTokens` table (`SIZE_WORDS` in
+/// `ade/web/src/lib/autocompact.test.ts`), row for row (its NaN and negative
+/// rows have no `u64`), and the ties where `toFixed` and Rust's `{:.1}` part.
+#[test]
+fn sizes_read_as_the_ade_writes_them() {
+    for (tokens, words) in [
+        (0, "0"),
+        (999, "999"),
+        (1_000, "1k"),
+        (9_500, "9.5k"),
+        (9_999, "10k"),
+        (10_000, "10k"),
+        (34_000, "34k"),
+        (160_000, "160k"),
+        (161_400, "161k"),
+        (999_499, "999k"),
+        (999_500, "1M"),
+        (999_999, "1M"),
+        (1_000_000, "1M"),
+        (1_200_000, "1.2M"),
+        (2_000_000, "2M"),
+        // `(9.25).toFixed(1)` is "9.3"; `(9.35).toFixed(1)` is "9.3" (the
+        // double is 9.3499…); `(10.5)` rounds up.
+        (9_250, "9.3k"),
+        (9_350, "9.3k"),
+        (9_750, "9.8k"),
+        (10_500, "11k"),
+        (1_250_000, "1.3M"),
+        (1_500, "1.5k"),
+        (20_000, "20k"),
+        (900, "900"),
+    ] {
+        assert_eq!(short_tokens(tokens), words, "{tokens}");
+    }
+}
+
 #[test]
 fn sizes_and_rules_read_as_the_notices_write_them() {
-    assert_eq!(short_tokens(160_000), "160k");
-    assert_eq!(short_tokens(161_400), "161k");
-    assert_eq!(short_tokens(1_500), "1.5k");
-    assert_eq!(short_tokens(20_000), "20k");
-    assert_eq!(short_tokens(1_200_000), "1.2M");
-    assert_eq!(short_tokens(2_000_000), "2M");
-    assert_eq!(short_tokens(900), "900");
     assert_eq!(Rule::global().name(), "global rule");
     assert_eq!(Rule::session().name(), "this conversation's rule");
     assert_eq!(acme_rule().name(), "acme-web rule");

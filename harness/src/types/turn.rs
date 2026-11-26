@@ -534,6 +534,12 @@ pub struct TurnRecord {
     /// reply as final.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacting: Option<String>,
+    /// A Stop abandoned the compaction at the end of this turn. It stopped
+    /// the compaction only: the reply was already final, and a message
+    /// queued during it keeps its continuation, so `harness::stop` neither
+    /// takes that continuation back nor stops the turn it seeds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compaction_stopped: bool,
     /// Function ids the spawn granted at dispatch level only (the discovery
     /// pair, the skills fetch): callable by id, never surfaced as native
     /// tools, so a narrowed child's toolset stays exactly its work functions.
@@ -728,6 +734,7 @@ pub(crate) mod tests {
             account: None,
             autocompact: None,
             compacting: None,
+            compaction_stopped: false,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,

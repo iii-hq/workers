@@ -5284,6 +5284,12 @@ fn warn_no_budget_echo(session_id: &str) {
 /// does one that gained less than 10 % (it would fire again every step); a
 /// persisted inline or limit compaction emits its completed phase (no
 /// started phase) once, and an inline one joins the autocompact log.
+///
+/// The pause covers a failed or busy attempt at the model's own limit
+/// (`trigger: "usable"`) on purpose: that context is past the budget too,
+/// so every later step of the turn would call the summariser again at the
+/// budget on the same context. Without the budget, context-manager still
+/// compacts at `usable` as it did before autocompact.
 async fn after_assembly(
     deps: &Deps,
     session: &SessionClient,

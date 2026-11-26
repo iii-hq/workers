@@ -16,9 +16,10 @@
   cache_write`; the snapshot's `total` when the step reported none) plus its output reaches
   the threshold (when it is below the model's `usable`), before the queue drains: the record
   stays `running` with `compacting`, a send queues and runs after it, a Stop abandons the
-  summary (`status: "cancelled"`), sub-agents never do it, and `harness::on-turn-completed`
-  carries the refreshed snapshot. `harness::side-chat::open` takes a compacting turn's reply
-  as final; `harness::side-chat::summarize` answers `side_chat_busy` while it compacts.
+  summary (`status: "cancelled"`) and only that (a message queued during it still runs),
+  sub-agents never do it, and `harness::on-turn-completed` carries the refreshed snapshot.
+  `harness::side-chat::open` takes a compacting turn's reply as final;
+  `harness::side-chat::summarize` answers `side_chat_busy` while it compacts.
 - **Inside a turn** `context::assemble` gets `compaction_budget` (the setting plus
   `max(10 %, 20k)`), `compaction_instructions` and the turn's `provider_options`
   (context-manager 1.3.0). A failed or busy inline attempt drops the budget for the rest of
@@ -45,10 +46,11 @@
 
 ### Rollback
 
-The configuration refuses unknown fields. Once the global autocompact setting is saved
-(`harness::chat-settings::set` with `autocompact`), a harness below 1.13 does not boot on
-that configuration: remove `autocompact` from the `harness` configuration entry before
-rolling back. A 1.13 install that never saved the setting stores nothing new in the
-configuration. The other state it writes (`harness_autocompact`, `harness_autocompact_log`,
-`harness_autocompact_models`, and the new fields on turn records, snapshots and compaction
-records) is ignored by older versions.
+The configuration refuses unknown fields. Once the global autocompact setting holds
+anything but its default (a mode of `tokens`, or a size or instructions, which stay stored
+while the mode is `off`), a harness below 1.13 does not boot on that configuration: remove
+`autocompact` from the `harness` configuration entry before rolling back. The default (off,
+with no size and no instructions) is never stored, so an install that never set a size, or
+cleared it, keeps a configuration older versions read. The other state it writes
+(`harness_autocompact`, `harness_autocompact_log`, `harness_autocompact_models`, and the
+new fields on turn records, snapshots and compaction records) is ignored by older versions.

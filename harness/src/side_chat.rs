@@ -405,6 +405,10 @@ pub fn seeded_record(parent: &TurnRecord, session_id: &str) -> TurnRecord {
     record.result_error = None;
     record.stop_reason = None;
     record.failure = None;
+    // A conversation compacting at its end (D158) can be forked: the
+    // compaction, and a Stop of it, stay the conversation's.
+    record.compacting = None;
+    record.compaction_stopped = false;
     // The account was the conversation's turn's: the side chat's first turn
     // takes its lock's (D80).
     record.account = None;
