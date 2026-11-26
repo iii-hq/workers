@@ -72,6 +72,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   },
   'components/observer-activity/ObserverDetails.tsx': { max: 7, reason: TOUCH },
   'components/ui/ActivityMetadata.tsx': { max: 2, reason: TOUCH },
+  'components/ui/ComposerPill.tsx': {
+    max: 2,
+    reason:
+      'phone chrome: the pill is 40px/16px on touch, 32px/14px on desktop',
+  },
   'components/ui/ActivityStatus.tsx': { max: 2, reason: TOUCH },
   'components/ui/Badge.tsx': { max: 1, reason: TOUCH },
   'components/ui/BottomSheet.tsx': {

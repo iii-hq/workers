@@ -4,10 +4,6 @@
 .composer-shell {
   --font-sans: var(--font-inter);
   font-family: var(--font-inter);
-  /* The toolbar's pickers fold against the composer's own width, not the
-     pane's: a wide pane still caps the composer, so a query on the pane
-     would keep every label while the row truncates them all. */
-  container-type: inline-size;
 }
 
 /* The chat reads the design-system palette like every other surface: the
@@ -711,36 +707,6 @@
 .composer-shell .composer-desktop-toolbar {
   position: relative;
   padding: 0 10px 10px;
-}
-
-/* The row's "More" button is for a composer too narrow to name every
-   picker. With a worker's control in the row (the judge), the named pills
-   need about 45rem; without one, about 36rem. Under that the pickers after
-   the model leave the row for the popover, and the button appears. */
-.composer-desktop-toolbar .composer-toolbar-more {
-  display: none;
-}
-
-@container (max-width: 45rem) {
-  .composer-desktop-toolbar[data-toolbar-extras="worker"]
-    .composer-toolbar-pickers {
-    display: none;
-  }
-  .composer-desktop-toolbar[data-toolbar-extras="worker"]
-    .composer-toolbar-more {
-    display: inline-flex;
-  }
-}
-
-@container (max-width: 36rem) {
-  .composer-desktop-toolbar[data-toolbar-extras="base"]
-    .composer-toolbar-pickers {
-    display: none;
-  }
-  .composer-desktop-toolbar[data-toolbar-extras="base"]
-    .composer-toolbar-more {
-    display: inline-flex;
-  }
 }
 
 /* The voice worker's recording bar takes over the toolbar row while you
