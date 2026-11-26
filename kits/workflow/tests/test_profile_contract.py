@@ -114,6 +114,7 @@ class ProfileContractTests(unittest.TestCase):
         self.assertHasAll(self.verifier, [mark,
             "/proc/$p/environ 2>/dev/null | grep -qxF \"WF_JOB=$W\" && kill $p", "done; true`"])
         self.assertEqual(self.verifier.count("/proc/$p/stat"), 0)
+        self.assertEqual(self.verifier.count("readlink /proc/$p/cwd"), 0)
 
 if __name__ == "__main__":
     unittest.main()
