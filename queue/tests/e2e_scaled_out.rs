@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use iii_queue::boot::BootHandle;
 use iii_queue::config::{AdapterEntry, QueueConfig, RunJobsIn};
-use iii_queue::functions::PUBLISH_FN_ID;
+use iii_queue::functions::{DLQ_MESSAGES_FN_ID, DLQ_TOPICS_FN_ID, PUBLISH_FN_ID};
 use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
@@ -564,4 +564,139 @@ async fn delivery_resumes_after_the_broker_drops_every_connection() {
         queue_resumed,
         "the function queue consumer is re-attached after the drop"
     );
+}
+
+/// A channel-level error does not rebuild the adapter. `dlq_topics` declares,
+/// passively, `<topic>.dlq` for a subscribed topic, which is never declared,
+/// and RabbitMQ answers NOT_FOUND by closing that channel. A rebuild would
+/// requeue the unacked delivery of a job still running, and the job would run
+/// a second time while its first run continues (#1919).
+#[tokio::test]
+#[serial]
+async fn a_channel_error_does_not_deliver_a_running_job_again() {
+    let Some(broker) = docker::start_rabbitmq().await else {
+        return;
+    };
+    let url = broker.amqp_url();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let topic = format!("orders-{suffix}");
+    let queue = format!("slow-{suffix}");
+    let on_order = format!("app::on_order_{suffix}");
+    let slow = format!("app::slow_{suffix}");
+    let Some(app) = instance(
+        &format!("channel-error-{suffix}"),
+        config(&url, Some(&queue)),
+        Some(&on_order),
+    )
+    .await
+    else {
+        return;
+    };
+    let runs = Arc::new(AtomicUsize::new(0));
+    {
+        let runs = runs.clone();
+        app.iii.register_function(
+            slow.as_str(),
+            RegisterFunction::new_async(move |_payload: Value| {
+                let runs = runs.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    Ok::<Value, Error>(json!({ "ok": true }))
+                }
+            }),
+        );
+    }
+    subscribe_and_deliver_once(&app, &on_order, &topic).await;
+    enqueue(&app, &slow, &queue).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while runs.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the job starts");
+
+    dlq_topics(&app).await;
+
+    // Past the end of the first run, so a redelivery has had time to start.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let runs = runs.load(Ordering::SeqCst);
+    app.stop().await;
+    assert_eq!(runs, 1, "the running job is not delivered again");
+}
+
+/// Subscribes and waits for one delivery, so the topic is known to the adapter
+/// and `dlq_topics` probes its `<topic>.dlq`, which is never declared.
+async fn subscribe_and_deliver_once(app: &Instance, function_id: &str, topic: &str) {
+    let _ = subscribe(app, function_id, topic);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publish(app, topic, "probe").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.fires.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(app.fires.load(Ordering::SeqCst), 1, "the topic delivers");
+}
+
+async fn dlq_topics(app: &Instance) {
+    app.iii
+        .call(
+            CallRequest {
+                function_id: DLQ_TOPICS_FN_ID.to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(5_000),
+            }
+            .namespace(&app.namespace),
+        )
+        .await
+        .expect("dlq_topics should succeed");
+}
+
+/// Channel errors do not wear out the connection's channel ids. lapin keeps a
+/// server-closed channel's id poisoned for the connection's life, and a reused
+/// poisoned id stays stuck, so errors that no longer rebuild the adapter would
+/// exhaust its ids and every DLQ and inspection call would fail.
+/// `channel_max=8` makes that a few calls instead of thousands.
+#[tokio::test]
+#[serial]
+async fn channel_errors_do_not_exhaust_the_channel_ids() {
+    let Some(broker) = docker::start_rabbitmq().await else {
+        return;
+    };
+    let url = format!("{}?channel_max=8", broker.amqp_url());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let topic = format!("orders-{suffix}");
+    let queue = format!("mail-{suffix}");
+    let on_order = format!("app::on_order_{suffix}");
+    let Some(app) = instance(
+        &format!("channel-ids-{suffix}"),
+        config(&url, Some(&queue)),
+        Some(&on_order),
+    )
+    .await
+    else {
+        return;
+    };
+    subscribe_and_deliver_once(&app, &on_order, &topic).await;
+
+    for _ in 0..20 {
+        dlq_topics(&app).await;
+    }
+
+    // The function queue's dead-letter queue exists, so this needs only a
+    // channel that opens.
+    let browsed = app
+        .iii
+        .call(
+            CallRequest {
+                function_id: DLQ_MESSAGES_FN_ID.to_string(),
+                payload: json!({ "topic": queue }),
+                action: None,
+                timeout_ms: Some(5_000),
+            }
+            .namespace(&app.namespace),
+        )
+        .await;
+    app.stop().await;
+    browsed.expect("an operation channel still opens after channel errors");
 }

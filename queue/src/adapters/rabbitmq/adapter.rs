@@ -74,6 +74,7 @@ use super::retry::RetryHandler;
 use super::topology::TopologyManager;
 use super::types::{Job, QueueMode, RabbitMQConfig, priority_from_data};
 use super::worker::Worker;
+use crate::runtime::RECONNECT_CONNECT_TIMEOUT;
 
 /// How often [`RabbitMQAdapter::connection_lost`] re-checks the connection
 /// status, in case the error hook never fires.
@@ -85,6 +86,8 @@ pub struct RabbitMQAdapter {
     /// recovers on its own: the worker rebuilds the adapter (see
     /// `boot::supervise_connection`).
     lost: watch::Receiver<bool>,
+    /// Carries every channel but the shared `channel`, see [`OpsConnection`].
+    ops: Mutex<OpsConnection>,
     publisher: Arc<Publisher>,
     retry_handler: Arc<RetryHandler>,
     topology: Arc<TopologyManager>,
@@ -97,6 +100,65 @@ pub struct RabbitMQAdapter {
     function_consumer_counter: AtomicU64,
     function_consumer_tasks: RwLock<Vec<FunctionConsumerHandle>>,
     function_queue_configs: RwLock<HashMap<String, FunctionQueueConfig>>,
+}
+
+/// A second connection for the per-call channels: inspection, DLQ browsing
+/// and function-queue topology. Those calls can make RabbitMQ close their
+/// channel (NOT_FOUND on a passive declare of a queue that was never made, a
+/// conflicting declare), and lapin reports that as an error of the whole
+/// connection. On the consumer connection it would rebuild the adapter, and a
+/// rebuild requeues every unacked delivery, so jobs still running would run
+/// again (#1919). lapin also keeps a closed channel's id unusable for the
+/// connection's life, so after such an error the connection is replaced (see
+/// [`OpsConnection::usable`]); the old one closes when its last channel is
+/// dropped.
+struct OpsConnection {
+    connection: Connection,
+    errored: Arc<AtomicBool>,
+    /// Channels opened on `connection`.
+    opened: u32,
+}
+
+impl OpsConnection {
+    async fn connect(amqp_url: &str) -> anyhow::Result<Self> {
+        // The broker client has no deadline of its own, and `queue::define`
+        // waits on this under the runtime's apply lock.
+        let connection = tokio::time::timeout(
+            RECONNECT_CONNECT_TIMEOUT,
+            Connection::connect(amqp_url, ConnectionProperties::default()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("connecting to RabbitMQ timed out"))?
+        // Never the URL: it carries the password.
+        .map_err(|e| anyhow::anyhow!("Failed to connect to RabbitMQ: {}", e))?;
+        let errored = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&errored);
+        let mut events = Box::pin(connection.events_listener());
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            while let Some(event) = events.next().await {
+                if let lapin::Event::Error(_) = event {
+                    flag.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        });
+        Ok(Self {
+            connection,
+            errored,
+            opened: 0,
+        })
+    }
+
+    /// lapin hands channel ids out in a cycle of `channel_max`, and a poisoned
+    /// id fails, then stays taken, when the cycle comes back to it. After an
+    /// error the connection is replaced before that: half a cycle leaves room
+    /// for ids skipped while still in use. Without an error, ids recycle fine.
+    fn usable(&self) -> bool {
+        let cycle = u32::from(self.connection.configuration().channel_max()).max(2);
+        self.connection.status().connected()
+            && !(self.errored.load(Ordering::Acquire) && self.opened >= cycle / 2)
+    }
 }
 
 struct FunctionQueueDelivery {
@@ -141,7 +203,9 @@ impl RabbitMQAdapter {
     }
 
     fn is_connected(&self) -> bool {
-        self.connection.status().connected() && !*self.lost.borrow()
+        self.connection.status().connected()
+            && self.channel.status().connected()
+            && !*self.lost.borrow()
     }
 
     /// Fails fast and says why while the connection is down, instead of a
@@ -155,7 +219,13 @@ impl RabbitMQAdapter {
     }
 
     async fn operation_channel(&self, operation: &str) -> anyhow::Result<Channel> {
-        self.connection
+        self.ensure_connected()?;
+        let mut ops = self.ops.lock().await;
+        if !ops.usable() {
+            *ops = OpsConnection::connect(&self.config.amqp_url).await?;
+        }
+        ops.opened = ops.opened.saturating_add(1);
+        ops.connection
             .create_channel()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create channel for {}: {}", operation, e))
@@ -310,6 +380,8 @@ impl RabbitMQAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set QoS: {}", e))?;
 
+        let ops = Mutex::new(OpsConnection::connect(&config.amqp_url).await?);
+
         let channel = Arc::new(channel);
         let publisher = Arc::new(Publisher::new(Arc::clone(&channel)));
         let topology = Arc::new(TopologyManager::new(Arc::clone(&channel)));
@@ -318,6 +390,7 @@ impl RabbitMQAdapter {
         Ok(Self {
             connection,
             lost,
+            ops,
             publisher,
             retry_handler,
             topology,
@@ -994,11 +1067,7 @@ impl QueueAdapter for RabbitMQAdapter {
         // Provision named queues on a disposable channel so a conflicting
         // declaration closes only that channel, not the shared channel used
         // by every live publisher and consumer in this adapter.
-        let channel = self
-            .connection
-            .create_channel()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create topology channel: {e}"))?;
+        let channel = self.operation_channel("function queue topology").await?;
         TopologyManager::new(Arc::new(channel))
             .setup_function_queue(queue_name, config.backoff_ms, config.max_priority)
             .await
