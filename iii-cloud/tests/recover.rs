@@ -97,4 +97,13 @@ async fn a_restart_fails_the_running_run_and_cleans_up_its_files() {
     assert!(!app.join(".iii/compose/iii-cloud-run").exists());
     assert!(!run_dir.join("run.json").exists());
     assert!(h.fake.kinds().contains(&"check:true".to_string()));
+    // Whoever waits for the run hears that it ended.
+    let events = h.fake.events.lock().unwrap().clone();
+    assert!(
+        events.iter().any(|e| e.kind == EventKind::Run
+            && e.id == "r1"
+            && e.terminal
+            && e.record["error"]["code"] == "WORKER_RESTARTED"),
+        "{events:?}"
+    );
 }
