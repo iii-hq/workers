@@ -1030,10 +1030,11 @@ async fn a_stop_abandons_the_summary_and_the_turn_still_completes() {
         .expect("the start notice is closed");
     assert_eq!(
         notice["data"]["message"],
-        "Auto-compact stopped. The conversation goes on and compacts again after its next turn."
+        "Auto-compact stopped. The conversation goes on and compacts again after a later turn."
     );
     assert_eq!(turn_record(&store, S)["status"], "completed");
-    // No back-off: the next turn's end compacts at the threshold again.
+    // No back-off: a later turn's end compacts at the threshold again (the
+    // next one may find context-manager still finishing this summary).
     assert!(store.get(autocompact::BACKOFF_SCOPE, S).is_null());
 }
 
