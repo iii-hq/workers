@@ -241,19 +241,28 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
 }
 
 /**
- * Deepwork is always offered, whether or not its kit is installed yet: the
- * setup wizard installs it in the background (it lands minutes after a new
- * project opens) and an older project may never have had it. Until the
- * Directory serves the profile, the picker shows this row with the kit's
- * install state, and a click installs the kit.
+ * Deepwork and Workflow are always offered, whether or not their kits are
+ * installed yet: the setup wizard may install a kit in the background (it
+ * lands minutes after a new project opens) and an older project may never
+ * have had it. Until the Directory serves a profile, the picker shows its
+ * row with the kit's install state, and a click installs the kit.
  */
-const ALWAYS_LISTED = {
-  id: 'deepwork',
-  kit: 'iii/deepwork',
-  name: 'Deepwork',
-  description:
-    'Use for big goals: plans tickets, runs agents in parallel, reviews the work.',
-} as const
+const ALWAYS_LISTED = [
+  {
+    id: 'deepwork',
+    kit: 'iii/deepwork',
+    name: 'Deepwork',
+    description:
+      'Use for big goals: plans tickets, runs agents in parallel, reviews the work.',
+  },
+  {
+    id: 'workflow',
+    kit: 'iii/workflow',
+    name: 'Workflow',
+    description:
+      'Use for any goal: does a small one itself, runs a larger one as checked tickets.',
+  },
+] as const
 
 /** The kit's install, as the setup wizard or a click here started it. */
 function useKitInstall(kit: string): KitInstall | undefined {
@@ -267,26 +276,80 @@ function useKitInstall(kit: string): KitInstall | undefined {
   )
 }
 
+/**
+ * One always-listed profile's row. It stays mounted while the Directory
+ * serves the profile (rendering nothing), so a click's select-when-installed
+ * survives the catalog read that hides the row.
+ */
 function KitAgentRow({
-  install,
+  listed,
+  shown,
+  agents,
   disabled,
-  onInstall,
+  selectRef,
+  installChoice,
+  onInstalled,
   onReview,
 }: {
-  install: KitInstall | undefined
+  listed: (typeof ALWAYS_LISTED)[number]
+  shown: boolean
+  agents: AgentEntry[]
   disabled: boolean
-  onInstall: () => void
+  selectRef: { current: (entry: AgentEntry) => void }
+  installChoice: { current: string | null }
+  onInstalled: () => void
   onReview: () => void
 }) {
+  const install = useKitInstall(listed.kit)
+  // A Directory without kit support answers the install with nothing.
+  const [unsupported, setUnsupported] = useState(false)
+  // Clicked Install last: select the profile once the Directory serves it.
+  useEffect(() => {
+    if (installChoice.current !== listed.id) return
+    const installed = agents.find((entry) => entry.id === listed.id)
+    if (!installed) return
+    installChoice.current = null
+    if (!disabled) selectRef.current(installed)
+  }, [agents, installChoice, disabled, listed.id, selectRef])
+
+  // An applied kit rings the agents doorbell; read once more in case the
+  // observer was not registered yet.
+  const kitInstalled = install?.state === 'installed'
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is stable per mount; only the state flip matters.
+  useEffect(() => {
+    if (kitInstalled) onInstalled()
+  }, [kitInstalled])
+
+  if (!shown || unsupported) return null
+  const onInstall = () => {
+    installChoice.current = listed.id
+    void retryOnboardingKit(listed.kit).then(() => {
+      if (!onboardingKitsSnapshot().some((entry) => entry.kit === listed.kit)) {
+        setUnsupported(true)
+        if (installChoice.current === listed.id) installChoice.current = null
+      }
+    })
+  }
+  const review = () => {
+    onReview()
+    requestPanelOpen({
+      pageId: 'directory',
+      context: {
+        collection: 'kits',
+        kit: listed.kit,
+        ...(install?.planId ? { plan_id: install.planId } : {}),
+      },
+    })
+  }
   const state = install?.state
   const installing = state === 'installing'
   const action =
     state === 'review' ? 'Review' : state === 'failed' ? 'Try again' : 'Install'
   const label = installing
-    ? `${ALWAYS_LISTED.name} agent is installing`
+    ? `${listed.name} agent is installing`
     : state === 'review'
-      ? `Review the ${ALWAYS_LISTED.name} kit install`
-      : `${action === 'Try again' ? 'Try installing' : 'Install'} the ${ALWAYS_LISTED.name} agent`
+      ? `Review the ${listed.name} kit install`
+      : `${action === 'Try again' ? 'Try installing' : 'Install'} the ${listed.name} agent`
   return (
     <button
       type="button"
@@ -294,15 +357,15 @@ function KitAgentRow({
       title={state === 'failed' ? install?.message : undefined}
       disabled={disabled || installing}
       className="group/kit flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent"
-      onClick={state === 'review' ? onReview : onInstall}
+      onClick={state === 'review' ? review : onInstall}
     >
       <AgentGlyph icon="agent" />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-sm leading-5 font-medium text-ink">
-          {ALWAYS_LISTED.name}
+          {listed.name}
         </span>
         <span className="line-clamp-2 text-sm leading-5 text-pretty text-ink-faint">
-          {ALWAYS_LISTED.description}
+          {listed.description}
         </span>
       </span>
       <span className="flex h-5 shrink-0 items-center gap-1.5 text-sm text-ink-faint">
@@ -347,21 +410,6 @@ export function AgentProfilePicker({
     refresh: refreshCatalog,
   } = useAgentCatalog(agentEntries)
   const agents = (catalog ?? []).filter((entry) => !entry.hidden)
-  const kitInstall = useKitInstall(ALWAYS_LISTED.kit)
-  // A Directory without kit support answers the install with nothing.
-  const [kitUnsupported, setKitUnsupported] = useState(false)
-  // Clicked Install: select the profile once the Directory serves it.
-  const [selectWhenInstalled, setSelectWhenInstalled] = useState(false)
-  const showKitRow =
-    agentEntries === undefined &&
-    catalog !== null &&
-    !error &&
-    !kitUnsupported &&
-    !(catalog ?? []).some((entry) => entry.id === ALWAYS_LISTED.id)
-  const kitRowIndex = agents.findIndex(
-    (entry) =>
-      (entry.name.trim() || entry.id).localeCompare(ALWAYS_LISTED.name) > 0,
-  )
   const selectedId = agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const preselect =
     preselectDefaultAgent && !selectionLocked
@@ -374,60 +422,43 @@ export function AgentProfilePicker({
   }
   const selectRef = useRef(select)
   selectRef.current = select
+  // The always-listed profile whose Install was clicked last: it alone is
+  // selected once the Directory serves it, whichever kit lands first.
+  const installChoice = useRef<string | null>(null)
   // Apply the identity the picker displays before a first send can run.
   useLayoutEffect(() => {
     if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
   }, [preselect])
 
-  useEffect(() => {
-    if (!selectWhenInstalled) return
-    const installed = agents.find((entry) => entry.id === ALWAYS_LISTED.id)
-    if (!installed) return
-    setSelectWhenInstalled(false)
-    if (!selectionLocked) selectRef.current(installed)
-  }, [agents, selectWhenInstalled, selectionLocked])
-
-  // An applied kit rings the agents doorbell; read once more in case the
-  // observer was not registered yet.
-  const kitInstalled = kitInstall?.state === 'installed'
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is stable per mount; only the state flip matters.
-  useEffect(() => {
-    if (kitInstalled) refreshCatalog()
-  }, [kitInstalled])
-
-  const installKitAgent = () => {
-    setSelectWhenInstalled(true)
-    void retryOnboardingKit(ALWAYS_LISTED.kit).then(() => {
-      if (
-        !onboardingKitsSnapshot().some(
-          (entry) => entry.kit === ALWAYS_LISTED.kit,
-        )
-      ) {
-        setKitUnsupported(true)
-        setSelectWhenInstalled(false)
-      }
-    })
-  }
-  const reviewKitAgent = () => {
-    setOpen(false)
-    requestPanelOpen({
-      pageId: 'directory',
-      context: {
-        collection: 'kits',
-        kit: ALWAYS_LISTED.kit,
-        ...(kitInstall?.planId ? { plan_id: kitInstall.planId } : {}),
-      },
-    })
-  }
-  const kitRow = showKitRow ? (
-    <KitAgentRow
-      key={`kit:${ALWAYS_LISTED.kit}`}
-      install={kitInstall}
-      disabled={selectionLocked}
-      onInstall={installKitAgent}
-      onReview={reviewKitAgent}
-    />
-  ) : null
+  // Where a kit row goes: before the first profile it sorts ahead of, -1 last.
+  const kitRows =
+    agentEntries === undefined
+      ? ALWAYS_LISTED.map((listed) => ({
+          index: agents.findIndex(
+            (entry) =>
+              (entry.name.trim() || entry.id).localeCompare(listed.name) > 0,
+          ),
+          row: (
+            <KitAgentRow
+              key={`kit:${listed.kit}`}
+              listed={listed}
+              shown={
+                catalog !== null &&
+                !error &&
+                !catalog.some((entry) => entry.id === listed.id)
+              }
+              agents={agents}
+              disabled={selectionLocked}
+              selectRef={selectRef}
+              installChoice={installChoice}
+              onInstalled={refreshCatalog}
+              onReview={() => setOpen(false)}
+            />
+          ),
+        }))
+      : []
+  const kitRowsAt = (index: number) =>
+    kitRows.filter((kitRow) => kitRow.index === index).map(({ row }) => row)
 
   const activeId = selectedId ?? preselect?.id
   const selected = agents.find((entry) => entry.id === activeId)
@@ -538,77 +569,78 @@ export function AgentProfilePicker({
             className="flex min-w-0 flex-col gap-0.5"
             aria-label="Agent profiles"
           >
-            {kitRowIndex === 0 ? kitRow : null}
-            {agents.map((entry, index) => {
-              const active = entry.id === activeId
-              const update = active ? undefined : updateFor(entry)
-              const markerId = `${markerBase}-${entry.id}`
-              const description = entry.description.trim()
-              return [
-                index > 0 && index === kitRowIndex ? kitRow : null,
-                <button
-                  key={entry.id}
-                  type="button"
-                  aria-label={`Use ${entry.name.trim() || entry.id} agent profile`}
-                  aria-pressed={active}
-                  aria-describedby={update ? markerId : undefined}
-                  disabled={selectionLocked}
-                  className={cn(
-                    'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default',
-                    active
-                      ? 'bg-surface-hover'
-                      : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
-                  )}
-                  onClick={() => {
-                    select(entry)
-                    setOpen(false)
-                  }}
-                >
-                  <AgentGlyph icon={entry.icon} active={active} />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm leading-5 font-medium text-ink">
-                      {entry.name.trim() || entry.id}
-                    </span>
-                    {description ? (
-                      <span className="line-clamp-2 text-sm leading-5 text-pretty text-ink-faint">
-                        {description}
+            {/* One keyed list: a kit row keeps its state when its slot moves. */}
+            {agents
+              .flatMap((entry, index) => {
+                const active = entry.id === activeId
+                const update = active ? undefined : updateFor(entry)
+                const markerId = `${markerBase}-${entry.id}`
+                const description = entry.description.trim()
+                return [
+                  ...kitRowsAt(index),
+                  <button
+                    key={entry.id}
+                    type="button"
+                    aria-label={`Use ${entry.name.trim() || entry.id} agent profile`}
+                    aria-pressed={active}
+                    aria-describedby={update ? markerId : undefined}
+                    disabled={selectionLocked}
+                    className={cn(
+                      'flex w-full items-start gap-3 rounded-md px-2.5 py-2 text-left transition-colors duration-100 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-default',
+                      active
+                        ? 'bg-surface-hover'
+                        : 'hover:bg-surface-hover/60 disabled:hover:bg-transparent',
+                    )}
+                    onClick={() => {
+                      select(entry)
+                      setOpen(false)
+                    }}
+                  >
+                    <AgentGlyph icon={entry.icon} active={active} />
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate text-sm leading-5 font-medium text-ink">
+                        {entry.name.trim() || entry.id}
                       </span>
-                    ) : null}
-                    {update ? (
-                      <span
-                        id={markerId}
-                        className="flex items-center gap-1.5 text-xs text-ink-faint"
-                      >
-                        <CircleArrowUp
-                          aria-hidden
-                          className={cn(
-                            'size-4 shrink-0',
-                            update.major ? 'text-warn' : 'text-accent',
-                          )}
-                        />
-                        <span>
-                          {update.major ? 'Major update' : 'Update'}{' '}
-                          <span className="tabular-nums">
-                            {update.available}
-                          </span>
-                          <span className="sr-only"> available</span>
+                      {description ? (
+                        <span className="line-clamp-2 text-sm leading-5 text-pretty text-ink-faint">
+                          {description}
                         </span>
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="flex h-5 shrink-0 items-center">
-                    <Check
-                      aria-hidden
-                      className={cn(
-                        'size-4 text-ink transition-opacity duration-100',
-                        active ? 'opacity-100' : 'opacity-0',
-                      )}
-                    />
-                  </span>
-                </button>,
-              ]
-            })}
-            {kitRowIndex === -1 ? kitRow : null}
+                      ) : null}
+                      {update ? (
+                        <span
+                          id={markerId}
+                          className="flex items-center gap-1.5 text-xs text-ink-faint"
+                        >
+                          <CircleArrowUp
+                            aria-hidden
+                            className={cn(
+                              'size-4 shrink-0',
+                              update.major ? 'text-warn' : 'text-accent',
+                            )}
+                          />
+                          <span>
+                            {update.major ? 'Major update' : 'Update'}{' '}
+                            <span className="tabular-nums">
+                              {update.available}
+                            </span>
+                            <span className="sr-only"> available</span>
+                          </span>
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="flex h-5 shrink-0 items-center">
+                      <Check
+                        aria-hidden
+                        className={cn(
+                          'size-4 text-ink transition-opacity duration-100',
+                          active ? 'opacity-100' : 'opacity-0',
+                        )}
+                      />
+                    </span>
+                  </button>,
+                ]
+              })
+              .concat(kitRowsAt(-1))}
           </fieldset>
           {selectedUpdate ? (
             <button

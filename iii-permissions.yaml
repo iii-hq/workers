@@ -271,10 +271,11 @@ rules:
   # ticket screen; the ticket working loop is allowlisted below. Planning is
   # the human's call too: agents file tickets under a project or release but
   # never create, rename, ship or convert them. One exception: the deepwork
-  # orchestrator files each run under its own project, so a create whose
-  # `lead` is `deepwork` is allowed. Rules cannot see the caller, so this is
-  # scoped by argument (an agent could spoof it; the worst case is a stray
-  # project). Any other create matches no rule and waits for a person.
+  # and workflow orchestrators file each run under its own project, so a
+  # create whose `lead` is `deepwork` or `workflow` is allowed. Rules cannot
+  # see the caller, so this is scoped by argument (an agent could spoof it;
+  # the worst case is a stray project). Any other create matches no rule and
+  # waits for a person.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
   - '!kanban::dispatch::on-turn-completed'
@@ -285,6 +286,11 @@ rules:
     rule_id: deepwork-run-project
     args:
       lead: { equals: deepwork }
+  - function: kanban::project::create
+    action: allow
+    rule_id: workflow-run-project
+    args:
+      lead: { equals: workflow }
   - '!kanban::project::update'
   - '!kanban::project::archive'
   - '!kanban::project::restore'
