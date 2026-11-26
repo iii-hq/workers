@@ -61,6 +61,8 @@ interface AgentRow {
   updated_at_ms?: number;
 }
 
+type SessionAnnouncement = LiveAnnouncement & { externalId?: string };
+
 interface AgentList {
   agents: AgentRow[];
   config_id?: string;
@@ -175,15 +177,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const [stopping, setStopping] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null);
+  const [announcement, setAnnouncement] = useState<SessionAnnouncement | null>(null);
   const seq = useRef(0);
   // Where focus returns when the composer closes: the Message button that opened it.
   const opener = useRef<HTMLElement | null>(null);
   const groupId = useId();
   const [follow, setFollow] = useState<string | null>(null);
   const followOpener = useRef<HTMLButtonElement>(null);
-  const announce = (text: string) =>
-    setAnnouncement({ seq: ++seq.current, text, urgency: 'polite' });
 
   const { refresh } = sessions;
   const configId = sessions.data?.config_id;
@@ -193,7 +193,10 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const settled = `${handler}-settled`;
     const target = (id: string) => `${id}::${iii.browserId}`;
     const off: (() => void)[] = [];
-    const invalidate = () => setVisibility(++generation.current);
+    const invalidate = () => {
+      setVisibility(++generation.current);
+      setAnnouncement((current) => (current?.externalId ? null : current));
+    };
     const reload = () => {
       configPending.current = false;
       refresh();
@@ -260,6 +263,22 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     sessions.data?.generation === visibility &&
     !sessions.error;
   const listed = sessions.data?.agents ?? [];
+  const externalAnnouncementId = announcement?.externalId;
+  const liveAnnouncement =
+    !externalAnnouncementId ||
+    (currentVisibility && listed.some((row) => row.id === externalAnnouncementId))
+      ? announcement
+      : null;
+  const announce = (row: AgentRow, text: string) => {
+    // An action may finish after the visibility that authorized its row is gone.
+    if (row.external_only && (!currentVisibility || visibility !== generation.current)) return;
+    setAnnouncement({
+      seq: ++seq.current,
+      text,
+      urgency: 'polite',
+      externalId: row.external_only ? row.id : undefined,
+    });
+  };
   const rows = currentVisibility
     ? listed
     : listed.filter((row) => !row.external_only).map((row) => ({ ...row, short_id: undefined }));
@@ -310,7 +329,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
       setFollow(null);
       setComposing(null);
-      announce(`Opened a fork of ${name}`);
+      announce(row, `Opened a fork of ${name}`);
     } catch (err) {
       setFailure(errorMessage(err));
     } finally {
@@ -349,7 +368,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         setFailure(res.reason ?? 'The session was not running.');
         setStopping(null);
       } else {
-        announce(`Stopped ${nameOf(row)}`);
+        announce(row, `Stopped ${nameOf(row)}`);
       }
     } catch (err) {
       setFailure(errorMessage(err));
@@ -370,7 +389,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         setFailure(res.reason ?? 'The session is busy; send again when it settles.');
         return false;
       }
-      announce(`Message sent to ${nameOf(row)}`);
+      announce(row, `Message sent to ${nameOf(row)}`);
       // Another row may have opened its own composer while this one was sending.
       setComposing((open) => (open === row.id ? null : open));
       refresh();
@@ -574,7 +593,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           onClose={() => setFollow(null)}
         />
       ) : null}
-      <LiveRegion announcement={announcement} />
+      <LiveRegion announcement={liveAnnouncement} />
       {failure || (sessions.error && sessions.data) ? (
         <div className="claude-sessions-notices">
           {failure ? (

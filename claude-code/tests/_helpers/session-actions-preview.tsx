@@ -113,7 +113,8 @@ const host = {
             .map(currentRow)
             .filter(
               (row) =>
-                (allowed || !row.external_only) && (p.all || row.kind !== 'background' || row.alive),
+                (allowed || !row.external_only) &&
+                (p.all || row.kind !== 'background' || row.alive),
             ),
           ...(p.include_config_id ? { config_id: configId } : {}),
         };

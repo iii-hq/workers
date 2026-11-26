@@ -296,6 +296,27 @@ async function testSessionActions(code) {
     assert.match(terminal(), /Terminal open calls:\s*1.*Terminals created:\s*1/);
   });
 
+  await test('clears a fork announcement when access to its original is revoked', async (t) => {
+    const { click, focus, shortcut, text, document, until } = setup(t, { heartbeat: false });
+    const original = '[aria-label="Open original: Design review"]';
+    const status = () => document.querySelector('[role="status"][aria-live="polite"]');
+
+    await click('Fork Design review');
+    await focus('Cancel');
+    await click('Create fork');
+    await text('Separate fork terminal · copy-1');
+    await until(() => status()?.textContent === 'Opened a fork of Design review');
+
+    shortcut('KeyR');
+    await until(() => !document.querySelector(original));
+    assert.equal(status().textContent, '');
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+
+    await click('Toggle access');
+    await until(() => document.querySelector(original));
+    assert.equal(status().textContent, '');
+  });
+
   await test('a late read from the previous selection cannot replace the current reply', async (t) => {
     const { click, follow, shortcut, text, document } = setup(t, { heartbeat: false });
     await follow();
