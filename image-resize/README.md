@@ -100,7 +100,13 @@ defaults.
 - EXIF orientation is applied; other metadata and colour profiles are dropped.
 - WebP output is lossy; use `png` for pixel-exact output such as line art.
 - JPEG output flattens transparency onto white.
-- Bad input fails with code `INVALID_ARGS` and aborts `output_channel`.
+- The output is always re-encoded, even when the image already fits, so it
+  can be larger than the input.
+- A JPEG cut off inside its scan data still decodes, with the missing rows
+  grey, as libjpeg and ImageMagick do.
+- A bad image, `metadata` or request key fails with code `INVALID_ARGS` and
+  aborts `output_channel`. A missing or malformed `input_channel` or
+  `output_channel` ref fails before the handler runs, as `invocation_failed`.
 
 ## Migration notes
 
@@ -111,10 +117,12 @@ defaults.
 - `output_format: 'jpg'` is rejected; use `jpeg`.
 - Images are never enlarged, so crop-to-fit can return less than the box.
 - WebP output is lossy and honours `quality`.
-- Bad input returns `INVALID_ARGS` instead of `invocation_failed` and aborts
-  the output.
+- A bad image or bad `metadata` returns `INVALID_ARGS` instead of
+  `invocation_failed` and aborts the output.
 - The result gains `source_width` and `source_height`.
-- PNG output keeps the source colour type.
+- PNG output is no longer forced to 8-bit RGBA: gray stays gray, 16-bit stays
+  16-bit, and alpha is written only when the source has it (a tRNS chunk
+  counts). Palette and 1/2/4-bit PNGs come out as 8-bit gray, RGB or RGBA.
 - `quality` outside 1-100 is an error.
 - Configuration moved to the `configuration` worker: `./config.yaml` is no
   longer read and no longer shipped, `--config` only seeds an empty entry,
@@ -124,5 +132,7 @@ defaults.
 ## License
 
 Apache 2.0 — see [LICENSE](https://github.com/iii-hq/workers/blob/main/LICENSE).
-Release binaries statically link libwebp
-([BSD-3-Clause, with Google's additional patent grant](https://chromium.googlesource.com/webm/libwebp/+/refs/heads/main/COPYING)).
+Release binaries statically link libwebp 1.6.0
+([BSD-3-Clause](https://chromium.googlesource.com/webm/libwebp/+/refs/tags/v1.6.0/COPYING),
+with Google's
+[additional patent grant](https://chromium.googlesource.com/webm/libwebp/+/refs/tags/v1.6.0/PATENTS)).

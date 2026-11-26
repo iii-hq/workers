@@ -21,16 +21,19 @@ iii compose --up
 
 1. the iii engine on `ws://127.0.0.1:49134`
 2. the http worker (`../../http`), serving HTTP on `127.0.0.1:3111`
-3. the image-resize worker (`..`); its defaults come from the `image-resize`
-   configuration entry: add a `config_override:` to its container in
-   `worker-compose.yaml` to change them
+3. the image-resize worker (`..`); its defaults come from its configuration
+   entry (see [Configuration](../README.md#configuration)): add a
+   `config_override:` to its container in `worker-compose.yaml` to change them
 4. this Node.js worker (`npm install`, then `npm run dev`), which registers the
    routes
 
 Stop everything with Ctrl+C.
 
-The stack binds `127.0.0.1`. `GET /image` fetches any http(s) URL server-side,
-so do not expose it.
+The stack binds `127.0.0.1`, but the http worker allows every CORS origin (the
+web UI is opened from `file://`), so while the stack runs any web page open in
+your browser can call `GET /image` and read what it fetches, including
+localhost and LAN addresses. Stop the stack when you are done and never expose
+it.
 
 ## API Endpoints
 
@@ -76,8 +79,10 @@ SDK channels. `width` and `height` (default 200) are the box, `strategy` is
 }
 ```
 
-The image is never enlarged: one smaller than the box is returned at its own
-size. A bad image or option returns 400.
+The image is never enlarged. With `scale-to-fit`, an image that already fits
+the box comes back at its own size. With `crop-to-fit`, it comes back as the
+largest centred crop with the box's aspect ratio, unscaled (the 100x80 sample
+in a 200x200 box gives 80x80). A bad image or option returns 400.
 
 ### GET /image
 
