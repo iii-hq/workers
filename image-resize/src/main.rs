@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{InitOptions, RegisterFunction, register_worker};
-use image_resize::{config, configuration, handler};
+use image_resize::{config, configuration, handler, ui};
 use tokio::sync::Semaphore;
 
 #[derive(Parser, Debug)]
@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
             "Downscale a JPEG, PNG or WebP image read from input_channel to fit or fill a box, never enlarging it, and write JPEG, PNG or lossy WebP bytes to output_channel.",
         ),
     );
+    ui::register(&iii);
 
     // Last, so the reload handler closes over fully built state.
     configuration::bind_reload(&iii, shared).run().await;

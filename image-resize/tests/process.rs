@@ -158,9 +158,21 @@ async fn boot_registers_seeds_and_reloads_its_configuration() {
     let mut logs = lines(&mut worker);
 
     timeout(Duration::from_secs(20), async {
-        let (mut ensured, mut resize, mut hook, mut observed, mut reloaded) =
-            (false, false, false, false, false);
-        while !(ensured && resize && hook && observed && reloaded) {
+        let (mut ensured, mut resize, mut hook, mut observed, mut reloaded, mut ui_content) =
+            (false, false, false, false, false, false);
+        let mut ui_assets = std::collections::BTreeSet::new();
+        let expected_assets = std::collections::BTreeSet::from([
+            ("script".to_string(), "image-resize/page.js".to_string()),
+            ("style".to_string(), "image-resize/styles.css".to_string()),
+        ]);
+        while !(ensured
+            && resize
+            && hook
+            && observed
+            && reloaded
+            && ui_content
+            && ui_assets == expected_assets)
+        {
             let value = frames.recv().await.expect("worker stays connected");
             match value["type"].as_str().unwrap_or_default() {
                 "invokefunction" if value["function_id"] == "configuration::ensure" => {
@@ -181,6 +193,20 @@ async fn boot_registers_seeds_and_reloads_its_configuration() {
                 "registerfunction" if value["id"] == "image-resize::on-config-change" => {
                     assert_eq!(value["metadata"]["internal"], true);
                     hook = true;
+                }
+                "registerfunction" if value["id"] == "image-resize::ui-content" => {
+                    assert_eq!(value["metadata"]["internal"], true);
+                    ui_content = true;
+                }
+                "observe" if value["source"]["function_id"] == "ade::ui::asset" => {
+                    assert_eq!(value["target"]["function_id"], "image-resize::ui-content");
+                    let args = &value["source"]["args"];
+                    let asset = (
+                        args["kind"].as_str().unwrap().to_string(),
+                        args["path"].as_str().unwrap().to_string(),
+                    );
+                    assert!(expected_assets.contains(&asset), "unexpected asset {args}");
+                    assert!(ui_assets.insert(asset), "asset observed twice: {args}");
                 }
                 "observe" if value["source"]["function_id"] == "configuration::on-updated" => {
                     assert_eq!(
@@ -205,7 +231,7 @@ async fn boot_registers_seeds_and_reloads_its_configuration() {
         }
     })
     .await
-    .expect("the engine sees ensure, both functions, the observer and one reload");
+    .expect("the engine sees ensure, the functions, the observers and one reload");
 
     timeout(Duration::from_secs(20), async {
         while let Some(line) = logs.recv().await {
