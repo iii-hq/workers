@@ -128,12 +128,33 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
             }
             AgentMessage::Assistant(a) => {
                 flush_result_images(&mut out, &mut image_buf);
-                let text = text_of(&a.content);
-                if !text.is_empty() {
-                    out.push(json!({
-                        "role": "assistant",
-                        "content": [{ "type": "output_text", "text": text }],
-                    }));
+                // The API asks for each reply's phase back and the message does
+                // not store it, so it is derived. The Codex CLI also knows
+                // `partial_answer`, which this never sends.
+                let has_call = a
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, ContentBlock::FunctionCall { .. }));
+                let closing_at = if has_call {
+                    a.content.len()
+                } else {
+                    a.content
+                        .iter()
+                        .rposition(
+                            |c| matches!(c, ContentBlock::Text { text } if !text.trim().is_empty()),
+                        )
+                        .unwrap_or(0)
+                };
+                let (before, closing) = a.content.split_at(closing_at);
+                for (phase, blocks) in [("commentary", before), ("final_answer", closing)] {
+                    let text = text_of(blocks);
+                    if !text.is_empty() {
+                        out.push(json!({
+                            "role": "assistant",
+                            "phase": phase,
+                            "content": [{ "type": "output_text", "text": text }],
+                        }));
+                    }
                 }
                 for c in &a.content {
                     if let ContentBlock::FunctionCall {
@@ -314,6 +335,89 @@ mod tests {
         assert_eq!(wire[1]["name"], "shell__exec");
         assert_eq!(wire[2]["type"], "function_call_output");
         assert_eq!(wire[2]["output"], "ok");
+    }
+
+    fn text(text: &str) -> ContentBlock {
+        ContentBlock::Text { text: text.into() }
+    }
+    fn message_item(phase: &str, text: &str) -> Value {
+        json!({
+            "role": "assistant",
+            "phase": phase,
+            "content": [{ "type": "output_text", "text": text }],
+        })
+    }
+
+    #[test]
+    fn each_reply_text_carries_the_phase_its_reply_implies() {
+        let commentary = |text: &str| message_item("commentary", text);
+        let closing = |text: &str| message_item("final_answer", text);
+        let thinking = ContentBlock::Thinking {
+            text: "hm".into(),
+            signature: None,
+        };
+        let cases = [
+            (vec![text("a"), call("t1")], vec![commentary("a")]),
+            (
+                vec![text("a"), text("b"), call("t1")],
+                vec![commentary("a\nb")],
+            ),
+            (
+                vec![text("a"), call("t1"), text("b")],
+                vec![commentary("a\nb")],
+            ),
+            (vec![call("t1")], vec![]),
+            (vec![text("a")], vec![closing("a")]),
+            (vec![thinking, text("a")], vec![closing("a")]),
+            (
+                vec![text("a"), text("b")],
+                vec![commentary("a"), closing("b")],
+            ),
+            (
+                vec![text("a"), text("b"), text("c")],
+                vec![commentary("a\nb"), closing("c")],
+            ),
+            // A blank last block is not the closing text.
+            (vec![text("a"), text("")], vec![closing("a\n")]),
+            (vec![text("a"), text("\n")], vec![closing("a\n\n")]),
+            (vec![text("")], vec![]),
+            (vec![], vec![]),
+        ];
+        for (content, want) in cases {
+            let mut wire = to_wire_messages(&[assistant(content.clone())], "");
+            wire.retain(|item| item["role"] == "assistant");
+            assert_eq!(wire, want, "{content:?}");
+        }
+    }
+
+    #[test]
+    fn only_assistant_message_items_carry_a_phase() {
+        let wire = to_wire_messages(
+            &[
+                user(vec![text("go")]),
+                assistant(vec![text("looking"), call("t1")]),
+                result("t1", "ok", json!({})),
+                assistant(vec![text("found it"), text("done")]),
+            ],
+            "be brief",
+        );
+        assert_eq!(
+            wire,
+            vec![
+                json!({ "role": "system", "content": [{ "type": "input_text", "text": "be brief" }] }),
+                json!({ "role": "user", "content": [{ "type": "input_text", "text": "go" }] }),
+                message_item("commentary", "looking"),
+                json!({
+                    "type": "function_call",
+                    "call_id": "t1",
+                    "name": "shell__exec",
+                    "arguments": "{\"cmd\":\"ls\"}",
+                }),
+                json!({ "type": "function_call_output", "call_id": "t1", "output": "ok" }),
+                message_item("commentary", "found it"),
+                message_item("final_answer", "done"),
+            ]
+        );
     }
 
     #[test]

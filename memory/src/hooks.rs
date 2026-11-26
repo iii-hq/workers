@@ -652,7 +652,10 @@ pub(crate) async fn injection(
     let layers = opened;
     let rules_of = |b: &Bank| {
         if cfg.inject_rules {
-            b.list_rules().unwrap_or_default()
+            let mut rules = b.list_rules().unwrap_or_default();
+            // A learned rule with every line gone is its header alone.
+            rules.retain(|r| !rule_body(r).is_empty());
+            rules
         } else {
             Vec::new()
         }
@@ -1464,9 +1467,23 @@ fn latest_rules_update(messages: Option<&Value>) -> Option<String> {
         .find(|text| text.trim_start().starts_with(RULES_UPDATE_OPEN))
 }
 
+/// Closes an update that carries no rule. The frozen system prompt and the
+/// earlier reminders still state the removed ones, and an agent told only of
+/// the replacement kept following them (MOT-5918). Never beside a rule: an
+/// update can leave one out that is still in force (cut by the budget, demoted
+/// to a memory), and with a rule left the agent drops the others by itself.
+const RULES_WITHDRAWN: &str = "\nNo memory rule applies now. The standing instructions of the \
+     memory section, also where earlier messages repeat them, are withdrawn: do not follow them \
+     in this reply or any later one. What the user asked for in this chat still stands.\n";
+
 /// The appended rules update: the whole current section, or a note that
 /// none applies (memory off, or no bank applies).
 fn rules_update_message(section: &str) -> String {
+    let withdrawn = if section.contains(RULES_INTRO) {
+        ""
+    } else {
+        RULES_WITHDRAWN
+    };
     let section = if section.is_empty() {
         "\nNo memory section applies now.\n"
     } else {
@@ -1474,7 +1491,7 @@ fn rules_update_message(section: &str) -> String {
     };
     format!(
         "{RULES_UPDATE_OPEN}\nThe memory rules changed. This block replaces the memory \
-         section of the system prompt and any earlier update:{section}</memory>"
+         section of the system prompt and any earlier update:{section}{withdrawn}</memory>"
     )
 }
 
@@ -3756,6 +3773,28 @@ Formal."
     }
 
     #[tokio::test]
+    async fn a_learned_rule_with_every_line_gone_is_no_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(6);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let (bank, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        bank.set_rule("learned", crate::extract::LEARNED_HEADER)
+            .unwrap();
+        assert_eq!(bank.list_rules().unwrap().len(), 1);
+        let capture = Capture::Extracted;
+        let none = &HashSet::new();
+        let out = injection(&deps, &cfg, "w-abc123", &[], true, capture, None, none).await;
+        assert_eq!(out.section, ambient_header("w-abc123", capture));
+        assert_eq!(out.rules, 0);
+        assert!(out.message.is_none(), "no empty reminder");
+    }
+
+    #[tokio::test]
     async fn a_newer_note_about_a_told_lines_subject_joins_right_after_it() {
         // The departure shares no word with the question and no change word
         // with the on-call line: only the entity both carry. kai's ledger-api
@@ -5599,6 +5638,31 @@ Formal."
         let (system, update) = tell_rules(&mut told, "s2", None, a, 6);
         assert_eq!(system, "", "a later section is appended, not rendered");
         assert!(update.is_some_and(|u| u.contains("## a\nA")));
+    }
+
+    #[test]
+    fn a_rules_update_withdraws_the_rules_only_when_it_carries_none() {
+        let rule = crate::types::Rule {
+            name: "style".into(),
+            content: "x".repeat(1000),
+            updated_at: 0,
+        };
+        let update = |rules: &[crate::types::Rule], max_rule_chars| {
+            let cfg = WorkerConfig {
+                max_rule_chars,
+                ..WorkerConfig::default()
+            };
+            let banks = vec!["main"; rules.len()];
+            rules_update_message(&rules_section(&cfg, "main", Capture::Save, rules, &banks).0)
+        };
+        for none in [rules_update_message(""), update(&[], 6000)] {
+            assert!(none.ends_with(&format!("{RULES_WITHDRAWN}</memory>")));
+        }
+        // Whole, cut and only named: the rule is still in force.
+        for max in [1000, 900, 0] {
+            let one = update(std::slice::from_ref(&rule), max);
+            assert!(one.contains("## style") && !one.contains(RULES_WITHDRAWN));
+        }
     }
 
     #[test]

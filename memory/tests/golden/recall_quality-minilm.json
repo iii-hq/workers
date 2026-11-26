@@ -2,7 +2,7 @@
   "embedding": {
     "dims": 384,
     "model": "sentence-transformers/all-MiniLM-L6-v2@c9745ed1d9f2",
-    "vectors_fingerprint": "fp3622fa56b6808799"
+    "vectors_fingerprint": "fp8b5b7770506d9e81"
   },
   "half_life_days": 60,
   "modes": {
