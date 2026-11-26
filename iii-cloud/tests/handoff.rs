@@ -250,6 +250,8 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
         waiting_on: None,
     };
     h.ctx.store.update(|s| {
+        // The agent's own check carries its hand-off's id.
+        let handoff_id = s.handoffs.first().map(|x| x.id.clone());
         s.put_check_for(
             Check {
                 id: "agent-check".into(),
@@ -269,7 +271,7 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
                 ready: true,
                 report: String::new(),
                 manifest: None,
-                handoff_id: None,
+                handoff_id,
                 commits: vec![],
             },
             false,
@@ -468,9 +470,9 @@ async fn a_question_for_the_person_is_waiting_for_you_and_quiet_is_stalled() {
 async fn when_the_agent_finishes_one_fast_check_runs_and_it_is_done() {
     let (h, _s, _r, ws) = setup().await;
     clean_manifest(&ws);
-    seed_passed_run(&h, &ws);
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
     let before = h.ctx.store.read(|s| s.check.as_ref().map(|c| c.id.clone()));
@@ -882,9 +884,9 @@ fn a_proposal_waiting_for_confirmation_is_found_in_the_tail() {
 async fn a_turn_that_ends_on_a_folder_proposal_is_waiting_for_the_person_not_done() {
     let (h, _s, _r, ws) = setup().await;
     clean_manifest(&ws);
-    seed_passed_run(&h, &ws);
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
     *w.tail.lock().unwrap() = Some(propose_tail(false));
@@ -1101,9 +1103,9 @@ async fn a_check_with_only_warnings_and_a_passed_run_ends_done_without_continue_
         {"code": "SOME_TIDY_UP", "severity": "warn", "kind": "fix_in_repo", "message": "tidy"},
         {"code": "EMPTY_DEFAULT_VARIABLE", "severity": "warn", "message": "empty"}
     ], "deploy_issues": []}}))).with_priority(1).mount(&server).await;
-    seed_passed_run(&h, &ws);
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
     idle_for(&w, 0).await;
@@ -1225,6 +1227,7 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
     let created = create(&h.ctx, ready_req()).await.unwrap();
     h.ctx.store.update(|s| {
         let mut c = s.check.clone().unwrap();
+        c.id = "someone-elses-check".into();
         c.handoff_id = Some("someone-elses".into());
         c.run = Some(Run {
             id: "r".into(),
@@ -1800,9 +1803,9 @@ async fn the_brief_says_when_an_earlier_try_left_the_fix_branch_on_origin() {
 async fn done_is_provisional_the_chat_is_followed_on_and_a_pending_ask_wins() {
     let (h, _s, _r, ws) = setup().await;
     clean_manifest(&ws);
-    seed_passed_run(&h, &ws);
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     let a = until(&h, "working", |a| {
         a.state == AgentPhase::Working && a.current.is_some()
@@ -2014,6 +2017,7 @@ async fn a_failed_read_judges_nothing_in_that_poll() {
         "harness::observers::list",
         "harness::ask::list",
         "session::get",
+        "session::messages-tail",
     ] {
         let (h, _s, _r, _ws) = setup().await;
         accept_sends(&h);
@@ -2533,4 +2537,169 @@ async fn a_hand_off_resumes_the_agents_earlier_fix_branch() {
         assert!(wt.join(f).exists(), "{f}");
     }
     assert!(git(wt, &["log", "--format=%s"]).contains("Add isolated iii cloud test manifest"));
+}
+
+fn failed_run(check_id: &str, commit: &str) -> Run {
+    Run {
+        id: "rf".into(),
+        check_id: check_id.into(),
+        commit: commit.into(),
+        engine: "0.27.0".into(),
+        status: RunStatus::Failed,
+        started_at: "t".into(),
+        finished_at: None,
+        stages: vec![],
+        workers: WorkerCount { ready: 0, total: 1 },
+        routes: RouteCount {
+            count: 0,
+            prefix: None,
+        },
+        healthcheck: None,
+        not_covered: vec![],
+        log_tail: vec![],
+        error: Some(RunError {
+            stage: StageName::Workers,
+            code: "WORKERS_NOT_READY".into(),
+            message: "api did not connect".into(),
+        }),
+        reused: false,
+        waiting_on: None,
+    }
+}
+
+/// The failed run of the check the hand-off was made from is part of its brief.
+#[tokio::test]
+async fn run_failure_comes_from_the_check_the_hand_off_was_made_from() {
+    let (h, _s, _r, _ws) = setup().await;
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.run = Some(failed_run(&c.id, "abc"));
+        s.put_check(c);
+    });
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    let out = iii_cloud::handoff::brief_for(
+        &h.ctx,
+        HandoffBriefRequest {
+            handoff_id: created.id,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.run_failure.unwrap().code, "WORKERS_NOT_READY");
+}
+
+/// A check the person starts in their own folder says nothing about the agent's work.
+#[tokio::test]
+async fn a_check_of_the_persons_own_does_not_bring_a_finished_hand_off_a_continue() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    clean_manifest(&ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "done", |a| a.state == AgentPhase::Done).await;
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.id = "persons-check".into();
+        c.handoff_id = None;
+        c.ready = false;
+        c.problems = vec![prob("p1", "SOME_BLOCK")];
+        s.put_check(c);
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(sent(&h).is_empty(), "{:?}", sent(&h));
+    assert_eq!(
+        h.ctx.store.read(|s| s.handoffs[0].agent.state),
+        AgentPhase::Done
+    );
+}
+
+/// A failed local run of the hand-off's commit is the agent's work: it gets a continue naming it.
+#[tokio::test]
+async fn a_failed_run_with_a_clean_plan_gets_a_continue_that_names_the_failure() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    clean_manifest(&ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
+        c.ready = false;
+        c.run = Some(failed_run("agent-check", &head));
+    });
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    for _ in 0..200 {
+        if !sent(&h).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let messages = sent(&h);
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].contains("WORKERS_NOT_READY: api did not connect (stage workers)"),
+        "{}",
+        messages[0]
+    );
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
+}
+
+/// A fast check that fails leaves the older one in place: nothing is judged from it.
+#[tokio::test]
+async fn a_failed_idle_check_judges_nothing_and_is_tried_again() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    // The worktree is on another branch: the hand-off's check refuses (WRONG_WORKTREE).
+    let branch = h.ctx.store.read(|s| s.handoffs[0].branch.clone());
+    git(&ws, &["checkout", "-q", "-b", "elsewhere"]);
+    idle_for(&w, 500).await;
+    assert!(sent(&h).is_empty());
+    assert_eq!(
+        h.ctx.store.read(|s| s.handoffs[0].agent.state),
+        AgentPhase::Working
+    );
+    // Back on its branch the next poll checks and continues.
+    git(&ws, &["checkout", "-q", &branch]);
+    for _ in 0..200 {
+        if !sent(&h).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(sent(&h).len(), 1);
+}
+
+/// What the page shows after a restart is what it showed before.
+#[tokio::test]
+async fn a_refused_continue_still_reads_stalled_after_a_restart() {
+    let (h, _s, _r, _ws) = setup().await;
+    h.fake.on("harness::send", |_| {
+        Err(iii_cloud::error::CloudError::new("BOOM", "refused"))
+    });
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "stalled", |a| {
+        a.state == AgentPhase::Stalled && a.question.is_some()
+    })
+    .await;
+    // A fresh follower, as after a restart.
+    let a = iii_cloud::handoff::poll_now(&h.ctx, &created.id)
+        .await
+        .unwrap();
+    assert_eq!(a.state, AgentPhase::Stalled);
+    assert!(a.question.is_some());
 }

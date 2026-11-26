@@ -470,6 +470,9 @@ pub struct Handoff {
     /// session works again, or a stall passes, it tries no other.
     #[serde(default)]
     pub continue_at_ms: Option<i64>,
+    /// The chat refused the last "continue" (so the state after a restart is the same).
+    #[serde(default)]
+    pub continue_refused: bool,
 }
 
 impl Handoff {

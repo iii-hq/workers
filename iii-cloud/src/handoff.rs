@@ -366,6 +366,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         worktree_note,
         continues: 0,
         continue_at_ms: None,
+        continue_refused: false,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -687,9 +688,6 @@ struct Local {
     seen_working: bool,
     /// The fast check of this idle stretch has run (reset when the session works again).
     idle_checked: bool,
-    /// The last "continue" was refused by the chat (the window it opened is
-    /// `Handoff.continue_at_ms`).
-    continue_refused: bool,
 }
 
 enum Poll {
@@ -848,14 +846,18 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     // The newest messages: when, and what the last call says it does.
     let secrets = env_values(ctx);
     let mut current = agent.current.clone();
-    let mut confirm_pending = false;
-    if let Ok(tail) = ctx
+    let confirm_pending;
+    // A failed read judges nothing (a pending folder confirmation could hide in it).
+    let Ok(tail) = ctx
         .plat
         .call(
             "session::messages-tail",
             json!({ "session_id": session, "limit": 4 }),
         )
         .await
+    else {
+        return Poll::Continue;
+    };
     {
         let items = tail
             .get("messages")
@@ -926,6 +928,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             ctx.store.update(|s| {
                 if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                     h.continue_at_ms = None;
+                    h.continue_refused = false;
                 }
             });
         }
@@ -956,7 +959,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
     } else if phase == AgentPhase::Done && continuing {
-        if local.continue_refused {
+        if handoff.continue_refused {
             // The chat refused our "continue"; the page can say so and point at the chat.
             phase = AgentPhase::Stalled;
             question = Some(STOPPED_TEXT.to_string());
@@ -979,20 +982,33 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                         h.checked = true;
                     }
                 });
-                let _ = crate::check::check(
+                if crate::check::check(
                     ctx,
                     CheckRequest {
                         handoff_id: Some(id.to_string()),
                         ..Default::default()
                     },
                 )
-                .await;
+                .await
+                .is_err()
+                {
+                    // The older check says nothing about now: judge nothing, check again next time.
+                    local.idle_checked = false;
+                    return Poll::Continue;
+                }
             }
-            let mine = open_problems(ctx, &handoff, Owner::Agent);
+            let mut mine = open_problems(ctx, &handoff, Owner::Agent);
             let theirs = open_problems(ctx, &handoff, Owner::Person);
+            // A failed local run of this commit is the agent's work too.
+            if mine.is_empty()
+                && theirs.is_empty()
+                && !passed_run_here(ctx, &handoff)
+                && let Some(failure) = run_failure_line(ctx, &handoff)
+            {
+                mine.push(failure);
+            }
             if !mine.is_empty() {
                 let sent = send_continue(ctx, &handoff, &session, &mine, &secrets).await;
-                local.continue_refused = sent == Continue::Refused;
                 // The window opens; when it passes the stretch is judged again.
                 local.idle_checked = sent == Continue::Spent;
                 if sent == Continue::Sent {
@@ -1185,15 +1201,25 @@ pub fn awaits_confirmation(items: &[Value]) -> bool {
     pending
 }
 
-/// `(code, title)` of the blocking problems of `owner` in the newest check of
-/// the hand-off's environment (the selected one's, or a kept one); none once
-/// it is ready. Warnings never keep a hand-off open.
+/// The checks that are this hand-off's, newest first: the one it was made from
+/// and the ones its agent (or the worker, after a turn) asked for. A check the
+/// person started in their own folder is not.
+fn own_checks<'a>(
+    s: &'a crate::store::State,
+    h: &'a Handoff,
+) -> impl Iterator<Item = &'a Check> + 'a {
+    s.check.iter().chain(s.checks.iter()).filter(move |c| {
+        c.handoff_id.as_deref() == Some(h.id.as_str())
+            || h.check_id.as_deref() == Some(c.id.as_str())
+    })
+}
+
+/// `(code, title)` of the blocking problems of `owner` in the hand-off's newest
+/// check; none once it is ready. Warnings never keep a hand-off open.
 fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, String)> {
     ctx.store.read(|s| {
-        s.check
-            .iter()
-            .chain(s.checks.iter())
-            .find(|c| c.environment_id == handoff.environment_id)
+        own_checks(s, handoff)
+            .next()
             .filter(|c| !c.ready)
             .map(|c| {
                 c.problems
@@ -1253,6 +1279,7 @@ async fn send_continue(
     ctx.store.update(|s| {
         if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == handoff.id) {
             h.continue_at_ms = Some(now_ms());
+            h.continue_refused = !sent;
             if sent {
                 h.continues += 1;
             }
@@ -1265,28 +1292,51 @@ async fn send_continue(
     }
 }
 
-/// The newest check of the hand-off's environment has a passed run for its own commit.
+/// The hand-off's newest check has a passed run for its own commit.
 fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
     ctx.store.read(|s| {
-        let mut mine = s
-            .check
-            .iter()
-            .chain(s.checks.iter())
-            .filter(|c| c.environment_id == handoff.environment_id);
-        let Some(latest) = mine.next() else {
+        let Some(latest) = own_checks(s, handoff).next() else {
             return false;
         };
         // The fast check after the turn is a new check of the same commit: the
         // run the agent made belongs to an earlier check of that commit.
-        s.check
-            .iter()
-            .chain(s.checks.iter())
-            .filter(|c| c.environment_id == handoff.environment_id && c.commit == latest.commit)
+        own_checks(s, handoff)
+            .filter(|c| c.commit == latest.commit)
             .any(|c| {
                 c.run
                     .as_ref()
                     .is_some_and(|r| r.status == RunStatus::Passed)
             })
+    })
+}
+
+/// The hand-off's newest run, when it failed on the newest check's commit:
+/// `(code, "<message> (stage <stage>)")`. A run that is still going (`waiting_on`
+/// set) is not a failure: the agent's own call returned with it, and that case
+/// keeps its "stopped before running it" text.
+fn run_failure_line(ctx: &Ctx, handoff: &Handoff) -> Option<(String, String)> {
+    ctx.store.read(|s| {
+        let latest = own_checks(s, handoff).next()?;
+        let run = own_checks(s, handoff)
+            .filter(|c| c.commit == latest.commit)
+            .find_map(|c| c.run.as_ref())
+            .filter(|r| r.status == RunStatus::Failed)?;
+        let stage = run
+            .error
+            .as_ref()
+            .and_then(|e| serde_json::to_value(e.stage).ok())
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let (code, message) = match &run.error {
+            Some(e) => (e.code.clone(), e.message.clone()),
+            None => ("RUN_FAILED".into(), "the local run failed".into()),
+        };
+        Some((
+            code,
+            match stage {
+                Some(st) => format!("{message} (stage {st})"),
+                None => message,
+            },
+        ))
     })
 }
 
@@ -1585,7 +1635,10 @@ pub async fn brief_for(ctx: &Arc<Ctx>, request: HandoffBriefRequest) -> Res<Hand
                 .iter()
                 .chain(s.checks.iter())
                 // Only this hand-off's own checks: another's run is not its failure.
-                .filter(|c| c.handoff_id.as_deref() == Some(h.id.as_str()))
+                .filter(|c| {
+                    c.handoff_id.as_deref() == Some(h.id.as_str())
+                        || h.check_id.as_deref() == Some(c.id.as_str())
+                })
                 .find_map(|c| c.run.as_ref())
                 .filter(|r| r.status == RunStatus::Failed);
             let run_failure = run.and_then(|r| {
