@@ -62,8 +62,17 @@ pub fn binds_thinking(model: &str) -> bool {
     .any(|m| model.contains(m))
 }
 
+/// Models whose thinking logged before a compaction must not be replayed:
+/// binding models drop it (see [`binds_thinking`]); Codex models replay
+/// encrypted reasoning, which the Codex CLI also drops at compaction. Unlike
+/// `binds_thinking`, this does not turn pruning off.
+pub fn strips_thinking_at_compaction(model: &str) -> bool {
+    binds_thinking(model) || model.contains("codex/")
+}
+
 /// A compaction puts the summary in the system prompt and drops the head, so
-/// on a binding model every thinking block logged before the compaction
+/// on a model that strips thinking at compaction
+/// ([`strips_thinking_at_compaction`]) every thinking block logged before the compaction
 /// record — the kept tail's included — was signed over a prefix that is
 /// gone: the API drops it and every block after it, on every later request.
 /// Strip those blocks (text and calls stay), the same bytes on every step,
@@ -789,6 +798,18 @@ mod tests {
         assert!(!binds_thinking("claude-mythos-5-1"));
         assert!(!binds_thinking("claude-opus-5"));
         assert!(!binds_thinking("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn codex_models_strip_compacted_thinking_but_keep_pruning() {
+        assert!(strips_thinking_at_compaction("codex/gpt-6.2-sol"));
+        assert!(strips_thinking_at_compaction(
+            "openai-codex::codex/gpt-6.2-sol"
+        ));
+        assert!(!binds_thinking("codex/gpt-6.2-sol"));
+        assert!(strips_thinking_at_compaction("claude-opus-5-5"));
+        assert!(!strips_thinking_at_compaction("gpt-6.2-sol"));
+        assert!(!strips_thinking_at_compaction("claude-mythos-5-1"));
     }
 
     #[test]
