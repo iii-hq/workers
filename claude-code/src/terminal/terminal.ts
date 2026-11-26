@@ -16,9 +16,11 @@ import { type HostPrepared, prepareSession } from './workspace.js';
 
 const DescribePayloadSchema = z.object({
   mode: z
-    .enum(['original', 'fork'])
+    .literal('fork')
     .optional()
-    .describe('Explicit session action. Without a mode, preserve the legacy automatic behavior.'),
+    .describe(
+      'Explicitly open a separate fork. Without a mode, preserve the legacy automatic behavior.',
+    ),
   claude_session_id: z
     .guid()
     .optional()
@@ -70,11 +72,6 @@ export function registerTerminal(
           ? await resolveOpen(session, request)
           : await resolveOpen(session)
         : undefined;
-      if (mode === 'original') {
-        if (open && 'follow' in open && open.claude_session_id === claude_session_id) return open;
-        throw new Error('the original is unavailable for read-only follow');
-      }
-      if (open && !('args' in open)) throw new Error('no terminal launch plan');
       if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
       const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
       if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
@@ -87,7 +84,7 @@ export function registerTerminal(
           fresh.args.length === open.args.length &&
           fresh.args.every((arg, i) => arg === open.args[i]);
         const fresh = await resolveOpen(session, request);
-        if (!('args' in fresh) || !samePlan(fresh)) {
+        if (!samePlan(fresh)) {
           throw new Error('the session changed while opening; refresh the list');
         }
       }
@@ -100,19 +97,12 @@ export function registerTerminal(
     },
     {
       description:
-        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit original action only returns a read-only follow target. An explicit fork always creates a separate conversation.',
+        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit fork always creates a separate conversation.',
       request_format: jsonSchema(DescribePayloadSchema),
       response_format: {
         type: 'object',
-        anyOf: [
-          { required: ['program', 'args', 'cwd', 'env'] },
-          { required: ['follow', 'claude_session_id'] },
-        ],
+        required: ['program', 'args', 'cwd', 'env'],
         properties: {
-          follow: {
-            const: true,
-            description: 'No original transport: use the read-only reply APIs.',
-          },
           claude_session_id: { type: 'string' },
           program: { type: 'string' },
           args: { type: 'array', items: { type: 'string' } },

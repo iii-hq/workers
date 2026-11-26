@@ -17,6 +17,7 @@
  */
 import {
   Button,
+  ConfirmDialog,
   EmptyState,
   type ExtensionIii,
   IconButton,
@@ -32,7 +33,6 @@ import {
   StatusBar,
   StatusDot,
   StatusPanel,
-  useConfirm,
 } from '@iii-dev/console-ui';
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format';
 import { useWorkerLive } from '@iii-dev/console-ui/hooks';
@@ -62,6 +62,7 @@ interface AgentRow {
 }
 
 type SessionAnnouncement = LiveAnnouncement & { externalId?: string };
+type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation: number };
 
 interface AgentList {
   agents: AgentRow[];
@@ -172,10 +173,11 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     },
     handlerId: 'iii::claude-ui::sessions',
   });
-  const { confirm, dialog } = useConfirm();
+  const [confirmation, setConfirmation] = useState<SessionConfirmation | null>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
   const [composing, setComposing] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
-  const [opening, setOpening] = useState<string | null>(null);
+  const [openingFork, setOpening] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState<SessionAnnouncement | null>(null);
   const seq = useRef(0);
@@ -282,6 +284,23 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const rows = currentVisibility
     ? listed
     : listed.filter((row) => !row.external_only).map((row) => ({ ...row, short_id: undefined }));
+  const activeConfirmation =
+    confirmation &&
+    (!confirmation.row.external_only ||
+      (currentVisibility &&
+        confirmation.generation === visibility &&
+        rows.some((row) => row.id === confirmation.row.id)))
+      ? confirmation
+      : null;
+  useEffect(() => {
+    if (confirmation && !activeConfirmation) {
+      setConfirmation(null);
+      refreshButton.current?.focus();
+    }
+  }, [confirmation, activeConfirmation]);
+  const opening =
+    openingFork ?? (activeConfirmation?.action === 'fork' ? activeConfirmation.row.id : null);
+
   const here = byAttention(rows.filter((row) => row.pty_session_id));
   const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
@@ -295,25 +314,18 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   };
 
   const forkRow = async (row: AgentRow) => {
-    if (opening || !row.claude_session_id) return;
+    if (openingFork || !row.claude_session_id) return;
     const name = nameOf(row);
     setFailure(null);
     setOpening(row.id);
+    const stillVisible = () => !row.external_only || visibility === generation.current;
     try {
-      if (
-        !(await confirm({
-          title: `Fork ${name}?`,
-          description:
-            'Start a separate conversation with the history so far. New messages in the fork won’t change the original.',
-          confirmLabel: 'Create fork',
-        }))
-      )
-        return;
       const spec = await host.iii.call(
         'claude::terminal::describe',
         { session: row.id, mode: 'fork', claude_session_id: row.claude_session_id },
         { timeoutMs: DESCRIBE_TIMEOUT_MS },
       );
+      if (!stillVisible()) return;
       if (
         spec.claude_session_id !== row.claude_session_id ||
         spec.copy !== true ||
@@ -331,7 +343,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       setComposing(null);
       announce(row, `Opened a fork of ${name}`);
     } catch (err) {
-      setFailure(errorMessage(err));
+      if (stillVisible()) setFailure(errorMessage(err));
     } finally {
       setOpening(null);
       // After a refusal too: the row was probably out of date.
@@ -341,15 +353,6 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
 
   const stop = async (row: AgentRow) => {
     const background = row.kind === 'background';
-    const ok = await confirm({
-      title: `Stop ${nameOf(row)}?`,
-      description: background
-        ? `Its conversation is kept; resume it later with claude attach ${row.short_id}.`
-        : 'The turn ends now; the conversation is kept and takes the next message.',
-      confirmLabel: 'Stop',
-      tone: 'danger',
-    });
-    if (!ok) return;
     setFailure(null);
     setStopping(row.id);
     try {
@@ -460,7 +463,10 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                     variant="ghost"
                     aria-label={`Fork ${name}`}
                     aria-disabled={!!opening}
-                    onClick={() => void forkRow(row)}
+                    onClick={() => {
+                      if (!opening)
+                        setConfirmation({ row, action: 'fork', generation: visibility });
+                    }}
                   >
                     Fork
                   </Button>
@@ -483,7 +489,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                     variant="ghost"
                     label={`Stop ${name}`}
                     disabled={isStopping}
-                    onClick={() => void stop(row)}
+                    onClick={() => setConfirmation({ row, action: 'stop', generation: visibility })}
                   >
                     <Square aria-hidden />
                   </IconButton>
@@ -578,9 +584,32 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       ? 'Sessions unavailable'
       : 'Reading sessions…';
 
+  const target = activeConfirmation?.row;
+  const isFork = activeConfirmation?.action === 'fork';
+  const confirmationDescription = !target
+    ? undefined
+    : isFork
+      ? 'Start a separate conversation with the history so far. New messages in the fork won’t change the original.'
+      : target.kind === 'background'
+        ? `Its conversation is kept; resume it later with claude attach ${target.short_id}.`
+        : 'The turn ends now; the conversation is kept and takes the next message.';
   return (
     <div className="claude-sessions">
-      {dialog}
+      <ConfirmDialog
+        open={!!target}
+        onOpenChange={(open) => {
+          if (!open) setConfirmation(null);
+        }}
+        title={target ? `${isFork ? 'Fork' : 'Stop'} ${nameOf(target)}?` : ''}
+        description={confirmationDescription}
+        confirmLabel={target ? (isFork ? 'Create fork' : 'Stop') : undefined}
+        tone={target && !isFork ? 'danger' : 'default'}
+        onConfirm={() => {
+          if (!target || (target.external_only && visibility !== generation.current)) return;
+          if (isFork) void forkRow(target);
+          else void stop(target);
+        }}
+      />
       {follow ? (
         <SessionDetail
           key={follow}
@@ -636,6 +665,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           <ShadcnButton
             variant="ghost"
             size="icon-sm"
+            ref={refreshButton}
             aria-label="Refresh sessions"
             title="Refresh sessions"
             onClick={refresh}

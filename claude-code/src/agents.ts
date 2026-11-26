@@ -60,13 +60,8 @@ export type AgentRow = z.infer<typeof AgentRowSchema>;
 
 /** How a terminal opens a listed session; `copy` when it opens a fork of it. */
 export type OpenSpec = { args: string[]; cwd: string; copy?: true };
-export type OpenMode = 'original' | 'fork';
-export type OpenRequest = {
-  mode: OpenMode;
-  claude_session_id: string;
-};
-export type OpenPlan = OpenSpec | { follow: true; claude_session_id: string };
-export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenPlan>;
+type OpenRequest = { mode: 'fork'; claude_session_id: string };
+export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenSpec>;
 
 const ListPayloadSchema = z.object({
   all: z
@@ -292,13 +287,11 @@ export function registerAgents(
       host = current(),
       replies = false,
       showAll = replies || external(),
-      readPtys = !replies,
       markExternal = false,
     }: {
       host?: Prepared;
       replies?: boolean;
       showAll?: boolean;
-      readPtys?: boolean;
       markExternal?: boolean;
     } = {},
   ) => {
@@ -306,7 +299,7 @@ export function registerAgents(
       listSessions(iii),
       cliSnapshot(iii, host, all),
       !showAll || markExternal ? hookSessions(iii) : new Set<string>(),
-      readPtys ? claudePtys(iii) : null,
+      replies ? null : claudePtys(iii),
     ]);
     const merge = (externalVisibility = showAll) =>
       mergeInventory({
@@ -410,7 +403,6 @@ export function registerAgents(
     const epoch = visibilityEpoch();
     const { merge, detail } = await inventory(true, {
       showAll: request ? epoch !== null : external(),
-      readPtys: request?.mode !== 'original',
     });
     if (request && epoch !== visibilityEpoch())
       throw new Error('session visibility changed; refresh the list');
@@ -427,12 +419,6 @@ export function registerAgents(
         request.claude_session_id !== claudeId
       ) {
         throw new Error('the listed conversation changed or is unavailable');
-      }
-      if (request.mode === 'original') {
-        if (epoch === null) throw new Error('reply access disabled');
-        // PTY metadata and CLI IDs only identify a process at one instant.
-        // The current transport cannot bind streaming output and input to this UUID.
-        return { follow: true, claude_session_id: claudeId };
       }
       if (!row.cwd) throw new Error('this session has no recorded working directory');
       return {

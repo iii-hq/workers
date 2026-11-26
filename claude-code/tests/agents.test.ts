@@ -594,6 +594,38 @@ describe('claude::agents::follow-snapshot', () => {
     });
   });
 
+  it.each([
+    'interactive',
+    'background',
+    'finished',
+  ] as const)('follows a synthetic %s conversation without using a terminal', async (kind) => {
+    await withSyntheticHost(async ({ host, client, claude_session_id, refresh }) => {
+      const backgroundRow = kind !== 'interactive';
+      host.cli[0] = {
+        ...host.cli[0],
+        kind: backgroundRow ? 'background' : 'interactive',
+        pid: kind === 'finished' ? undefined : 42,
+        ...(backgroundRow ? { state: kind === 'finished' ? 'done' : 'working' } : {}),
+      };
+      host.calls.length = 0;
+      const snapshot = () => client.call({ function_id, payload: { claude_session_id } });
+      expect(await snapshot()).toMatchObject({
+        claude_session_id,
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      expect(host.calls.filter((call) => call.function_id.startsWith('shell::pty::'))).toEqual([]);
+      expect(
+        host.calls
+          .filter((call) => call.function_id === 'shell::exec')
+          .map((call) => call.payload.command),
+      ).toEqual(["'fixture-cli' agents --json --all", 'python3']);
+
+      host.config = async () => ({ external_sessions: false });
+      await refresh();
+      await expect(snapshot()).rejects.toThrow('reply access disabled');
+    });
+  });
+
   it('does not read transcript data after a lookup loses its live visibility epoch', async () => {
     let epoch: number | null = 1;
     const id = '7e64247f-5095-4a53-9b54-2d8d61b20356';
@@ -628,44 +660,20 @@ describe('opening a listed session', () => {
     return fake.resolveOpen(id);
   };
 
-  const original = { mode: 'original' as const, claude_session_id: ID };
-  const fork = { ...original, mode: 'fork' as const };
+  const fork = { mode: 'fork' as const, claude_session_id: ID };
 
-  it('offers only read-only follow for a live interactive original and a distinct explicit fork', async () => {
+  it('resolves an explicit fork separately from the live interactive original', async () => {
     const fake = host(ok([interactive(ID, 'idle')]), { external: true });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
     expect(await fake.resolveOpen(ID, fork)).toEqual({
       args: [...RESUME, '--fork-session'],
       cwd: '/repo',
       copy: true,
     });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
     expect(await fake.heldElsewhere(ID)).toBe(true);
   });
 
-  it('follows an original without accessing even a PID-matched console PTY', async () => {
-    const ptys = vi.fn(() => ({
-      sessions: [{ session_id: 'fixture-pty', pid: 42, ui: 'claude', status: 'attached' }],
-    }));
-    const fake = host(ok([interactive(ID, 'idle')]), { external: true, ptys });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-    expect(ptys).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    background(ID, 'working', { id: 'abcdef98', pid: 99 }),
-    background(ID, 'done'),
-  ])('only follows an unbound background original (%j)', async (row) => {
-    const fake = host(ok([row]), { external: true });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-  });
-
-  it.each([
-    'original',
-    'fork',
-  ] as const)('refuses %s on hidden, changed, missing or unavailable inventory', async (mode) => {
-    const request = { mode, claude_session_id: ID };
-    await expect(host(ok([interactive(ID, 'busy')])).resolveOpen(ID, request)).rejects.toThrow(
+  it('refuses a fork on hidden, changed, missing or unavailable inventory', async () => {
+    await expect(host(ok([interactive(ID, 'busy')])).resolveOpen(ID, fork)).rejects.toThrow(
       'no session with that id is listed',
     );
     const fake = host(ok([]));
@@ -673,22 +681,11 @@ describe('opening a listed session', () => {
       'claude_sessions/h',
       record('h', 'done', '11223344-0000-4000-8000-000000000000'),
     );
-    await expect(fake.resolveOpen('h', request)).rejects.toThrow(/changed/);
-    await expect(fake.resolveOpen(ID, request)).rejects.toThrow(
-      'no session with that id is listed',
-    );
+    await expect(fake.resolveOpen('h', fork)).rejects.toThrow(/changed/);
+    await expect(fake.resolveOpen(ID, fork)).rejects.toThrow('no session with that id is listed');
     await expect(
-      host(() => ({ exit_code: 1, stderr: 'failed', stdout: '' })).resolveOpen(ID, request),
+      host(() => ({ exit_code: 1, stderr: 'failed', stdout: '' })).resolveOpen(ID, fork),
     ).rejects.toThrow('session inventory unavailable');
-  });
-
-  it('never reserves a finished original as a terminal launch', async () => {
-    const fake = host(ok([]), { external: true });
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    expect(await fake.resolveOpen('h', original)).toEqual({ follow: true, claude_session_id: ID });
-    expect(await fake.resolveOpen('h', original)).toEqual({ follow: true, claude_session_id: ID });
-    expect(await fake.heldElsewhere(ID)).toBe(false);
-    expect(await fake.resolveOpen('h')).toEqual({ args: RESUME, cwd: '/work' });
   });
 
   it('does not grant an explicit fork across an off/on refresh', async () => {
@@ -701,15 +698,6 @@ describe('opening a listed session', () => {
       { external: true, visibilityEpoch: () => epoch },
     );
     await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
-  });
-
-  it('requires live reply permission even for a tracked original', async () => {
-    const fake = host(ok([interactive(ID, 'idle')]), {
-      external: true,
-      tracked: [ID],
-      visibilityEpoch: () => null,
-    });
-    await expect(fake.resolveOpen(ID, original)).rejects.toThrow('reply access disabled');
   });
 
   it('resumes a finished run in its own directory', async () => {

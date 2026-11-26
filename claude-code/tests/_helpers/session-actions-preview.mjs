@@ -16,7 +16,7 @@ const portArg = process.argv.indexOf('--port');
 const port = portArg < 0 ? 4197 : Number(process.argv[portArg + 1]);
 const primitives = {
   'ui/Button': 'Button',
-  'ui/ConfirmDialog': 'useConfirm',
+  'ui/ConfirmDialog': 'ConfirmDialog',
   'ui/Dialog': 'Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription',
   'ui/EmptyState': 'EmptyState',
   'ui/IconButton': 'IconButton',
@@ -294,6 +294,31 @@ async function testSessionActions(code) {
     assert.equal(document.documentElement.dataset.replyWatches, '1');
     assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /copy-1/);
     assert.match(terminal(), /Terminal open calls:\s*1.*Terminals created:\s*1/);
+  });
+
+  await test('dismisses an external fork confirmation as soon as access is revoked', async (t) => {
+    const { click, focus, shortcut, text, document, until } = setup(t, { heartbeat: false });
+    const original = '[aria-label="Open original: Design review"]';
+    const dialog = () => document.querySelector('[role="alertdialog"]');
+
+    await click('Fork Design review');
+    await focus('Cancel');
+    await text('Fork Design review?');
+    assert.ok(dialog());
+    shortcut('KeyR');
+    await until(() => !document.querySelector(original));
+    assert.doesNotMatch(dialog()?.textContent ?? '', /Design review/);
+    await until(() => !dialog());
+    await focus('Refresh sessions');
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+
+    await click('Toggle access');
+    await until(() => document.querySelector(original));
+    assert.equal(dialog(), null);
+    await click('Fork Design review');
+    await click('Create fork');
+    await text('Separate fork terminal · copy-1');
   });
 
   await test('clears a fork announcement when access to its original is revoked', async (t) => {
