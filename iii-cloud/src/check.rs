@@ -858,7 +858,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let started = Instant::now();
     // The harness drops a call at 300 s: every wait of this one ends by then,
     // counted from the start (the fetch and the plan read take from it too).
-    let deadline = started + crate::run::CALL_WAIT;
+    let deadline = started + crate::run::call_wait(ctx);
     if request
         .manifest
         .as_deref()
@@ -1262,7 +1262,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                     break;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(ctx.secs(1).min(Duration::from_millis(500))).await;
         }
     }
     Ok(check)

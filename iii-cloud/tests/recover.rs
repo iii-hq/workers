@@ -117,23 +117,51 @@ async fn a_restart_kills_the_process_group_of_the_stage_that_was_running() {
     use std::os::unix::process::CommandExt;
     let h = harness("http://cloud.test", Arc::new(Fake::default()));
     let cfg = h.ctx.config().await;
-    let mut stage = std::process::Command::new("sleep")
-        .arg("300")
-        .process_group(0)
-        .spawn()
-        .unwrap();
+    // Ended whatever the assertions do: the guard kills that exact child.
+    struct Stage(std::process::Child);
+    impl Drop for Stage {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut stage = Stage(
+        std::process::Command::new("sleep")
+            .arg("20")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
     let run_dir = cfg.data_path().join("runs/r2");
     std::fs::create_dir_all(&run_dir).unwrap();
+    let pid = stage.0.id();
+    let saved = |start: Option<String>| {
+        serde_json::json!({"containers": [], "copy": null, "iii_bin": "true", "stage_group": pid, "stage_start": start}).to_string()
+    };
+    // A pid that shows another start time is another process now (a reboot reused it):
+    // it is left alone and only the record is dropped.
     std::fs::write(
         run_dir.join("run.json"),
-        serde_json::json!({"containers": [], "copy": null, "iii_bin": "true", "stage_group": stage.id()}).to_string(),
+        saved(Some("Thu Jan  1 00:00:00 1970".into())),
+    )
+    .unwrap();
+    recover(&h.ctx).await;
+    assert!(
+        stage.0.try_wait().unwrap().is_none(),
+        "a live group of another start time was killed"
+    );
+    assert!(!run_dir.join("run.json").exists());
+    // The same process (the start time it shows): its group goes.
+    std::fs::write(
+        run_dir.join("run.json"),
+        saved(iii_cloud::run::proc_start(pid)),
     )
     .unwrap();
     recover(&h.ctx).await;
     // Killed by SIGKILL: `wait` returns at once, with no exit code.
     let status = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        tokio::task::spawn_blocking(move || stage.wait().unwrap()),
+        tokio::task::spawn_blocking(move || stage.0.wait().unwrap()),
     )
     .await
     .expect("the stage was left running")
