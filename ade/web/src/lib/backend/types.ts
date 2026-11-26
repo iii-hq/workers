@@ -1,3 +1,4 @@
+import type { SnapshotAutocompact } from '@/lib/autocompact'
 import type { ModelId } from '@/types/chat'
 import type {
   HarnessFileBlock,
@@ -303,6 +304,12 @@ export interface ContextUsageReport {
   total: number
   usable: number
   free: number
+  /**
+   * The snapshot's auto-compact (chat-projects phase 3, contract C): the
+   * size, the effective threshold and the rule as the last turn resolved
+   * them. Absent from an older harness.
+   */
+  autocompact?: SnapshotAutocompact | null
 }
 
 export interface ChatBackend {

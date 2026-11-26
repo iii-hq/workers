@@ -24,10 +24,22 @@ export const factValueClassName = 'font-inter text-sm text-ink'
 export const factMonoValueClassName =
   'font-mono text-body text-ink tabular-nums'
 
-type AccentStyle = CSSProperties & { '--fact-accent'?: string }
+type AccentStyle = CSSProperties & {
+  '--fact-accent'?: string
+  '--fact-tick'?: string
+}
 
 function accentStyle(accent: string | undefined): AccentStyle | undefined {
   return accent ? { '--fact-accent': accent } : undefined
+}
+
+/** The meter's accent and, with a tick, where the tick sits. */
+function meterStyle(
+  accent: string | undefined,
+  tick: number | null,
+): AccentStyle | undefined {
+  if (tick === null) return accentStyle(accent)
+  return { ...accentStyle(accent), '--fact-tick': `${tick}%` }
 }
 
 export interface FactCardProps extends ComponentProps<'div'> {
@@ -235,6 +247,11 @@ export interface FactMeterProps {
   label: string
   /** Still growing: the fill pulses at full width. */
   pending?: boolean
+  /**
+   * A threshold on the bar, 0..100: an amber (Warning) mark standing over
+   * the track, such as where auto-compact fires (chat-projects §3.3.3).
+   */
+  tick?: number | null
   className?: string
 }
 
@@ -244,9 +261,25 @@ export function FactMeter({
   accent,
   label,
   pending = false,
+  tick,
   className,
 }: FactMeterProps) {
   const clamped = Math.min(100, Math.max(0, value))
+  const fill = (
+    <div
+      className={cn(
+        'h-full rounded-full bg-(--fact-accent,var(--color-ink)) transition-[width] duration-(--motion-duration-panel)',
+        pending && 'animate-pulse',
+      )}
+      style={{ width: pending ? '100%' : `${Math.max(1, clamped)}%` }}
+    />
+  )
+  // With a tick, the mark stands taller than the 4px track: the track
+  // clips the fill and the frame around it does not.
+  const at =
+    tick == null || !Number.isFinite(tick)
+      ? null
+      : Math.min(100, Math.max(0, tick))
   return (
     <div
       data-slot="fact-meter"
@@ -256,18 +289,27 @@ export function FactMeter({
       aria-valuemax={100}
       aria-valuenow={Math.round(clamped)}
       className={cn(
-        'h-1 w-full overflow-hidden rounded-full bg-muted',
+        at === null
+          ? 'h-1 w-full overflow-hidden rounded-full bg-muted'
+          : 'relative h-1 w-full',
         className,
       )}
-      style={accentStyle(accent)}
+      style={meterStyle(accent, at)}
     >
-      <div
-        className={cn(
-          'h-full rounded-full bg-(--fact-accent,var(--color-ink)) transition-[width] duration-(--motion-duration-panel)',
-          pending && 'animate-pulse',
-        )}
-        style={{ width: pending ? '100%' : `${Math.max(1, clamped)}%` }}
-      />
+      {at === null ? (
+        fill
+      ) : (
+        <>
+          <div className="h-full w-full overflow-hidden rounded-full bg-muted">
+            {fill}
+          </div>
+          <span
+            data-slot="fact-meter-tick"
+            aria-hidden
+            className="absolute -top-1 -bottom-1 left-(--fact-tick) w-0.5 -translate-x-1/2 rounded-full bg-warn"
+          />
+        </>
+      )}
     </div>
   )
 }

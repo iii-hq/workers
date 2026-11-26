@@ -238,6 +238,8 @@ export interface HarnessStatusReport {
     usable: number
     free: number
     categories?: { tools?: number; overhead?: number }
+    /** Phase 3 (contract C): read it with `parseSnapshotAutocompact`. */
+    autocompact?: unknown
   }
 }
 

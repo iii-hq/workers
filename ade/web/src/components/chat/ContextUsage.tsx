@@ -11,6 +11,12 @@ import {
   FactList,
   FactMeter,
 } from '@/components/ui/FactCard'
+import {
+  type AutocompactRule,
+  meterLabel,
+  meterLine,
+  tickRatio,
+} from '@/lib/autocompact'
 import type { ContextUsageReport } from '@/lib/backend/types'
 import {
   estimateConversationTokens,
@@ -31,6 +37,13 @@ interface ContextUsageProps {
    * the elided tail page on reload.
    */
   reported?: ContextUsageReport
+  /**
+   * Auto-compact (chat-projects phase 3, §3.3.3): the size this
+   * conversation compacts at against the reported `usable` (null: the
+   * model's own limit) and the rule that set it. Absent on an engine without
+   * it; shown only with a report, whose `usable` the size is measured on.
+   */
+  autocompact?: { effective: number | null; rule: AutocompactRule | null }
 }
 
 const WARN_THRESHOLD = 0.75
@@ -66,6 +79,7 @@ export function ContextUsage({
   messages,
   contextWindow,
   reported,
+  autocompact,
 }: ContextUsageProps) {
   const [open, setOpen] = useState(false)
   const estimate = useMemo(
@@ -91,7 +105,12 @@ export function ContextUsage({
   if (ratio >= DANGER_THRESHOLD) tone = 'danger'
   else if (ratio >= WARN_THRESHOLD) tone = 'warn'
 
-  const label = `context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasCapacity ? ` of ${capacity.toLocaleString()} (${pct}%)` : ''} — click for details`
+  // Auto-compact marks the meter only against the reported budget.
+  const auto = reported && autocompact ? autocompact : null
+  const tick = auto ? tickRatio(auto.effective, capacity) : null
+  const autoLabel = auto?.effective != null ? meterLabel(auto.effective) : null
+
+  const label = `context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasCapacity ? ` of ${capacity.toLocaleString()} (${pct}%)` : ''}${autoLabel ? `, ${autoLabel}` : ''} — click for details`
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -109,7 +128,7 @@ export function ContextUsage({
           aria-valuemax={100}
           className={cn('flex', RING_TONE[tone])}
         >
-          <RingGauge ratio={ratio} size={16} stroke={2.5} />
+          <RingGauge ratio={ratio} size={16} stroke={2.5} tick={tick} />
         </span>
         {/* Under 24rem the counts give way to the chat's title too; the
  ring stays and the trigger's label still says everything. */}
@@ -129,6 +148,19 @@ export function ContextUsage({
             {formatTokenCount(tokens)}
           </span>
         )}
+        {/* Wide surfaces only (§3.3.3): the pane's narrow form drops it
+ with the caret. */}
+        {autoLabel ? (
+          <span
+            data-autocompact-label=""
+            className="font-mono text-meta whitespace-nowrap text-ink-faint @max-[30rem]:hidden"
+          >
+            <span aria-hidden className="mr-1 text-ink-ghost">
+              ·
+            </span>
+            {autoLabel}
+          </span>
+        ) : null}
         {/* Under a 30rem pane (`@container` on the chat root) the caret
  goes; the ring and the counts are what you act on. */}
         <ChevronDown
@@ -160,6 +192,7 @@ export function ContextUsage({
               value={pct}
               accent={ACCENT_TONE[tone]}
               label="share of the context window"
+              tick={tick === null ? null : tick * 100}
               className="flex-1"
             />
             <span
@@ -173,6 +206,15 @@ export function ContextUsage({
               <span className="text-ink-faint"> · {pct}%</span>
             </span>
           </div>
+        ) : null}
+
+        {auto ? (
+          <p
+            data-autocompact-line=""
+            className="text-xs leading-4 text-ink-faint"
+          >
+            {meterLine(auto.effective, auto.rule)}
+          </p>
         ) : null}
 
         <FactList>
