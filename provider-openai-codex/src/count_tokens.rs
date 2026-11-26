@@ -52,9 +52,10 @@ const IMAGE_MAX_TILES: u64 = 8;
 // The most patches a model bills: gpt-5/5.1 mini and nano shrink an image to
 // 4096, gpt-5.2 to 5.5 to 10000, and gpt-5.6 and gpt-6 reject one over 30000.
 const IMAGE_PATCH_BUDGETS: [u64; 3] = [4096, 10000, 30000];
-// Codex's own estimate of a replayed reasoning item: the decoded payload
-// minus this fixed envelope, at 4 bytes a token.
-const REASONING_ENVELOPE_BYTES: u64 = 650;
+// A replayed reasoning item bills about its reasoning tokens: measured 18-29
+// encrypted bytes a token on gpt-6.2-sol (Codex CLI's decoded/4 is ~4x high);
+// 16 keeps the count an overcount.
+const ENCRYPTED_BYTES_PER_TOKEN: u64 = 16;
 // Base64 that holds a png/webp/gif header and most jpeg ones (EXIF comes first);
 // a multiple of 4 so it decodes alone. The whole image is the fallback.
 const IMAGE_HEADER_B64: usize = 128 * 1024;
@@ -141,9 +142,7 @@ fn item_tokens(model: &str, item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
         }
         Some("reasoning") => {
             let blob = item["encrypted_content"].as_str().unwrap_or("").len() as u64;
-            (blob * 3 / 4)
-                .saturating_sub(REASONING_ENVELOPE_BYTES)
-                .div_ceil(4)
+            blob.div_ceil(ENCRYPTED_BYTES_PER_TOKEN)
         }
         _ => {
             let frame = if item["role"] == "assistant" {
@@ -589,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replayed_reasoning_item_counts_codex_estimate() {
+    fn a_replayed_reasoning_item_counts_its_measured_rate() {
         let signed = |blob_len: usize, model: &str| {
             let item = json!({
                 "type": "reasoning",
@@ -608,9 +607,9 @@ mod tests {
                 vec![user("hi"), assistant(vec![thought, call("t1")])],
             ) - count("", vec![], vec![user("hi"), assistant(vec![call("t1")])])
         };
-        // (4000 * 3 / 4 - 650) / 4, rounded up.
-        assert_eq!(with(signed(4000, "codex/gpt-5.5")), 588);
-        assert_eq!(with(signed(600, "codex/gpt-5.5")), 0);
+        // 4000 / 16 and 600 / 16, rounded up.
+        assert_eq!(with(signed(4000, "codex/gpt-5.5")), 250);
+        assert_eq!(with(signed(600, "codex/gpt-5.5")), 38);
         assert_eq!(with(signed(4000, "codex/gpt-5.4")), 0);
         assert_eq!(
             with(ContentBlock::Thinking {

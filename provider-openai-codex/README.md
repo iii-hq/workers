@@ -13,7 +13,8 @@ into a router-owned channel), `provider::openai-codex::refresh_models`
 `provider::openai-codex::count_tokens` (local prompt token estimation with
 the tiktoken tokenizers behind `router::count_tokens`, over the Responses
 items the stream sends, with each image costed from its dimensions and each
-replayed reasoning item from Codex's own estimate; never runs the model,
+replayed reasoning item at one token per 16 encrypted bytes, a measured
+overcount of what the backend bills; never runs the model,
 costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
