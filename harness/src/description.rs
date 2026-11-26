@@ -241,6 +241,28 @@ pub fn ends_turn<'a>(
     any && only_descriptions && has_reply_text && !has_submit && !steering
 }
 
+/// What the description answers when its step, beside reply text, opens the
+/// turn. That text can be an announcement ("I'll check the tests first"): a
+/// model that makes one call per step sends it with this call alone, and
+/// ending the turn there stopped every such turn before its work. So the
+/// turn goes on, and the model ends it itself when the text was its answer.
+pub const GO_ON_NOTE: &str = "Description set. If your reply above already answers the user, end your turn now and write nothing more; if work remains, make your next call.";
+
+/// Whether the turn made a call other than `harness::set-description` (its
+/// checkpoints before the current step).
+pub fn did_other_work<'a>(mut function_ids: impl Iterator<Item = Option<&'a str>>) -> bool {
+    function_ids.any(|id| id != Some(SET_DESCRIPTION_ID))
+}
+
+/// The description's result with [`GO_ON_NOTE`] as `next`.
+pub fn with_go_on(mut data: ResultData) -> ResultData {
+    if let Value::Object(details) = &mut data.details {
+        details.insert("next".into(), Value::String(GO_ON_NOTE.into()));
+        data.content = vec![ContentBlock::text(data.details.to_string())];
+    }
+    data
+}
+
 /// Whether an assistant message carries reply text (not only thinking or calls).
 pub fn has_reply_text(content: &[ContentBlock]) -> bool {
     content.iter().any(|block| match block {
@@ -451,5 +473,33 @@ mod tests {
         assert!(!ends_turn(std::iter::empty(), true, false, false));
         assert!(has_reply_text(&[ContentBlock::text("Done.")]));
         assert!(!has_reply_text(&[ContentBlock::text("  ")]));
+    }
+
+    #[test]
+    fn other_work_is_any_call_but_the_description() {
+        assert!(!did_other_work(std::iter::empty()));
+        assert!(!did_other_work([Some(SET_DESCRIPTION_ID)].into_iter()));
+        assert!(did_other_work(
+            [Some(SET_DESCRIPTION_ID), Some("shell::exec")].into_iter()
+        ));
+        assert!(
+            did_other_work([None].into_iter()),
+            "a checkpoint with no id is still a call"
+        );
+    }
+
+    #[test]
+    fn go_on_note_rides_on_the_answer() {
+        let data = with_go_on(result(&SetDescriptionResponse {
+            ok: true,
+            reason: None,
+            title_ignored: None,
+        }));
+        assert_eq!(data.details["ok"], json!(true));
+        assert_eq!(data.details["next"], json!(GO_ON_NOTE));
+        let ContentBlock::Text { text, .. } = &data.content[0] else {
+            panic!("text content")
+        };
+        assert!(text.contains("end your turn now"), "{text}");
     }
 }

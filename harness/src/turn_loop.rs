@@ -2120,6 +2120,18 @@ async fn finish_step(
         .filter(|c| c.kind == CallKind::Call)
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
+    // A step whose only calls are harness::set-description, beside reply
+    // text, ends the turn only once the turn did other work: at its start the
+    // text can be an announcement, which the model then follows up itself.
+    let worked_before_step =
+        crate::description::did_other_work(record.calls.values().map(|c| c.function_id.as_deref()));
+    let describes_opening = !worked_before_step
+        && crate::description::ends_turn(
+            dispatch_calls.iter().map(|call| call.function_id.as_str()),
+            crate::description::has_reply_text(&outcome.message.content),
+            submit_call.is_some(),
+            false,
+        );
 
     if !dispatch_calls.is_empty() {
         crate::session_status::write_phase(deps, &record, "running tools").await;
@@ -2378,6 +2390,9 @@ async fn finish_step(
                     call_args,
                 ))
                 .await;
+                if describes_opening {
+                    data = crate::description::with_go_on(data);
+                }
                 let mut annotations = serde_json::Map::new();
                 crate::reconcile::settle_result(
                     deps,
@@ -2831,8 +2846,9 @@ async fn finish_step(
     // an ask was accepted, so ordinary function steps pay no extra reads.
     if !dispatch_calls.is_empty() {
         // A step whose only calls are harness::set-description, in a message
-        // that already has its reply text, ends the turn: the model is not
-        // called again (chat-projects §1.2.3).
+        // that already has its reply text, ends the turn once the turn did
+        // other work: the model is not called again (chat-projects §1.2.3).
+        // At the turn's start it goes on (`describes_opening` above).
         let describes_only = crate::description::ends_turn(
             dispatch_calls.iter().map(|call| call.function_id.as_str()),
             crate::description::has_reply_text(&outcome.message.content),
@@ -2840,6 +2856,7 @@ async fn finish_step(
             false,
         );
         if describes_only
+            && worked_before_step
             && !(has_user_after_watermark(&session, &record).await?
                 || has_queued(deps, &record).await?)
         {

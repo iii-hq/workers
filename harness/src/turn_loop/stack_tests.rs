@@ -2766,13 +2766,21 @@ fn describe_reply(with_text: bool) -> Value {
         "content": content})
 }
 
-/// chat-projects §1.2.3, the terminal-step rule: a step whose only call is
-/// `harness::set-description`, beside reply text, ends the turn once its
-/// result is written. One session::patch-meta carries the description; the
-/// model is offered the tool and is not asked again.
+/// chat-projects §1.2.3, the terminal-step rule: once the turn did other
+/// work, a step whose only call is `harness::set-description`, beside reply
+/// text, ends the turn once its result is written. One session::patch-meta
+/// carries the description; the model is offered the tool and is not asked
+/// again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_description_beside_the_reply_ends_the_turn_without_another_request() {
-    let (result, calls, turn) = generate(describe_reply(true)).await;
+async fn a_description_beside_the_reply_ends_the_turn_after_other_work() {
+    let (result, calls, turn) = run_on_fake_engine(
+        json!({"call_read": {"state": "done", "function_id": "shell::exec"}}),
+        json!([]),
+        Some(describe_reply(true)),
+        json!({}),
+        step_one,
+    )
+    .await;
     assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
     assert!(
         !calls
@@ -2818,6 +2826,31 @@ async fn a_description_beside_the_reply_ends_the_turn_without_another_request() 
         .expect("the call's result is written");
     assert_eq!(result["function_id"], "harness::set-description");
     assert_eq!(result["details"]["ok"], true);
+}
+
+/// At the turn's start the same step goes on: its text can be an
+/// announcement ("I'll check the tests first") that a model making one call
+/// per step pairs with the description. The result tells the model to end the
+/// turn itself when the text was its answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_description_beside_the_reply_at_the_turns_start_asks_the_model_again() {
+    let (result, calls, _) = generate(describe_reply(true)).await;
+    assert_eq!(result.unwrap().next_step, Some(2));
+    assert!(
+        calls
+            .iter()
+            .any(|(function, _)| function == "harness::turn"),
+        "the next step is queued: {calls:?}"
+    );
+    let result = calls
+        .iter()
+        .find(|(function, data)| {
+            function == "session::append" && data["message"]["role"] == "function_result"
+        })
+        .map(|(_, data)| data["message"].clone())
+        .expect("the call's result is written");
+    assert_eq!(result["details"]["ok"], true);
+    assert_eq!(result["details"]["next"], crate::description::GO_ON_NOTE);
 }
 
 /// The same call with no reply text continues like any tool step.
