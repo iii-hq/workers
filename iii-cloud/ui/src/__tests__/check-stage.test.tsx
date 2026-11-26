@@ -9,6 +9,7 @@ import { CheckStage } from '../CheckStage'
 import { boards } from '../fixtures'
 import { agent, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing } from '../fixtures/check'
+import { devValues } from '../fixtures/values'
 import { useStatus } from '../hub'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -223,6 +224,54 @@ describe('You', () => {
     await stage(B('deploy-open-problem'))
     expect(region('You')?.textContent).not.toContain('never sees')
     expect(region('You')?.textContent).toContain("Your agent can't do these")
+  })
+
+  describe('names a file of the folder can fill: one row, the bulk editor in a dialog', () => {
+    const first = () => ({ ...B('deploy-problems'), deploys: [] })
+    const read = (items = devValues.items) => ({
+      'iii-cloud::values': { ...devValues, environment_id: first().project?.environment?.id, items },
+      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'SEARCH_WEIGHT_STARS', ok: true }] },
+    })
+    const fillRow = () =>
+      [...el.querySelectorAll('li.iii-cloud-cs-filled')].find((r) => r.textContent?.includes('can be filled'))
+
+    it('shows the numbers and the files, and counts as one item of You and of the title', async () => {
+      await stage(first(), read(devValues.items.map((i) => ({ ...i, suggestions: [] }))))
+      const n = Number(/^(\d+) thing/.exec(title() ?? '')?.[1])
+      await stage(first(), read())
+      expect(fillRow()?.textContent).toContain(
+        '2 of 4 names your compose file reads can be filled from .env and .env.local.',
+      )
+      expect(fillRow()?.textContent).toContain('Review and save')
+      expect(title()).toMatch(new RegExp(`^${n + 1} things? `))
+    })
+
+    it('its action opens the dialog; saving calls values::save once, then the check', async () => {
+      const h = await stage(first(), read())
+      expect(el.querySelector('[role=dialog]')).toBeNull()
+      await click(btn('Review and save'))
+      expect(el.querySelector('[role=dialog]')?.textContent).toContain('Secrets and variables for')
+      await click(
+        [...el.querySelectorAll('[role=dialog] button')].find((b) =>
+          /^Save \d+ values? and check again/.test(b.textContent ?? ''),
+        ),
+      )
+      const saves = h.calls.filter((c) => c.id === 'iii-cloud::values::save')
+      expect(saves).toHaveLength(1)
+      expect(saves[0].payload).toMatchObject({
+        items: expect.arrayContaining([
+          { name: 'SEARCH_WEIGHT_STARS', from: 'env_file', type: 'variable', file: '.env' },
+        ]),
+      })
+      const ids = h.calls.map((c) => c.id)
+      expect(ids.lastIndexOf('iii-cloud::check')).toBeGreaterThan(ids.indexOf('iii-cloud::values::save'))
+    })
+
+    it('with nothing fillable the row is absent, and a name no file fills keeps its own row', async () => {
+      await stage(first(), read(devValues.items.map((i) => ({ ...i, suggestions: [] }))))
+      expect(fillRow()).toBeUndefined()
+      expect(youItems().some((r) => r.textContent?.includes('STRIPE_SECRET_KEY'))).toBe(true)
+    })
   })
 
   it('the secrets page is one link away, for what the row cannot do', async () => {

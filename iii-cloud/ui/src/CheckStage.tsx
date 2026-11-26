@@ -78,7 +78,7 @@ import {
 } from './parts'
 import type { Route } from './route'
 import type { AgentState, Check, Deploy, Status, ValuesSaved, WorkerError } from './types'
-import { useValues } from './ValuesEditor'
+import { useValues, ValuesDialog } from './ValuesEditor'
 
 export type CheckStageProps = {
   host: Host
@@ -933,6 +933,7 @@ export function CheckStage(props: CheckStageProps) {
 
   const first = !s.deploys.some((d) => d.environment_id === envId)
   const values = useValues(host, s, first && c ? { manifest: c.manifest || null } : null)
+  const [editing, setEditing] = useState(false)
 
   if (!c && !running) {
     return (
@@ -970,7 +971,30 @@ export function CheckStage(props: CheckStageProps) {
   const open = openProblems(s)
 
   // The two lists the title counts: what only the person can do, and what the agent fixes.
-  const needItems = f.person.filter((i) => !i.fixed && i.severity === 'block' && !configAction(i))
+  // The first time: names not in iii cloud that a file of the folder (or another environment) can fill are one row,
+  // opened in the bulk editor; only the names nothing can fill keep a row each.
+  const read = values.data
+  const fillable =
+    read?.save === 'ok'
+      ? read.items.filter(
+          (i) =>
+            i.in_cloud === 'unset' &&
+            !i.database &&
+            !i.invalid_name &&
+            i.suggestions.some((x) => x.source === 'env_file' || x.source === 'copy'),
+        )
+      : []
+  const fillableNames = new Set(fillable.map((i) => i.name))
+  const fillFiles = [
+    ...new Set(
+      fillable.flatMap((i) =>
+        i.suggestions.flatMap((x) => (x.source === 'env_file' ? [x.file.split('/').at(-1)] : [])),
+      ),
+    ),
+  ]
+  const needItems = f.person.filter(
+    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !fillableNames.has(valueName(i) ?? ''),
+  )
   const decisions = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] !== 'file') : []
   const decide = decisions.filter((o) => chosen[o.setting] !== 'console')
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
@@ -997,7 +1021,7 @@ export function CheckStage(props: CheckStageProps) {
       id: null,
     })
   }
-  const needN = needItems.length + decide.length
+  const needN = needItems.length + decide.length + (fillable.length ? 1 : 0)
   const ready = !!c?.ready && !running && !deployFix
   const working = fixing(s) && !ready
   const a = s.agent
@@ -1238,7 +1262,8 @@ export function CheckStage(props: CheckStageProps) {
         }
       : null
   const pending = c && !running && !ready ? cloudPendingNote(s) : null
-  const secretsOnly = needItems.length > 0 && !decide.length && needItems.every((i) => valueName(i))
+  const secretsOnly =
+    (needItems.length > 0 || fillable.length > 0) && !decide.length && needItems.every((i) => valueName(i))
   const youNote = running
     ? 'You can do this while the check runs'
     : secretsOnly
@@ -1246,7 +1271,6 @@ export function CheckStage(props: CheckStageProps) {
       : "Your agent can't do these"
 
   // The first-time line: names filled from the folder's .env files, saved as secrets.
-  const read = values.data
   const filled = read?.items.filter((i) => i.here === 'from_file' && i.in_cloud === 'set') ?? []
   const files = [...new Set(filled.map((i) => i.here_file?.split('/').at(-1)).filter(Boolean))]
   const empty = read?.items.filter((i) => i.need === 'optional' && i.in_cloud !== 'set').length ?? 0
@@ -1345,6 +1369,17 @@ export function CheckStage(props: CheckStageProps) {
           flush
         >
           <ul className="iii-cloud-cs-needs">
+            {fillable.length ? (
+              <li className="iii-cloud-cs-filled">
+                <MarkIcon mark="bad" label="can be filled" />
+                <span>
+                  {`${fillable.length} of ${read?.items.length} names your compose file reads can be filled from ${fillFiles.length ? fillFiles.join(' and ') : 'another environment'}. Nothing leaves this machine until you save.`}
+                </span>
+                <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => setEditing(true)}>
+                  Review and save
+                </button>
+              </li>
+            ) : null}
             {needItems.map((i) => {
               const name = valueName(i)
               return name ? (
@@ -1530,6 +1565,18 @@ export function CheckStage(props: CheckStageProps) {
           after="then the check runs again"
           onClose={() => setImporting(false)}
           onApplied={checkAgain}
+        />
+      ) : null}
+      {editing ? (
+        <ValuesDialog
+          host={host}
+          status={s}
+          narrow={narrow}
+          manifest={c?.manifest || null}
+          read={values}
+          after="and check again"
+          onClose={() => setEditing(false)}
+          onSaved={checkAgain}
         />
       ) : null}
       {p?.environment && c ? (
