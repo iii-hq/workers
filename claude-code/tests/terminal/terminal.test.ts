@@ -70,7 +70,9 @@ describe('claude::terminal::describe', () => {
   it('takes the folder per session, in its request schema', () => {
     const { describeFn } = setup();
     const schema = describeFn.options.request_format as { properties: Record<string, unknown> };
-    expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(['cwd', 'session']));
+    expect(Object.keys(schema.properties)).toEqual(
+      expect.arrayContaining(['cwd', 'session', 'mode', 'claude_session_id']),
+    );
     const response = describeFn.options.response_format as { properties: Record<string, unknown> };
     expect(Object.keys(response.properties)).toEqual(
       expect.arrayContaining(['program', 'args', 'cwd', 'env', 'plugin', 'project_dir', 'copy']),
@@ -151,6 +153,25 @@ describe('claude::terminal::describe', () => {
       false,
     );
     expect(claude.installs).toEqual([]);
+  });
+
+  it('keeps repeat explicit original requests on native attach, even after describing a fork', async () => {
+    const { describeFn, resolveOpen } = setup();
+    const args = ['attach', 'abcd1234'];
+    const cwd = '/fixture';
+    resolveOpen.mockImplementation(async (_id, request) =>
+      request?.mode === 'fork'
+        ? { args: ['--resume', id, '--fork-session'], cwd, copy: true }
+        : { args, cwd },
+    );
+
+    const first = await describeFn.handler(original);
+    expect(first).toMatchObject({ args, cwd });
+    expect(first).not.toHaveProperty('copy');
+    expect(await describeFn.handler({ ...original, mode: 'fork' })).toMatchObject({ copy: true });
+    const reopened = await describeFn.handler(original);
+    expect(reopened).toMatchObject({ args, cwd });
+    expect(reopened).not.toHaveProperty('copy');
   });
 
   it('will not launch a stale attach after preparation', async () => {

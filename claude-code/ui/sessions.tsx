@@ -101,6 +101,11 @@ function nameOf(row: AgentRow): string {
   return row.name ?? row.short_id ?? row.id.slice(0, 8);
 }
 
+function backgroundAttachmentKey(row: AgentRow): string | undefined {
+  if (row.kind === 'background' && row.claude_session_id)
+    return `original:background:${row.claude_session_id}`;
+}
+
 function describe(row: AgentRow): string {
   const parts = [
     row.status === 'waiting' && row.waiting_for
@@ -204,8 +209,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const here = byAttention(rows.filter((row) => row.pty_session_id));
   const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
-  const onScreen = rows.find(
-    (row) => row.pty_session_id && row.pty_session_id === terminal.current,
+  const onScreen = (
+    rows.find((row) => row.pty_session_id && row.pty_session_id === terminal.current) ??
+    rows.find((row) => backgroundAttachmentKey(row) === terminal.currentKey)
   )?.id;
   const followed = rows.find((row) => row.claude_session_id === follow && row.kind !== 'headless');
 
@@ -243,12 +249,10 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         setFollow(spec.claude_session_id);
         return;
       }
-      const key = `${mode}:${crypto.randomUUID()}`;
-      // Even a spec can reuse a held PTY by key. Never pass a source row ID
-      // here: older pages used that ID for copies too.
+      const newKey = () => `${mode}:${crypto.randomUUID()}`;
       let opened: boolean;
       if (mode === 'original' && spec.pty_session_id) {
-        const take = terminal.open({ key, pty: spec.pty_session_id });
+        const take = terminal.open({ key: newKey(), pty: spec.pty_session_id });
         if (row.kind === 'interactive' && row.claude_session_id) {
           // A listed PTY may belong to another browser. Follow the same UUID
           // through the gated lookup instead of trying a different writer.
@@ -271,7 +275,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             'The original session changed or has no available terminal. Refresh the list and try again.',
           );
         }
-        opened = await terminal.open({ key, spec });
+        // The native attach runs in a PTY whose PID can differ from the one in
+        // inventory. Reuse its lease after a fresh describe authorizes the attach.
+        // A fork or a resume must never claim this attachment key.
+        const attachmentKey =
+          mode === 'original' && spec.args[0] === 'attach'
+            ? backgroundAttachmentKey(row)
+            : undefined;
+        opened = await terminal.open({ key: attachmentKey ?? newKey(), spec });
       }
       if (!opened)
         throw new Error('This terminal is no longer available. Refresh the list and try again.');

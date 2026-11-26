@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
 import { PageSidebar } from '../../../ade/web/src/components/ui/PageSidebar';
@@ -98,6 +98,8 @@ function Preview() {
   const [screen, setScreen] = useState({ pty: '', key: '', text: 'No terminal selected' });
   const [narrow, setNarrow] = useState(false);
   const [count, setCount] = useState(0);
+  const firstBackgroundPty = useRef<string | null>(null);
+  const [reopening, setReopening] = useState<'reused' | 'replaced' | null>(null);
   const [leases] = useState(() => new Map<string, typeof screen>());
   const terminal: AgentTerminalApi = {
     current: screen.pty || null,
@@ -120,7 +122,14 @@ function Preview() {
                 : null));
       if (!text) throw new Error('No matching fixture terminal');
       if (!pty && !held) setCount((n) => n + 1);
-      const next = { key, pty: pty ?? held?.pty ?? `fixture-${key}`, text };
+      const next = { key, pty: pty ?? held?.pty ?? `fixture-${crypto.randomUUID()}`, text };
+      // Open Background indexing, switch to Console original (or a confirmed
+      // fork), then reopen Background indexing without a PID match. Its PTY
+      // must be reused and Terminals created must not increase on the return.
+      if (text === 'Original background terminal') {
+        if (firstBackgroundPty.current === null) firstBackgroundPty.current = next.pty;
+        else setReopening(next.pty === firstBackgroundPty.current ? 'reused' : 'replaced');
+      }
       leases.set(key, next);
       setScreen(next);
       return true;
@@ -186,6 +195,9 @@ function Preview() {
               <h1 className="font-medium">Claude terminal</h1>
               <p>{screen.text}</p>
               <p className="text-sm">Terminals created: {count}</p>
+              {screen.text === 'Original background terminal' && reopening ? (
+                <p className="text-sm">Background attachment on reopen: {reopening}</p>
+              ) : null}
             </main>
           </div>
         </div>
