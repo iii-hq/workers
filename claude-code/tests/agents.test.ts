@@ -258,6 +258,7 @@ function host(
     prepared?: typeof prepared;
     tracked?: string[];
     ptys?: () => unknown;
+    visibilityEpoch?: () => number | null;
   } = {},
 ): FakeIii & ReturnType<typeof registerAgents> {
   const fake = fakeIii();
@@ -277,6 +278,7 @@ function host(
     () => options.prepared ?? prepared,
     () => options.external ?? false,
     { has: (id) => tracked.has(id) },
+    options.visibilityEpoch,
   );
   return { ...fake, ...agents };
 }
@@ -491,6 +493,112 @@ describe('opening a listed session', () => {
     for (const r of options.records ?? []) fake.state.set(`claude_sessions/${r.session_id}`, r);
     return fake.resolveOpen(id);
   };
+
+  const original = { mode: 'original' as const, claude_session_id: ID };
+  const fork = { ...original, mode: 'fork' as const };
+
+  it('offers only read-only follow for a live interactive original and a distinct explicit fork', async () => {
+    const fake = host(ok([interactive(ID, 'idle')]), { external: true });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
+    expect(await fake.resolveOpen(ID, fork)).toEqual({
+      args: [...RESUME, '--fork-session'],
+      cwd: '/repo',
+      copy: true,
+    });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
+    expect(await fake.heldElsewhere(ID)).toBe(true);
+  });
+
+  it('returns only the PID-matched Claude PTY, not a shell PTY or the separate copy', async () => {
+    const copyId = 'ba553300-0000-4000-8000-012345678900';
+    const rows = [interactive(ID, 'idle', { pid: 12 }), interactive(copyId, 'busy', { pid: 13 })];
+    const ptys = [
+      { session_id: 'copy-pty', pid: 13, ui: 'claude' },
+      { session_id: 'shell-pty', pid: 12, ui: 'shell' },
+    ];
+    const fake = host(ok(rows), { external: true, ptys: () => ({ sessions: ptys }) });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
+    ptys.push({ session_id: 'original-pty', pid: 12, ui: 'claude' });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ pty_session_id: 'original-pty' });
+  });
+
+  it('uses a fresh background short ID for original and the conversation UUID for fork', async () => {
+    const row = background(ID, 'working', { id: 'abcdef98', pid: 99 });
+    const fake = host(ok([row]), { external: true });
+    expect(await fake.resolveOpen(ID, original)).toEqual({
+      args: ['attach', 'abcdef98'],
+      cwd: '/repo',
+    });
+    expect(await fake.resolveOpen(ID, fork)).toEqual({
+      args: [...RESUME, '--fork-session'],
+      copy: true,
+      cwd: '/repo',
+    });
+    row.id = '--bad';
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
+    row.pid = undefined;
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
+  });
+
+  it.each([
+    'original',
+    'fork',
+  ] as const)('refuses %s on hidden, changed, missing or unavailable inventory', async (mode) => {
+    const request = { mode, claude_session_id: ID };
+    await expect(host(ok([interactive(ID, 'busy')])).resolveOpen(ID, request)).rejects.toThrow(
+      'no session with that id is listed',
+    );
+    const fake = host(ok([]));
+    fake.state.set(
+      'claude_sessions/h',
+      record('h', 'done', '11223344-0000-4000-8000-000000000000'),
+    );
+    await expect(fake.resolveOpen('h', request)).rejects.toThrow(/changed/);
+    await expect(fake.resolveOpen(ID, request)).rejects.toThrow(
+      'no session with that id is listed',
+    );
+    await expect(
+      host(() => ({ exit_code: 1, stderr: 'failed', stdout: '' })).resolveOpen(ID, request),
+    ).rejects.toThrow(/failed/);
+  });
+
+  it('refuses an original PTY when two conversations claim its process', async () => {
+    const fake = host(ok([interactive(ID, 'idle'), interactive('another-conversation', 'idle')]), {
+      external: true,
+      ptys: () => ({ sessions: [{ session_id: 'ambiguous', pid: 42, ui: 'claude' }] }),
+    });
+    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
+  });
+
+  it('does not attach a finished background row by a short ID reused by another session', async () => {
+    const fake = host(
+      ok([
+        background(ID, 'done'),
+        background('new-conversation', 'working', { pid: 9, id: ID.slice(0, 8) }),
+      ]),
+      { external: true },
+    );
+    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
+  });
+
+  it('does not grant an explicit fork across an off/on refresh', async () => {
+    let epoch = 1;
+    const fake = host(
+      () => {
+        epoch++;
+        return ok([interactive(ID, 'busy')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
+  });
+
+  it('reserves a finished original without ever returning a fallback copy', async () => {
+    const fake = host(ok([]));
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
+    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/already open/);
+  });
 
   it('resumes a finished run in its own directory', async () => {
     const records = [record('h', 'done', ID)];

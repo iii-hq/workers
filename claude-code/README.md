@@ -285,15 +285,9 @@ and `claude_turns` in state), when a hooked terminal reports a session start, a
 prompt, a stop or an end, when the terminal beside it changes session, when the
 window gains focus, and on its refresh button.
 
-A click on a row opens that session in the terminal, in its own directory. One
-that runs in a terminal of this console shows that terminal; a finished run
-resumes (`claude --resume`); a background session is attached to (`claude
-attach`, which needs `external_sessions` on). A session that is live anywhere
-else, in another terminal or in a headless turn, opens as a copy under a new id
-(`--fork-session`), after a confirmation: the CLI would let a second process
-resume the same id, and both would write to one transcript. Nothing is
-resumed while `claude agents --json` fails, since then nothing says whether a
-session is live.
+Select a row to open the **original**. ADE reopens an identified console terminal, or uses native `claude attach` for a live background session with a verified short ID. A finished run can resume in its recorded directory. When a live host session has no attachable terminal, ADE can follow its latest assistant reply **read only**, with `external_sessions` enabled. No input is sent; use the original terminal to continue the conversation. Close the viewer to stop following. If access or the source is lost, the viewer hides the reply.
+
+Choose **Fork** and confirm **Create fork** to start a separate conversation from the selected conversation’s history (`--fork-session`). Canceling opens nothing. Opening the original never selects that copy. An unavailable inventory or failed attach is not an invitation to resume or fork.
 
 ### Reading a terminal session’s replies
 

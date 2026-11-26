@@ -6,7 +6,7 @@
 
 import type { IIIClient } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
-import type { OpenSpec } from '../../src/agents.js';
+import type { ResolveOpen } from '../../src/agents.js';
 import { TerminalConfigSchema } from '../../src/config.js';
 import { registerTerminal } from '../../src/terminal/terminal.js';
 import type { HostPrepared } from '../../src/terminal/workspace.js';
@@ -54,7 +54,7 @@ function setup(hostOver: Partial<HostPrepared> = {}) {
     detail: '',
     ...hostOver,
   };
-  const resolveOpen = vi.fn<(id: string) => Promise<OpenSpec>>();
+  const resolveOpen = vi.fn<ResolveOpen>();
   registerTerminal(
     iii,
     () => host,
@@ -134,6 +134,54 @@ describe('claude::terminal::describe', () => {
     const spec = await describeFn.handler({ session: 's' });
     expect(spec).toMatchObject({ cwd: '/repo', copy: true });
     expect((spec.args as string[]).slice(-3)).toEqual(['--resume', 'x', '--fork-session']);
+  });
+
+  const id = '12345678-1111-4000-8000-000000000001';
+  const original = { session: id, mode: 'original', claude_session_id: id };
+  it.each([
+    { follow: true as const, claude_session_id: id },
+    { pty_session_id: 'fixture-original' },
+  ])('does not prepare a terminal for %j', async (plan) => {
+    const { describeFn, resolveOpen, claude } = setup();
+    resolveOpen.mockResolvedValueOnce(plan);
+    expect(await describeFn.handler(original)).toEqual(plan);
+    expect(resolveOpen).toHaveBeenCalledWith(
+      id,
+      { mode: 'original', claude_session_id: id },
+      false,
+    );
+    expect(claude.installs).toEqual([]);
+  });
+
+  it('will not launch a stale attach after preparation', async () => {
+    const { describeFn, resolveOpen } = setup();
+    resolveOpen
+      .mockResolvedValueOnce({ args: ['attach', 'abcd1234'], cwd: '/fixture' })
+      .mockResolvedValueOnce({ follow: true, claude_session_id: id });
+    await expect(describeFn.handler(original)).rejects.toThrow(/changed/);
+    expect(resolveOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('describes an explicit copy only for the verified target', async () => {
+    const { describeFn, resolveOpen } = setup();
+    const args = ['--resume', id, '--fork-session'];
+    resolveOpen.mockResolvedValue({ args, cwd: '/fixture', copy: true });
+    const spec = await describeFn.handler({ ...original, mode: 'fork' });
+    expect(resolveOpen).toHaveBeenLastCalledWith(id, { mode: 'fork', claude_session_id: id });
+    expect(spec.copy).toBe(true);
+    expect((spec.args as string[]).slice(-3)).toEqual(args);
+  });
+
+  it.each([
+    { mode: 'original' },
+    { mode: 'fork', session: id },
+    { ...original, claude_session_id: 'bad' },
+    { ...original, mode: 'resume' },
+  ])('rejects incomplete or unrecognized mode requests: %j', async (payload) => {
+    const { describeFn, resolveOpen, claude } = setup();
+    await expect(describeFn.handler(payload)).rejects.toThrow();
+    expect(resolveOpen).not.toHaveBeenCalled();
+    expect(claude.installs).toEqual([]);
   });
 
   it('attaches to a background session with nothing but attach', async () => {

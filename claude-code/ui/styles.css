@@ -99,6 +99,34 @@
     line-height: 1.45;
   }
 
+  .claude-follow-content {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .claude-follow-state {
+    margin-bottom: 16px;
+    color: var(--color-ink-faint);
+    font-size: 13px;
+  }
+
+  .claude-follow-content h3 {
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .claude-follow-text {
+    max-width: 70ch;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+
+  .claude-follow-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
   .claude-sessions-skeleton {
     display: flex;
     flex-direction: column;

@@ -154,6 +154,7 @@ const agents = registerAgents(
   () => inventoryHost(prepared),
   () => holder.current.external_sessions,
   tracker,
+  () => replyPermission.epoch,
 );
 registerExternalReplies(iii, replyPermission, agents.replyRow);
 registerTerminal(

@@ -39,6 +39,7 @@ import { useWorkerLive } from '@iii-dev/console-ui/hooks';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
 import { MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
+import { SessionDetail } from './session-detail';
 
 /** The console injects an untyped host object; this is the boundary. */
 // biome-ignore lint/suspicious/noExplicitAny: the injected host is untyped
@@ -51,6 +52,7 @@ interface AgentRow {
   kind: 'headless' | 'interactive' | 'background';
   status: Status;
   alive: boolean;
+  claude_session_id?: string;
   short_id?: string;
   pty_session_id?: string;
   name?: string;
@@ -74,6 +76,7 @@ const ACTION_TIMEOUT_MS = 30_000;
 const HOST_STOP_TIMEOUT_MS = 50_000;
 
 const SOURCES = [
+  { function_id: 'claude::on-config-change' },
   {
     function_id: 'state::on-changed',
     filters: { 'input.scope': { $in: ['claude_sessions', 'claude_turns'] } },
@@ -170,13 +173,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const sessions = useWorkerLive<AgentList>({
     iii: host.iii,
     sources: SOURCES,
-    fetch: async () => {
-      const list = await listAgents(host);
-      for (const row of list.agents) {
-        if (row.pty_session_id) terminal.claim(row.pty_session_id, row.id);
-      }
-      return list;
-    },
+    fetch: () => listAgents(host),
     handlerId: 'iii::claude-ui::sessions',
   });
   const { confirm, dialog } = useConfirm();
@@ -189,6 +186,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   // Where focus returns when the composer closes: the Message button that opened it.
   const opener = useRef<HTMLElement | null>(null);
   const groupId = useId();
+  const [follow, setFollow] = useState<string | null>(null);
+  const followOpener = useRef<HTMLButtonElement>(null);
   const announce = (text: string) =>
     setAnnouncement({ seq: ++seq.current, text, urgency: 'polite' });
 
@@ -221,47 +220,69 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const here = byAttention(rows.filter((row) => row.pty_session_id));
   const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
-  // A copy on screen is its own row once listed; until then, the one it was opened from.
-  const onScreen =
-    rows.find((row) => row.pty_session_id && row.pty_session_id === terminal.current)?.id ??
-    terminal.currentKey;
+  const onScreen = rows.find(
+    (row) => row.pty_session_id && row.pty_session_id === terminal.current,
+  )?.id;
+  const followed = rows.find((row) => row.claude_session_id === follow && row.kind !== 'headless');
 
   const closeComposer = () => {
     setComposing(null);
     opener.current?.focus();
   };
 
-  const openRow = async (row: AgentRow) => {
+  const openRow = async (row: AgentRow, mode: 'original' | 'fork') => {
     if (opening) return;
     const name = nameOf(row);
     setFailure(null);
     setOpening(row.id);
     try {
-      const shown =
-        (row.pty_session_id && (await terminal.open({ key: row.id, pty: row.pty_session_id }))) ||
-        (terminal.has(row.id) && (await terminal.open({ key: row.id })));
-      if (!shown) {
-        const spec = await host.iii.call(
-          'claude::terminal::describe',
-          { session: row.id },
-          { timeoutMs: DESCRIBE_TIMEOUT_MS },
-        );
-        const ok =
-          !spec.copy ||
-          (await confirm({
-            title: `Open a copy of ${name}?`,
-            description: `${
-              row.kind === 'headless'
-                ? 'A turn is running on it now, and a terminal on the same session would mix its conversation.'
-                : 'It is running in another terminal, and two terminals on one session would mix its conversation.'
-            } The copy starts with the conversation so far; the original is not touched.`,
-            confirmLabel: 'Open copy',
-          }));
-        if (!ok) return;
-        await terminal.open({ key: row.id, spec });
+      if (
+        mode === 'fork' &&
+        !(await confirm({
+          title: `Fork ${name}?`,
+          description:
+            'Start a separate conversation with the history so far. New messages in the fork won’t change the original.',
+          confirmLabel: 'Create fork',
+        }))
+      )
+        return;
+      const spec = await host.iii.call(
+        'claude::terminal::describe',
+        {
+          session: row.id,
+          mode,
+          claude_session_id: row.claude_session_id,
+        },
+        { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      );
+      if (mode === 'original' && spec.follow && spec.claude_session_id === row.claude_session_id) {
+        setFollow(spec.claude_session_id);
+        return;
       }
-      setComposing((open) => (open === row.id ? null : open));
-      announce(`Opened ${name}`);
+      const key = `${mode}:${crypto.randomUUID()}`;
+      // Even a spec can reuse a held PTY by key. Never pass a source row ID
+      // here: older pages used that ID for copies too.
+      let opened: boolean;
+      if (mode === 'original' && spec.pty_session_id) {
+        opened = await terminal.open({ key, pty: spec.pty_session_id });
+      } else {
+        if (
+          !spec.program ||
+          !Array.isArray(spec.args) ||
+          Boolean(spec.copy) !== (mode === 'fork') ||
+          (mode === 'original' && row.alive && spec.args[0] !== 'attach')
+        ) {
+          throw new Error(
+            'The original session changed or has no available terminal. Refresh the list and try again.',
+          );
+        }
+        opened = await terminal.open({ key, spec });
+      }
+      if (!opened)
+        throw new Error('This terminal is no longer available. Refresh the list and try again.');
+      setFollow(null);
+      setComposing(null);
+      announce(mode === 'fork' ? `Opened a fork of ${name}` : `Opened ${name}`);
     } catch (err) {
       setFailure(errorMessage(err));
     } finally {
@@ -343,9 +364,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const canStop =
       row.alive && (row.kind === 'headless' || (row.kind === 'background' && !!row.short_id));
     const name = nameOf(row);
-    const opensCopy =
-      row.alive && !row.pty_session_id && row.kind !== 'background' && !terminal.has(row.id);
-    const openLabel = `Open ${opensCopy ? 'a copy of ' : ''}${name}`;
+    const openLabel = `Open original: ${name}`;
+    const canFork = !!row.claude_session_id;
     return (
       // biome-ignore lint/a11y/useSemanticElements: ListGroup is the console's div, so its rows are too
       <div key={`${row.kind}:${row.id}`} role="listitem">
@@ -362,15 +382,33 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
               aria-label={openLabel}
               aria-current={row.id === onScreen ? 'true' : undefined}
               title={[openLabel, row.cwd, row.id].filter(Boolean).join('\n')}
-              onClick={() => void openRow(row)}
+              aria-disabled={!!opening}
+              onClick={(event) => {
+                if (!opening) {
+                  followOpener.current = event.currentTarget;
+                  void openRow(row, 'original');
+                }
+              }}
             >
               {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
             </button>
           }
           description={opening === row.id ? 'Opening…' : isStopping ? 'Stopping…' : describe(row)}
           trailing={
-            canMessage || canStop ? (
+            canMessage || canStop || canFork ? (
               <span className="claude-sessions-actions">
+                {canFork ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Fork ${name}`}
+                    aria-disabled={!!opening}
+                    onClick={() => void openRow(row, 'fork')}
+                  >
+                    Fork
+                  </Button>
+                ) : null}
                 {canMessage ? (
                   <IconButton
                     variant="ghost"
@@ -487,6 +525,16 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   return (
     <div className="claude-sessions">
       {dialog}
+      {follow ? (
+        <SessionDetail
+          key={follow}
+          iii={host.iii}
+          id={follow}
+          available={!!followed && !sessions.error}
+          opener={followOpener}
+          onClose={() => setFollow(null)}
+        />
+      ) : null}
       <LiveRegion announcement={announcement} />
       {failure || (sessions.error && sessions.data) ? (
         <div className="claude-sessions-notices">

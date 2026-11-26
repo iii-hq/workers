@@ -9,12 +9,20 @@
 
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import type { OpenSpec } from '../agents.js';
+import type { OpenSpec, ResolveOpen } from '../agents.js';
 import type { TerminalConfig } from '../config.js';
 import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
 
 const DescribePayloadSchema = z.object({
+  mode: z
+    .enum(['original', 'fork'])
+    .optional()
+    .describe('Explicit session action. Without a mode, preserve the legacy automatic behavior.'),
+  claude_session_id: z
+    .guid()
+    .optional()
+    .describe('Expected conversation UUID from the selected row; required with mode.'),
   cwd: z
     .string()
     .max(4096)
@@ -44,20 +52,42 @@ export function registerTerminal(
   iii: IIIClient,
   host: () => HostPrepared,
   config: () => TerminalConfig,
-  resolveOpen: (id: string) => Promise<OpenSpec>,
+  resolveOpen: ResolveOpen,
 ): void {
   iii.registerFunction(
     'claude::terminal::describe',
     async (payload: unknown) => {
-      const { cwd, session } = DescribePayloadSchema.parse(payload ?? {});
+      const { cwd, session, mode, claude_session_id } = DescribePayloadSchema.parse(payload ?? {});
       const prepared = host();
       if (!prepared.executable) {
         throw new Error(prepared.detail || 'claude is not available on the terminal host');
       }
-      const open = session ? await resolveOpen(session) : undefined;
+      if (mode && (!session || !claude_session_id))
+        throw new Error('an explicit action needs a session and conversation UUID');
+      const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
+      const open = session
+        ? request
+          ? await resolveOpen(session, request, false)
+          : await resolveOpen(session)
+        : undefined;
+      // A viewer or an existing PTY needs no new process, plugin or workspace setup.
+      if (open && !('args' in open)) return open;
       const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
       if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
       if (!open) return spec;
+      // Plugin preparation can take minutes. Never give out an earlier attach,
+      // resume or copy if the inventory now calls for something different.
+      if (session && request) {
+        const fresh = await resolveOpen(session, request);
+        if (
+          !('args' in fresh) ||
+          fresh.cwd !== open.cwd ||
+          fresh.copy !== open.copy ||
+          JSON.stringify(fresh.args) !== JSON.stringify(open.args)
+        ) {
+          throw new Error('the session changed while opening; refresh the list');
+        }
+      }
       return {
         ...spec,
         args: openArgs(spec.args, open),
@@ -66,12 +96,25 @@ export function registerTerminal(
     },
     {
       description:
-        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. The console page passes the result straight to shell::pty::open.',
+        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit original action can instead return an existing PTY or a read-only follow target. An explicit fork always creates a separate conversation.',
       request_format: jsonSchema(DescribePayloadSchema),
       response_format: {
         type: 'object',
-        required: ['program', 'args', 'cwd', 'env'],
+        anyOf: [
+          { required: ['program', 'args', 'cwd', 'env'] },
+          { required: ['pty_session_id'] },
+          { required: ['follow', 'claude_session_id'] },
+        ],
         properties: {
+          pty_session_id: {
+            type: 'string',
+            description: 'Reopen this identified original console PTY; do not launch a program.',
+          },
+          follow: {
+            const: true,
+            description: 'No original transport: use the read-only reply APIs.',
+          },
+          claude_session_id: { type: 'string' },
           program: { type: 'string' },
           args: { type: 'array', items: { type: 'string' } },
           cwd: { type: 'string', description: 'The folder, resolved (symlinks followed).' },

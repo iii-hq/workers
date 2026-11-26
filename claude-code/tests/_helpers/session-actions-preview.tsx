@@ -1,0 +1,189 @@
+import { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
+import { PageSidebar } from '../../../ade/web/src/components/ui/PageSidebar';
+import { TooltipProvider } from '../../../ade/web/src/components/shadcn/tooltip';
+import { ExtensionScopeProvider } from '../../../ade/web/src/lib/ui-scope';
+import '../../../ade/web/src/index.css';
+import '../../ui/styles.css';
+import { SessionsRail } from '../../ui/sessions';
+
+const rows = ['Design review', 'Console original', 'Background indexing'].map((name, i) => {
+  const id = `1234567${i}-1234-4321-8123-000000000001`;
+  return {
+    id,
+    claude_session_id: id,
+    name,
+    kind: i === 2 ? 'background' : 'interactive',
+    alive: true,
+    status: i === 2 ? 'busy' : 'idle',
+    cwd: '/fixture/workspace',
+    ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
+    ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
+  };
+});
+const handlers = new Map<string, (event: unknown) => void>();
+const watches = new Set<{
+  source: { function_id: string; args?: { claude_session_id?: string } };
+  target: string;
+}>();
+let allowed = true;
+let sequence = 1;
+const reply = () => ({
+  id: `reply-${sequence}`,
+  text:
+    sequence === 1
+      ? 'The layout review is ready.'
+      : `Review update ${sequence}: the changes are ready to check.`,
+});
+const host = {
+  iii: {
+    browserId: 'fixture',
+    on(id: string, fn: (event: unknown) => void) {
+      handlers.set(`${id}::fixture`, fn);
+      return () => handlers.delete(`${id}::fixture`);
+    },
+    observe(
+      source: string | { function_id: string; args?: { claude_session_id?: string } },
+      target: string,
+    ) {
+      const w = { source: typeof source === 'string' ? { function_id: source } : source, target };
+      watches.add(w);
+      return () => watches.delete(w);
+    },
+    addConnectionStateListener: () => () => {},
+    async call(fn: string, p: { session?: string; claude_session_id?: string; mode?: string }) {
+      if (fn === 'claude::agents::list') return { agents: allowed ? rows : [rows[1]] };
+      const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
+      if (!row || (!allowed && !row.pty_session_id)) throw new Error('Session unavailable');
+      if (fn === 'claude::agents::get') return { ...row, last_reply: reply() };
+      if (fn === 'claude::terminal::describe') {
+        if (p.mode === 'original' && row.pty_session_id)
+          return { pty_session_id: row.pty_session_id };
+        if (p.mode === 'original' && !row.short_id)
+          return { follow: true, claude_session_id: row.id };
+        const args =
+          row.short_id && p.mode !== 'fork'
+            ? ['attach', row.short_id]
+            : ['--resume', row.id, '--fork-session'];
+        return {
+          program: 'mock-claude',
+          cwd: '/fixture',
+          env: {},
+          args,
+          copy: args.includes('--fork-session'),
+        };
+      }
+      throw new Error(`Unexpected synthetic call: ${fn}`);
+    },
+  },
+};
+function emit(id: string, event: { claude_session_id?: string; reply?: ReturnType<typeof reply> }) {
+  for (const w of watches) {
+    if (
+      w.source.function_id !== id ||
+      (w.source.args && w.source.args.claude_session_id !== event.claude_session_id)
+    )
+      continue;
+    handlers.get(w.target)?.(event);
+  }
+}
+function Preview() {
+  const [screen, setScreen] = useState({ pty: '', key: '', text: 'No terminal selected' });
+  const [narrow, setNarrow] = useState(false);
+  const [count, setCount] = useState(0);
+  const [leases] = useState(() => new Map<string, typeof screen>());
+  const terminal: AgentTerminalApi = {
+    current: screen.pty || null,
+    currentKey: screen.key || null,
+    has: (key) => leases.has(key),
+    claim: () => {},
+    async open({ key, pty, spec }) {
+      const held = leases.get(key);
+      const args = spec?.args ?? [];
+      const text =
+        pty === 'fixture-console'
+          ? 'Original console PTY'
+          : (held?.text ??
+            (args.includes('--fork-session')
+              ? 'Separate fork terminal'
+              : args[0] === 'attach' && args[1] === rows[2].short_id
+                ? 'Original background terminal'
+                : null));
+      if (!text) throw new Error('No matching fixture terminal');
+      if (!pty && !held) setCount((n) => n + 1);
+      const next = { key, pty: pty ?? held?.pty ?? `fixture-${key}`, text };
+      leases.set(key, next);
+      setScreen(next);
+      return true;
+    },
+  };
+  const deliver = () => {
+    if (allowed) {
+      sequence++;
+      emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: reply() });
+    }
+  };
+  // A fixture keyboard shortcut also works while the real modal owns focus.
+  window.onkeydown = (e) => {
+    if (e.altKey && e.code === 'KeyU') deliver();
+  };
+  return (
+    <TooltipProvider>
+      <ExtensionScopeProvider scope="claude">
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100dvh',
+            width: narrow ? '390px' : '100%',
+            maxWidth: '100%',
+          }}
+        >
+          <header className="flex flex-wrap items-center gap-3 border-b p-2 text-sm">
+            <strong>Synthetic controls</strong>
+            <button type="button" onClick={deliver}>
+              Deliver reply (Alt+U)
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                allowed = !allowed;
+                emit('configuration::on-updated', {});
+                emit('claude::on-config-change', {});
+              }}
+            >
+              Toggle access
+            </button>
+            <button type="button" onClick={() => setNarrow(!narrow)}>
+              Resize pane
+            </button>
+          </header>
+          <div data-iii-ui="claude" className="flex min-h-0 flex-1 flex-row-reverse">
+            <PageSidebar
+              label="Sessions"
+              side="right"
+              defaultWidth={300}
+              minWidth={240}
+              maxWidth={440}
+              resizable
+              collapsible
+              narrowBelow={960}
+              narrowMode="drawer"
+              closeDrawerOnSelect={false}
+            >
+              <SessionsRail host={host} terminal={terminal} />
+            </PageSidebar>
+            <main className="min-w-0 flex-1 p-4">
+              <h1 className="font-medium">Claude terminal</h1>
+              <p>{screen.text}</p>
+              <p className="text-sm">Terminals created: {count}</p>
+            </main>
+          </div>
+        </div>
+      </ExtensionScopeProvider>
+    </TooltipProvider>
+  );
+}
+const root = document.getElementById('root');
+if (root) createRoot(root).render(<Preview />);
