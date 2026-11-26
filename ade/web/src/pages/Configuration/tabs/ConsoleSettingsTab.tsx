@@ -474,7 +474,9 @@ export function ConsoleSettingsTab({
             <SettingsRow
               id={GENERAL_ANCHOR.autocompact}
               label={AUTOCOMPACT_TITLE}
-              description={autocompactRowText(chatSettings.autocompact)}
+              description={autocompactRowText(
+                chatSettings.loaded ? chatSettings.autocompact : undefined,
+              )}
               action={
                 <Button
                   type="button"

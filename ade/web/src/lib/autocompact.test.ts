@@ -10,6 +10,7 @@ import {
   conversationAutocompact,
   effectiveCell,
   effectiveTokens,
+  fieldTokens,
   formatTokens,
   type GlobalAutocompact,
   globalNow,
@@ -144,6 +145,37 @@ const SIZE_WORDS: readonly [number, string][] = [
 describe('formatTokens', () => {
   it.each(SIZE_WORDS)('writes %d as %s', (n, text) => {
     expect(formatTokens(n)).toBe(text)
+  })
+})
+
+describe('fieldTokens: a field keeps the exact size it shows rounded', () => {
+  it.each([
+    [123_456, '123k'],
+    [400_500, '401k'],
+    [1_234_567, '1.2M'],
+  ])('untouched, %d (shown %s) stays exact', (stored, shown) => {
+    expect(formatTokens(stored)).toBe(shown)
+    expect(fieldTokens(shown, stored)).toEqual({ ok: true, tokens: stored })
+  })
+
+  it('reads anything typed as typed, the rounded word too once retyped', () => {
+    // A different text is the person's size.
+    expect(fieldTokens('124k', 123_456)).toEqual({ ok: true, tokens: 124_000 })
+    expect(fieldTokens('123000', 123_456)).toEqual({
+      ok: true,
+      tokens: 123_000,
+    })
+    expect(fieldTokens('123K', 123_456)).toEqual({ ok: true, tokens: 123_000 })
+    expect(fieldTokens('abc', 123_456)).toEqual({
+      ok: false,
+      error: TOKENS_RANGE_ERROR,
+    })
+    // Without a stored size, it is parseTokens.
+    expect(fieldTokens('123k', null)).toEqual({ ok: true, tokens: 123_000 })
+    expect(fieldTokens('123k', undefined)).toEqual({
+      ok: true,
+      tokens: 123_000,
+    })
   })
 })
 
@@ -329,6 +361,62 @@ describe('resolveAutocompact: conversation, then project, then global', () => {
   })
 })
 
+describe('conversationAutocompact before the settings and projects are read', () => {
+  it('is unknown where it reaches what is not read, known elsewhere', () => {
+    const plain = conv('c1')
+    const inAcme = conv('c2', { projectId: 'p-acme' })
+    const own = conv('c3', {
+      projectId: 'p-acme',
+      sessionMetadata: { autocompact: { mode: 'tokens', tokens: 600_000 } },
+    })
+    // The global not read: never "off".
+    expect(
+      conversationAutocompact({
+        conversation: plain,
+        projects: [],
+        global: GLOBAL_OFF,
+        globalRead: false,
+      }),
+    ).toBeNull()
+    // The project list not read: a project conversation is unknown.
+    expect(
+      conversationAutocompact({
+        conversation: inAcme,
+        projects: [],
+        global: GLOBAL_400K,
+        projectsRead: false,
+      }),
+    ).toBeNull()
+    // Its own value, or its project's from the list, needs neither.
+    expect(
+      conversationAutocompact({
+        conversation: own,
+        projects: [],
+        global: GLOBAL_OFF,
+        globalRead: false,
+        projectsRead: false,
+      })?.tokens,
+    ).toBe(600_000)
+    expect(
+      conversationAutocompact({
+        conversation: inAcme,
+        projects: [ACME],
+        global: GLOBAL_OFF,
+        globalRead: false,
+        projectsRead: false,
+      })?.tokens,
+    ).toBe(160_000)
+    // Read, a project missing from the list is no project.
+    expect(
+      conversationAutocompact({
+        conversation: inAcme,
+        projects: [],
+        global: GLOBAL_400K,
+      })?.tokens,
+    ).toBe(400_000)
+  })
+})
+
 describe('the effective size and the tick', () => {
   it('is the size below usable, else the model limit (null)', () => {
     expect(effectiveTokens(160_000, 916_000)).toBe(160_000)
@@ -481,6 +569,10 @@ describe('the settings dialog words (§3.3.1)', () => {
     )
   })
 
+  it('claims nothing before the settings are read', () => {
+    expect(settingsRowText(undefined)).toBeNull()
+  })
+
   it('writes the revised hint', () => {
     expect(SETTINGS_HINT).toBe(
       "Whichever comes first: this size or the model's own limit. A model's limit is its input budget, less than its window: about 116k on a 200k Claude model. The grey ticks are the limits of the models used here in the last 7 days.",
@@ -531,6 +623,9 @@ describe('the settings dialog words (§3.3.1)', () => {
     expect(sessionsCount(1, false)).toBe('1 session sets their own value')
     expect(sessionsCount(2, false)).toBe('2 sessions set their own value')
     expect(sessionsCount(12, true)).toBe('12+ sessions set their own value')
+    // No loaded session sets one: no line, older pages or not (never "0+").
+    expect(sessionsCount(0, false)).toBeNull()
+    expect(sessionsCount(0, true)).toBeNull()
   })
 
   it('writes a history row', () => {
@@ -561,6 +656,24 @@ describe('the project dialog and Details words (§3.3.2, §3.3.4)', () => {
     expect(inheritChoiceLabel({ project: null, global: GLOBAL_OFF })).toBe(
       "Global (model's limit)",
     )
+  })
+
+  it("names Details' first choice without a value until it is read", () => {
+    // The settings aren't read: the global's value is unknown, not off.
+    expect(inheritChoiceLabel({ project: null, global: undefined })).toBe(
+      'Global',
+    )
+    expect(inheritChoiceLabel({ project: BILLING, global: undefined })).toBe(
+      "Project's",
+    )
+    // A project's own value needs no global.
+    expect(inheritChoiceLabel({ project: ACME, global: undefined })).toBe(
+      "Project's (160k)",
+    )
+    // In a project the list hasn't given yet.
+    expect(
+      inheritChoiceLabel({ project: undefined, global: GLOBAL_400K }),
+    ).toBe("Project's")
   })
 
   it("writes a side chat's line", () => {

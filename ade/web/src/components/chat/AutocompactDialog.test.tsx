@@ -464,6 +464,89 @@ describe('Settings › Chat › Auto-compact (§3.3.1)', () => {
     })
   })
 
+  describe.each([
+    [123_456, '123k'],
+    [400_500, '401k'],
+    [1_234_567, '1.2M'],
+  ])('an exact size it did not edit (%d, shown %s)', (exact, shown) => {
+    const seed = (mode: 'tokens' | 'off') =>
+      seedChatSettingsForTests({
+        descriptions: { agent_writes: true },
+        autocompact: { ...GLOBAL, mode, tokens: exact },
+      })
+
+    it('the switch turns off and on again keeping it', async () => {
+      seed('tokens')
+      await render()
+      expect(tokensField().value).toBe(shown)
+      const toggle = dialog().querySelector('[role="switch"]') as HTMLElement
+      await act(async () => toggle.click())
+      expect(lastPatch()).toEqual({
+        autocompact: {
+          mode: 'off',
+          tokens: exact,
+          instructions: 'Keep the PRs.',
+        },
+      })
+      await act(async () => toggle.click())
+      expect(lastPatch()).toEqual({
+        autocompact: {
+          mode: 'tokens',
+          tokens: exact,
+          instructions: 'Keep the PRs.',
+        },
+      })
+      expect(tokensField().value).toBe(shown)
+    })
+
+    it('the switch turned on from off keeps it', async () => {
+      seed('off')
+      await render()
+      expect(tokensField().value).toBe(shown)
+      const toggle = dialog().querySelector('[role="switch"]') as HTMLElement
+      await act(async () => toggle.click())
+      expect(lastPatch()).toEqual({
+        autocompact: {
+          mode: 'tokens',
+          tokens: exact,
+          instructions: 'Keep the PRs.',
+        },
+      })
+    })
+
+    it('Enter on the untouched field writes nothing', async () => {
+      seed('tokens')
+      await render()
+      await enter(tokensField())
+      expect(lastPatch()).toBeUndefined()
+      expect(tokensField().value).toBe(shown)
+    })
+
+    it('saving the summary keeps it', async () => {
+      seed('tokens')
+      await render()
+      type(summary(), 'Keep the plan.')
+      await act(async () => button('Save')?.click())
+      expect(lastPatch()).toEqual({
+        autocompact: {
+          mode: 'tokens',
+          tokens: exact,
+          instructions: 'Keep the plan.',
+        },
+      })
+    })
+  })
+
+  it('writes nothing before the settings are read', async () => {
+    seedChatSettingsForTests(null)
+    await render()
+    const toggle = dialog().querySelector('[role="switch"]') as HTMLElement
+    expect(toggle.hasAttribute('data-disabled')).toBe(true)
+    expect(tokensField().disabled).toBe(true)
+    await act(async () => toggle.click())
+    expect(lastPatch()).toBeUndefined()
+  })
+
   it('shows any other failure at the top', async () => {
     mocks.call.mockRejectedValueOnce(new Error('engine down'))
     await render()
@@ -517,6 +600,16 @@ describe('the overrides table (D173)', () => {
     expect(
       dialog().querySelector('[data-autocompact-sessions]')?.textContent,
     ).toBe('1+ sessions set their own value')
+  })
+
+  it('says nothing of sessions when no loaded one sets its own, older pages or not', async () => {
+    setSessionListHasMoreForTests(true)
+    mocks.conversations = mocks.conversations.filter(
+      (c) => (c as { id: string }).id !== 's-ledger',
+    )
+    await render()
+    expect(dialog().querySelector('[data-autocompact-sessions]')).toBeNull()
+    expect(dialog().textContent).not.toContain('0+')
   })
 
   it("opens a project's dialog on its Auto-compact section", async () => {

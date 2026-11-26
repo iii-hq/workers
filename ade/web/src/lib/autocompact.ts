@@ -155,6 +155,23 @@ export function parseTokens(text: string): TokensParse {
 }
 
 /**
+ * The size a token field holds. The field shows a stored size rounded
+ * (`formatTokens`: 123456 reads `123k`), so while its text still reads as the
+ * stored size, it is that exact size, never the rounded one: a save that
+ * didn't touch the size keeps it. Anything else is what was typed
+ * (`parseTokens`). The apps use the same rule.
+ */
+export function fieldTokens(
+  text: string,
+  stored: number | null | undefined,
+): TokensParse {
+  if (stored != null && validTokens(stored) && text === formatTokens(stored)) {
+    return { ok: true, tokens: stored }
+  }
+  return parseTokens(text)
+}
+
+/**
  * A size the way every auto-compact word writes it: `160k`, `9.5k`, `1M`,
  * `1.2M`. Under 10k one decimal, then whole thousands, then millions with
  * one decimal; a trailing `.0` goes.
@@ -280,6 +297,16 @@ export function conversationAutocompact(input: {
   conversations?: readonly ResolvedConversation[]
   /** A side chat's parent read from the engine, when it isn't loaded here. */
   parent?: ResolvedConversation | null
+  /**
+   * The global setting has been read (default true). While it hasn't, a
+   * resolution that reaches the global is unknown (null), never "off".
+   */
+  globalRead?: boolean
+  /**
+   * The project list has answered (default true). While it hasn't, a
+   * conversation in a project the list lacks is unknown (null).
+   */
+  projectsRead?: boolean
 }): AutocompactResolution | null {
   let conversation: Pick<Conversation, 'sessionMetadata' | 'projectId'> =
     input.conversation
@@ -291,16 +318,29 @@ export function conversationAutocompact(input: {
     if (!parent) return null
     conversation = parent
   }
+  const session = autocompactOf(conversation)
   const projectId = conversation.projectId
-  const project =
-    projectId && projectId !== NO_PROJECT
-      ? (input.projects.find((p) => p.id === projectId) ?? null)
-      : null
-  return resolveAutocompact({
-    session: autocompactOf(conversation),
+  const inProject = Boolean(projectId && projectId !== NO_PROJECT)
+  const project = inProject
+    ? (input.projects.find((p) => p.id === projectId) ?? null)
+    : null
+  if (
+    session.mode === 'inherit' &&
+    inProject &&
+    !project &&
+    input.projectsRead === false
+  ) {
+    return null
+  }
+  const resolved = resolveAutocompact({
+    session,
     project,
     global: input.global,
   })
+  if (resolved.rule.scope === 'global' && input.globalRead === false) {
+    return null
+  }
+  return resolved
 }
 
 /**
@@ -528,8 +568,14 @@ export const COLUMN_EFFECTIVE = 'Effective'
 export const HISTORY_HEADING = 'Last auto-compactions'
 export const HISTORY_EMPTY = 'No auto-compactions yet.'
 
-/** The Settings › Chat row's description: what applies now. */
-export function settingsRowText(global: GlobalAutocompact | null): string {
+/**
+ * The Settings › Chat row's description: what applies now. Null while the
+ * settings aren't read (`undefined`): the row claims nothing it doesn't know.
+ */
+export function settingsRowText(
+  global: GlobalAutocompact | null | undefined,
+): string | null {
+  if (global === undefined) return null
   const tokens = globalTokens(global)
   return tokens === null
     ? "Off: conversations compact at the model's limit, as today."
@@ -610,8 +656,12 @@ export function sessionWhere(title: string, projectName: string | null) {
   return `${title} · ${projectName ? `session in ${projectName}` : 'session, no project'}`
 }
 
-/** How many sessions set their own value: "2 sessions", "12+ sessions". */
-export function sessionsCount(count: number, more: boolean): string {
+/**
+ * How many sessions set their own value: "2 sessions", "12+ sessions". Null
+ * when no loaded session does (older pages or not, never "0+").
+ */
+export function sessionsCount(count: number, more: boolean): string | null {
+  if (count <= 0) return null
   const n = `${count}${more ? '+' : ''}`
   return `${n} ${count === 1 && !more ? 'session sets' : 'sessions set'} their own value`
 }
@@ -640,17 +690,28 @@ function valueWord(tokens: number | null): string {
 
 /**
  * Details' first choice (§3.3.4): "Project's (160k)", or "Global (400k)" for
- * a conversation without a project.
+ * a conversation without a project. While what it inherits isn't read (the
+ * global `undefined`, the project `undefined`), it names the level with no
+ * value: "Project's", "Global".
  */
 export function inheritChoiceLabel(input: {
-  project: AutocompactProject | null
-  global: GlobalAutocompact | null
+  /** Null: no project; undefined: in a project the list hasn't given yet. */
+  project: AutocompactProject | null | undefined
+  /** Undefined while the settings aren't read. */
+  global: GlobalAutocompact | null | undefined
 }): string {
-  if (!input.project) return `Global (${valueWord(globalTokens(input.global))})`
+  if (input.project === undefined) return "Project's"
+  if (!input.project) {
+    return input.global === undefined
+      ? 'Global'
+      : `Global (${valueWord(globalTokens(input.global))})`
+  }
+  const own = parseAutocompactSetting(input.project.autocompact)
+  if (own.mode === 'inherit' && input.global === undefined) return "Project's"
   const resolved = resolveAutocompact({
     session: INHERIT,
     project: input.project,
-    global: input.global,
+    global: input.global ?? null,
   })
   return `Project's (${valueWord(resolved.tokens)})`
 }

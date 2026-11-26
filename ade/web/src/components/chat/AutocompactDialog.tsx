@@ -40,6 +40,7 @@ import {
   COLUMN_LIMIT,
   COLUMN_WHERE,
   effectiveCell,
+  fieldTokens,
   formatTokens,
   type GlobalAutocompact,
   globalTokens,
@@ -56,7 +57,6 @@ import {
   OVERRIDES_HEADING,
   OVERRIDES_HINT,
   parseAutocompactSetting,
-  parseTokens,
   resolveAutocompact,
   SETTINGS_HINT,
   SETTINGS_INTRO,
@@ -231,6 +231,8 @@ export function AutocompactDialog({
   const global = chatSettings.autocompact
   const tokens = globalTokens(global)
   const on = tokens !== null
+  /** Nothing is written over settings that haven't been read. */
+  const ready = chatSettings.loaded
   /** The last size set, kept while off so turning on restores it. */
   const lastTokens = global.tokens ?? AUTOCOMPACT_DEFAULT_TOKENS
 
@@ -318,7 +320,8 @@ export function AutocompactDialog({
   }
 
   const commitField = () => {
-    const parsed = parseTokens(text)
+    // Untouched text is the saved size, exact (`123k` holds 123456).
+    const parsed = fieldTokens(text, lastTokens)
     if (!parsed.ok) {
       setErrors({ value: parsed.error })
       return
@@ -358,6 +361,7 @@ export function AutocompactDialog({
     dragging ?? tokens ?? lastTokens,
   )
   const instructionsDirty = instructions !== savedInstructions
+  const sessionsLine = sessionsCount(overrides.sessions, more)
 
   return (
     <>
@@ -392,8 +396,9 @@ export function AutocompactDialog({
                   id={`${ids}-switch`}
                   aria-label={SWITCH_LABEL}
                   checked={on}
+                  disabled={!ready}
                   onCheckedChange={(checked) => {
-                    const parsed = parseTokens(text)
+                    const parsed = fieldTokens(text, lastTokens)
                     // A size that isn't one goes back to the saved size:
                     // the field never shows a value the setting doesn't hold.
                     if (!parsed.ok) {
@@ -422,7 +427,7 @@ export function AutocompactDialog({
                   id={`${ids}-tokens`}
                   name="autocompact-tokens"
                   value={text}
-                  disabled={!on}
+                  disabled={!on || !ready}
                   onChange={(next) => {
                     textOwned.current = true
                     setText(next)
@@ -453,7 +458,7 @@ export function AutocompactDialog({
                   min={0}
                   max={AUTOCOMPACT_SLIDER_MAX}
                   step={AUTOCOMPACT_SLIDER_STEP}
-                  disabled={!on}
+                  disabled={!on || !ready}
                   label={`${VALUE_LEAD} (${VALUE_TRAIL})`}
                   valueText={(v) => `${formatTokens(v)} tokens`}
                   ticks={(models.rows ?? []).map((m) => ({
@@ -592,6 +597,7 @@ export function AutocompactDialog({
                     type="button"
                     size="sm"
                     variant="secondary"
+                    disabled={!ready}
                     onClick={() => {
                       const next = instructions.trim()
                       setInstructions(next)
@@ -616,12 +622,12 @@ export function AutocompactDialog({
                   {OVERRIDES_HEADING}
                 </h3>
                 <p className="text-xs text-ink-faint">{OVERRIDES_HINT}</p>
-                {overrides.sessions > 0 || more ? (
+                {sessionsLine ? (
                   <p
                     data-autocompact-sessions=""
                     className="text-xs text-ink-faint"
                   >
-                    {sessionsCount(overrides.sessions, more)}
+                    {sessionsLine}
                   </p>
                 ) : null}
               </div>

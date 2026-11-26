@@ -7,7 +7,10 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import { seedChatSettingsForTests } from '@/hooks/use-chat-settings'
 import type { ChatProject } from '@/lib/backend/projects'
 import { setChatCapabilitiesForTests } from '@/lib/chat-capabilities'
-import type { ConversationDetailsDraft } from '@/lib/conversation-details'
+import {
+  buildDetailsPatch,
+  type ConversationDetailsDraft,
+} from '@/lib/conversation-details'
 import type { Conversation } from '@/types/chat'
 import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 ;(
@@ -331,6 +334,102 @@ describe('Conversation details: Auto-compact (§3.3.4)', () => {
       { session_id: 'gone' },
       expect.anything(),
     )
+    expect(row()?.querySelector('[data-autocompact-locked]')?.textContent).toBe(
+      'Compacts as its conversation does.',
+    )
+  })
+
+  it.each([
+    [123_456, '123k'],
+    [400_500, '401k'],
+    [1_234_567, '1.2M'],
+  ])(
+    'a rename keeps an exact size it did not edit (%d, shown %s)',
+    async (exact, shown) => {
+      const conversation = {
+        ...base,
+        sessionMetadata: { autocompact: { mode: 'tokens', tokens: exact } },
+      }
+      const { onSave } = render({ conversation })
+      expect(tokensField()?.value).toBe(shown)
+      type(
+        dialog().querySelector(
+          '[name="conversation-title"]',
+        ) as HTMLInputElement,
+        'Webhook retries, again',
+      )
+      await submit()
+      const draft = onSave.mock.calls[0]?.[0] as ConversationDetailsDraft
+      expect(draft.autocompact).toEqual({ mode: 'tokens', tokens: exact })
+      // Only the name is written: no autocompact change.
+      const patch = buildDetailsPatch(conversation, draft, 0)
+      expect(patch?.title).toBe('Webhook retries, again')
+      expect(patch?.set).not.toHaveProperty('autocompact')
+      expect(patch?.unset).not.toContain('autocompact')
+    },
+  )
+
+  it('a size picked again after another choice is still the exact one', async () => {
+    const conversation = {
+      ...base,
+      sessionMetadata: { autocompact: { mode: 'tokens', tokens: 123_456 } },
+    }
+    const { onSave } = render({ conversation })
+    type(tokensField() as HTMLInputElement, '124k')
+    type(tokensField() as HTMLInputElement, '123k')
+    await submit()
+    expect(onSave.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        autocompact: { mode: 'tokens', tokens: 123_456 },
+      }),
+    )
+  })
+
+  it('names no inherited value before the settings are read', () => {
+    seedChatSettingsForTests(null)
+    render({ conversation: { ...base, projectId: undefined } })
+    expect(trigger()?.textContent).toMatch(/^Global\W*$/)
+    act(() => root?.unmount())
+    host?.remove()
+    // A project with its own value needs no global.
+    render()
+    expect(trigger()?.textContent).toMatch(/^Project's \(160k\)\W*$/)
+    act(() => root?.unmount())
+    host?.remove()
+    render({ conversation: { ...base, projectId: 'prj_api' } })
+    expect(trigger()?.textContent).toMatch(/^Project's\W*$/)
+  })
+
+  it("names no project's value before the project list answers", () => {
+    setChatCapabilitiesForTests({
+      autocompact: true,
+      chatSettings: true,
+      projects: true,
+    })
+    // The caller's list is empty until it loads.
+    render({ projects: [] })
+    expect(trigger()?.textContent).toMatch(/^Project's\W*$/)
+  })
+
+  it('a side chat says no size before the settings are read', () => {
+    seedChatSettingsForTests(null)
+    const parent: Conversation = {
+      id: 'root',
+      title: 'Root',
+      model: null,
+      messages: [],
+      createdAt: 0,
+      updatedAt: 0,
+      sessionMetadata: {},
+    }
+    render({
+      conversation: {
+        ...base,
+        projectId: undefined,
+        sessionMetadata: { side_chat_of: 'root' },
+      },
+      conversations: [parent],
+    })
     expect(row()?.querySelector('[data-autocompact-locked]')?.textContent).toBe(
       'Compacts as its conversation does.',
     )

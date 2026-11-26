@@ -82,3 +82,28 @@ describe('Settings › Chat on a phone (390 px)', () => {
     ).toBe('auto')
   })
 })
+
+describe('Settings › Chat › Auto-compact row', () => {
+  const row = () => document.getElementById(GENERAL_ANCHOR.autocompact)
+
+  it('says what applies once the settings are read', () => {
+    expect(row()?.textContent).toContain(
+      "At 400k, or at the model's limit when it comes first.",
+    )
+  })
+
+  it('claims nothing before the settings are read, then says it', () => {
+    act(() => seedChatSettingsForTests(null))
+    expect(row()?.textContent).toBe('Auto-compactOpen')
+    expect(row()?.textContent).not.toContain('Off')
+    act(() =>
+      seedChatSettingsForTests({
+        descriptions: { agent_writes: true },
+        autocompact: { mode: 'off' },
+      }),
+    )
+    expect(row()?.textContent).toContain(
+      "Off: conversations compact at the model's limit, as today.",
+    )
+  })
+})
