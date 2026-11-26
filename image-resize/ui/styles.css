@@ -73,6 +73,13 @@
   gap: 1rem;
 }
 
+/* The settings form's sections; the settings page sets the gap. */
+[data-iii-ui="image-resize"] .imgr-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--settings-section-gap, 24px);
+}
+
 [data-iii-ui="image-resize"] .imgr-action {
   align-self: flex-start;
 }

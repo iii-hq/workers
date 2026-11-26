@@ -7,6 +7,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { ImageResizeConfigForm } from './src/configuration'
 import { ImageResizePage } from './src/page'
 
 export default function setup(host: Host) {
@@ -16,6 +17,7 @@ export default function setup(host: Host) {
     configurationId: 'image-resize',
     render: (props) => <ImageResizePage host={host} {...props} />,
   })
+  host.configForms.register('image-resize', ImageResizeConfigForm)
 
   host.commands?.register('image-resize', [
     {
