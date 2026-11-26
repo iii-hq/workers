@@ -17,6 +17,14 @@
  * `@container`); the ring and the counts stay, since they are the part you
  * act on. Under 24rem the counts give way to the chat's title as well, and
  * the ring stands alone (the button's label still says everything).
+ *
+ * Auto-compact (chat-projects phase 3, §3.3.3, D170), from the snapshot's
+ * `autocompact`: an amber tick on the ring and on the breakdown's bar at
+ * `effective_tokens / usable`; "· auto 160k" after the counts (from 30rem
+ * up) and beside the hero; "Compacts after this turn" in their place while
+ * a running turn (the console's `isStreaming`) is past the size; and the
+ * line "Auto-compact at 160k · acme-web rule" or "At the model's limit"
+ * under the bar. At the model's own limit: no tick and no label.
  */
 
 import {
@@ -65,8 +73,10 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { type AutocompactMark, autocompactMark, chipLabel, tickRatio } from '../lib/autocompact'
 import { formatCost, formatTokens } from '../lib/format'
 import { compactions, growth, type StepPoint, stepPoints } from '../lib/history'
+import { AutocompactLine, ChipAutoLabel, HeroAutoLabel, StackTick } from './autocompact'
 import { RingGauge } from './icons'
 import { categories, type LegendEntry, legendRows, PREVIEW_CATEGORIES, percentOf } from '../lib/legend'
 import {
@@ -113,6 +123,9 @@ export interface SessionChipProps {
   sessionId: string
   modelId?: string
   contextWindow?: number
+  /** A turn is running in this conversation. Absent on an older console,
+      where "Compacts after this turn" never shows. */
+  isStreaming?: boolean
 }
 
 /** What `state::on-changed` returns per write, delivered as the observed
@@ -318,7 +331,20 @@ function idList(ids: string[], self: string, limit = 3) {
 }
 
 /** The headline: how much of the window is in use, and the share as a pill. */
-function Hero({ total, usable, estimated }: { total: number; usable: number; estimated: boolean }) {
+function Hero({
+  total,
+  usable,
+  estimated,
+  mark,
+  running,
+}: {
+  total: number
+  usable: number
+  estimated: boolean
+  /** Auto-compact: "auto 160k", or "Compacts after this turn" (§3.3.3). */
+  mark?: AutocompactMark | null
+  running?: boolean
+}) {
   const ratio = usable > 0 ? Math.min(1, total / usable) : 0
   const pct = Math.round(ratio * 100)
   return (
@@ -326,6 +352,7 @@ function Hero({ total, usable, estimated }: { total: number; usable: number; est
       <div className="harness-ui-hero-main">
         <span className="harness-ui-hero-num">{`${estimated ? '~' : ''}${formatTokens(total)}`}</span>
         <span className="harness-ui-hero-of">of {formatTokens(usable)} tokens</span>
+        <HeroAutoLabel total={total} mark={mark ?? null} running={running} />
       </div>
       <span className="harness-ui-pill" data-tone={toneFor(ratio)}>
         {`${pct}%`}
@@ -381,9 +408,11 @@ function EmptyWindow({ contextWindow }: { contextWindow?: number }) {
   )
 }
 
-/** The window as a thin bar: one rounded segment per category, 2px apart. */
-function StackBar({ pct, children }: { pct: number; children?: ReactNode }) {
-  return (
+/** The window as a thin bar: one rounded segment per category, 2px apart.
+    With a `tick` (0–1), an amber mark stands over it where auto-compact
+    fires; the bar clips its segments, so the mark sits on a frame around it. */
+function StackBar({ pct, tick, children }: { pct: number; tick?: number | null; children?: ReactNode }) {
+  const bar = (
     <div
       className="harness-ui-stack"
       role="progressbar"
@@ -393,6 +422,13 @@ function StackBar({ pct, children }: { pct: number; children?: ReactNode }) {
       aria-valuemax={100}
     >
       {children}
+    </div>
+  )
+  if (tick == null) return bar
+  return (
+    <div className="harness-ui-stack-frame">
+      {bar}
+      <StackTick tick={tick} />
     </div>
   )
 }
@@ -644,6 +680,7 @@ function WindowCard({
   liveCost,
   onRetry,
   sessionId,
+  running,
 }: {
   snapshot: ContextSnapshot
   history: HistoryState
@@ -652,8 +689,11 @@ function WindowCard({
   liveCost: number | null | undefined
   onRetry: () => void
   sessionId: string
+  /** A turn is running (the console's `isStreaming`). */
+  running?: boolean
 }) {
   const usable = snapshot.usable
+  const mark = autocompactMark(snapshot)
   const cats = categories(snapshot)
   const estimated = !snapshot.estimator || snapshot.estimator === 'heuristic'
   const pct = Math.round(Math.min(1, snapshot.total / usable) * 100)
@@ -678,8 +718,14 @@ function WindowCard({
   const unreported = partial?.total?.unreported.length ? partial.total : partial?.self.partial.length ? partial.self : null
   return (
     <>
-      <Hero total={snapshot.total} usable={usable} estimated={estimated} />
-      <StackBar pct={pct}>
+      <Hero
+        total={snapshot.total}
+        usable={usable}
+        estimated={estimated}
+        mark={mark}
+        running={running}
+      />
+      <StackBar pct={pct} tick={tickRatio(mark?.effective, usable)}>
         {cats
           .filter((segment) => segment.tokens > 0)
           .map((segment) => (
@@ -693,6 +739,7 @@ function WindowCard({
             />
           ))}
       </StackBar>
+      <AutocompactLine mark={mark} />
       <div className="harness-ui-legend">
         {rows.map((row) => (
           <LegendRow key={row.key} row={row} usable={usable} />
@@ -1391,6 +1438,8 @@ interface ContextPopoverProps {
   history: HistoryState
   onRetry: () => void
   onOpenSession?: (sessionId: string) => void
+  /** A turn is running (the console's `isStreaming`). */
+  running?: boolean
 }
 
 /** Which page of the breakdown is showing; the sub-agents page may open on
@@ -1407,6 +1456,7 @@ function ContextPopover({
   history,
   onRetry,
   onOpenSession,
+  running,
 }: ContextPopoverProps) {
   const [view, setView] = useState<PopoverView>({ page: 'overview' })
   const root = useRef<HTMLDivElement>(null)
@@ -1463,6 +1513,7 @@ function ContextPopover({
           liveCost={liveCost}
           onRetry={onRetry}
           sessionId={sessionId}
+          running={running}
         />
       ) : (
         <EmptyWindow contextWindow={contextWindow} />
@@ -1542,6 +1593,7 @@ export function createContextChip(host: Host) {
     sessionId,
     modelId,
     contextWindow,
+    isStreaming,
   }: SessionChipProps) {
     const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
     const [open, setOpen] = useState(false)
@@ -1627,13 +1679,14 @@ export function createContextChip(host: Host) {
         history={history}
         onRetry={metrics.retry}
         onOpenSession={onOpenSession}
+        running={isStreaming}
       />
     )
 
     /* The ring carries proportion; the counts carry the number you act on;
        the percentage keeps its job in the label, the tooltip and the
        breakdown's hero. */
-    const ring = (ratio: number, pct: number, tone: Tone) => (
+    const ring = (ratio: number, pct: number, tone: Tone, tick: number | null = null) => (
       <span
         className="harness-ui-chip-ring"
         role="progressbar"
@@ -1642,7 +1695,7 @@ export function createContextChip(host: Host) {
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <RingGauge ratio={ratio} size={16} stroke={2.5} color={TONE_COLOR[tone]} />
+        <RingGauge ratio={ratio} size={16} stroke={2.5} color={TONE_COLOR[tone]} tick={tick} />
       </span>
     )
     const counts = (used: string, window: string) => (
@@ -1691,17 +1744,23 @@ export function createContextChip(host: Host) {
     const ratio = Math.min(1, snapshot.total / snapshot.usable)
     const pct = Math.round(ratio * 100)
     const tone = toneFor(ratio)
+    // Auto-compact (chat-projects §3.3.3): the tick on the ring, and after
+    // the counts "auto 160k", or "Compacts after this turn" while a running
+    // turn is past the size. Neither with the model's own limit.
+    const mark: AutocompactMark | null = autocompactMark(snapshot)
+    const autoLabel = chipLabel(snapshot.total, mark, isStreaming)
 
     return (
       <ContextChipSurface
         open={open}
         onOpenChange={setOpen}
         tone={tone}
-        triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
+        triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%)${autoLabel ? `, ${autoLabel.toLowerCase()}` : ''} — click for the breakdown`}
         trigger={
           <>
-            {ring(ratio, pct, tone)}
+            {ring(ratio, pct, tone, tickRatio(mark?.effective, snapshot.usable))}
             {counts(formatTokens(snapshot.total), formatTokens(snapshot.usable))}
+            <ChipAutoLabel total={snapshot.total} mark={mark} running={isStreaming} />
             {caret}
           </>
         }

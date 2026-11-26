@@ -164,3 +164,63 @@ describe('Conversation details: the Claude Code account (§4.3.5)', () => {
     ).toEqual({ set: {}, unset: ['claude_account'] })
   })
 })
+
+describe('Conversation details: Auto-compact (§3.3.4)', () => {
+  const own = {
+    ...base,
+    sessionMetadata: {
+      ...base.sessionMetadata,
+      autocompact: { mode: 'tokens', tokens: 600_000 },
+    },
+  }
+
+  it('leaves autocompact alone when the row did not change', () => {
+    expect(
+      buildDetailsPatch(
+        base,
+        { ...detailsDraftOf(base), autocompact: { mode: 'inherit' } },
+        999,
+      ),
+    ).toBeNull()
+    expect(
+      buildDetailsPatch(
+        own,
+        {
+          ...detailsDraftOf(own),
+          autocompact: { mode: 'tokens', tokens: 600_000 },
+        },
+        999,
+      ),
+    ).toBeNull()
+  })
+
+  it('sets a size or off, and the inherited choice removes the key', () => {
+    expect(
+      buildDetailsPatch(
+        base,
+        {
+          ...detailsDraftOf(base),
+          autocompact: { mode: 'tokens', tokens: 160_000 },
+        },
+        999,
+      ),
+    ).toEqual({
+      set: { autocompact: { mode: 'tokens', tokens: 160_000 } },
+      unset: [],
+    })
+    expect(
+      buildDetailsPatch(
+        own,
+        { ...detailsDraftOf(own), autocompact: { mode: 'off' } },
+        999,
+      ),
+    ).toEqual({ set: { autocompact: { mode: 'off' } }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        own,
+        { ...detailsDraftOf(own), autocompact: { mode: 'inherit' } },
+        999,
+      ),
+    ).toEqual({ set: {}, unset: ['autocompact'] })
+  })
+})

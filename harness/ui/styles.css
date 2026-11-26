@@ -77,6 +77,21 @@
 [data-iii-ui="harness"] .harness-ui-chip-btn[data-open] .harness-ui-chip-caret {
   transform: rotate(180deg);
 }
+/* Auto-compact (chat-projects §3.3.3): "· auto 160k" after the counts, in
+   mono Faint like the console's own meter; "Compacts after this turn" in
+   the warning tone while a running turn is past the size. */
+[data-iii-ui="harness"] .harness-ui-chip-auto {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-chip-auto[data-after-turn] {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-warn-strong);
+}
 /* Pane width, not viewport: the chat root (`ChatView`'s `@container`
    section) is the nearest container — the `data-iii-ui` wrapper is
    `display: contents`, so it is not one. Under 30rem, the design system's
@@ -85,6 +100,10 @@
    button's aria-label still says all of it. */
 @container (max-width: 30rem) {
   [data-iii-ui="harness"] .harness-ui-chip-caret {
+    display: none;
+  }
+  /* The auto-compact label is for wide surfaces; the ring keeps its tick. */
+  [data-iii-ui="harness"] .harness-ui-chip-auto {
     display: none;
   }
 }
@@ -192,6 +211,7 @@
 [data-iii-ui="harness"] .harness-ui-hero-main {
   display: flex;
   flex: 1;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
@@ -206,6 +226,20 @@
 [data-iii-ui="harness"] .harness-ui-hero-of {
   font-size: 12px;
   color: var(--color-ink-faint);
+}
+/* "auto 160k" beside the window, as on the chip; the warning tone while the
+   running turn will compact. */
+[data-iii-ui="harness"] .harness-ui-hero-auto {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-hero-auto[data-after-turn] {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-warn-strong);
 }
 [data-iii-ui="harness"] .harness-ui-pill {
   flex: none;
@@ -242,6 +276,21 @@
   height: 100%;
   flex: none;
   border-radius: var(--radius-full);
+}
+/* The auto-compact mark: 2px of Warning standing 4px over and under the
+   bar, which clips its segments, so the mark sits on a frame around it. */
+[data-iii-ui="harness"] .harness-ui-stack-frame {
+  position: relative;
+}
+[data-iii-ui="harness"] .harness-ui-stack-tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: var(--radius-full);
+  background: var(--color-warn);
+  pointer-events: none;
 }
 /* Before the first reply: a raised card in the live layout's shape. The
    hero number is the window size; the badge sits where the share pill will;

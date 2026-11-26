@@ -43,6 +43,8 @@ import {
   useMediaQuery,
   WIDE_HEADER_QUERY,
 } from '@/hooks/use-media-query'
+import { useSideChatParent } from '@/hooks/use-side-chat-parent'
+import { useTurnAutocompact } from '@/hooks/use-turn-autocompact'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import { expandAttachments } from '@/lib/attachments'
@@ -57,6 +59,12 @@ import {
   linkStoredAttachments,
   uploadAttachments,
 } from '@/lib/attachments/store'
+import {
+  SECTION_LABEL as AUTOCOMPACT_LABEL,
+  chipText as autocompactChipText,
+  conversationAutocompact,
+  effectiveTokens,
+} from '@/lib/autocompact'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import {
@@ -1482,10 +1490,17 @@ export function ChatView({
           sessionId={conversation.id}
           modelId={effectiveModel ?? undefined}
           contextWindow={contextWindow}
+          isStreaming={streamingIndicator}
         />
       )
     })
-  }, [extSessionChips, conversation.id, effectiveModel, contextWindow])
+  }, [
+    extSessionChips,
+    conversation.id,
+    effectiveModel,
+    contextWindow,
+    streamingIndicator,
+  ])
   const hasInjectedContextChip = extSessionChips.some(
     (chip) => chip.id === 'context',
   )
@@ -1527,6 +1542,45 @@ export function ChatView({
   ])
   const reportedContext =
     contextReport?.id === conversation.id ? contextReport.report : undefined
+  /* Auto-compact (chat-projects phase 3, D164): the setting chain as the
+   * engine resolves it (conversation, project, global; a side chat follows
+   * its conversation, read from the engine when it isn't loaded here),
+   * measured on the last reported `usable`. The meter's tick, its line and
+   * the header chip read this one value between turns; while a turn runs
+   * they read the value the turn froze, as the harness does. */
+  const sideChatParent = useSideChatParent({
+    conversation,
+    conversations: listedConversations,
+    enabled: chatCaps.autocompact,
+  })
+  const resolvedAutocompact = chatCaps.autocompact
+    ? conversationAutocompact({
+        conversation,
+        projects: chatProjects.projects,
+        global: chatSettings.autocompact,
+        conversations: listedConversations,
+        parent: sideChatParent,
+      })
+    : null
+  const autocompact = useTurnAutocompact({
+    sessionId: conversation.id,
+    running: chatCaps.autocompact && streamingIndicator && !conversation.draft,
+    between: resolvedAutocompact
+      ? {
+          effective: effectiveTokens(
+            resolvedAutocompact.tokens,
+            reportedContext?.usable,
+          ),
+          rule: resolvedAutocompact.rule,
+        }
+      : null,
+    observe: backend.onTurnAutocompact,
+  })
+  // The chip is for wide surfaces only (D138), like the account chip.
+  const chipAutocompact =
+    !side && wideHeader && autocompact?.effective != null
+      ? autocompact.effective
+      : null
 
   /* Injected turn summaries live beside the composer rather than in the
    * transcript. Workers own their data and subscribe by session id; the host
@@ -3734,6 +3788,7 @@ export function ChatView({
                       messages={conversation.messages}
                       contextWindow={contextWindow}
                       reported={reportedContext}
+                      autocompact={autocompact ?? undefined}
                     />
                   )}
                 </div>
@@ -3864,7 +3919,11 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
-      {!side && (conversation.description || chatProject || chipAccount) ? (
+      {!side &&
+      (conversation.description ||
+        chatProject ||
+        chipAccount ||
+        chipAutocompact !== null) ? (
         /* Line 2 and the chips row of the header (chat-projects §1.3.4):
            the description in Muted with "by agent · 2m" when the agent
            wrote it, then the project and folder chips. */
@@ -3892,7 +3951,7 @@ export function ChatView({
               ) : null}
             </div>
           ) : null}
-          {chatProject || chipAccount ? (
+          {chatProject || chipAccount || chipAutocompact !== null ? (
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {chatProject ? (
                 <button
@@ -3936,6 +3995,23 @@ export function ChatView({
                 >
                   <AccountDot color={chipAccount.color} />
                   <span className="truncate">{chipAccount.name}</span>
+                </button>
+              ) : null}
+              {chipAutocompact !== null ? (
+                /* The auto-compact chip (§3.3.3): only when a size below
+                   the model's limit applies; Conversation details on the
+                   Auto-compact row. */
+                <button
+                  type="button"
+                  data-autocompact-chip={chipAutocompact}
+                  disabled={!canEditDetails}
+                  onClick={() => openDetails('autocompact')}
+                  title={AUTOCOMPACT_LABEL}
+                  className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink enabled:hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  <span className="truncate">
+                    {autocompactChipText(chipAutocompact)}
+                  </span>
                 </button>
               ) : null}
             </div>

@@ -813,8 +813,7 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [crate::ask_store::SCOPE, IDEM_SCOPE, BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
-                    crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
+                "scopes": PRIVATE_SCOPES,
             }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -872,15 +871,25 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
     message.contains("function_not_found") || message.contains("not found")
 }
 
+/// Every scope the private namespace claims, and so every scope the
+/// `harness::state::*` accessors serve: one list, so the claim and the
+/// routing ([`is_binding_scope`]) cannot drift apart.
+const PRIVATE_SCOPES: [&str; 9] = [
+    crate::ask_store::SCOPE,
+    IDEM_SCOPE,
+    BINDING_SCOPE,
+    BINDING_OWNER_SCOPE,
+    crate::hooks::recall::SCOPE,
+    crate::functions::delete_session_tree::OPERATIONS,
+    crate::functions::delete_session_tree::GUARDS,
+    crate::functions::delete_session_tree::DISPATCHES,
+    // One ring every harness instance updates with compare-and-set; it names
+    // every conversation's title, so agents' public state reads never see it.
+    crate::autocompact::LOG_SCOPE,
+];
+
 fn is_binding_scope(scope: &str) -> bool {
-    matches!(
-        scope,
-        BINDING_SCOPE
-            | BINDING_OWNER_SCOPE
-            | IDEM_SCOPE
-            | crate::hooks::recall::SCOPE
-            | crate::ask_store::SCOPE
-    ) || is_deletion_scope(scope)
+    PRIVATE_SCOPES.contains(&scope)
 }
 
 fn is_deletion_scope(scope: &str) -> bool {
@@ -1373,12 +1382,24 @@ mod tests {
             BINDING_OWNER_SCOPE,
             IDEM_SCOPE,
             crate::ask_store::SCOPE,
+            crate::autocompact::LOG_SCOPE,
         ] {
             assert!(
                 is_binding_scope(scope),
                 "{scope} must route to the accessors"
             );
+            assert!(PRIVATE_SCOPES.contains(&scope), "{scope} must be claimed");
         }
+        for scope in [
+            crate::functions::delete_session_tree::OPERATIONS,
+            crate::functions::delete_session_tree::GUARDS,
+            crate::functions::delete_session_tree::DISPATCHES,
+        ] {
+            assert!(is_deletion_scope(scope) && is_binding_scope(scope));
+        }
+        // The back-off and the models index are public, like the turn's.
+        assert!(!is_binding_scope(crate::autocompact::BACKOFF_SCOPE));
+        assert!(!is_binding_scope(crate::autocompact::MODELS_SCOPE));
         assert!(!is_binding_scope(TURN_SCOPE));
         assert!(!is_binding_scope(QUEUE_SCOPE));
     }

@@ -12,6 +12,15 @@
           "null"
         ]
       },
+      "autocompact": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "The project's autocompact setting (chat-projects phase 3): `{mode: \"inherit\"}` (the default), `{mode: \"off\"}` or `{mode: \"tokens\", tokens}` with 20,000-2,000,000 tokens. Anything else is `bad_setting` or `bad_tokens`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "bring_existing": {
         "default": null,
         "description": "Stamp the root conversations already in these folders whose `project_id` is missing or `\"none\"`.",

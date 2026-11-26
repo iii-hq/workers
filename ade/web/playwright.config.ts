@@ -8,12 +8,14 @@ const artifactsRoot =
 
 export default defineConfig({
   testDir: './e2e',
-  // The Workers fixture starts its own Vite server via test:e2e:workers.
+  // The Workers and auto-compact fixtures start their own Vite servers via
+  // test:e2e:workers and test:e2e:autocompact.
   // The traces stress run has its own config and dev server
   // (`pnpm test:stress`, e2e/stress/playwright.config.ts).
   testIgnore: [
     ...genericConsoleTestIgnore(),
     '**/workers-settings.spec.ts',
+    '**/autocompact-settings.spec.ts',
     '**/stress/**',
   ],
   fullyParallel: false,

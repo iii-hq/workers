@@ -825,6 +825,16 @@ async fn generate_step(
         }
     }
 
+    // Autocompact (chat-projects phase 3), resolved once per turn next to
+    // its account and kept on the record: the budget every assembly of the
+    // turn sends and the threshold its snapshots mark. A record from before
+    // 1.13 resolves at its next step.
+    if record.autocompact.is_none() {
+        record.autocompact =
+            Some(Box::pin(crate::autocompact::for_turn(deps, &session, &record)).await);
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+    }
+
     // max_turns guard: cap runaway loops with a synthetic notice.
     if record.turn_count >= record.options.max_turns {
         let notice = format!(
@@ -1100,6 +1110,7 @@ async fn generate_step(
         record.pre_generate_hook_tokens,
     );
     let mut reassembled = false;
+    let mut inline_emitted = false;
     let (
         gen_system_prompt,
         gen_annotations,
@@ -1128,7 +1139,10 @@ async fn generate_step(
         )
         .await
         {
-            Ok(assembled) => assembled,
+            Ok(assembled) => {
+                after_assembly(deps, &session, &mut record, &assembled, &mut inline_emitted).await;
+                assembled
+            }
             Err(HarnessError::ContextOverflow(reason)) => {
                 let failure = overflow_failure(deps, &record).await;
                 return finalize_failed(deps, &session, &mut record, &reason, failure)
@@ -1812,6 +1826,14 @@ async fn generate_step(
                 "context snapshot store failed"
             );
         }
+        // The models index `harness::autocompact::models` lists (D165).
+        crate::autocompact::note_model(
+            deps,
+            snapshot.provider.as_deref(),
+            &snapshot.model,
+            snapshot.usable,
+        )
+        .await;
     }
 
     // Capture mode only: origin on the update event names the current
@@ -3405,6 +3427,11 @@ async fn finalize_completed(
         ))
         .await;
     }
+    // Autocompact at the end of the turn (D158), before the first drain: the
+    // record stays `running` while it summarises, so a send queues and runs
+    // after it; the refreshed snapshot rides on-turn-completed. A Stop
+    // abandons the summary and the turn still completes.
+    Box::pin(crate::autocompact::at_turn_end(deps, session, record)).await;
     let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
@@ -4602,6 +4629,24 @@ async fn assemble_context(
         .collect();
 
     let context = deps.context().await;
+    // Autocompact (D159, D160): the soft budget, with the global
+    // instructions, while the setting is set and nothing paused it; the
+    // turn's provider options always, so an inline compaction runs on the
+    // conversation's account (D161).
+    let compaction_budget = record
+        .autocompact
+        .as_ref()
+        .and_then(|autocompact| autocompact.budget(record.context_snapshot.as_ref()));
+    let compaction_instructions = match compaction_budget {
+        Some(_) => crate::autocompact::global_instructions(&deps.cfg().await.autocompact),
+        None => None,
+    };
+    let provider_options = record
+        .options
+        .provider_options
+        .as_ref()
+        .filter(|options| !options.is_empty())
+        .and_then(|options| serde_json::to_value(options).ok());
     let params = crate::clients::AssembleParams {
         messages: candidate_values,
         model_id: record.options.model.clone(),
@@ -4625,6 +4670,9 @@ async fn assemble_context(
         // of every later step. Compaction still bounds the window.
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
         provenance: capture,
+        compaction_budget,
+        compaction_instructions,
+        provider_options,
     };
 
     let mut out = match context.assemble(params).await {
@@ -4681,7 +4729,20 @@ async fn assemble_context(
             ),
         }
     }
+    // The budget context-manager applied: `min(usable, budget)`, or none. A
+    // response without the echo comes from a context-manager older than
+    // 1.3.0, which dropped the budget: the turn runs at the model's limit.
+    let applied_budget = match out.compaction_budget {
+        Some(echo) => echo,
+        None => {
+            if compaction_budget.is_some() {
+                warn_no_budget_echo(&record.session_id);
+            }
+            None
+        }
+    };
     let mut summary_persisted = false;
+    let mut inline = None;
     if out.applied.compacted
         && let Some(summary) = &out.applied.summary
     {
@@ -4691,7 +4752,22 @@ async fn assemble_context(
             .and_then(|i| usize::try_from(i).ok())
             .and_then(|i| candidate.get(i))
             .map(|(id, _)| id.clone());
-        let data = json!({
+        // `budget`: the autocompact budget fired it (below `usable`);
+        // otherwise the model's own limit did, as before autocompact.
+        let by_budget = out
+            .compaction
+            .as_ref()
+            .is_some_and(crate::clients::context::AssembleCompaction::by_budget);
+        let (trigger, threshold_tokens, rule) = match (by_budget, record.autocompact.as_ref()) {
+            (true, Some(autocompact)) => (
+                crate::compaction::Trigger::Inline,
+                crate::autocompact::effective_tokens(autocompact.setting_tokens, out.usable),
+                Some(autocompact.rule.clone()),
+            ),
+            _ => (crate::compaction::Trigger::Limit, None, None),
+        };
+        let compaction_id = ids::inline_compaction_id(&record.turn_id, step);
+        let mut data = json!({
             "summary": summary,
             "tail_start_entry_id": tail_entry,
             "tokens_before": out.applied.tokens_before,
@@ -4700,6 +4776,28 @@ async fn assemble_context(
             "assembled_token_count": out.token_count,
             "usable_input_tokens": out.usable,
             "effective_max_output_tokens": out.effective_max_output_tokens,
+            "compaction_id": compaction_id,
+            "model": record.options.model,
+            "trigger": trigger,
+            "source": trigger.source(),
+            "context_before": out.applied.initial_token_count,
+            "context_after": out.token_count,
+        });
+        if let Some(threshold) = threshold_tokens {
+            data["threshold_tokens"] = json!(threshold);
+        }
+        if let Some(rule) = &rule {
+            data["rule"] = json!(rule);
+        }
+        inline = Some(InlineCompaction {
+            compaction_id,
+            entry_id: ids::compaction_entry_id(&record.turn_id, step),
+            trigger,
+            threshold_tokens,
+            rule,
+            tokens_before: out.applied.tokens_before,
+            context_before: out.applied.initial_token_count,
+            context_after: out.token_count,
         });
         summary_persisted = session
             .append_custom(
@@ -4711,6 +4809,9 @@ async fn assemble_context(
             )
             .await
             .is_ok();
+        if !summary_persisted {
+            inline = None;
+        }
     }
 
     // The snapshot's "compacted" means the context carries a summary: this
@@ -4798,6 +4899,9 @@ async fn assemble_context(
         summarized,
         summarized_head_tokens,
         breakdown: out.breakdown,
+        applied_budget,
+        compaction: out.compaction,
+        inline,
         pruned: out.applied.pruned,
     })
 }
@@ -4944,6 +5048,10 @@ fn build_context_snapshot(
         prompt_surface_digest: None,
         prompt_sections_fallback: None,
         prefix_divergences: Vec::new(),
+        autocompact: record
+            .autocompact
+            .as_ref()
+            .map(|autocompact| autocompact.snapshot(assembled.usable)),
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -5136,6 +5244,111 @@ struct Assembled {
     /// context-manager pruned or reduced function results to fit the budget
     /// this step, rewriting rows an earlier request may have sent.
     pruned: bool,
+    /// The autocompact budget context-manager applied (its echo): `None`
+    /// when none was sent, or from a context-manager older than 1.3.0.
+    applied_budget: Option<u64>,
+    /// The compaction this assembly tried, when it tried one (1.3.0).
+    compaction: Option<crate::clients::context::AssembleCompaction>,
+    /// The compaction this assembly persisted.
+    inline: Option<InlineCompaction>,
+}
+
+/// A compaction `context::assemble` ran inside a turn (contract C):
+/// `inline` at the autocompact budget, `limit` at the model's own.
+#[derive(Debug, Clone)]
+struct InlineCompaction {
+    compaction_id: String,
+    entry_id: String,
+    trigger: crate::compaction::Trigger,
+    threshold_tokens: Option<u64>,
+    rule: Option<crate::autocompact::Rule>,
+    tokens_before: Option<u64>,
+    context_before: u64,
+    context_after: u64,
+}
+
+/// A context-manager older than 1.3.0 ignores `compaction_budget`; said
+/// once per process.
+fn warn_no_budget_echo(session_id: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            session_id,
+            "context::assemble did not echo compaction_budget (context-manager older than 1.3.0): turns run without the autocompact cap; the end of a turn still compacts"
+        );
+    }
+}
+
+/// After an assembly (D160): an inline attempt that failed or was busy
+/// pauses the budget for the rest of the turn (no notice, no back-off), as
+/// does one that gained less than 10 % (it would fire again every step); a
+/// persisted inline or limit compaction emits its completed phase (no
+/// started phase) once, and an inline one joins the autocompact log.
+///
+/// The pause covers a failed or busy attempt at the model's own limit
+/// (`trigger: "usable"`) on purpose: that context is past the budget too,
+/// so every later step of the turn would call the summariser again at the
+/// budget on the same context. Without the budget, context-manager still
+/// compacts at `usable` as it did before autocompact.
+async fn after_assembly(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    assembled: &Assembled,
+    emitted: &mut bool,
+) {
+    let small_gain = assembled.inline.as_ref().is_some_and(|inline| {
+        inline.trigger == crate::compaction::Trigger::Inline
+            && !crate::autocompact::gained_enough(inline.context_before, inline.context_after)
+    });
+    let failed = assembled
+        .compaction
+        .as_ref()
+        .is_some_and(crate::clients::context::AssembleCompaction::failed_or_busy);
+    if (failed || small_gain)
+        && assembled.applied_budget.is_some()
+        && let Some(autocompact) = record.autocompact.as_mut()
+        && !autocompact.paused
+    {
+        autocompact.paused = true;
+        if let Some(compaction) = &assembled.compaction {
+            tracing::info!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                status = %compaction.status,
+                failure = ?compaction.failure,
+                small_gain,
+                "inline autocompact paused for the rest of the turn"
+            );
+        }
+        // Stored now: a redelivered step keeps the pause.
+        let timeout = deps.cfg().await.session_timeout_ms;
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, timeout).await {
+            tracing::warn!(session_id = %record.session_id, %error, "the inline autocompact pause was not stored");
+        }
+    }
+    let Some(inline) = assembled.inline.as_ref().filter(|_| !*emitted) else {
+        return;
+    };
+    *emitted = true;
+    let outcome = crate::compaction::inline_outcome(
+        &record.session_id,
+        &inline.compaction_id,
+        inline.trigger,
+        inline.threshold_tokens,
+        inline.rule.clone(),
+        inline.tokens_before,
+        Some(inline.context_before),
+        Some(inline.context_after),
+        vec![inline.entry_id.clone()],
+    );
+    deps.events
+        .emit_compaction(
+            &record.session_id,
+            crate::compaction::event_payload("completed", &outcome),
+        )
+        .await;
+    crate::autocompact::log_compaction(deps, session, &outcome).await;
 }
 
 struct ContextAssemblyInputs<'a> {

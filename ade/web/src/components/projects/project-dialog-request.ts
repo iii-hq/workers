@@ -8,8 +8,11 @@ export type ProjectDialogRequest =
   | {
       mode: 'edit'
       projectId: string
-      /** Open on this section (the Projects tab of Claude Code accounts). */
-      section?: 'account'
+      /**
+       * Open on this section: the account (the Projects tab of Claude Code
+       * accounts) or auto-compact (its settings' overrides table).
+       */
+      section?: 'account' | 'autocompact'
     }
 
 type Listener = (request: ProjectDialogRequest) => void

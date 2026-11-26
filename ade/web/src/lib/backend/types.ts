@@ -1,3 +1,4 @@
+import type { SnapshotAutocompact } from '@/lib/autocompact'
 import type { ModelId } from '@/types/chat'
 import type {
   HarnessFileBlock,
@@ -303,6 +304,12 @@ export interface ContextUsageReport {
   total: number
   usable: number
   free: number
+  /**
+   * The snapshot's auto-compact (chat-projects phase 3, contract C): the
+   * size, the effective threshold and the rule as the last turn resolved
+   * them. Absent from an older harness.
+   */
+  autocompact?: SnapshotAutocompact | null
 }
 
 export interface ChatBackend {
@@ -401,6 +408,16 @@ export interface ChatBackend {
    * to refetch `listQueued`. Returns an unsubscribe.
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
+  /**
+   * Observe a session's context snapshot while a turn runs: each step's
+   * `autocompact`, the value the turn froze (chat-projects §3.2.3). The
+   * meter, its label and the header chip read it until the turn ends.
+   * Returns an unsubscribe.
+   */
+  onTurnAutocompact?(
+    sessionId: string,
+    onValue: (value: SnapshotAutocompact) => void,
+  ): () => void
   /**
    * What the harness knows about the session's question cards
    * (`harness::ask`), by question id: `true` while one still waits on the

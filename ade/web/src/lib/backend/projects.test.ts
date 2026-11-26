@@ -123,7 +123,7 @@ describe('project calls', () => {
     expect(res.moved).toBe(4)
   })
 
-  it('updates as a patch: account only when given, autocompact never', async () => {
+  it('updates as a patch: account and autocompact only when given', async () => {
     call.mockResolvedValue({
       project: { id: 'prj_2', name: 'y', color: 'rose', folders: ['/x'] },
       moved: 0,
@@ -140,6 +140,56 @@ describe('project calls', () => {
     expect(call).toHaveBeenLastCalledWith('harness::projects::update', {
       id: 'prj_2',
       account: { mode: 'pinned', account_id: 'personal' },
+    })
+    // Phase 3 (§3.3.2, D167): the section's value goes with the patch.
+    await updateProject({
+      id: 'prj_2',
+      autocompact: { mode: 'tokens', tokens: 160_000 },
+    })
+    expect(call).toHaveBeenLastCalledWith('harness::projects::update', {
+      id: 'prj_2',
+      autocompact: { mode: 'tokens', tokens: 160_000 },
+    })
+    await updateProject({ id: 'prj_2', autocompact: { mode: 'inherit' } })
+    expect(call).toHaveBeenLastCalledWith('harness::projects::update', {
+      id: 'prj_2',
+      autocompact: { mode: 'inherit' },
+    })
+  })
+
+  it('creates with an auto-compact value', async () => {
+    call.mockResolvedValue({
+      project: { id: 'prj_3', name: 'z', color: 'blue', folders: ['/z'] },
+      moved: 0,
+    })
+    await createProject({
+      name: 'z',
+      color: 'blue',
+      folders: ['/z'],
+      autocompact: { mode: 'off' },
+    })
+    expect(call).toHaveBeenCalledWith('harness::projects::create', {
+      name: 'z',
+      color: 'blue',
+      folders: ['/z'],
+      autocompact: { mode: 'off' },
+    })
+  })
+
+  it('patches the global auto-compact through the chat settings', async () => {
+    call.mockResolvedValueOnce({
+      settings: {
+        descriptions: { agent_writes: true },
+        autocompact: { mode: 'tokens', tokens: 400_000 },
+      },
+    })
+    await expect(
+      setChatSettings({ autocompact: { mode: 'tokens', tokens: 400_000 } }),
+    ).resolves.toMatchObject({
+      autocompact: { mode: 'tokens', tokens: 400_000 },
+    })
+    expect(call).toHaveBeenLastCalledWith('harness::chat-settings::set', {
+      patch: { autocompact: { mode: 'tokens', tokens: 400_000 } },
     })
   })
 
@@ -276,5 +326,28 @@ describe('project errors', () => {
       field: 'account',
       message: 'Follow the global account, or pin to one of the accounts',
     })
+  })
+
+  // Phase 3's typed rejections (D167) go under the Auto-compact section,
+  // with the harness's words, or ours when it sent only the code.
+  it.each([
+    ['bad_tokens', 'Between 20k and 2M tokens'],
+    ['bad_instructions', 'Up to 1,000 characters'],
+    [
+      'bad_setting',
+      "Use the global setting, a size, or only the model's limit",
+    ],
+  ])('puts %s under the auto-compact section', (code, words) => {
+    const context = { name: 'n', folders: [] }
+    expect(describeProjectError({ code }, context)).toEqual({
+      field: 'autocompact',
+      message: words,
+    })
+    expect(
+      describeProjectError(
+        wire({ code, message: 'Said by the harness' }),
+        context,
+      ),
+    ).toEqual({ field: 'autocompact', message: 'Said by the harness' })
   })
 })

@@ -1,9 +1,16 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
 //! media-normalize -> cap results (always) -> (past a third of the
-//! window) let the provider's count set the budget -> (if over) age-prune ->
-//! (if still over) compact -> (if still over) emergency-reduce function
+//! window, or 80 % of the compaction budget) let the provider's count set
+//! the budget -> (if over the compaction threshold) age-prune -> (if still
+//! over it) compact -> (if over `usable`) emergency-reduce function
 //! results -> assemble the final list or return a structured overflow.
+//!
+//! Two thresholds (D160): the compaction threshold, `min(usable,
+//! options.compaction_budget)`, is soft — prune and compaction start past
+//! it; `usable` is hard — emergency reduction and the overflow error hold
+//! to it alone, so a busy or failed summariser at a low budget never drops
+//! content the model could still read.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
 //! model-facing list (nor the count); `applied.tail_start_index`
@@ -31,8 +38,8 @@ use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, TurnKnobs};
 use crate::types::{
-    AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
-    ThinkingLevel,
+    AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, Failure, ModelInput,
+    ProviderOptions, Role, ThinkingLevel,
 };
 
 const TEXT_ONLY_IMAGE_OMITTED: &str = "[image omitted: model does not support vision]";
@@ -186,6 +193,24 @@ pub struct AssembleOptions {
     /// a byte-level generation witness only; ordinary callers leave it off.
     #[serde(default)]
     pub provenance: bool,
+    /// Soft compaction threshold, in tokens: prune and compaction start once
+    /// the request passes `min(usable, compaction_budget)`, and the
+    /// provider's count from `min(usable / 3, 0.8 × compaction_budget)`.
+    /// Emergency reduction and the `context/overflow` error still hold to
+    /// `usable` alone. Echoed as the response's `compaction_budget`; absent,
+    /// compaction starts at `usable` as before.
+    #[serde(default)]
+    pub compaction_budget: Option<u64>,
+    /// Guidance for an inline compaction's summariser, as
+    /// `context::compact`'s `instructions`: trimmed, ignored when blank, cut
+    /// past 2000 chars.
+    #[serde(default)]
+    pub compaction_instructions: Option<String>,
+    /// `router::chat` `provider_options`, namespaced by provider id (e.g.
+    /// the conversation's account under `claude-code`), forwarded verbatim
+    /// to every summariser call this assembly makes.
+    #[serde(default)]
+    pub provider_options: Option<ProviderOptions>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -276,6 +301,41 @@ pub struct AssemblySummary {
     pub summarized_indices: Option<Vec<usize>>,
 }
 
+/// Which threshold made the assembly compact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionTrigger {
+    /// The request passed `options.compaction_budget` while still within
+    /// `usable`.
+    Budget,
+    /// The request passed `usable`, the model's limit (as before 1.3.0).
+    Usable,
+}
+
+/// How an inline compaction attempt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionStatus {
+    /// The head was summarised (`applied.compacted`).
+    Compacted,
+    /// The summariser failed; `failure` says why.
+    Failed,
+    /// Another caller holds the compaction lease.
+    Busy,
+    /// Nothing could be summarised without taking the whole request.
+    Skipped,
+}
+
+/// The inline compaction this call tried.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CompactionReport {
+    pub trigger: CompactionTrigger,
+    pub status: CompactionStatus,
+    /// Present when `status` is `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Failure>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssembleResponse {
     /// `options.provenance` only: output ordinal -> exact request index;
@@ -294,6 +354,14 @@ pub struct AssembleResponse {
     pub token_count: u64,
     /// The budget the context was fit into.
     pub usable: u64,
+    /// The soft compaction threshold this call applied, `min(usable,
+    /// options.compaction_budget)`; `null` without the option. Always
+    /// present from 1.3.0, so a caller can tell an older context-manager
+    /// (which drops the option) by the field's absence.
+    pub compaction_budget: Option<u64>,
+    /// Present only when this call tried an inline compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionReport>,
     /// Effective output allocation used to derive `usable`. This is the
     /// router-resolved request limit, not the model catalog ceiling.
     pub effective_max_output_tokens: u64,
@@ -347,6 +415,13 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         .unwrap_or_else(|| default_reserved(&config, resolved.limits.context_window));
     let thinking_budget = resolved.thinking_budget(options.thinking_level);
     let usable_budget = usable(&resolved.limits, reserved, thinking_budget);
+    let compaction_budget = options
+        .compaction_budget
+        .map(|budget| budget.min(usable_budget));
+    let thresholds = Budgets {
+        hard: usable_budget,
+        soft: compaction_budget.unwrap_or(usable_budget),
+    };
 
     let estimator = estimator_for_model(&req.model.id);
 
@@ -443,13 +518,15 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
     // The estimate is chars/4, and dense content bills far more: random hex
     // about 2.25x, so a 128k window took a 256k prompt without compacting.
-    // Past a third of the window the provider's own count sets the budget
-    // the steps below hold the estimate to.
+    // Past a third of the window (or 80 % of the compaction budget, which a
+    // 1M window would otherwise decide on the estimate alone) the provider's
+    // own count sets the budgets the steps below hold the estimate to.
     let gated_estimate = token_count;
-    let mut gate_budget = gate_budget(
+    let gated = gate_budget(
         deps,
         &req.model,
-        usable_budget,
+        thresholds,
+        provider_count_from(usable_budget, options.compaction_budget),
         token_count,
         request_overhead_tokens,
         &system_prompt,
@@ -458,6 +535,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         knobs,
     )
     .await;
+    let soft_budget = gated.soft;
+    let mut gate_budget = gated.hard;
 
     // Step 1: prune aged function outputs — only over budget
     // (context-manager.md § context::assemble). A prune rewrites results an
@@ -467,7 +546,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // tutorial that was 92% of the uncached input and 63% of the cost, with
     // the window never past a third full. Over budget it still runs first,
     // the cheapest relief before compaction.
-    if options.allow_prune.unwrap_or(true) && token_count > gate_budget {
+    if options.allow_prune.unwrap_or(true) && token_count > soft_budget {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             decay_user_turns: config.decay_user_turns,
@@ -482,11 +561,18 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         token_count = total(&sizes, prompt_tokens);
     }
 
-    // Step 2: compact the head.
+    // Step 2: compact the head, past the soft threshold.
+    let mut compaction = None;
+    let mut compaction_failure = None;
     if !options.preview_only
-        && token_count > gate_budget
+        && token_count > soft_budget
         && options.allow_compaction.unwrap_or(true)
     {
+        let trigger = if token_count > gate_budget {
+            CompactionTrigger::Usable
+        } else {
+            CompactionTrigger::Budget
+        };
         // The default lease key hashes the *request* message set —
         // the same derivation context::compact uses — so callers
         // hitting both functions with the same history contend on the
@@ -495,34 +581,56 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             .lease_key
             .clone()
             .unwrap_or_else(|| lease::default_lease_key(&request_messages));
-        if let Some(compaction) = try_compact(
+        let attempt = try_compact(
             deps,
             &req.model,
             &working,
             &sizes,
-            gate_budget,
-            options.tail_turns.unwrap_or(config.tail_turns),
-            &lease_key,
-            options.previous_summary.as_deref(),
-            max_result_tokens,
+            InlineCompaction {
+                lease_key: &lease_key,
+                tail_turns: options.tail_turns.unwrap_or(config.tail_turns),
+                tail_budget: soft_budget,
+                input_budget: gate_budget,
+                max_result_tokens,
+                steering: PromptSteering {
+                    previous_summary: options.previous_summary.as_deref(),
+                    instructions: options.compaction_instructions.as_deref(),
+                },
+                provider_options: options.provider_options.as_ref(),
+            },
         )
-        .await
-        {
-            (system_prompt, summary_span) = render(Some(&compaction.summary));
-            working = working.split_off(compaction.head_len);
-            sizes = sizes.split_off(compaction.head_len);
-            prompt_tokens = estimator.text(&system_prompt);
-            applied.compacted = true;
-            applied.tail_start_index = Some(compaction.tail_start_view.map(|v| view_to_orig[v]));
-            if provenance {
-                let head: Vec<usize> = view_to_orig.drain(..compaction.head_len).collect();
-                summarized_indices = (head.len() <= 2048).then_some(head);
+        .await;
+        let (status, failure) = match attempt {
+            CompactAttempt::Compacted(compaction) => {
+                (system_prompt, summary_span) = render(Some(&compaction.summary));
+                working = working.split_off(compaction.head_len);
+                sizes = sizes.split_off(compaction.head_len);
+                prompt_tokens = estimator.text(&system_prompt);
+                applied.compacted = true;
+                applied.tail_start_index =
+                    Some(compaction.tail_start_view.map(|v| view_to_orig[v]));
+                if provenance {
+                    let head: Vec<usize> = view_to_orig.drain(..compaction.head_len).collect();
+                    summarized_indices = (head.len() <= 2048).then_some(head);
+                }
+                applied.tokens_before = Some(compaction.tokens_before);
+                applied.summarized_head_tokens = Some(compaction.tokens_before);
+                applied.summary = Some(compaction.summary);
+                token_count = total(&sizes, prompt_tokens);
+                (CompactionStatus::Compacted, None)
             }
-            applied.tokens_before = Some(compaction.tokens_before);
-            applied.summarized_head_tokens = Some(compaction.tokens_before);
-            applied.summary = Some(compaction.summary);
-            token_count = total(&sizes, prompt_tokens);
-        }
+            CompactAttempt::Busy => (CompactionStatus::Busy, None),
+            CompactAttempt::Skipped => (CompactionStatus::Skipped, None),
+            CompactAttempt::Failed(failure) => {
+                compaction_failure = Some(failure.clone());
+                (CompactionStatus::Failed, Some(failure))
+            }
+        };
+        compaction = Some(CompactionReport {
+            trigger,
+            status,
+            failure,
+        });
     }
 
     // Step 3: enforce the budget by reducing complete function-result
@@ -600,6 +708,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         return Err(ContextError::Overflow {
             token_count,
             usable: gate_budget,
+            failure: compaction_failure,
         });
     }
 
@@ -624,6 +733,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         messages: working,
         token_count,
         usable: usable_budget,
+        compaction_budget,
+        compaction,
         effective_max_output_tokens: resolved.limits.max_output_tokens,
         model_resolved: match resolved.resolved {
             crate::core::budget::ModelResolved::Inline => ModelResolvedWire::Inline,
@@ -645,6 +756,21 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 /// window; content billing more than N times its estimate still slips past.
 pub(super) const PROVIDER_COUNT_SHARE: u64 = 3;
 
+/// With a compaction budget, the provider is also asked once the estimate
+/// passes this share (in tenths) of the budget (D160).
+const BUDGET_COUNT_TENTHS: u64 = 8;
+
+/// The estimate from which the provider's count sets the budgets: a third
+/// of `usable`, or 80 % of the compaction budget when that is lower. On a
+/// 1M window (usable about 916k) a third is about 305k, so a 160k budget
+/// would otherwise be decided on the estimate alone.
+pub(super) fn provider_count_from(usable: u64, compaction_budget: Option<u64>) -> u64 {
+    let share = usable.div_ceil(PROVIDER_COUNT_SHARE);
+    compaction_budget.map_or(share, |budget| {
+        share.min(budget.saturating_mul(BUDGET_COUNT_TENTHS).div_ceil(10))
+    })
+}
+
 /// Reductions after relief left a request the provider counts over the
 /// window; past them the request is an overflow.
 const MAX_RECOUNTS: usize = 3;
@@ -664,23 +790,46 @@ fn reduce_results(
         .saturating_add(emergency.pruned_tokens);
 }
 
-/// The budget, in estimate units, that keeps the provider's count of the
-/// request within `usable`: the window itself while the estimate is small,
-/// when nothing can count the request, or when the count is no larger.
+/// The two thresholds the pipeline holds the estimate to, in estimate units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Budgets {
+    /// `usable`: emergency reduction and the overflow error.
+    hard: u64,
+    /// `min(usable, compaction_budget)`: prune and compaction.
+    soft: u64,
+}
+
+impl Budgets {
+    /// Both thresholds at the rate the provider counts this request.
+    fn scaled(self, estimate: u64, counted: u64) -> Self {
+        let scale =
+            |budget: u64| (u128::from(budget) * u128::from(estimate) / u128::from(counted)) as u64;
+        Self {
+            hard: scale(self.hard),
+            soft: scale(self.soft),
+        }
+    }
+}
+
+/// The budgets, in estimate units, that keep the provider's count of the
+/// request within each threshold: the thresholds themselves while the
+/// estimate is below `count_from`, when nothing can count the request, or
+/// when the count is no larger.
 #[allow(clippy::too_many_arguments)]
 async fn gate_budget(
     deps: &Deps,
     model: &ModelInput,
-    usable: u64,
+    thresholds: Budgets,
+    count_from: u64,
     estimate: u64,
     request_overhead_tokens: u64,
     system_prompt: &str,
     tools: &[AgentFunction],
     messages: &[AgentMessage],
     knobs: TurnKnobs<'_>,
-) -> u64 {
-    if messages.is_empty() || estimate.saturating_mul(PROVIDER_COUNT_SHARE) < usable {
-        return usable;
+) -> Budgets {
+    if messages.is_empty() || estimate < count_from {
+        return thresholds;
     }
     // The estimate carries the request overhead; the provider's count of
     // the prompt, messages and tools does not.
@@ -698,20 +847,22 @@ async fn gate_budget(
         .map(|counted| counted.saturating_add(request_overhead_tokens))
     {
         Ok(counted) if counted > estimate => {
-            let budget = (u128::from(usable) * u128::from(estimate) / u128::from(counted)) as u64;
+            let budgets = thresholds.scaled(estimate, counted);
             tracing::info!(
                 estimate,
                 counted,
-                usable,
-                budget,
+                usable = thresholds.hard,
+                budget = budgets.hard,
+                compaction_threshold = thresholds.soft,
+                compaction_budget = budgets.soft,
                 "assemble: the provider counts more than the estimate; budget tightened"
             );
-            budget
+            budgets
         }
-        Ok(_) => usable,
+        Ok(_) => thresholds,
         Err(error) => {
             tracing::debug!(%error, "assemble: no provider count; the estimate holds");
-            usable
+            thresholds
         }
     }
 }
@@ -723,29 +874,50 @@ struct CompactionOutcome {
     tokens_before: u64,
 }
 
-/// Inline compaction under the lease. `None` means "no compaction this
-/// call" — lease busy, nothing to summarise, or summariser failure —
-/// and assemble continues to emergency reduction and budget checking.
-#[allow(clippy::too_many_arguments)]
+/// How [`try_compact`] ended.
+enum CompactAttempt {
+    Compacted(CompactionOutcome),
+    Busy,
+    Skipped,
+    Failed(Failure),
+}
+
+/// What one inline compaction runs with.
+struct InlineCompaction<'a> {
+    lease_key: &'a str,
+    tail_turns: usize,
+    /// Sizes the verbatim tail: the soft threshold.
+    tail_budget: u64,
+    /// Sizes the summariser's requests: the model's `usable`.
+    input_budget: u64,
+    max_result_tokens: u64,
+    steering: PromptSteering<'a>,
+    provider_options: Option<&'a ProviderOptions>,
+}
+
+/// Inline compaction under the lease. Anything short of `Compacted` —
+/// lease busy, nothing to summarise, or summariser failure — leaves the
+/// request as it was, and assemble continues to emergency reduction and
+/// budget checking.
 async fn try_compact(
     deps: &Deps,
     model: &ModelInput,
     working: &[AgentMessage],
     sizes: &[u64],
-    usable_budget: u64,
-    tail_turns: usize,
-    lease_key: &str,
-    previous_summary: Option<&str>,
-    max_result_tokens: u64,
-) -> Option<CompactionOutcome> {
+    plan: InlineCompaction<'_>,
+) -> CompactAttempt {
     let config = deps.config().await;
     let leases = deps.leases().await;
     let ttl_ms = (config.lease_ttl_secs * 1_000) as i64;
-    let nonce = lease::acquire(leases.as_ref(), deps.clock.as_ref(), lease_key, ttl_ms).await?;
+    let Some(nonce) =
+        lease::acquire(leases.as_ref(), deps.clock.as_ref(), plan.lease_key, ttl_ms).await
+    else {
+        return CompactAttempt::Busy;
+    };
 
     let outcome = async {
-        let budget = preserve_recent_budget(usable_budget, None);
-        let selection = select(working, sizes, budget, tail_turns);
+        let budget = preserve_recent_budget(plan.tail_budget, None);
+        let selection = select(working, sizes, budget, plan.tail_turns);
         // Never compact the ENTIRE working set during assembly: an empty
         // verbatim tail assembles into an empty messages array, which
         // providers hard-reject ("messages: at least one message is
@@ -755,11 +927,11 @@ async fn try_compact(
         // at a prior compaction's assistant-boundary tail_start); skip
         // compaction and let emergency reduction do the shrinking.
         if selection.head_len >= working.len() {
-            return None;
+            return CompactAttempt::Skipped;
         }
         let head = &working[..selection.head_len];
         if head.is_empty() {
-            return None;
+            return CompactAttempt::Skipped;
         }
 
         let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
@@ -767,16 +939,14 @@ async fn try_compact(
             deps,
             model,
             head,
-            usable_budget,
-            max_result_tokens,
-            PromptSteering {
-                previous_summary,
-                instructions: None,
-            },
+            plan.input_budget,
+            plan.max_result_tokens,
+            plan.steering,
+            plan.provider_options,
         )
         .await
         {
-            Ok(summary) => Some(CompactionOutcome {
+            Ok(summary) => CompactAttempt::Compacted(CompactionOutcome {
                 summary,
                 head_len: selection.head_len,
                 tail_start_view: selection.tail_start_index,
@@ -787,13 +957,13 @@ async fn try_compact(
                 // emergency pass either fits the request or returns a
                 // structured context overflow.
                 tracing::warn!(error = %err, "assemble: compaction skipped");
-                None
+                CompactAttempt::Failed(err.failure())
             }
         }
     }
     .await;
 
-    lease::release(leases.as_ref(), lease_key, &nonce).await;
+    lease::release(leases.as_ref(), plan.lease_key, &nonce).await;
     outcome
 }
 
@@ -1054,6 +1224,60 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&text_only).unwrap()[0]["content"][1]["content"][0]["text"],
             TEXT_ONLY_IMAGE_OMITTED
+        );
+    }
+
+    #[test]
+    fn the_provider_count_starts_at_a_third_of_usable_or_80_percent_of_the_budget() {
+        // No budget: a third of usable, as `estimate * 3 >= usable` read before.
+        assert_eq!(provider_count_from(900_000, None), 300_000);
+        assert_eq!(provider_count_from(100, None), 34);
+        for estimate in [32u64, 33, 34, 35] {
+            assert_eq!(
+                estimate >= provider_count_from(100, None),
+                estimate * PROVIDER_COUNT_SHARE >= 100,
+                "estimate {estimate}"
+            );
+        }
+        // A 160k budget on a 1M model: 128k, not ~305k.
+        assert_eq!(provider_count_from(916_000, Some(160_000)), 128_000);
+        // A budget above the window changes nothing.
+        assert_eq!(provider_count_from(116_000, Some(2_000_000)), 38_667);
+        assert_eq!(provider_count_from(0, Some(160_000)), 0);
+    }
+
+    #[test]
+    fn budgets_scale_at_the_rate_the_provider_counts() {
+        let budgets = Budgets {
+            hard: 900_000,
+            soft: 100_000,
+        };
+        assert_eq!(
+            budgets.scaled(85_000, 127_500),
+            Budgets {
+                hard: 600_000,
+                soft: 66_666,
+            }
+        );
+    }
+
+    #[test]
+    fn the_new_options_are_optional_on_the_wire() {
+        let options: AssembleOptions = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(options.compaction_budget, None);
+        assert_eq!(options.compaction_instructions, None);
+        assert_eq!(options.provider_options, None);
+
+        let options: AssembleOptions = serde_json::from_value(json!({
+            "compaction_budget": 176_000,
+            "compaction_instructions": "keep the deploy steps",
+            "provider_options": { "claude-code": { "account": "acct-work" } }
+        }))
+        .unwrap();
+        assert_eq!(options.compaction_budget, Some(176_000));
+        assert_eq!(
+            options.provider_options.unwrap()["claude-code"]["account"],
+            "acct-work"
         );
     }
 

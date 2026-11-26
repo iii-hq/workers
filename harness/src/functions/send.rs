@@ -421,16 +421,16 @@ async fn start_compaction(
         let _ = crate::state::put_idem(&deps.iii, key, &record, cfg.session_timeout_ms).await;
     }
     let request = crate::compaction::Request {
-        session_id: session_id.clone(),
-        model,
-        provider,
         instructions: command.instructions,
         entry_id: Some(entry_id.clone()),
         mark_working: true,
+        ..crate::compaction::Request::command(session_id.clone(), model, provider)
     };
     let background = deps.clone();
     let id = compaction_id.clone();
     tokio::spawn(async move {
+        // The account is resolved in the background: tmux may take a while.
+        let request = request.on_conversation_account(&background).await;
         crate::compaction::run(&background, request, id).await;
     });
     Ok(SendResponse {
@@ -2188,6 +2188,10 @@ pub(crate) async fn seed_new(
         stop_reason: None,
         failure: None,
         account: None,
+        // Resolved at the first step.
+        autocompact: None,
+        compacting: None,
+        compaction_stopped: false,
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         native_names: Default::default(),
         validation_retries: 0,
@@ -2928,6 +2932,9 @@ mod tests {
             stop_reason: None,
             failure: None,
             account: None,
+            autocompact: None,
+            compacting: None,
+            compaction_stopped: false,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,

@@ -328,12 +328,14 @@ export function Configuration({
       projects: chatCaps.projects,
       descriptions: chatCaps.chatSettings && chatCaps.setDescription,
       claudeAccounts: chatCaps.harnessRetry,
+      autocompact: chatCaps.autocompact && chatCaps.chatSettings,
     }),
     [
       chatCaps.projects,
       chatCaps.chatSettings,
       chatCaps.setDescription,
       chatCaps.harnessRetry,
+      chatCaps.autocompact,
     ],
   )
   const searchIndex = useMemo(() => {

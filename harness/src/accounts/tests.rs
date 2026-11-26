@@ -816,6 +816,7 @@ impl Fake {
                     color: "teal".into(),
                     folders: vec!["/w/acme".into()],
                     account: Some(account),
+                    autocompact: None,
                 },
                 None,
             )

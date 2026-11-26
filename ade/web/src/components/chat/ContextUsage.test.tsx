@@ -53,3 +53,73 @@ describe('ContextUsage in a narrow pane', () => {
     expect(count?.className).toContain('@max-[24rem]:hidden')
   })
 })
+
+// chat-projects §3.3.3: the amber tick at effective / usable on the ring and
+// the bar, "auto 400k" after the counts, and the line in the breakdown. At
+// the model's own limit (a null effective) there is no tick and no label.
+describe('ContextUsage auto-compact', () => {
+  const reported = { total: 142_000, usable: 916_000, free: 774_000 }
+
+  it('marks the ring and labels the counts', () => {
+    const container = mount(
+      <ContextUsage
+        messages={[]}
+        reported={reported}
+        autocompact={{ effective: 400_000, rule: { scope: 'global' } }}
+      />,
+    )
+    const trigger = container.querySelector('button')
+    expect(trigger?.querySelector('[data-ring-tick]')).not.toBeNull()
+    const label = trigger?.querySelector('[data-autocompact-label]')
+    expect(label?.textContent).toBe('·auto 400k')
+    // Wide surfaces only: a narrow pane keeps the tick.
+    expect(label?.className).toContain('@max-[30rem]:hidden')
+    expect(trigger?.getAttribute('aria-label')).toContain(', auto 400k')
+  })
+
+  it('writes the line and marks the bar in the breakdown', () => {
+    const container = mount(
+      <ContextUsage
+        messages={[]}
+        reported={reported}
+        autocompact={{
+          effective: 160_000,
+          rule: { scope: 'project', project_name: 'acme-web' },
+        }}
+      />,
+    )
+    act(() => container.querySelector('button')?.click())
+    expect(document.querySelector('[data-autocompact-line]')?.textContent).toBe(
+      'Auto-compact at 160k · acme-web rule',
+    )
+    expect(
+      document.querySelector('[data-slot="fact-meter-tick"]'),
+    ).not.toBeNull()
+  })
+
+  it("has no tick and no label at the model's limit, and says so", () => {
+    const container = mount(
+      <ContextUsage
+        messages={[]}
+        reported={reported}
+        autocompact={{ effective: null, rule: { scope: 'global' } }}
+      />,
+    )
+    const trigger = container.querySelector('button')
+    expect(trigger?.querySelector('[data-ring-tick]')).toBeNull()
+    expect(trigger?.querySelector('[data-autocompact-label]')).toBeNull()
+    act(() => trigger?.click())
+    expect(document.querySelector('[data-autocompact-line]')?.textContent).toBe(
+      "At the model's limit",
+    )
+    expect(document.querySelector('[data-slot="fact-meter-tick"]')).toBeNull()
+  })
+
+  it('shows nothing of it on a harness without auto-compact', () => {
+    const container = mount(<ContextUsage messages={[]} reported={reported} />)
+    const trigger = container.querySelector('button')
+    expect(trigger?.querySelector('[data-ring-tick]')).toBeNull()
+    act(() => trigger?.click())
+    expect(document.querySelector('[data-autocompact-line]')).toBeNull()
+  })
+})

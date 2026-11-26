@@ -272,6 +272,11 @@ rules:
   # The accounts' week split by project reads tmux's measure of the usage
   # outside the Chat, which agents are denied (chat-projects phase 4).
   - '!harness::metrics::account-split'
+  # Autocompact (chat-projects phase 3): the settings page's models with
+  # their limits and the engine's log of automatic compactions, which names
+  # every conversation's title; the person reads them, agents never do.
+  - '!harness::autocompact::models'
+  - '!harness::autocompact::log'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is

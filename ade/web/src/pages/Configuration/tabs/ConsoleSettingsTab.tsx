@@ -1,5 +1,6 @@
 import { ArrowUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AutocompactDialog } from '@/components/chat/AutocompactDialog'
 import { ClaudeAccountsDialog } from '@/components/chat/ClaudeAccountsDialog'
 import { FullModeConfirmDialog } from '@/components/permissions/FullModeConfirmDialog'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
@@ -28,6 +29,10 @@ import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { useTabLimit } from '@/hooks/use-tab-limit'
 import type { ThemePreference } from '@/hooks/use-theme'
+import {
+  SETTINGS_TITLE as AUTOCOMPACT_TITLE,
+  settingsRowText as autocompactRowText,
+} from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
 import {
   autoAllowSeedFromRules,
@@ -157,6 +162,9 @@ export function ConsoleSettingsTab({
   // `harness::retry`; the dialog says what tmux needs short of the whole
   // feature (§4.3.6).
   const [claudeAccountsOpen, setClaudeAccountsOpen] = useState(false)
+  // Chat › Auto-compact (chat-projects §3.3.1): on a phase-3 harness that
+  // also has the chat settings, where the global value is written.
+  const [autocompactOpen, setAutocompactOpen] = useState(false)
   const newChatMode = useNewChatMode()
   const sendKey = useSendKey()
   const sendKeyOptions = useMemo(buildSendKeyOptions, [])
@@ -400,6 +408,12 @@ export function ConsoleSettingsTab({
           open={claudeAccountsOpen}
           onOpenChange={setClaudeAccountsOpen}
         />
+        {chatCaps.autocompact && chatCaps.chatSettings ? (
+          <AutocompactDialog
+            open={autocompactOpen}
+            onOpenChange={setAutocompactOpen}
+          />
+        ) : null}
         <SettingsList>
           {chatProjects.available ? (
             <SettingsRow
@@ -456,6 +470,24 @@ export function ConsoleSettingsTab({
               }
             />
           ) : null}
+          {chatCaps.autocompact && chatCaps.chatSettings ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.autocompact}
+              label={AUTOCOMPACT_TITLE}
+              description={autocompactRowText(
+                chatSettings.loaded ? chatSettings.autocompact : undefined,
+              )}
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAutocompactOpen(true)}
+                >
+                  Open
+                </Button>
+              }
+            />
+          ) : null}
           {chatCaps.chatSettings && chatCaps.setDescription ? (
             <SettingsRow
               id={GENERAL_ANCHOR.sessionDescriptions}
@@ -464,7 +496,6 @@ export function ConsoleSettingsTab({
                 descriptionsError ??
                 'Agents write a one-line description inside the turn they are running. A conversation whose description you edited keeps yours.'
               }
-              layout="inline"
               control={
                 <span className="flex items-center gap-3 text-sm text-ink">
                   <label

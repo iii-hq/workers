@@ -154,5 +154,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::accounts::AccountSplitRequest, Vec<crate::accounts::AccountSplit>>(
             crate::accounts::ACCOUNT_SPLIT_ID,
         ),
+        // chat-projects phase 3
+        spec::<crate::autocompact::ModelsRequest, Vec<crate::autocompact::AutocompactModel>>(
+            crate::autocompact::MODELS_ID,
+        ),
+        spec::<crate::autocompact::LogRequest, Vec<crate::autocompact::LogEntry>>(
+            crate::autocompact::LOG_ID,
+        ),
     ]
 }
