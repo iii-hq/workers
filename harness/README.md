@@ -633,11 +633,14 @@ and the record "Auto-compacted at 160k · 161k →
 `harness::side-chat::summarize` on a compacting side chat answers
 `side_chat_busy`. `harness::on-turn-completed` carries the refreshed
 snapshot. A Stop abandons the summary (`status: "cancelled"`, no record:
-"Auto-compact stopped. The conversation goes on and compacts again after its
-next turn.", with no back-off) and answers `stopping: true`; the reply is
+"Auto-compact stopped. The conversation goes on and compacts again after a
+later turn.", with no back-off) and answers `stopping: true`; the reply is
 already final, so the Stop stops the compaction only: a message queued during
 it keeps its turn (the record marks `compaction_stopped: true` and keeps
-`continues`).
+`continues`). The Stop ends only the harness's wait: context-manager finishes
+the summary it was asked for and holds the conversation's lease until then,
+so a turn that ends meanwhile is skipped as busy ("Auto-compact skipped:
+another compaction of this conversation is in progress.").
 
 **Inside a turn** every `context::assemble` carries `compaction_budget:
 cap_tokens` with `compaction_instructions` and the turn's
