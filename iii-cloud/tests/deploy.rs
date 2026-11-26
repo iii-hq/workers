@@ -94,6 +94,7 @@ fn passed_run(commit: &str) -> Run {
         not_covered: vec![],
         log_tail: vec![],
         error: None,
+        reused: false,
     }
 }
 

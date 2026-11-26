@@ -425,6 +425,11 @@
             },
             "type": "array"
           },
+          "reused": {
+            "default": false,
+            "description": "A passed run of an earlier check answered this one: nothing ran again.",
+            "type": "boolean"
+          },
           "routes": {
             "$ref": "#/definitions/RouteCount"
           },

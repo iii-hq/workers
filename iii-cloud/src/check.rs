@@ -483,13 +483,68 @@ pub fn default_not_covered() -> Vec<String> {
     ]
 }
 
-/// Remote branch tips contain the commit: GitHub has it.
+/// Remote branch tips contain the commit: GitHub has it (as of the last fetch).
 pub async fn pushed(ws: &std::path::Path, sha: &str) -> bool {
-    let _ = tool::run("git", &["fetch", "origin"], Some(ws), None, "TOOL_MISSING").await;
     git(ws, &["branch", "-r", "--contains", sha])
         .await
         .map(|o| !o.trim().is_empty())
         .unwrap_or(false)
+}
+
+/// The check's one GitHub round trip: the environment branch's tip into its
+/// remote-tracking ref, and the commit too when it is not in the repository.
+/// False when the branch could not be fetched: its remote head is then unknown.
+pub async fn fetch_remote(ws: &std::path::Path, branch: &str, commit: &str) -> bool {
+    let run = |args: Vec<String>| async move {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        tool::run("git", &refs, Some(ws), None, "TOOL_MISSING").await
+    };
+    let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    let here = run(vec![
+        "cat-file".into(),
+        "-e".into(),
+        format!("{commit}^{{commit}}"),
+    ])
+    .await
+    .is_ok_and(|o| o.ok());
+    let branch_fetch = run(vec!["fetch".into(), "origin".into(), spec]);
+    if here {
+        return branch_fetch.await.is_ok_and(|o| o.ok());
+    }
+    let (fetched, _) = tokio::join!(
+        branch_fetch,
+        run(vec!["fetch".into(), "origin".into(), commit.into()])
+    );
+    fetched.is_ok_and(|o| o.ok())
+}
+
+/// The environment branch's head as of the last `fetch_remote`.
+pub async fn fetched_head(ws: &std::path::Path, branch: &str) -> Res<String> {
+    git(
+        ws,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/remotes/origin/{branch}^{{commit}}"),
+        ],
+    )
+    .await
+    .map(|s| s.trim().to_string())
+    .map_err(|_| CloudError::new("GIT_FAILED", format!("origin has no branch {branch}.")))
+}
+
+/// `base` is an ancestor of `commit`; only exit 0 counts. Local, no fetch.
+pub async fn is_ancestor(ws: &std::path::Path, base: &str, commit: &str) -> bool {
+    tool::run(
+        "git",
+        &["merge-base", "--is-ancestor", base, commit],
+        Some(ws),
+        None,
+        "TOOL_MISSING",
+    )
+    .await
+    .is_ok_and(|o| o.code == Some(0))
 }
 
 /// The commits of `base..commit` in the workspace, newest first, at most 50.
@@ -852,17 +907,45 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     if request.push.unwrap_or(false) {
         push_fix_branch(ctx, &sel, &commit).await?;
     }
-    let is_pushed = request.commit.is_some() || pushed(&sel.workspace, &commit).await;
-
-    let env_body = if signed_out.is_some() {
-        Value::Null
-    } else {
-        ctx.call(&Req::get(format!(
-            "/teams/{}/environments/{}",
-            sel.team_id, sel.env.id
-        )))
-        .await?
+    // Everything that waits on a network or a process starts together: the one
+    // GitHub round trip (then the three answers from local refs), the
+    // environment, the support matrix and the local engine's version.
+    let git_part = async {
+        let fetched = fetch_remote(&sel.workspace, &sel.env.branch, &commit).await;
+        let is_pushed = request.commit.is_some() || pushed(&sel.workspace, &commit).await;
+        // The gate does not fail open: a failed fetch leaves the head unknown.
+        let head = if fetched {
+            fetched_head(&sel.workspace, &sel.env.branch).await
+        } else {
+            Err(CloudError::new(
+                "GIT_FAILED",
+                format!("Could not fetch {} from origin.", sel.env.branch),
+            ))
+        };
+        let ancestor = match &head {
+            Ok(h) if !h.is_empty() => Some(is_ancestor(&sel.workspace, h, &commit).await),
+            _ => None,
+        };
+        (is_pushed, head, ancestor)
     };
+    let env_part = async {
+        if signed_out.is_some() {
+            Ok(Value::Null)
+        } else {
+            ctx.call(&Req::get(format!(
+                "/teams/{}/environments/{}",
+                sel.team_id, sel.env.id
+            )))
+            .await
+        }
+    };
+    let ((is_pushed, base_head, ancestor), env_body, matrix, iii_version) = tokio::join!(
+        git_part,
+        env_part,
+        support_matrix(ctx),
+        local_iii_version(&cfg.iii_bin)
+    );
+    let env_body = env_body?;
     // The cloud's answer when there is one (a null manifest is none); the
     // stored record only when signed out.
     let env_manifest = if env_body.is_null() {
@@ -948,25 +1031,25 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
 
     let settings = env_body.get("settings").cloned().unwrap_or(Value::Null);
     let manifest = Manifest::load(&sel.workspace, manifest_path.as_deref());
-    let matrix = support_matrix(ctx).await;
-    let iii_version = local_iii_version(&cfg.iii_bin).await;
     // The names the run here fills from the person's env files count as set
     // (`LOCAL_VARIABLE_UNSET` is what is left after the fill); their values are dropped here.
     let checkout = ctx
         .store
         .read(|s| s.project.as_ref().map(|p| PathBuf::from(&p.path)))
         .unwrap_or_else(|| sel.workspace.clone());
-    let filled: Vec<String> = crate::values::here_values(
+    let from_files = crate::values::here_values(
         &checkout,
         &sel.workspace,
         manifest_path.as_deref(),
         &sel.env,
-    )
-    .into_iter()
-    .map(|(name, _, _)| name)
-    // A name skipped for now runs here with an empty value.
-    .chain(crate::values::skipped_of(ctx, &sel.env.id))
-    .collect();
+    );
+    let skipped = crate::values::skipped_of(ctx, &sel.env.id);
+    let filled: Vec<String> = from_files
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        // A name skipped for now runs here with an empty value.
+        .chain(skipped.iter().cloned())
+        .collect();
     let here_problems = local_checks(&LocalInput {
         workspace: &sel.workspace,
         manifest: manifest.as_ref(),
@@ -980,10 +1063,9 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let mut here_problems = here_problems;
     // Ready pins what gets merged: the base is in the commit's history, and
     // the worktree has nothing uncommitted (the run's own files are excluded).
-    let base_head = remote_head(&sel.workspace, &sel.env.branch).await;
     match &base_head {
         Ok(head) if !head.is_empty() => {
-            if !base_is_ancestor(&sel.workspace, &sel.env.branch, head, &commit).await {
+            if ancestor != Some(true) {
                 here_problems.push(crate::local::here(
                     "BASE_NOT_IN_HISTORY",
                     format!("{} has commits this branch does not have", sel.env.branch),
@@ -1034,11 +1116,12 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             None,
         ));
     }
-    if request.commit.is_none()
-        && git(&sel.workspace, &["status", "--porcelain"])
-            .await
-            .is_ok_and(|s| !s.trim().is_empty())
-    {
+    // As the run reads it: unreadable counts as dirty.
+    let dirty = git(&sel.workspace, &["status", "--porcelain"])
+        .await
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(true);
+    if request.commit.is_none() && dirty {
         here_problems.push(crate::local::here(
             "UNCOMMITTED_CHANGES",
             "The worktree has changes that are not committed".into(),
@@ -1053,7 +1136,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let here = HerePart {
         problems: here_problems.len() as u32,
         accepts_cloud_block: accepts_cloud_block(iii_version.as_deref()),
-        iii_version,
+        iii_version: iii_version.clone(),
     };
     problems.extend(here_problems);
     let base = base_head;
@@ -1090,7 +1173,55 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     crate::status::put_variables(ctx, &sel, merged);
     emit_check(ctx, &check);
     if request.run.unwrap_or(false) {
-        crate::run::start_with(ctx, check.id.clone(), sel.clone()).await?;
+        // The run reads the saved plan's runtimes and this check's problems as it
+        // starts, so it starts here, once both are stored, and not before.
+        let key = run_key(
+            &sel.workspace,
+            manifest.as_ref(),
+            iii_version.as_deref(),
+            &sel.env.id,
+            &settings,
+            &from_files,
+            &skipped,
+        )
+        .await;
+        let head = git(&sel.workspace, &["rev-parse", "HEAD"])
+            .await
+            .map(|h| h.trim().to_string())
+            .unwrap_or_default();
+        let blocked = check
+            .problems
+            .iter()
+            .any(|p| p.code == "LOCAL_ENGINE_VERSION");
+        let reusable = match &key {
+            Some(key) if !request.force.unwrap_or(false) && !dirty && !blocked => {
+                passed_run(ctx, key, &head)
+            }
+            _ => None,
+        };
+        if let Some(old) = reusable {
+            let id = check.id.clone();
+            update_check(ctx, &id, |c| {
+                c.run = Some(Run {
+                    check_id: id.clone(),
+                    reused: true,
+                    ..old
+                })
+            });
+        } else {
+            let run = crate::run::start_with(ctx, check.id.clone(), sel.clone()).await?;
+            if let Some(key) = key {
+                ctx.store.update(|s| {
+                    s.run_keys.insert(run.id.clone(), key);
+                    let held: Vec<String> = s
+                        .checks
+                        .iter()
+                        .filter_map(|c| c.run.as_ref().map(|r| r.id.clone()))
+                        .collect();
+                    s.run_keys.retain(|id, _| held.contains(id));
+                });
+            }
+        }
         // The call waits for the run at most 240 s, under the harness's 300 s dispatch timeout.
         let deadline = Instant::now() + Duration::from_secs(240);
         loop {
@@ -1110,6 +1241,69 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         }
     }
     Ok(check)
+}
+
+/// A hash of what a local run of the workspace would be made from: the compose
+/// file's path and content, the engine, the environment's settings and the
+/// names and values the run reads (the worktree `.env`, the env files it fills
+/// from, the names skipped). Values are only hashed, never kept. None without a
+/// readable compose file.
+async fn run_key(
+    ws: &std::path::Path,
+    manifest: Option<&Manifest>,
+    engine: Option<&str>,
+    env_id: &str,
+    settings: &Value,
+    from_files: &[(String, String, String)],
+    skipped: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let m = manifest?;
+    let head = git(ws, &["rev-parse", "HEAD"]).await.ok()?;
+    let mut vars = crate::local::worktree_env(ws, m);
+    vars.extend(from_files.iter().map(|(n, v, _)| (n.clone(), v.clone())));
+    for name in skipped {
+        if !vars.iter().any(|(n, _)| n == name) {
+            vars.push((name.clone(), String::new()));
+        }
+    }
+    vars.sort();
+    let settings = canonical(settings);
+    let mut hash = Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    };
+    for text in [
+        ws.to_string_lossy().as_ref(),
+        head.trim(),
+        &m.file.to_string_lossy(),
+        &m.text,
+        engine.unwrap_or("unknown"),
+        env_id,
+        &settings,
+    ] {
+        part(text.as_bytes());
+    }
+    for (name, value) in &vars {
+        part(name.as_bytes());
+        part(value.as_bytes());
+    }
+    Some(hex::encode(hash.finalize()))
+}
+
+/// The passed run made from `key` on a clean `head`, from a check the store still keeps.
+fn passed_run(ctx: &Ctx, key: &str, head: &str) -> Option<Run> {
+    ctx.store.read(|s| {
+        s.checks
+            .iter()
+            .filter_map(|c| c.run.as_ref())
+            .find(|r| {
+                r.status == RunStatus::Passed
+                    && r.commit == head
+                    && s.run_keys.get(&r.id).is_some_and(|k| k == key)
+            })
+            .cloned()
+    })
 }
 
 pub fn emit_check(ctx: &Ctx, check: &Check) {

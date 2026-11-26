@@ -200,6 +200,10 @@ pub struct CheckRequest {
     /// tracks or that is not an `iii-cloud/` fix branch.
     #[serde(default)]
     pub push: Option<bool>,
+    /// With `run`: run again even when a passed run of the same commit, compose
+    /// file, engine and run environment exists.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 /// `iii-cloud::check::get` input.
@@ -1059,6 +1063,9 @@ pub struct Run {
     pub not_covered: Vec<String>,
     pub log_tail: Vec<String>,
     pub error: Option<RunError>,
+    /// A passed run of an earlier check answered this one: nothing ran again.
+    #[serde(default)]
+    pub reused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
