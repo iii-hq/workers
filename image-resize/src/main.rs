@@ -102,7 +102,8 @@ async fn main() -> Result<()> {
     shutdown.await?;
 
     tracing::info!("image-resize shutting down");
-    iii.shutdown_async().await;
+    // shutdown() joins the SDK connection thread, so the close frame and the OTel shutdown finish before main returns.
+    tokio::task::spawn_blocking(move || iii.shutdown()).await?;
 
     Ok(())
 }

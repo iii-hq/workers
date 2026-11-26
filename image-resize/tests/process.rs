@@ -106,12 +106,12 @@ async fn engine(fail_ensure: bool) -> (String, mpsc::UnboundedReceiver<Value>) {
 fn worker(url: &str, extra: &[&str], namespace: Option<&str>) -> Worker {
     let mut command = Command::new(env!("CARGO_BIN_EXE_image-resize"));
     command
-        .args(["--url", url])
         .args(extra)
         // The SDK writes an `iii ps` marker under $HOME/.iii/run.
         .env("HOME", env!("CARGO_TARGET_TMPDIR"))
         .env("III_CONFIG_NAME", CONFIG_NAME)
-        .env_remove("III_URL")
+        .env("III_URL", url)
+        .env("OTEL_ENABLED", "true")
         .env("RUST_LOG", "info")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -259,4 +259,14 @@ async fn sigterm_exits_cleanly_with_blank_namespace() {
     assert!(kill.success());
     let status = exit_status(&mut worker, Duration::from_secs(10)).await;
     assert!(status.success(), "{status}");
+
+    // The SDK logs this from its connection thread, so it only appears when main joins that thread.
+    let mut otel_shut_down = false;
+    while let Some(line) = logs.recv().await {
+        otel_shut_down |= line.contains("OpenTelemetry shut down");
+    }
+    assert!(
+        otel_shut_down,
+        "main returned before the SDK shut down OpenTelemetry"
+    );
 }
