@@ -7,6 +7,7 @@ import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
 import { base, ENV, following, ready, secretRequests } from '../fixtures/base'
+import { hubOf, useActions } from '../hub'
 import {
   configDir,
   deployOrigin,
@@ -414,6 +415,79 @@ describe('configuration form', () => {
       future: { a: 1 },
       postgres_image: 'postgres:16',
     })
+  })
+})
+
+describe('the hub keeps what a page that is gone cannot', () => {
+  const refusal = { code: 'MERGE_CONFLICT', message: 'x' }
+  const grab = async (host: Host) => {
+    const ref: { current: ReturnType<typeof useActions> | null } = { current: null }
+    const Caller = () => {
+      ref.current = useActions(host)
+      return null
+    }
+    await act(async () => root.render(<Caller />))
+    return ref as { current: ReturnType<typeof useActions> }
+  }
+  const staging: Status = {
+    ...base,
+    project: {
+      ...base.project!,
+      environment: { ...base.project!.environment!, id: 'e-staging', name: 'staging' },
+    },
+  }
+
+  it("a check record of the environment replaces the refusal kept for it; another environment's record does not", async () => {
+    const h = fakeHost(base)
+    const hub = hubOf(h.host)
+    hub.subscribe(() => undefined)
+    hub.setCheckError(ENV.id, refusal)
+    hub.setCheckError('e-other', refusal)
+    await act(async () => hub.refresh(false))
+    const handler = h.handlers.get('iii::iii-cloud-ui::events::console-test')
+    handler?.({ kind: 'check', id: 'c9', terminal: true, summary: '', record: { ...ready, environment_id: ENV.id } })
+    expect(hub.checkError(ENV.id)).toBeNull()
+    expect(hub.checkError('e-other')).not.toBeNull()
+  })
+
+  it('a refusal is kept for the environment the call was made for, not the one selected when it fails', async () => {
+    let status: Status = base
+    let reject: (e: Error) => void = () => undefined
+    const h = fakeHost(() => status, {
+      'iii-cloud::check': () => new Promise((_, r) => (reject = r)),
+    })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    let done: Promise<unknown> = Promise.resolve()
+    await act(async () => {
+      done = a.current.call('check', 'iii-cloud::check', {})
+    })
+    status = staging
+    await act(async () => hub.refresh(true))
+    await act(async () => {
+      reject(Object.assign(new Error('x'), { code: 'MERGE_CONFLICT' }))
+      await done
+    })
+    expect(hub.checkError(ENV.id)).not.toBeNull()
+    expect(hub.checkError('e-staging')).toBeNull()
+  })
+
+  it('every project::use marks its environment: the check current then is stale, any other is not', async () => {
+    const h = fakeHost(base, { 'iii-cloud::project::use': {} })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    await act(async () => void a.current.call('use', 'iii-cloud::project::use', { environment_id: ENV.id }))
+    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
+    expect(hub.movedFrom('e-other')).toBeNull()
+  })
+
+  it('the stop flag outlives its hub: a reload (a fresh hub) still knows it', () => {
+    hubOf(fakeHost(base).host).markStopped(ENV.id, true)
+    expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(true)
+    hubOf(fakeHost(base).host).markStopped(ENV.id, false)
+    expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
   })
 })
 

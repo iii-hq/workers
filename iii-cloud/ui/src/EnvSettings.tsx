@@ -714,8 +714,10 @@ function PasteEnv({
   const found = parseEnv(text)
   const mine = found.filter((e) => listed.has(e.name) && !listed.get(e.name)?.database)
   const other = found.filter((e) => !listed.has(e.name)).map((e) => e.name)
-  // What a save would overwrite: the names iii cloud already has. The person confirms those before it saves.
-  const replaces = mine.filter((e) => listed.get(e.name)?.in_cloud === 'set').map((e) => e.name)
+  // What a save may overwrite: every name that is not known to be unset (set, or unreadable). The person confirms
+  // those before it saves; any change of the text asks again.
+  const replaces = mine.filter((e) => listed.get(e.name)?.in_cloud !== 'unset').map((e) => e.name)
+  const unreadable = mine.some((e) => listed.get(e.name)?.in_cloud === 'unknown')
   const [confirmed, setConfirmed] = useState(false)
   const save = async () => {
     const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
@@ -735,6 +737,7 @@ function PasteEnv({
       })),
     )
     // What saved is done: only the names that did not stay in the box.
+    setConfirmed(false)
     setText((t) =>
       parseEnv(t)
         .filter((e) => bad.some((b) => b.name === e.name))
@@ -760,7 +763,10 @@ function PasteEnv({
           rows={8}
           spellCheck={false}
           autoComplete="off"
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            setConfirmed(false)
+          }}
         />
         {found.length ? (
           <p className="iii-cloud-desc">
@@ -774,7 +780,11 @@ function PasteEnv({
           <Checkbox
             checked={confirmed}
             onChange={(e) => setConfirmed(e.target.checked)}
-            label={`${plural(replaces.length, 'name')} already set in ${v.environment} will be replaced: ${replaces.join(', ')}.`}
+            label={
+              unreadable
+                ? `iii cloud could not be read, so it is not known what is set in ${v.environment}. ${plural(replaces.length, 'name')} may replace a value already there: ${replaces.join(', ')}.`
+                : `${plural(replaces.length, 'name')} already set in ${v.environment} will be replaced: ${replaces.join(', ')}.`
+            }
           />
         ) : null}
         {failed.map((f) => (

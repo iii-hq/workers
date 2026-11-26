@@ -4,18 +4,38 @@
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { boards } from '../fixtures'
+import { apiPath } from '../fixtures/base'
 import { DEV, live6, running6, serving5 } from '../fixtures/deploy'
 import { hubOf } from '../hub'
 import type { BranchRef, Status } from '../types'
 import type { Call } from './host'
-import { board, btn, click, ctx, el, flush, lastCall, mount, text, type, usePage } from './util'
+import { board, btn, click, cloudAnswers, ctx, el, flush, lastCall, mount, text, type, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
 
 usePage()
 
-const worker = (calls: Call[]) => calls.filter((c) => c.id !== 'iii-cloud::status' && c.id !== 'iii-cloud::values')
+const worker = (calls: Call[]) =>
+  calls.filter((c) => !['iii-cloud::status', 'iii-cloud::values', 'iii-cloud::api'].includes(c.id))
+/** iii cloud's list of dev's deployments: #5 serves (the Change note and the Ready footer name it from this). */
+const cloudList = (current: typeof serving5 | null = serving5) =>
+  cloudAnswers({
+    [apiPath('/deployments', DEV.id)]: {
+      deployments: [serving5, live6].map((d) => ({
+        id: d.id,
+        number: d.number,
+        environment_id: DEV.id,
+        type: 'push',
+        status: 'ready',
+        current: d.id === current?.id,
+        commit: { sha: d.commit.sha },
+        triggered_by: { user_id: null, api_key_id: null },
+        created_at: d.created_at,
+        finished_at: null,
+      })),
+    },
+  })
 const title = () => el.querySelector('h2.iii-cloud-h')?.textContent
 const path = () => el.querySelector('[role=toolbar] nav')?.textContent
 const radio = (label: string) =>
@@ -69,7 +89,7 @@ describe('one screen, no step rail', () => {
 
 describe('Change', () => {
   it('opens under the header with the branch, the uncommitted files and the compose file; Cancel closes it', async () => {
-    const h = await board('deploy-what')
+    const h = await board('deploy-what', {}, cloudList())
     expect(region('What goes to dev')).toBeNull()
     await click(btn('Change'))
     const panel = region('What goes to dev')
@@ -294,18 +314,92 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
   })
 
   it('after a Change the old check cannot be deployed: locked until a newer check exists', async () => {
-    const ready = boards['deploy-review'].status
-    await mount(ready, ctx(route), {
+    const base = boards['deploy-review'].status
+    const ready = { ...base, check: { ...base.check!, environment_id: DEV.id } }
+    // The check after the `use` is refused: the old ready check is all the screen has, and it is of the old source.
+    const h = await mount(ready, ctx(route), {
       'iii-cloud::project::use': {},
-      'iii-cloud::check': () => new Promise(() => undefined),
+      'iii-cloud::check': () => Promise.reject(Object.assign(new Error('x'), { code: 'NO_COMMITS' })),
     })
     expect(title()).toBe('Ready to deploy to dev')
     await click(btn('Change'))
     await click(btn('Check this instead'))
     await flush()
     expect(title()).not.toBe('Ready to deploy to dev')
+    expect(text()).toContain('Commit something first')
     const deploys = [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
     expect(deploys.every((b) => b.hasAttribute('disabled'))).toBe(true)
+    expect(region('You')).toBeNull()
+    // A check with any other id is newer, whatever its clock says: Deploy is back.
+    await act(async () =>
+      h.handlers.get('iii::iii-cloud-ui::events::console-test')?.({
+        kind: 'check',
+        id: 'chk-after',
+        terminal: true,
+        summary: '',
+        record: { ...ready.check!, id: 'chk-after', checked_at: new Date(Date.now() + 60_000).toISOString() },
+      }),
+    )
+    expect(title()).toBe('Ready to deploy to dev')
+    // ...and the check that arrived replaced the kept refusal.
+    expect(text()).not.toContain('Commit something first')
+  })
+
+  it('Confirm deploy is off for every lock: signed out, a deploy-fix hand-off, another deployment running', async () => {
+    const s = boards['deploy-review'].status
+    const confirm = () => btn('Confirm deploy') as HTMLButtonElement | null
+    const at = ctx({ ...route, deploy: 'dep-6' })
+    await mount({ ...s, deploys: [held, serving5] }, at, { 'iii-cloud::deploy': {} })
+    expect(confirm()?.disabled).toBe(false)
+    const signedOut = {
+      ...s,
+      deploys: [held, serving5],
+      check: { ...s.check!, problems: [{ ...s.check!.problems[0], code: 'SIGN_IN_REQUIRED' }] },
+    }
+    await mount(signedOut, ctx({ ...route, deploy: 'dep-6' }, 2))
+    expect(confirm()?.disabled).toBe(true)
+    const fixing = { ...s, deploys: [held, serving5], agent: { ...withAgent.agent, kind: 'deploy_fix' } as never }
+    await mount(fixing, ctx({ ...route, deploy: 'dep-6' }, 3))
+    expect(confirm()?.disabled).toBe(true)
+    const other = { ...running6, id: 'dep-9', number: 9 }
+    await mount({ ...s, deploys: [other, held, serving5] }, ctx({ ...route, deploy: 'dep-6' }, 4))
+    expect(confirm()?.disabled).toBe(true)
+  })
+
+  it('the production name dialog disables its own button, and says why, when a lock appears while it is open', async () => {
+    const s = boards['deploy-review'].status
+    const p = s.project as NonNullable<Status['project']>
+    const prod = { ...p, environment: { ...p.environment!, production: true } }
+    const h = await mount({ ...s, project: prod, deploys: [held, serving5] }, ctx({ ...route, deploy: 'dep-6' }), {
+      'iii-cloud::deploy': {},
+    })
+    await click(btn('Confirm deploy'))
+    const dialog = () => el.querySelector('[role=dialog]')
+    await type(dialog()?.querySelector('input') ?? null, 'dev')
+    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Confirm deploy')
+    expect(go()?.hasAttribute('disabled')).toBe(false)
+    // Another deployment of dev starts while the dialog is open.
+    await act(async () =>
+      h.handlers.get('iii::iii-cloud-ui::events::console-test')?.({
+        kind: 'deploy',
+        id: 'dep-9',
+        terminal: false,
+        summary: '',
+        record: { ...running6, id: 'dep-9', number: 9 },
+      }),
+    )
+    expect(go()?.hasAttribute('disabled')).toBe(true)
+    expect(dialog()?.textContent).toContain('Deployment #9 is still going.')
+    expect(h.calls.some((c) => c.id === 'iii-cloud::deploy')).toBe(false)
+  })
+
+  it('the Change note names the deployment iii cloud says serves, and none before the list is read', async () => {
+    await board('deploy-what', {}, cloudList(serving5))
+    await click(btn('Change'))
+    expect(region('What goes to dev')?.textContent).toContain('dev serves d738d2f · deployment #5')
+    await board('deploy-what', ctx(route, 2), cloudAnswers({}))
+    await click(btn('Change'))
+    expect(region('What goes to dev')?.textContent).not.toMatch(/serves|Nothing is live/)
   })
 
   it('the last refused check shows at the top, kept by the hub after the card that asked is gone', async () => {

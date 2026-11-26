@@ -20,11 +20,12 @@ import {
 import { ChevronRight, CircleAlert, CircleDashed, Check as Done, Info, Loader2 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AgentControls } from './AgentRow'
+import { useDeployments } from './api'
 import { askedAt, clock, FOLDER_NOTE, useFolderNote, useLaunch } from './asked'
 import { ConfigImportDialog } from './ConfigImport'
 import { configAction, findings, type Item, location, needsYou, valueName } from './findings'
 import { canOpenChat, handOff, openAgentChat } from './handoff'
-import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedAt } from './hub'
+import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom } from './hub'
 import {
   activeSameKind,
   appFile,
@@ -52,7 +53,7 @@ import {
   RESOURCE_KIND,
   roleOf,
   sendLabel,
-  servingDeploy,
+  servingNamed,
   settingWords,
   sha7,
   signInRequired,
@@ -90,7 +91,8 @@ export type CheckStageProps = {
   scenario?: 'setup' | 'change'
   /** The Change panel, open under the header (DeployFlow keeps it), and what its link does. */
   panel?: ReactNode
-  onChange?: () => void
+  /** "Change" was pressed: its button, so the panel can give the focus back to this very one. */
+  onChange?: (trigger: HTMLElement) => void
 }
 
 type Mark = 'ok' | 'bad' | 'work' | 'wait' | 'note'
@@ -145,6 +147,24 @@ const agentOn = (s: Status) => !!s.agent && ACTIVE.includes(s.agent.state)
 /** The agent is on the check's fixes (a ready or deploy-fix hand-off); stalled stays here. */
 const fixing = (s: Status) => agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind ?? 'ready') !== 'pull_request'
 const github = (s: Status, path: string) => `https://github.com/${s.project?.repository ?? ''}/${path}`
+
+/**
+ * Why nothing that sends `iii-cloud::deploy` may be pressed now, or null: an out-of-date page or a sign-in to renew,
+ * a deploy being sent, the agent fixing a failed deployment, another deployment going. One answer for every control
+ * (the primary action, "without it", Confirm on a held deployment, and the production dialog's own button).
+ */
+export function deployLockReason(
+  s: Status,
+  envId: string,
+  o: { stale: boolean; sending: boolean; exceptId?: string },
+): string | null {
+  if (o.stale) return 'The page is out of date or signed out. Sign in or refresh first.'
+  if (o.sending) return 'A deploy is being sent.'
+  if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix')
+    return 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
+  const other = s.deploys.find((d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running')
+  return other ? `Deployment #${other.number} is still going.` : null
+}
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
 export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
@@ -220,14 +240,28 @@ function goesLine(s: Status, c: Check | null, env: string): string {
 }
 
 /** The line under every title: what goes, the compose file, and "Change". */
-export function GoesSub({ s, c, env, onChange }: { s: Status; c: Check | null; env: string; onChange?: () => void }) {
+export function GoesSub({
+  s,
+  c,
+  env,
+  onChange,
+}: {
+  s: Status
+  c: Check | null
+  env: string
+  onChange?: (trigger: HTMLElement) => void
+}) {
   return (
     <p className="iii-cloud-cs-sub">
       {goesLine(s, c, env)} · <Mono>{appFile(s).path}</Mono>
       {onChange ? (
         <>
           {' · '}
-          <button type="button" className="iii-cloud-linkbtn iii-cloud-small" data-change-trigger="" onClick={onChange}>
+          <button
+            type="button"
+            className="iii-cloud-linkbtn iii-cloud-small"
+            onClick={(e) => onChange(e.currentTarget)}
+          >
             Change
           </button>
         </>
@@ -335,6 +369,7 @@ export function TypedConfirm({
   description,
   confirmLabel,
   onConfirm,
+  locked,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -343,6 +378,8 @@ export function TypedConfirm({
   description: string
   confirmLabel: string
   onConfirm: () => Promise<void>
+  /** Why it can't be confirmed now (a lock that appeared while the dialog is open); null: it can. */
+  locked?: string | null
 }) {
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
@@ -384,7 +421,12 @@ export function TypedConfirm({
               Cancel
             </Button>
           </DialogClose>
-          <Button variant="primary" disabled={busy || typed.trim() !== name} onClick={() => void confirm()}>
+          {locked ? (
+            <span className="iii-cloud-cs-sub" role="status">
+              {locked}
+            </span>
+          ) : null}
+          <Button variant="primary" disabled={busy || !!locked || typed.trim() !== name} onClick={() => void confirm()}>
             {busy ? (
               <>
                 <Spinner />
@@ -540,7 +582,7 @@ function SecretField({
   why,
   save,
   blocked,
-  skip,
+  undo,
 }: {
   name: string
   env: string
@@ -549,21 +591,22 @@ function SecretField({
   save: (value: string | null) => Promise<string | null>
   /** Who can write it, when this session can't: no field then. */
   blocked: string | null
-  /** An optional name: "Skip for now" (null: not offered). */
-  skip: (() => Promise<string | null>) | null
+  /** A required secret that was skipped (iii cloud still needs a value): "Undo" the skip (null: not skipped). A
+   *  required secret is never offered "Skip for now". */
+  undo: (() => Promise<string | null>) | null
 }) {
   const [value, setValue] = useState('')
-  const [saved, setSaved] = useState(false)
+  const [done, setDone] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const submit = async (job: () => Promise<string | null>) => {
+  const submit = async (job: () => Promise<string | null>, said: string) => {
     setBusy(true)
     const out = await job()
     setBusy(false)
     setError(out)
     if (out === null) {
       setValue('')
-      setSaved(true)
+      setDone(said)
     }
   }
   return (
@@ -576,10 +619,10 @@ function SecretField({
       </span>
       {blocked ? (
         <span className="iii-cloud-cs-detail">{blocked}</span>
-      ) : saved ? (
+      ) : done ? (
         <span className="iii-cloud-cs-saved" role="status">
           <MarkIcon mark="ok" label="saved" />
-          Saved. The check runs again.
+          {done}
         </span>
       ) : (
         <span className="iii-cloud-cs-field">
@@ -591,15 +634,23 @@ function SecretField({
             value={value}
             onChange={setValue}
           />
-          <Button variant="secondary" disabled={!value || busy} onClick={() => void submit(() => save(value))}>
+          <Button
+            variant="secondary"
+            disabled={!value || busy}
+            onClick={() => void submit(() => save(value), 'Saved. The check runs again.')}
+          >
             Save
           </Button>
-          <Button variant="ghost" disabled={busy} onClick={() => void submit(() => save(null))}>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void submit(() => save(null), 'Saved empty. The check runs again.')}
+          >
             Leave it empty
           </Button>
-          {skip ? (
-            <Button variant="ghost" disabled={busy} onClick={() => void submit(skip)}>
-              Skip for now
+          {undo ? (
+            <Button variant="ghost" disabled={busy} onClick={() => void submit(undo, 'Undone. The check runs again.')}>
+              Undo
             </Button>
           ) : null}
         </span>
@@ -754,13 +805,15 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const p = s.project
   const env = p?.environment
   const launching = useLaunch()?.kind === 'launching'
+  const feed = useDeployments(host, s, env?.id ?? '')
   if (!p || !env) return null
   const direct = isDirectEnv(s, env)
   const pr = direct ? null : usablePr(s)
   const file = appFile(s)
   const { resources, overrides } = c.plan.confirmations
   const role = roleOf(s)
-  const serving = servingDeploy(s, env.id)
+  // Named by iii cloud's list (a rollback in the console moves it); until the list is read, none is named.
+  const serving = servingNamed(s, env.id, feed.data?.deployments)
   const typical = typicalDeployMs(s, env.id)
   const branch = p.workspace?.source ?? p.checkout.branch
   // Whose commits (newest first): the agent's down to `from_head`, the checkout's from it. No `from_head`: all the agent's.
@@ -891,7 +944,9 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
         {[
           serving
             ? `${env.name} serves #${serving.number} until the new deployment is live.`
-            : `Nothing is live on ${env.name} yet.`,
+            : feed.data
+              ? `Nothing is live on ${env.name} yet.`
+              : null,
           typical ? `It takes about ${minutesLabel(typical)}.` : null,
           "Only you can confirm this; your agent can't.",
           pr || direct
@@ -956,7 +1011,7 @@ export function CheckStage(props: CheckStageProps) {
   // A refusal of the last `check` call (kept by the hub: the page may have come from a card that is gone) shows once,
   // at the top of the area; and a `project::use` newer than the check holds Deploy until a newer check exists.
   const refused = useCheckError(host, envId)
-  const movedAt = useMovedAt(host, envId)
+  const movedFrom = useMovedFrom(host, envId)
   const stale = useLocked(host, s)
   const shownError =
     error && !(refused && error.code === refused.code && error.message === refused.message) ? error : null
@@ -1042,7 +1097,11 @@ export function CheckStage(props: CheckStageProps) {
     })
   }
   // The source was replaced (`project::use`) after this check ran: it says nothing about the new source.
-  const staleSource = !!c && movedAt > Date.parse(c.checked_at)
+  // (By id, not by time: the worker's clock is its own.)
+  const staleSource = !!c && movedFrom === c.id
+  // The check is of a source the person replaced: none of its lists, parts or numbers is the current state, so they
+  // are folded under Details (closed) and the screen asks for a new check.
+  const replaced = staleSource && !running
   const ready = !!c?.ready && !running && !deployFix && !staleSource
   const working = fixing(s) && !ready
   const a = s.agent
@@ -1224,14 +1283,18 @@ export function CheckStage(props: CheckStageProps) {
   const staleDeploy = !!error && CHECK_AGAIN.has(error.code)
   // Every control that deploys obeys these: another deployment going, signed out, an out-of-date page, a deploy being
   // sent, the agent fixing a failed deployment. (Its own stop's lock, "Check X first", is the one it overrides.)
-  const deployLocked =
-    stops.some((x) => x.lock && x.key !== 'outdated') || stale || staleDeploy || busy === 'deploy' || deployFix
+  const deployLock =
+    stops.find((x) => x.lock && x.key !== 'outdated')?.lock ??
+    (staleDeploy ? 'Check again first.' : null) ??
+    deployLockReason(s, envId, { stale, sending: busy === 'deploy' })
+  const deployLocked = !!deployLock
   // The local run never ran on a commit iii cloud's plan accepts (a failed run has its own stop).
   const runPending = !!c && !running && c.plan.status === 'clean' && !run && !agentItems.length && !needN && !c.ready
 
   // The header: the next thing to do, said with the lists' own lengths.
-  const title =
-    running && !working
+  const title = replaced
+    ? `Check ${source} for ${env}`
+    : running && !working
       ? `Checking ${source} for ${env}`
       : ready
         ? `Ready to deploy to ${env}`
@@ -1290,7 +1353,7 @@ export function CheckStage(props: CheckStageProps) {
     // Not ready and no check in flight: checking again is always on screen. With nothing else for the person to do
     // (the agent has nothing, no list for them) it is the primary action; otherwise it sits beside the locked Deploy.
     const idle = !running && !hubChecking
-    const nothingElse = !needN && !lines.length && !working
+    const nothingElse = replaced || (!needN && !lines.length && !working)
     const deployOff = <PageAction onClick={() => undefined} disabled>{`Deploy to ${env}`}</PageAction>
     action =
       idle && nothingElse ? (
@@ -1309,7 +1372,7 @@ export function CheckStage(props: CheckStageProps) {
   }
 
   const parts =
-    !ready && (running || (!needN && !lines.length))
+    !replaced && !ready && (running || (!needN && !lines.length))
       ? {
           cloud: c && fresh ? cloudPart(s, c) : skeleton('checking', 4),
           here: c && fresh ? runPart(s, c, now, running) : skeleton('next', 5),
@@ -1427,7 +1490,7 @@ export function CheckStage(props: CheckStageProps) {
         />
       ))}
 
-      {needN ? (
+      {needN && !replaced ? (
         <SectionCard
           title="You"
           count={needN}
@@ -1467,13 +1530,7 @@ export function CheckStage(props: CheckStageProps) {
                   why={i.detail ?? i.fix}
                   save={(v) => saveSecret(name, v)}
                   blocked={blocked}
-                  skip={
-                    !i.skipped &&
-                    (i.code === 'EMPTY_DEFAULT_VARIABLE' ||
-                      read?.items.find((x) => x.name === name)?.need === 'optional')
-                      ? () => skipNames([name], true)
-                      : null
-                  }
+                  undo={i.skipped ? () => skipNames([name], false) : null}
                 />
               ) : (
                 <PlainNeed key={i.key} item={i} />
@@ -1506,7 +1563,7 @@ export function CheckStage(props: CheckStageProps) {
         </SectionCard>
       ) : null}
 
-      {lines.length || (a && working) ? (
+      {!replaced && (lines.length || (a && working)) ? (
         <SectionCard
           title="Your agent"
           count={lines.length}
@@ -1590,8 +1647,17 @@ export function CheckStage(props: CheckStageProps) {
 
       {ready && c && !runPending ? <Ready s={s} c={c} host={host} /> : null}
 
-      {c && (doneN || warnings.length || past.length) ? (
-        <Details summary={summary}>
+      {c && (replaced || doneN || warnings.length || past.length) ? (
+        <Details summary={replaced ? `Check of the replaced source · ${summary}` : summary}>
+          {replaced ? (
+            <Group title="The check before you changed the source" count={1}>
+              <li className="iii-cloud-cs-need">
+                <span className="iii-cloud-cs-detail">
+                  {`${sha7(c.commit)}: ${needN ? `${plural(needN, 'thing')} for you, ` : ''}${lines.length ? `${plural(lines.length, 'thing')} for your agent, ` : ''}${plural(warnings.length, 'warning')}. It says nothing about the new source.`}
+                </span>
+              </li>
+            </Group>
+          ) : null}
           <Group title="Done" count={doneN}>
             {fixed.map((i) => (
               <Fact key={i.key} mark="ok" title={i.title} />
@@ -1642,6 +1708,19 @@ export function CheckStage(props: CheckStageProps) {
                       {envPageUrl(s, 'config') ? (
                         <LinkButton href={envPageUrl(s, 'config') as string}>Open in iii cloud</LinkButton>
                       ) : null}
+                    </span>
+                  ) : i.code === 'EMPTY_DEFAULT_VARIABLE' && valueName(i) ? (
+                    // The worker sends an optional empty name as this warning (a required one blocks, and is never
+                    // skipped): "Skip for now" is here, beside the name it is about.
+                    <span className="iii-cloud-cs-acts-row">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy === 'skip'}
+                        onClick={() => void skipNames([valueName(i) ?? ''], true)}
+                      >
+                        Skip for now
+                      </Button>
                     </span>
                   ) : null
                 }
@@ -1698,6 +1777,7 @@ export function CheckStage(props: CheckStageProps) {
           }
           confirmLabel={pr ? 'Merge and deploy' : 'Deploy'}
           onConfirm={deploy}
+          locked={lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false })}
         />
       ) : null}
     </div>

@@ -16,13 +16,22 @@ import {
 } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Circle, CircleDot, Copy } from 'lucide-react'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 import { cloudWrite, useCloud } from './api'
 import { clock, useLaunch } from './asked'
-import { ActionBar, ActionError, CheckStage, checkPayload, GoesSub, ScreenHead, TypedConfirm } from './CheckStage'
+import {
+  ActionBar,
+  ActionError,
+  CheckStage,
+  checkPayload,
+  deployLockReason,
+  GoesSub,
+  ScreenHead,
+  TypedConfirm,
+} from './CheckStage'
 import { useDeployments } from './EnvOverview'
 import { handOff, openAgentChat } from './handoff'
-import { hubOf, useActions, useCheckError } from './hub'
+import { hubOf, useActions, useCheckError, useLocked } from './hub'
 import { Deleted } from './Manage'
 import {
   activeSameKind,
@@ -44,6 +53,7 @@ import {
   RESOURCE_KIND,
   sendLabel,
   servingId,
+  servingNamed,
   sha7,
 } from './model'
 import { Dot, Fresh, LinkButton, Mono, Notice, PageAction, PathBar, SectionCard, StatePill, useNow } from './parts'
@@ -74,6 +84,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
   const env = route.env
   const state = envState(status, env)
   const [changing, setChanging] = useState(false)
+  const trigger = useRef<HTMLElement | null>(null)
   const checkAgain = () => void act.call('check', 'iii-cloud::check', checkPayload(status))
 
   // The deployment the route names, if it is this environment's; a failed one the agent is already fixing goes
@@ -86,6 +97,12 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
   // What the last check call of this environment was refused with: kept by the hub, so it shows after the card that
   // asked is gone (the environment page and first-time setup go here at once).
   const refused = useCheckError(host, env)
+  // A check that arrives replaces whatever the last call here was refused with (a refusal is about the old state).
+  const { setError } = act
+  const checkId = status.check?.id
+  useEffect(() => {
+    if (checkId) setError(null)
+  }, [checkId, setError])
   const gone =
     status.problems?.find((p) => p.code === 'PROJECT_DELETED') ??
     (state === 'selected' ? status.problems?.find((p) => p.code === 'ENVIRONMENT_DELETED') : undefined)
@@ -120,10 +137,21 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
         status={status}
         go={go}
         narrow={narrow}
-        onChange={() => setChanging(!changing)}
+        onChange={(button) => {
+          trigger.current = button
+          setChanging(!changing)
+        }}
         panel={
           changing ? (
-            <ChangePanel host={host} status={status} envId={env} act={act} go={go} onClose={() => setChanging(false)} />
+            <ChangePanel
+              host={host}
+              status={status}
+              envId={env}
+              act={act}
+              go={go}
+              onClose={() => setChanging(false)}
+              trigger={trigger}
+            />
           ) : null
         }
       />
@@ -202,6 +230,7 @@ function ChangePanel({
   act,
   go,
   onClose,
+  trigger,
 }: {
   host: Host
   status: Status
@@ -209,6 +238,8 @@ function ChangePanel({
   act: Act
   go: AreaProps['go']
   onClose: () => void
+  /** The "Change" button that opened it: the focus goes back to that one (a screen can have two panes). */
+  trigger: RefObject<HTMLElement | null>
 }) {
   const [pick, setPick] = useState(() => appFile(status).path)
   const [source, setSource] = useState<string | null>(null)
@@ -217,8 +248,11 @@ function ChangePanel({
   // The panel takes focus when it opens and gives it back to "Change" when it closes.
   useEffect(() => {
     top.current?.focus()
-    return () => document.querySelector<HTMLElement>('[data-change-trigger]')?.focus()
-  }, [])
+    const back = trigger.current
+    return () => back?.focus()
+  }, [trigger])
+  // Named by iii cloud's list; until it is read, no deployment is named.
+  const feed = useDeployments(host, status, envId)
   const p = status.project
   const env = p?.environment
   if (!p || !env) return null
@@ -228,7 +262,7 @@ function ChangePanel({
   const kept = p.workspace?.not_brought ?? p.checkout.changed_files.filter(unbringable)
   const sources = env.production ? null : sourcesOf(p, env.name)
   const chosen = sources ? (sources.find((o) => o.value === source) ?? sources.find((o) => o.default)) : undefined
-  const serving = status.deploys.find((d) => d.id === servingId(status, envId))
+  const serving = servingNamed(status, envId, feed.data?.deployments)
 
   const start = async () => {
     // The agent works in the copy this replaces: it stops first, and its commits stay where they are. A step that
@@ -247,8 +281,7 @@ function ChangePanel({
       bring_changes: bring && (chosen?.folder ?? true) && !env.production && changed.length > 0,
     })
     if (used === null) return
-    // Until a check newer than this exists, the screen holds back Deploy (the old check was of the old source).
-    hubOf(host).markMoved(envId, Date.now())
+    // (`useActions` marks every `project::use`: the old check stays stale until another one exists.)
     onClose()
     void act.call('check', 'iii-cloud::check', checkPayload(status, pick))
     go({ at: 'deploy', env: envId })
@@ -259,8 +292,10 @@ function ChangePanel({
       title={`What goes to ${env.name}`}
       note={
         serving
-          ? `${env.name} serves ${sha7(serving.commit.sha)} · deployment #${serving.number}`
-          : `Nothing is live on ${env.name} yet`
+          ? `${env.name} serves ${sha7(serving.sha)} · deployment #${serving.number}`
+          : feed.data
+            ? `Nothing is live on ${env.name} yet`
+            : null
       }
       flush
     >
@@ -374,6 +409,7 @@ function Follow({
   const launching = useLaunch()?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
   const [canceling, setCanceling] = useState(false)
+  const stale = useLocked(host, status)
   const envId = d.environment_id
   const running = d.outcome === 'running' && !needsAction(d)
   // Live is what iii cloud's list says serves: an old Follow card of a replaced deployment is not.
@@ -429,6 +465,7 @@ function Follow({
     ...resources.map((r) => `a shared ${RESOURCE_KIND[r.kind] ?? r.kind} for ${r.binding ?? r.alias}`),
     overrides.length ? `${plural(overrides.length, 'setting')} from the compose file` : null,
   ].filter(Boolean)
+  const deployLock = deployLockReason(status, envId, { stale, sending: act.busy === 'deploy', exceptId: d.id })
   const confirmPayload = { check_id: c?.id, deployment_id: d.id }
   const confirm = async () => {
     const out = await act.call<Deploy>('deploy', 'iii-cloud::deploy', confirmPayload)
@@ -509,7 +546,8 @@ function Follow({
               <Button
                 size="sm"
                 variant="primary"
-                disabled={!confirmable || act.busy === 'deploy'}
+                disabled={!confirmable || !!deployLock}
+                title={deployLock ?? undefined}
                 onClick={() => (env.production ? setConfirming(true) : void confirm())}
               >
                 Confirm deploy
@@ -660,6 +698,7 @@ function Follow({
         description={`This approves what deployment #${d.number} creates and changes, so iii cloud lets it go on.`}
         confirmLabel="Confirm deploy"
         onConfirm={confirm}
+        locked={deployLockReason(status, envId, { stale, sending: false, exceptId: d.id })}
       />
     </div>
   )

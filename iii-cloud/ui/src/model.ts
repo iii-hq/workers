@@ -344,6 +344,24 @@ export function deployState(d: Stateful, serving: string | null = null): { label
 export const servingId = (s: Status, envId: string | undefined, cloud?: CloudDeployment[] | null): string | null =>
   cloud?.find((d) => d.current)?.id ?? servingDeploy(s, envId)?.id ?? null
 
+/**
+ * The deployment serving an environment, by iii cloud's list, for text that names it ("dev serves #5"). Until the
+ * list is read it names none: the worker's own record can be out of date (a rollback made in the console).
+ */
+export function servingNamed(
+  s: Status,
+  envId: string | undefined,
+  cloud: CloudDeployment[] | null | undefined,
+): { number: number; sha: string } | null {
+  if (!cloud) return null
+  const id = servingId(s, envId, cloud)
+  const c = cloud.find((d) => d.id === id)
+  const l = s.deploys.find((d) => d.id === id)
+  const number = c?.number ?? l?.number
+  const sha = l?.commit.sha ?? c?.commit.sha
+  return id && number != null && sha ? { number, sha } : null
+}
+
 /** The word of a local deployment record; pass `serving` to tell Live from Replaced. */
 export const deployWord = (d: Deploy, serving: string | null = null) => deployState(d, serving).label
 

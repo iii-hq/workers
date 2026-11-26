@@ -7,14 +7,15 @@ import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
 import { boards } from '../fixtures'
-import { agent, base, pr, ready } from '../fixtures/base'
+import { agent, apiPath, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing } from '../fixtures/check'
+import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { devValues } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
-import { btn, click, el, flush, lastCall, root, text, type, usePage } from './util'
+import { btn, click, cloudAnswers, el, flush, lastCall, root, text, type, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -565,14 +566,92 @@ describe('the review: what a check that is not ready still offers', () => {
   })
 
   it('an agent the person stopped is not started again when the check ends; "Fix with your agent" is', async () => {
-    const running = B('deploy-checking')
-    const h = await stage(running, marker)
-    hubOf(h.host).markStopped(running.project?.environment?.id ?? '', true)
-    await fire(h, { kind: 'check', id: 'chk-d1', terminal: true, summary: '', record: found } as ChangeEvent)
+    // A check runs and the agent works; the person presses Stop (as on screen), the agent ends, the check ends.
+    const working = B('deploy-fixing')
+    const h = await stage(working, { ...marker, 'iii-cloud::handoff::stop': {} })
+    await act(async () => hubOf(h.host).checking(1))
+    await click(btn('Stop'))
+    await click([...el.querySelectorAll('[role=alertdialog] button')].find((b) => b.textContent === 'Stop the agent'))
+    await act(async () => hubOf(h.host).checking(-1))
+    await fire(h, {
+      kind: 'agent',
+      id: 'ho-d',
+      terminal: true,
+      summary: '',
+      record: { ...working.agent, state: 'stopped' },
+    } as ChangeEvent)
+    const ended = { ...found, id: 'chk-end', checked_at: new Date(Date.now() + 60_000).toISOString() }
+    await fire(h, { kind: 'check', id: 'chk-end', terminal: true, summary: '', record: ended } as ChangeEvent)
     await flush()
     expect(handoffs(h)).toHaveLength(0)
-    await click(btn('Fix with your agent'))
+    // The way back is on screen: the stopped agent's notice offers it.
+    await click(btn('Ask your agent to finish'))
     expect(handoffs(h)).toHaveLength(1)
+  })
+
+  it('the stop survives a reload: a fresh hub still knows the person stopped it', async () => {
+    const env = B('deploy-checking').project?.environment?.id ?? ''
+    const first = await stage(B('deploy-checking'))
+    hubOf(first.host).markStopped(env, true)
+    const fresh = fakeHost(B('deploy-checking'))
+    expect(hubOf(fresh.host).stopped(env)).toBe(true)
+    hubOf(fresh.host).markStopped(env, false)
+    expect(hubOf(first.host).stopped(env)).toBe(false)
+  })
+
+  it('a source replaced by "Check <tip>" holds Deploy until another check exists, and folds the old check', async () => {
+    const outdated = B('state-outdated')
+    const h = await stage(outdated, {
+      'iii-cloud::project::use': {},
+      'iii-cloud::check': () => Promise.reject(Object.assign(new Error('x'), { code: 'NO_COMMITS' })),
+    })
+    await click([...el.querySelectorAll('button')].find((b) => /^Check [0-9a-f]{7}$/.test(b.textContent ?? '')))
+    await flush()
+    expect(title()).toMatch(/^Check /)
+    expect(
+      [...el.querySelectorAll('button')]
+        .filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
+        .every((b) => b.hasAttribute('disabled')),
+    ).toBe(true)
+    expect(region('You')).toBeNull()
+    expect(region('Details')?.textContent).toContain('before you changed the source')
+    // Any other check id is newer, whatever its clock says.
+    await fire(h, {
+      kind: 'check',
+      id: 'chk-new',
+      terminal: true,
+      summary: '',
+      record: { ...outdated.check!, id: 'chk-new', checked_at: new Date(Date.now() + 60_000).toISOString() },
+    } as ChangeEvent)
+    expect(title()).toBe('Ready to deploy to dev')
+  })
+
+  it("the Ready footer names the deployment iii cloud says serves, not the worker's newest; none before the list is read", async () => {
+    const s = { ...boards['deploy-review'].status, deploys: [live6, serving5] }
+    const env = DEV.id
+    const list = (id: string) => ({
+      [apiPath('/deployments', env)]: {
+        deployments: s.deploys.map((d) => ({
+          id: d.id,
+          number: d.number,
+          environment_id: env,
+          type: 'push',
+          status: 'ready',
+          current: d.id === id,
+          commit: { sha: d.commit.sha },
+          triggered_by: { user_id: null, api_key_id: null },
+          created_at: d.created_at,
+          finished_at: null,
+        })),
+      },
+    })
+    // The worker's newest ready deployment is #6; iii cloud says #5 serves (a rollback made in the console).
+    const old = serving5
+    await stage(s, cloudAnswers(list(old.id)))
+    expect(text()).toContain(`${s.project?.environment?.name} serves #${old.number} until the new deployment is live.`)
+    await stage(s, cloudAnswers({}))
+    expect(text()).not.toMatch(/serves #\d+ until/)
+    expect(text()).not.toContain('Nothing is live on')
   })
 
   it('a session that cannot write says who can, with no field: an API key, a Developer on production', async () => {
@@ -588,26 +667,32 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(youItems()[0].textContent).toContain('takes Owner or Admin. You are Developer.')
   })
 
-  it('an optional name can be skipped for now, and a skipped one is undone from Warnings', async () => {
-    const dev = { ...B('deploy-problems'), deploys: [] }
-    const h = await stage(dev, {
-      'iii-cloud::values': {
-        environment_id: dev.project?.environment?.id,
-        environment: 'dev',
-        manifest: 'api/worker-compose-prod.yaml',
-        read_from: 'workspace',
-        cloud: 'read',
-        save: 'ok',
-        items: [{ name: 'STRIPE_SECRET_KEY', need: 'optional', in_cloud: 'unset', suggestions: [] }],
-      },
-      'iii-cloud::values::skip': { environment_id: 'e', names: [] },
-    })
-    await click([...youItems()[0].querySelectorAll('button')].find((b) => b.textContent === 'Skip for now'))
+  it('an optional empty name (the worker sends it as the EMPTY_DEFAULT_VARIABLE warning) is skipped from Warnings; a required secret never offers Skip', async () => {
+    const h = await stage(B('setup-fixing-live'), { 'iii-cloud::values::skip': {} })
+    const skip = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Skip for now')
+    expect(skip?.closest('details, [aria-label=Warnings], .iii-cloud-cs-item')).toBeTruthy()
+    await click(skip)
     expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
-      names: ['STRIPE_SECRET_KEY'],
+      names: [expect.any(String)],
       skip: true,
     })
     expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    // A required secret (SECRET_MISSING blocks) is in You with no Skip.
+    await stage(B('deploy-problems'))
+    expect(
+      youItems()
+        .flatMap((r) => [...r.querySelectorAll('button')])
+        .some((b) => b.textContent === 'Skip for now'),
+    ).toBe(false)
+  })
+
+  it('a skipped required secret stays in You (iii cloud still needs a value) with Undo; a skipped optional one is undone from Warnings', async () => {
+    const back = await stage(B('setup-fixing-secret-skipped'), { 'iii-cloud::values::skip': {} })
+    const row = youItems().find((r) => [...r.querySelectorAll('button')].some((b) => b.textContent === 'Undo'))
+    expect(row).toBeTruthy()
+    await click([...(row?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Undo'))
+    expect(back.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({ skip: false })
+    expect(row?.textContent).toContain('Undone. The check runs again.')
     const skipped = await stage(B('setup-fixing-skipped'), { 'iii-cloud::values::skip': {} })
     await click(btn('Undo'))
     expect(skipped.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({ skip: false })

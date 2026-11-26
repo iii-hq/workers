@@ -25,15 +25,46 @@ export type Hub = {
   checking(delta: 1 | -1): void
   record(kind: string, id: string): unknown
   recordVersion(): number
-  /** The last `check` call's refusal for an environment, kept until the next check call of it. */
+  /** The last `check` call's refusal for an environment, kept until the next check call or check record of it. */
   checkError(envId: string): WorkerError | null
   setCheckError(envId: string, error: WorkerError | null): void
-  /** When the source of an environment's check was replaced (`project::use`): a check older than this is stale. */
-  movedAt(envId: string): number
-  markMoved(envId: string, at: number): void
+  /**
+   * The check that was current when the source of an environment's check was replaced (`project::use`; '' when none):
+   * exactly that check is stale, any other is newer. null: the source was not replaced.
+   */
+  movedFrom(envId: string): string | null
+  /** The environment the latest `project::use` selected, until the status says so itself. */
+  selectedEnv(): string
+  /** `project::use` succeeded for this environment: its current check (if any) is of the old source. */
+  used(envId: string): void
   /** The person stopped the agent of this environment: nothing starts one by itself until they check or ask again. */
   stopped(envId: string): boolean
   markStopped(envId: string, on: boolean): void
+}
+
+const STOPPED = (envId: string) => `iii-cloud:stopped:${envId}`
+// Survives a new hub (and a reload, through localStorage): the stop is the person's, not the page's.
+const stoppedMemory = new Set<string>()
+const readStopped = (envId: string) => {
+  try {
+    return localStorage.getItem(STOPPED(envId)) === '1' || stoppedMemory.has(envId)
+  } catch {
+    return stoppedMemory.has(envId)
+  }
+}
+const writeStopped = (envId: string, on: boolean) => {
+  if (on) stoppedMemory.add(envId)
+  else stoppedMemory.delete(envId)
+  try {
+    if (on) localStorage.setItem(STOPPED(envId), '1')
+    else localStorage.removeItem(STOPPED(envId))
+  } catch {
+    // storage is best effort: the in-memory copy keeps this tab right
+  }
+}
+/** Forget every stop (tests). */
+export function clearStopped() {
+  for (const e of [...stoppedMemory]) writeStopped(e, false)
 }
 
 const hubs = new WeakMap<Host, Hub>()
@@ -86,8 +117,8 @@ export function hubOf(host: Host): Hub {
   let seq = 0
   const records = new Map<string, unknown>()
   const checkErrors = new Map<string, WorkerError>()
-  const moved = new Map<string, number>()
-  const stoppedBy = new Set<string>()
+  const moved = new Map<string, string>()
+  let pendingEnv = ''
   const listeners = new Set<() => void>()
   let dispose: (() => void) | null = null
   const emit = () => {
@@ -104,6 +135,8 @@ export function hubOf(host: Host): Hub {
   const onEvent = (ev: ChangeEvent) => {
     if (!ev || typeof ev !== 'object' || !ev.kind || !ev.record) return
     remember(ev.kind, ev.id, ev.record)
+    // A check that arrived (the agent's own, one that outlived the page's call) replaces a refusal kept for it.
+    if (ev.kind === 'check') checkErrors.delete((ev.record as Check).environment_id)
     if (ev.kind === 'run') {
       const r = ev.record as Run
       const c = records.get(`check:${r.check_id}`) as Check | undefined
@@ -121,14 +154,14 @@ export function hubOf(host: Host): Hub {
       else if (!checkErrors.delete(envId)) return
       emit()
     },
-    stopped: (envId) => stoppedBy.has(envId),
-    markStopped(envId, on) {
-      if (on) stoppedBy.add(envId)
-      else stoppedBy.delete(envId)
-    },
-    movedAt: (envId) => moved.get(envId) ?? 0,
-    markMoved(envId, at) {
-      moved.set(envId, at)
+    stopped: readStopped,
+    markStopped: writeStopped,
+    movedFrom: (envId) => moved.get(envId) ?? null,
+    selectedEnv: () => pendingEnv || (state.status?.project?.environment?.id ?? ''),
+    used(envId: string) {
+      const c = state.status?.check
+      moved.set(envId, c && c.environment_id === envId ? c.id : '')
+      pendingEnv = envId
       emit()
     },
     checking(delta) {
@@ -143,6 +176,7 @@ export function hubOf(host: Host): Hub {
         if (next.check?.run) remember('run', next.check.run.id, next.check.run)
         for (const d of next.deploys) remember('deploy', d.id, d)
         for (const r of next.secrets) remember('secret', r.id, r)
+        if (next.project?.environment?.id === pendingEnv) pendingEnv = ''
         set({ status: next, error: null, loaded: true })
       } catch (err) {
         if (mine === seq) set({ error: errorMessage(err), loaded: true })
@@ -206,9 +240,9 @@ export function useCheckError(host: Host, envId: string): WorkerError | null {
   const hub = hubOf(host)
   return useSyncExternalStore(hub.subscribe, () => hub.checkError(envId))
 }
-export function useMovedAt(host: Host, envId: string): number {
+export function useMovedFrom(host: Host, envId: string): string | null {
   const hub = hubOf(host)
-  return useSyncExternalStore(hub.subscribe, () => hub.movedAt(envId))
+  return useSyncExternalStore(hub.subscribe, () => hub.movedFrom(envId))
 }
 
 export function useStatusSnapshot(host: Host): Status | null {
@@ -243,7 +277,8 @@ export function useActions(host: Host) {
       setBusy(key)
       setError(null)
       const isCheck = id === 'iii-cloud::check'
-      const checkEnv = isCheck ? (hubOf(host).get().status?.project?.environment?.id ?? '') : ''
+      // The environment the call is for, taken now: the person may open another one before it ends.
+      const checkEnv = isCheck ? hubOf(host).selectedEnv() : ''
       if (isCheck) {
         hubOf(host).checking(1)
         hubOf(host).setCheckError(checkEnv, null)
@@ -254,6 +289,11 @@ export function useActions(host: Host) {
         const out = await host.iii.call<T>(id, payload, {
           timeoutMs: id === 'iii-cloud::check' || id === 'iii-cloud::deploy' ? LONG : 60_000,
         })
+        // Every `project::use` goes through here: the check of the old source is stale until another one exists.
+        if (id === 'iii-cloud::project::use')
+          hubOf(host).used(
+            typeof payload.environment_id === 'string' ? payload.environment_id : hubOf(host).selectedEnv(),
+          )
         // The event also arrives over the hub; this keeps the page right if it does not.
         void hubOf(host).refresh(false)
         return out
@@ -261,8 +301,7 @@ export function useActions(host: Host) {
         const refused = workerError(err, errorCode(err), errorMessage(err))
         if (alive.current) setError(refused)
         // The card that asked may be gone (the page went to the Deploy screen): the hub keeps the refusal.
-        // Keyed by the environment selected now: a `use` before the check may have changed it meanwhile.
-        if (isCheck) hubOf(host).setCheckError(hubOf(host).get().status?.project?.environment?.id ?? checkEnv, refused)
+        if (isCheck) hubOf(host).setCheckError(checkEnv, refused)
         return null
       } finally {
         if (isCheck) hubOf(host).checking(-1)
