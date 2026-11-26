@@ -1256,6 +1256,15 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// Whether `dir` holds no lock and no temporary file, nor the legacy
+    /// lock beside it.
+    fn is_clean(dir: &Path) -> bool {
+        std::fs::read_dir(dir).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            !name.ends_with(".lock") && !name.contains("tmp")
+        }) && !super::super::lockdir::legacy_path(dir).exists()
+    }
+
     /// No lock and no temporary file left in `dir`, nor the legacy lock
     /// beside it.
     fn nothing_left(dir: &Path) {
@@ -1892,7 +1901,10 @@ mod tests {
         let stored = accounts.credential("personal").await.unwrap();
         assert_eq!(stored.access_token.expose(), "at-personal-2");
         assert_eq!(server.asked().len(), 1);
-        nothing_left(&home.paths.account_dir("personal"));
+        // The background save writes the file before it releases its lock.
+        let dir = home.paths.account_dir("personal");
+        eventually("the save releases its lock", || is_clean(&dir)).await;
+        nothing_left(&dir);
     }
 
     #[tokio::test]
