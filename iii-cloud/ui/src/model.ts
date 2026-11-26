@@ -19,6 +19,20 @@ export const EVENTS_FN = 'iii::iii-cloud-ui::events'
 export const CALL_IDS = ['connect', 'check', 'secret', 'deploy', 'watch'].map((n) => `iii-cloud::${n}`)
 
 export const sha7 = (sha: string) => sha.slice(0, 7)
+
+/**
+ * What a deploy takes from, in running text: the branch the person works on, else the folder's, else the commit.
+ * The worker's own `iii-cloud/ready-*` branch is never named: it reads "<env>'s branch".
+ */
+export function sourceLabel(s: Status, env: string): string {
+  const p = s.project
+  const own = (b: string | null | undefined) => (b && !b.startsWith('iii-cloud/ready-') ? b : null)
+  const label = own(p?.workspace?.source) ?? own(p?.checkout.branch)
+  return (
+    label ??
+    (p?.workspace?.source || p?.checkout.branch ? `${env}'s branch` : p ? sha7(p.checkout.head) : 'your folder')
+  )
+}
 export const ago = (iso: string | null | undefined) => {
   const r = iso ? formatRelative(iso) : ''
   return r === 'just now' ? r : r ? `${r} ago` : ''

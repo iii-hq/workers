@@ -22,7 +22,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AgentControls } from './AgentRow'
 import { askedAt, clock, FOLDER_NOTE, useFolderNote, useLaunch } from './asked'
 import { ConfigImportDialog } from './ConfigImport'
-import { configAction, findings, type Item, location, valueName } from './findings'
+import { configAction, findings, type Item, location, needsYou, valueName } from './findings'
 import { canOpenChat, handOff, openAgentChat } from './handoff'
 import { hubOf, useActions, useChecking } from './hub'
 import {
@@ -56,6 +56,7 @@ import {
   settingWords,
   sha7,
   signInRequired,
+  sourceLabel,
   stageLabel,
   stageText,
   stageTime,
@@ -199,7 +200,7 @@ export function ActionBar({ narrow, action, note }: { narrow: boolean; action?: 
 /** "feat/search-rank: 3 commits and your 2 uncommitted files, to dev": what goes, from what the check and the folder carry. */
 function goesLine(s: Status, c: Check | null, env: string): string {
   const p = s.project
-  const source = p?.workspace?.source ?? p?.checkout.branch ?? (p ? sha7(p.checkout.head) : 'your folder')
+  const source = sourceLabel(s, env)
   const brought = !!c?.commits?.some((x) => x.message.startsWith('Uncommitted changes from '))
   // Before a check, the folder's own files are what the check will take.
   const files = !c || brought ? (p?.checkout.changed_files.filter((f) => !unbringable(f)).length ?? 0) : 0
@@ -911,7 +912,7 @@ export function CheckStage(props: CheckStageProps) {
   const envId = c?.environment_id ?? p?.environment?.id ?? ''
   const envRow = p?.environments.find((e) => e.id === envId)
   const env = envRow?.name ?? p?.environment?.name ?? 'the environment'
-  const source = p?.workspace?.source ?? p?.checkout.branch ?? (p ? sha7(p.checkout.head) : 'your folder')
+  const source = sourceLabel(s, env)
 
   // The check starts from this screen's own buttons; the agent starts by itself when the check it watched ends with
   // agent-owned problems, if auto_fix is on. ponytail: only while the page is open; the worker's `fix` covers a closed page.
@@ -992,11 +993,8 @@ export function CheckStage(props: CheckStageProps) {
       ),
     ),
   ]
-  const needItems = f.person.filter(
-    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !fillableNames.has(valueName(i) ?? ''),
-  )
+  const { items: needItems, decide } = needsYou(s, fillableNames)
   const decisions = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] !== 'file') : []
-  const decide = decisions.filter((o) => chosen[o.setting] !== 'console')
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
   const agentItems = f.agent.filter((i) => !i.fixed && i.severity === 'block')
   const lines: Line[] = [

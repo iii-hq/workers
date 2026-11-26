@@ -234,3 +234,17 @@ export function findings(s: Status): Findings {
 
 /** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
+
+/**
+ * What only the person can do before this check can pass: its blocking problems (a warning is not one) and the
+ * console settings still to decide. The one list the Deploy screen's title and the environment's next action count.
+ * `except`: names a bulk row covers instead.
+ */
+export function needsYou(s: Status, except: Set<string> = new Set()) {
+  const items = findings(s).person.filter(
+    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !except.has(valueName(i) ?? ''),
+  )
+  const chosen = s.override_choices ?? {}
+  const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
+  return { items, decide }
+}

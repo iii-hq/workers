@@ -3,6 +3,7 @@ import { Button, Panel, Skeleton } from '@iii-dev/console-ui'
 import { useCloud } from './api'
 import { clock } from './asked'
 import { failedLine } from './FailureCard'
+import { needsYou } from './findings'
 import { useActions, useLocked } from './hub'
 import {
   defaultBranch,
@@ -13,12 +14,11 @@ import {
   isFailedDeploy,
   minutesLabel,
   needsAction,
-  openProblems,
   plural,
-  problemTitle,
   roleOf,
   servingDeploy,
   sha7,
+  sourceLabel,
   type Tone,
   when,
   withAppFile,
@@ -147,13 +147,14 @@ export function nextAction(
   }
 
   const c = s.check?.environment_id === envId ? s.check : null
-  const branch = p?.checkout.branch ?? null
-  const person = c && !c.ready ? openProblems(s).filter((x) => x.owner === 'person') : []
+  const branch = p ? sourceLabel(s, name) : null
+  // The same list the Deploy screen's title counts.
+  const you = c && !c.ready && c.run?.status !== 'running' ? needsYou(s) : null
+  const n = (you?.items.length ?? 0) + (you?.decide.length ?? 0)
   const a = s.agent && ['starting', 'working'].includes(s.agent.state) ? s.agent : null
   const fixing = a?.working_on?.length ?? 0
-  if (person.length) {
-    const n = person.length
-    const first = problemTitle(person[0])
+  if (you && n) {
+    const first = you.items[0]?.title ?? `${name}'s ${you.decide[0].setting} was changed in iii cloud's console`
     return {
       state: 'you',
       wait: true,

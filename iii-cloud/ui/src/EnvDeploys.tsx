@@ -11,10 +11,10 @@ import type { Deploy, Members, Status } from './types'
 
 const message = (d: Deploy) => d.commit.message?.split('\n')[0]
 
-/** What a deployment is called in the list: the commit's message, a failed one its cause, else its number. */
+/** What a deployment is called in the list: the commit's message, a failed one its cause, else its short sha (the number is the first column). */
 function titleOf(d: Deploy): string {
   if (isFailedDeploy(d)) return failureTitle(d)
-  return message(d) ?? `Deployment #${d.number}`
+  return message(d) ?? sha7(d.commit.sha)
 }
 
 /**

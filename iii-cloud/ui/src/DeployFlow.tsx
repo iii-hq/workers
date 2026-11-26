@@ -132,7 +132,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
         end={<Fresh host={host} status={status} narrow={narrow} />}
       />
       <div className="iii-cloud-body iii-cloud-scroll">
-        <div className="iii-cloud-dep">
+        <div className="iii-cloud-depcol">
           {act.error ? (
             <ActionError host={host} status={status} error={act.error} checkAgain={checkAgain} go={go} />
           ) : null}

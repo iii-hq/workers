@@ -22,6 +22,8 @@
 [data-iii-ui='iii-cloud'] :where(.iii-cloud-body > :not(.iii-cloud-crumb)) {
   max-width: 960px;
   width: 100%;
+  /* The body scrolls: a card is as tall as its content, never squeezed to the pane's height. */
+  flex-shrink: 0;
 }
 /* The tab's content scrolls; the header and the tabs above it stay put. */
 [data-iii-ui='iii-cloud'] .iii-cloud-scroll {

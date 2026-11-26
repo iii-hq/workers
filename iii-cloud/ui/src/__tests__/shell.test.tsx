@@ -470,6 +470,24 @@ describe('the hand-over between places, end to end', () => {
     expect(path()).toBe('Projects / registry · dev')
   })
 
+  it('one count and one source label: the environment card and the Deploy screen say the same', async () => {
+    const b = boards['deploy-problems']
+    const count = (s: string | null | undefined) => /^(\d+) things? /.exec(s ?? '')?.[1]
+    const ws = b.status.project!.workspace!
+    const status = {
+      ...b.status,
+      project: { ...b.status.project!, workspace: { ...ws, source: 'iii-cloud/ready-dev' } },
+    }
+    await mount(status, ctx({ at: 'deploy', env: '' }), cloudAnswers(b.cloud ?? {}))
+    const onDeploy = count(el.querySelector('h2.iii-cloud-h')?.textContent)
+    expect(onDeploy).toBeDefined()
+    expect(text()).not.toContain('iii-cloud/ready-')
+    await mount(status, ctx({ at: 'env', env: '' }, 2), cloudAnswers(b.cloud ?? {}))
+    await settle()
+    expect(count(text().match(/\d+ things? needs? you/)?.[0])).toBe(onDeploy)
+    expect(text()).not.toContain('iii-cloud/ready-')
+  })
+
   it('the Deploy screen: Secrets and variables, and Review of the filled names, open the secrets page', async () => {
     const b = boards['deploy-problems']
     await board('deploy-problems')

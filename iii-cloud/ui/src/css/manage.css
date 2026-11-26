@@ -202,6 +202,8 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   overflow: hidden;
+  /* In the page's column: never squeezed by its height; the page scrolls. */
+  flex-shrink: 0;
   border-radius: var(--radius-xl);
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cells {

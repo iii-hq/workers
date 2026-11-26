@@ -4,7 +4,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { Button, EmptyState, List, ListItem, PageMain, Skeleton } from '@iii-dev/console-ui'
 import { ChevronRight, Cloud } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useCloud } from './api'
 import { ConnectView } from './ConnectView'
 import { useActions, useLocked } from './hub'
@@ -165,9 +165,13 @@ type RowProps = {
   switching: string | null
   go: (r: Route) => void
   open: (key: string, name: string, payload: Record<string, unknown>, envName?: string | null) => void
+  /** The row's read failed (the message) or works again (null): the list says it once. */
+  report: (key: string, failure: string | null) => void
+  /** Moves when the person presses "Try again" on the list. */
+  retry: number
 }
 
-function PlaceRow({ host, status, place, narrow, offline, locked, switching, go, open }: RowProps) {
+function PlaceRow({ host, status, place, narrow, offline, locked, switching, go, open, report, retry }: RowProps) {
   const key = status.connection.api_key
   const p = status.project
   const team = key ? key.team_id : place.teamId
@@ -194,7 +198,22 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   const deletions = useCloud<Deletions>(host, status, null, gone && team ? `/teams/${team}/deletions` : null)
   const list = deploys.data?.deployments
   const live = liveOf(list)
-  const readError = envs.error && !gone ? envs.error : deploys.error
+  // A read that failed over an answer we still hold keeps the answer; the list's notice says the rest.
+  const readError = deploys.data ? null : ((envs.error && !gone ? envs.error : deploys.error) ?? null)
+  const failure = readError ? readError.message : null
+  const rowKey = place.key
+  const refetchEnvs = envs.refetch
+  const refetchDeploys = deploys.refetch
+  useEffect(() => {
+    report(rowKey, failure)
+    return () => report(rowKey, null)
+  }, [report, rowKey, failure])
+  // Only a press of "Try again" reads again (the refetches change every render, so they are not listed).
+  useEffect(() => {
+    if (!retry) return
+    refetchEnvs()
+    refetchDeploys()
+  }, [retry, refetchEnvs, refetchDeploys])
   // A deploy going on from this folder (any of its environments): the row says so.
   const now = useNow(15_000)
   const going = moving(status).find(
@@ -217,7 +236,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   } else if (offline) line1 = "Sign in to see what's live"
   // Only the folder and the names are known: say what exists, and how to see the rest.
   else if (!team) line1 = place.envName ? `${place.envName} · open it to see what's live` : "Open it to see what's live"
-  else if (readError) line1 = `Can't read iii cloud: ${readError.message}`
+  else if (readError) line1 = <span className="iii-cloud-faint">What is live isn't known yet</span>
   else if (env && list) {
     line1 = liveLine(env.name, list)
     if (waits.length) line1 = `${line1} · ${waits.join(', ')}`
@@ -383,6 +402,16 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
   const locked = useLocked(host, status)
   const { switching, error, switchTo, dialog } = useSwitch(host, status, go)
   const [tried, setTried] = useState('')
+  const [failures, setFailures] = useState<Record<string, string>>({})
+  const [retry, setRetry] = useState(0)
+  const report = useCallback((k: string, failure: string | null) => {
+    setFailures((f) => {
+      if ((f[k] ?? null) === failure) return f
+      const { [k]: _gone, ...rest } = f
+      return failure ? { ...rest, [k]: failure } : rest
+    })
+  }, [])
+  const failed = Object.values(failures)
   const places = placesOf(status)
   const key = status.connection.api_key
   const offline = status.connection.status !== 'connected'
@@ -406,6 +435,8 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
       switching={switching}
       go={go}
       open={open}
+      report={report}
+      retry={retry}
     />
   ))
   const list = (
@@ -445,6 +476,18 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
             variant="alert"
             headline={`Couldn't open ${tried || 'the project'}`}
             detail={[plainMessage(error), plainDetail(error)].filter(Boolean).join(' ')}
+          />
+        ) : null}
+        {failed.length ? (
+          <Notice
+            variant="warn"
+            headline={`Couldn't read ${failed.length === 1 ? 'one project' : `${failed.length} projects`} from iii cloud`}
+            detail={`${failed[0]} Opening a project still works; its state shows when the read does.`}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => setRetry(retry + 1)}>
+                Try again
+              </Button>
+            }
           />
         ) : null}
         {narrow && !offline && !key ? <p className="iii-cloud-desc">{`Signed in as ${whoIs(status)}`}</p> : null}

@@ -162,14 +162,22 @@ describe('Projects (desktop)', () => {
     expect(openOf('old')).toBeNull()
   })
 
-  it('a read that fails says so in the row; Open stays', async () => {
+  it('a read that fails is said once for the list, with Try again; the row waits and Open stays; the read works after', async () => {
+    let broken = true
     const fail = () => ({ status: 500, body: { code: 'CLOUD_ERROR', message: '' } })
     const answers = cloudAnswers(startCloud)
     const api = (q: Record<string, unknown>) =>
-      String(q.path).includes('p-billing') ? fail() : answers['iii-cloud::api'](q)
+      broken && String(q.path).includes('p-billing') ? fail() : answers['iii-cloud::api'](q)
     await showStart(startStatus, { 'iii-cloud::api': api })
-    expect(lines('billing')[0]).toBe("Can't read iii cloud: iii cloud had a problem. Try again in a moment.")
+    expect(lines('billing')[0]).toBe("What is live isn't known yet")
+    expect(text().match(/Couldn't read/g)).toHaveLength(1)
+    expect(text()).toContain('iii cloud had a problem. Try again in a moment.')
     expect(openOf('billing')?.disabled).toBe(false)
+    broken = false
+    await click(btn('Try again'))
+    await settle()
+    expect(text()).not.toContain("Couldn't read")
+    expect(lines('billing')[0]).not.toBe("What is live isn't known yet")
   })
 
   it('something waits on the person: leaving asks first, and Stay sends nothing', async () => {
