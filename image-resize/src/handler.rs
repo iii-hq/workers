@@ -89,6 +89,13 @@ async fn run(
         Some(value) => ImageMetadata::deserialize(value)
             .map_err(|e| invalid(format!("invalid metadata: {e}")))?,
     };
+    let deprecated = meta.deprecated_keys();
+    if !deprecated.is_empty() {
+        tracing::warn!(
+            keys = ?deprecated,
+            "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
+        );
+    }
     let bytes = read_image(req.input_channel.frames(), MAX_INPUT_BYTES).await?;
     let params = resolve_params(config, &meta, sniff(&bytes)?)?;
 

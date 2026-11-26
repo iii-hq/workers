@@ -5,6 +5,7 @@ use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::Cursor;
 use std::num::NonZeroU32;
 
@@ -54,6 +55,30 @@ pub struct ImageMetadata {
     pub target_width: Option<NonZeroU32>,
     /// Box height in pixels. The image is never enlarged. Defaults to the configured box.
     pub target_height: Option<NonZeroU32>,
+    /// Deprecated and ignored; removed in the next version. The input format is detected.
+    #[deprecated = "ignored; removed in the next version"]
+    pub format: Option<Value>,
+    /// Deprecated and ignored; removed in the next version. The result reports `source_width`.
+    #[deprecated = "ignored; removed in the next version"]
+    pub width: Option<Value>,
+    /// Deprecated and ignored; removed in the next version. The result reports `source_height`.
+    #[deprecated = "ignored; removed in the next version"]
+    pub height: Option<Value>,
+}
+
+impl ImageMetadata {
+    /// The deprecated keys this call sent, for a warning.
+    #[allow(deprecated)]
+    pub fn deprecated_keys(&self) -> Vec<&'static str> {
+        [
+            ("format", &self.format),
+            ("width", &self.width),
+            ("height", &self.height),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.is_some().then_some(key))
+        .collect()
+    }
 }
 
 /// The call result: the output's format and size, and the source's size after
@@ -285,6 +310,24 @@ fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, Error> {
 mod tests {
     use super::*;
     use image::{ImageEncoder, RgbImage};
+
+    #[test]
+    fn deprecated_keys_lists_what_the_call_sent() {
+        let meta = |v: Value| ImageMetadata::deserialize(&v).unwrap();
+        assert!(
+            meta(serde_json::json!({ "target_width": 10 }))
+                .deprecated_keys()
+                .is_empty()
+        );
+        assert_eq!(
+            meta(serde_json::json!({ "width": 1, "format": "jpeg" })).deprecated_keys(),
+            ["format", "width"]
+        );
+        assert_eq!(
+            meta(serde_json::json!({ "format": "png", "width": 1, "height": 1 })).deprecated_keys(),
+            ["format", "width", "height"]
+        );
+    }
 
     fn make_rgb_image(w: u32, h: u32, r: u8, g: u8, b: u8) -> DynamicImage {
         let mut img = RgbImage::new(w, h);
