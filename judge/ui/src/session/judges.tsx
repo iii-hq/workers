@@ -29,6 +29,14 @@ interface JudgeRow {
   id: string
   /** What choosing it writes to the session; `undefined` = Default. */
   value: string | undefined
+  /**
+   * The provider the row stands for, when it writes `undefined`: the judge
+   * settings' default, which this row carries as a designation rather than
+   * a second entry.
+   */
+  provider?: string
+  /** Carries the "Default" designation: the judge settings' provider. */
+  isDefault?: boolean
   mark: ReactNode
   label: string
   /** One quiet line under the name: the model, or what is wrong. */
@@ -73,41 +81,65 @@ function problemLabel(problem: string): string {
 }
 
 /**
- * The picker's choices, one flat list: the judge settings' Default first,
- * then one row per provider with the model its settings name.
+ * The picker's choices, one flat list: the judge settings' provider first,
+ * carrying the Default designation (choosing it writes nothing, so the
+ * session follows the settings), then Off, then every other running judge
+ * with the model its settings name. Only with no default set does a bare
+ * Default row stand in.
  */
 function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | null, stored: string | undefined): JudgeRow[] {
   const running = new Map((providers ?? []).map((entry) => [entry.provider, entry]))
   const fallback = settings?.provider
-  const fallbackEntry = fallback ? running.get(fallback) : undefined
-  const fallbackDescription = !fallback
-    ? 'From judge settings'
-    : providers && !fallbackEntry
-      ? `${fallback}, not running`
-      : fallbackEntry?.problem
-        ? `${fallback}, not configured`
-        : [fallback, fallbackEntry?.model].filter(Boolean).join(' · ')
-  const fallbackWarning = Boolean(fallback && providers && (!fallbackEntry || fallbackEntry.problem))
   const names = [...running.keys()].filter((name) => name !== JUDGE_OFF)
   if (stored && stored !== JUDGE_OFF && providers && !running.has(stored)) names.push(stored)
+
+  const providerRow = (name: string, isDefault: boolean): JudgeRow => {
+    const entry = running.get(name)
+    // The default judge's state is unknown until the first listing answers;
+    // every other row only exists because a listing named it.
+    const unknown = isDefault && !providers
+    return {
+      id: isDefault ? 'default' : `provider-${name}`,
+      value: isDefault ? undefined : name,
+      provider: isDefault ? name : undefined,
+      isDefault,
+      mark: <JudgeMark provider={name} />,
+      label: name,
+      description: unknown
+        ? undefined
+        : !entry
+          ? 'Not running'
+          : entry.problem
+            ? problemLabel(entry.problem)
+            : (entry.model ?? undefined),
+      warning: !unknown && (!entry || Boolean(entry.problem)),
+      reason: unknown
+        ? undefined
+        : !entry
+          ? `judge-${name} is not running`
+          : entry.problem
+            ? `Not configured: ${entry.problem}`
+            : undefined,
+      configure: entry ? providerTarget(entry) : undefined,
+    }
+  }
+
+  const head: JudgeRow = fallback
+    ? providerRow(fallback, true)
+    : {
+        id: 'default',
+        value: undefined,
+        isDefault: true,
+        mark: (
+          <span className="judge-ui-session-mark" aria-hidden="true">
+            <Scale size={16} aria-hidden />
+          </span>
+        ),
+        label: 'Default',
+        description: 'From judge settings',
+      }
   return [
-    {
-      id: 'default',
-      value: undefined,
-      mark: (
-        <span className="judge-ui-session-mark" aria-hidden="true">
-          <Scale size={16} aria-hidden />
-        </span>
-      ),
-      label: 'Default',
-      description: fallbackDescription,
-      warning: fallbackWarning,
-      reason: fallbackWarning
-        ? fallbackEntry?.problem
-          ? `${fallback} is not configured: ${fallbackEntry.problem}`
-          : `judge-${fallback} is not running`
-        : undefined,
-    },
+    head,
     {
       id: JUDGE_OFF,
       value: JUDGE_OFF,
@@ -119,19 +151,10 @@ function judgeRows(providers: JudgeProvider[] | null, settings: JudgeSettings | 
       label: 'Off',
       description: 'No judge in this session',
     },
-    ...names.sort().map((name): JudgeRow => {
-      const entry = running.get(name)
-      return {
-        id: `provider-${name}`,
-        value: name,
-        mark: <JudgeMark provider={name} />,
-        label: name,
-        description: !entry ? 'Not running' : entry.problem ? problemLabel(entry.problem) : (entry.model ?? undefined),
-        warning: !entry || Boolean(entry.problem),
-        reason: !entry ? `judge-${name} is not running` : entry.problem ? `Not configured: ${entry.problem}` : undefined,
-        configure: entry ? providerTarget(entry) : undefined,
-      }
-    }),
+    ...names
+      .filter((name) => name !== fallback)
+      .sort()
+      .map((name) => providerRow(name, false)),
   ]
 }
 
@@ -177,7 +200,10 @@ export function JudgesPanel({
     const hay = `${row.label} ${row.description ?? ''} ${row.value ?? 'default'}`.toLowerCase()
     return words.every((word) => hay.includes(word))
   })
-  const selectedIndex = visible.findIndex((row) => row.value === stored)
+  // The default judge's row is the session's choice both when the session
+  // follows the settings and when it names that judge itself.
+  const isChosen = (row: JudgeRow) => row.value === stored || (row.provider !== undefined && row.provider === stored)
+  const selectedIndex = visible.findIndex(isChosen)
   const resolvedIndex = activeIndex ?? Math.max(0, selectedIndex)
   const active = visible[Math.min(resolvedIndex, visible.length - 1)]
   const optionId = (row: JudgeRow) => `${listId}-${row.id}`
@@ -273,7 +299,7 @@ export function JudgesPanel({
           aria-label={showFilter ? 'Judges' : undefined}
         >
         {visible.map((row) => {
-          const selected = row.value === stored
+          const selected = isChosen(row)
           const tip = row.reason ? (
             <span className="judge-ui-session-tip">
               <span>{row.reason}</span>
@@ -284,7 +310,7 @@ export function JudgesPanel({
             <div key={row.id} className="judge-ui-session-row" role={showFilter ? 'none' : undefined}>
               <button
                 id={optionId(row)}
-                data-judge-option={row.value ?? 'default'}
+                data-judge-option={row.provider ?? row.value ?? 'default'}
                 type="button"
                 className="judge-ui-session-option"
                 role={showFilter ? 'option' : undefined}
@@ -300,7 +326,12 @@ export function JudgesPanel({
               >
                 {row.mark}
                 <span className="judge-ui-session-option-copy">
-                  <span className="judge-ui-session-option-label">{row.label}</span>
+                  <span className="judge-ui-session-option-label">
+                    {row.label}
+                    {row.isDefault && row.provider ? (
+                      <span className="judge-ui-session-option-badge">Default</span>
+                    ) : null}
+                  </span>
                   {row.description ? (
                     <span className="judge-ui-session-option-description">
                       {row.warning ? <TriangleAlert size={16} aria-hidden /> : null}

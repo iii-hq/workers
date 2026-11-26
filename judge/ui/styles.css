@@ -341,6 +341,10 @@
 /* One weight everywhere: a selected or hovered row never reflows. */
 [data-iii-ui='judge'] .judge-ui-session-option-label {
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   line-height: 20px;
 }
 
@@ -363,6 +367,19 @@
 }
 
 /* The check column is always there, so names never shift. */
+/* The judge settings' provider carries Default as a designation on its own
+   row, not as a second entry that resolves to the same judge. */
+[data-iii-ui='judge'] .judge-ui-session-option-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--color-surface-hover);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+}
+
 [data-iii-ui='judge'] .judge-ui-session-option-check {
   flex: 0 0 auto;
   color: var(--color-ink);
