@@ -262,4 +262,27 @@ describe('AgentProfilePicker catalog', () => {
       undefined,
     )
   })
+  it('selects only the profile whose Install was clicked last', async () => {
+    const onAgentProfileChange = await mount()
+    await act(async () => trigger()?.click())
+    // The reads after each apply fail, so both profiles land in one read.
+    harness.failures = 99
+
+    await act(async () => kitRow('Workflow')?.click())
+    await act(async () => kitRow()?.click())
+    await flush()
+    await flush()
+    expect(harness.downloads).toEqual(['iii/workflow', 'iii/deepwork'])
+    expect(onAgentProfileChange).not.toHaveBeenCalled()
+
+    harness.failures = 0
+    await agentsChanged()
+
+    expect(profileNames()).toContain('Use Workflow agent profile')
+    expect(onAgentProfileChange).toHaveBeenCalledTimes(1)
+    expect(onAgentProfileChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'deepwork' }),
+      undefined,
+    )
+  })
 })

@@ -287,6 +287,7 @@ function KitAgentRow({
   agents,
   disabled,
   selectRef,
+  installChoice,
   onInstalled,
   onReview,
 }: {
@@ -295,22 +296,21 @@ function KitAgentRow({
   agents: AgentEntry[]
   disabled: boolean
   selectRef: { current: (entry: AgentEntry) => void }
+  installChoice: { current: string | null }
   onInstalled: () => void
   onReview: () => void
 }) {
   const install = useKitInstall(listed.kit)
   // A Directory without kit support answers the install with nothing.
   const [unsupported, setUnsupported] = useState(false)
-  // Clicked Install: select the profile once the Directory serves it.
-  const [selectWhenInstalled, setSelectWhenInstalled] = useState(false)
-
+  // Clicked Install last: select the profile once the Directory serves it.
   useEffect(() => {
-    if (!selectWhenInstalled) return
+    if (installChoice.current !== listed.id) return
     const installed = agents.find((entry) => entry.id === listed.id)
     if (!installed) return
-    setSelectWhenInstalled(false)
+    installChoice.current = null
     if (!disabled) selectRef.current(installed)
-  }, [agents, selectWhenInstalled, disabled, listed.id, selectRef])
+  }, [agents, installChoice, disabled, listed.id, selectRef])
 
   // An applied kit rings the agents doorbell; read once more in case the
   // observer was not registered yet.
@@ -322,11 +322,11 @@ function KitAgentRow({
 
   if (!shown || unsupported) return null
   const onInstall = () => {
-    setSelectWhenInstalled(true)
+    installChoice.current = listed.id
     void retryOnboardingKit(listed.kit).then(() => {
       if (!onboardingKitsSnapshot().some((entry) => entry.kit === listed.kit)) {
         setUnsupported(true)
-        setSelectWhenInstalled(false)
+        if (installChoice.current === listed.id) installChoice.current = null
       }
     })
   }
@@ -422,6 +422,9 @@ export function AgentProfilePicker({
   }
   const selectRef = useRef(select)
   selectRef.current = select
+  // The always-listed profile whose Install was clicked last: it alone is
+  // selected once the Directory serves it, whichever kit lands first.
+  const installChoice = useRef<string | null>(null)
   // Apply the identity the picker displays before a first send can run.
   useLayoutEffect(() => {
     if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
@@ -447,6 +450,7 @@ export function AgentProfilePicker({
               agents={agents}
               disabled={selectionLocked}
               selectRef={selectRef}
+              installChoice={installChoice}
               onInstalled={refreshCatalog}
               onReview={() => setOpen(false)}
             />
