@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/FormDialog'
 import { useChatProjects } from '@/hooks/use-chat-projects'
 import { useChatSettings } from '@/hooks/use-chat-settings'
+import { useSideChatParent } from '@/hooks/use-side-chat-parent'
 import {
   type AutocompactSetting,
   autocompactOf,
@@ -181,6 +182,13 @@ export function ConversationDetailsDialog({
   const chatSettings = useChatSettings(realBackend && open)
   const showAutocompact = caps.autocompact
   const autocompactLocked = sideChat || isSideChat(conversation)
+  // A side chat follows its conversation: read from the engine when it
+  // isn't loaded here, never from the side chat's frozen copy (D164).
+  const sideChatParent = useSideChatParent({
+    conversation,
+    conversations,
+    enabled: open && showAutocompact && autocompactLocked,
+  })
   const [autocompactChoice, setAutocompactChoice] =
     useState<AutocompactChoice>('inherit')
   const [autocompactText, setAutocompactText] = useState('')
@@ -519,7 +527,8 @@ export function ConversationDetailsDialog({
                         projects: projectList,
                         global: chatSettings.autocompact,
                         conversations,
-                      }).tokens,
+                        parent: sideChatParent,
+                      })?.tokens,
                     )
                   : null
               }

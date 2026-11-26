@@ -331,6 +331,60 @@ describe('Settings › Chat › Auto-compact (§3.3.1)', () => {
     expect(alerts()).toEqual(['Between 20k and 2M tokens'])
   })
 
+  it('puts the saved size back when the switch moves past text that is not a size', async () => {
+    await render()
+    const toggle = dialog().querySelector('[role="switch"]') as HTMLElement
+    type(tokensField(), 'abc')
+    await enter(tokensField())
+    expect(alerts()).toEqual(['Between 20k and 2M tokens'])
+    expect(lastPatch()).toBeUndefined()
+    await act(async () => toggle.click())
+    // Off keeps the saved size, and the field shows it: never "abc".
+    expect(lastPatch()).toEqual({
+      autocompact: {
+        mode: 'off',
+        tokens: 400_000,
+        instructions: 'Keep the PRs.',
+      },
+    })
+    expect(tokensField().value).toBe('400k')
+    expect(alerts()).toEqual([])
+    await act(async () => toggle.click())
+    expect(lastPatch()).toEqual({
+      autocompact: {
+        mode: 'tokens',
+        tokens: 400_000,
+        instructions: 'Keep the PRs.',
+      },
+    })
+    expect(tokensField().value).toBe('400k')
+    expect(alerts()).toEqual([])
+  })
+
+  it('turns on at the size typed while it was on, and that size shows', async () => {
+    await render()
+    const toggle = dialog().querySelector('[role="switch"]') as HTMLElement
+    type(tokensField(), '1,5M')
+    await enter(tokensField())
+    expect(lastPatch()).toEqual({
+      autocompact: {
+        mode: 'tokens',
+        tokens: 1_500_000,
+        instructions: 'Keep the PRs.',
+      },
+    })
+    expect(tokensField().value).toBe('1.5M')
+    await act(async () => toggle.click())
+    expect(lastPatch()).toEqual({
+      autocompact: {
+        mode: 'off',
+        tokens: 1_500_000,
+        instructions: 'Keep the PRs.',
+      },
+    })
+    expect(tokensField().value).toBe('1.5M')
+  })
+
   it("shows the harness's bad_tokens under the field, keeping the typed size", async () => {
     mocks.call.mockRejectedValueOnce(
       rejection('bad_tokens', 'Between 20k and 2M tokens'),
@@ -394,7 +448,7 @@ describe('Settings › Chat › Auto-compact (§3.3.1)', () => {
     expect(alerts()).toEqual(['Up to 1,000 characters'])
     // The refused text stays, to fix and save again.
     expect(summary().value).toBe('Something else')
-    expect(button('Save')).toBeDefined()
+    expect(button('Save')).toBeInstanceOf(HTMLButtonElement)
     expect(document.activeElement).toBe(summary())
     expect(
       summary().getAttribute('aria-describedby')?.endsWith('summary-error'),

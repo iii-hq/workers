@@ -394,13 +394,22 @@ export function AutocompactDialog({
                   checked={on}
                   onCheckedChange={(checked) => {
                     const parsed = parseTokens(text)
+                    // A size that isn't one goes back to the saved size:
+                    // the field never shows a value the setting doesn't hold.
+                    if (!parsed.ok) {
+                      textOwned.current = false
+                      setText(formatTokens(lastTokens))
+                    }
                     void write(
                       checked === true
                         ? {
                             mode: 'tokens',
                             tokens: parsed.ok ? parsed.tokens : lastTokens,
                           }
-                        : { mode: 'off', tokens: lastTokens },
+                        : {
+                            mode: 'off',
+                            tokens: parsed.ok ? parsed.tokens : lastTokens,
+                          },
                       'value',
                     )
                   }}

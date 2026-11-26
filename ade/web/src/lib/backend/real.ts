@@ -27,6 +27,7 @@ import {
   startApprovalEventsSubscription,
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
+import { onTurnAutocompact } from './autocompact'
 import { compactionWindow, latestCompactionAnchor } from './compaction-window'
 import {
   getTurnStatus,
@@ -1005,6 +1006,7 @@ export const realBackend: ChatBackend = {
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
+  onTurnAutocompact,
   listObservers: realListObservers,
   onObserversChanged: realOnObserversChanged,
   askStates: realAskStates,

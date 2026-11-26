@@ -126,15 +126,26 @@ export type TokensParse =
   | { ok: false; error: string }
 
 /**
- * The size typed in a token field: `400000`, `400,000`, `400k`, `1.2M`
- * (case and spaces don't matter). Outside 20k–2M, or not a size, it is
- * "Between 20k and 2M tokens".
+ * A comma read one way only, or null when it could mean two sizes:
+ * thousands groups on a bare number (`400,000`, `1,200,000`), or one
+ * decimal comma with one or two digits before a unit (`20,5k`, `1,25M`).
+ * `20,5`, `1,234k` and `400,000k` are not sizes: never scale a guess.
+ */
+function withoutCommas(text: string): string | null {
+  if (!text.includes(',')) return text
+  if (/^\d{1,3}(?:,\d{3})+$/.test(text)) return text.replace(/,/g, '')
+  const decimal = /^(\d+),(\d{1,2})([km])$/.exec(text)
+  return decimal ? `${decimal[1]}.${decimal[2]}${decimal[3]}` : null
+}
+
+/**
+ * The size typed in a token field: `400000`, `400,000`, `400k`, `1.2M`,
+ * `1,5M` (case and spaces don't matter). Outside 20k–2M, not a size, or a
+ * comma that could mean two sizes, it is "Between 20k and 2M tokens".
  */
 export function parseTokens(text: string): TokensParse {
-  const cleaned = text
-    .trim()
-    .toLowerCase()
-    .replace(/[\s,_]/g, '')
+  const cleaned = withoutCommas(text.trim().toLowerCase().replace(/[\s_]/g, ''))
+  if (cleaned === null) return { ok: false, error: TOKENS_RANGE_ERROR }
   const match = /^(\d+(?:\.\d+)?|\.\d+)([km]?)$/.exec(cleaned)
   if (!match) return { ok: false, error: TOKENS_RANGE_ERROR }
   const scale = match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1
@@ -233,7 +244,8 @@ export function resolveAutocompact(input: {
   return { tokens: globalTokens(global), rule: { scope: 'global' } }
 }
 
-type ResolvedConversation = Pick<
+/** What the resolution reads of a conversation (a side chat's parent too). */
+export type ResolvedConversation = Pick<
   Conversation,
   'id' | 'sessionMetadata' | 'projectId'
 >
@@ -245,10 +257,20 @@ export function autocompactOf(
   return parseAutocompactSetting(conversation.sessionMetadata?.autocompact)
 }
 
+/** The conversation a side chat belongs to (`metadata.side_chat_of`), or null. */
+export function sideChatParentId(
+  conversation: Pick<Conversation, 'sessionMetadata'>,
+): string | null {
+  const parentId = conversation.sessionMetadata?.[SIDE_CHAT_KEY]
+  return typeof parentId === 'string' && parentId ? parentId : null
+}
+
 /**
- * The resolution for a conversation as it is loaded here: a side chat reads
- * its conversation's metadata and project (its own frozen copy only while
- * the conversation isn't loaded).
+ * The resolution for a conversation. A side chat reads its conversation's
+ * metadata and project, from the conversations loaded here or from
+ * `parent` (read with `session::get` when it isn't loaded). Null while
+ * neither has it: the side chat's own `autocompact` is the copy frozen at
+ * the fork, never what the harness reads (D164).
  */
 export function conversationAutocompact(input: {
   conversation: Pick<Conversation, 'sessionMetadata' | 'projectId'>
@@ -256,13 +278,18 @@ export function conversationAutocompact(input: {
   global: GlobalAutocompact | null
   /** The conversations loaded here, where a side chat's parent is looked for. */
   conversations?: readonly ResolvedConversation[]
-}): AutocompactResolution {
+  /** A side chat's parent read from the engine, when it isn't loaded here. */
+  parent?: ResolvedConversation | null
+}): AutocompactResolution | null {
   let conversation: Pick<Conversation, 'sessionMetadata' | 'projectId'> =
     input.conversation
-  const parentId = conversation.sessionMetadata?.[SIDE_CHAT_KEY]
-  if (typeof parentId === 'string' && parentId) {
-    const parent = input.conversations?.find((c) => c.id === parentId)
-    if (parent) conversation = parent
+  const parentId = sideChatParentId(conversation)
+  if (parentId) {
+    const parent =
+      input.conversations?.find((c) => c.id === parentId) ??
+      (input.parent?.id === parentId ? input.parent : null)
+    if (!parent) return null
+    conversation = parent
   }
   const projectId = conversation.projectId
   const project =
@@ -323,6 +350,17 @@ export function parseSnapshotAutocompact(
     cap_tokens: tokensOrNull(record.cap_tokens),
     rule: parseRule(record.rule),
   }
+}
+
+/** What a meter marks: the effective size (null: the model's limit) and its rule. */
+export interface AutocompactMark {
+  effective: number | null
+  rule: AutocompactRule | null
+}
+
+/** The mark a running turn froze, from its snapshot (§3.2.3). */
+export function snapshotMark(snapshot: SnapshotAutocompact): AutocompactMark {
+  return { effective: snapshot.effective_tokens, rule: snapshot.rule }
 }
 
 /* ── words: the meter, the chip, the notice ─────────────────────────── */
@@ -622,10 +660,14 @@ export function inheritChoiceLabel(input: {
  * D164): "Compacts at 160k, as its conversation does." or "Compacts at the
  * model's limit, as its conversation does."
  */
-export function sideChatLine(tokens: number | null): string {
+export function sideChatLine(tokens: number | null | undefined): string {
+  if (tokens === undefined) return SIDE_CHAT_UNREAD
   const at = tokens === null ? "the model's limit" : formatTokens(tokens)
   return `Compacts at ${at}, as its conversation does.`
 }
+
+/** A side chat whose conversation can't be read here: no size, no guess. */
+export const SIDE_CHAT_UNREAD = 'Compacts as its conversation does.'
 
 /* ── the log ─────────────────────────────────────────────────────────── */
 

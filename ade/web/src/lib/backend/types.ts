@@ -409,6 +409,16 @@ export interface ChatBackend {
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
   /**
+   * Observe a session's context snapshot while a turn runs: each step's
+   * `autocompact`, the value the turn froze (chat-projects §3.2.3). The
+   * meter, its label and the header chip read it until the turn ends.
+   * Returns an unsubscribe.
+   */
+  onTurnAutocompact?(
+    sessionId: string,
+    onValue: (value: SnapshotAutocompact) => void,
+  ): () => void
+  /**
    * What the harness knows about the session's question cards
    * (`harness::ask`), by question id: `true` while one still waits on the
    * person, `false` once settled. Read from `harness::ask::list` (open or

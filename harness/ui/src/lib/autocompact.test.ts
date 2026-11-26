@@ -71,15 +71,37 @@ describe('tickRatio', () => {
   })
 })
 
-describe('words', () => {
-  it('writes sizes as the ADE does', () => {
-    expect(sizeWord(9_500)).toBe('9.5k')
-    expect(sizeWord(160_000)).toBe('160k')
-    expect(sizeWord(161_400)).toBe('161k')
-    expect(sizeWord(1_000_000)).toBe('1M')
-    expect(sizeWord(1_200_000)).toBe('1.2M')
-  })
+/*
+ * The size words, shared with the ADE's `formatTokens` (the packages can't
+ * share code). Keep this table identical to the one in
+ * ade/web/src/lib/autocompact.test.ts, so the two can't drift.
+ */
+const SIZE_WORDS: readonly [number, string][] = [
+  [Number.NaN, '0'],
+  [-5, '0'],
+  [0, '0'],
+  [999, '999'],
+  [1_000, '1k'],
+  [9_500, '9.5k'],
+  [9_999, '10k'],
+  [10_000, '10k'],
+  [34_000, '34k'],
+  [160_000, '160k'],
+  [161_400, '161k'],
+  [999_499, '999k'],
+  [999_500, '1M'],
+  [1_000_000, '1M'],
+  [1_200_000, '1.2M'],
+  [2_000_000, '2M'],
+]
 
+describe('sizeWord', () => {
+  it.each(SIZE_WORDS)('writes %d as %s, as the ADE does', (n, text) => {
+    expect(sizeWord(n)).toBe(text)
+  })
+})
+
+describe('words', () => {
   it('names the rule', () => {
     expect(ruleName({ scope: 'global' })).toBe('global rule')
     expect(ruleName(project)).toBe('acme-web rule')

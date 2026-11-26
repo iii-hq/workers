@@ -14,13 +14,13 @@ import { ConversationDetailsDialog } from './ConversationDetailsDialog'
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
 
-// No engine here: every call fails, so the seeded stores stand.
+// No engine here: every call fails, so the seeded stores stand (a test
+// answers `session::get` for a side chat's conversation).
+const mocks = vi.hoisted(() => ({
+  call: vi.fn<(fn: string, payload?: unknown) => Promise<unknown>>(),
+}))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({
-    call: async () => {
-      throw new Error('no engine in tests')
-    },
-  }),
+  getIiiClient: async () => ({ call: mocks.call }),
 }))
 
 const projects: ChatProject[] = [
@@ -122,6 +122,7 @@ async function submit() {
 }
 
 beforeEach(() => {
+  mocks.call.mockReset().mockRejectedValue(new Error('no engine in tests'))
   setChatCapabilitiesForTests({ autocompact: true, chatSettings: true })
   seedChatSettingsForTests({
     descriptions: { agent_writes: true },
@@ -241,12 +242,22 @@ describe('Conversation details: Auto-compact (§3.3.4)', () => {
   })
 
   it("a side chat whose conversation is at the model's limit says so", () => {
+    const parent: Conversation = {
+      id: 'root',
+      title: 'Root',
+      model: null,
+      messages: [],
+      createdAt: 0,
+      updatedAt: 0,
+      sessionMetadata: {},
+    }
     render({
       conversation: {
         ...base,
         projectId: undefined,
-        sessionMetadata: { side_chat_of: 'gone' },
+        sessionMetadata: { side_chat_of: 'root' },
       },
+      conversations: [parent],
       sideChat: true,
     })
     // The global turned off on another device: the line follows it live.
@@ -258,6 +269,70 @@ describe('Conversation details: Auto-compact (§3.3.4)', () => {
     )
     expect(row()?.querySelector('[data-autocompact-locked]')?.textContent).toBe(
       "Compacts at the model's limit, as its conversation does.",
+    )
+  })
+
+  it("reads a side chat's conversation from the engine when it isn't loaded", async () => {
+    mocks.call.mockImplementation(async (fn, payload) => {
+      if (
+        fn === 'session::get' &&
+        (payload as { session_id?: string }).session_id === 'root'
+      ) {
+        return {
+          meta: {
+            session_id: 'root',
+            metadata: {
+              project_id: 'prj_api',
+              autocompact: { mode: 'tokens', tokens: 600_000 },
+            },
+          },
+        }
+      }
+      throw new Error('no engine in tests')
+    })
+    render({
+      conversation: {
+        ...base,
+        // The copy frozen at the fork: never what the line says.
+        sessionMetadata: {
+          side_chat_of: 'root',
+          autocompact: { mode: 'off' },
+        },
+      },
+      conversations: [],
+    })
+    const line = () =>
+      row()?.querySelector('[data-autocompact-locked]')?.textContent
+    await settle(() => line() !== 'Compacts as its conversation does.')
+    expect(line()).toBe('Compacts at 600k, as its conversation does.')
+    expect(mocks.call).toHaveBeenCalledWith(
+      'session::get',
+      { session_id: 'root' },
+      expect.anything(),
+    )
+  })
+
+  it("says no size when a side chat's conversation can't be read", async () => {
+    render({
+      conversation: {
+        ...base,
+        sessionMetadata: {
+          side_chat_of: 'gone',
+          autocompact: { mode: 'tokens', tokens: 600_000 },
+        },
+      },
+      conversations: [],
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(mocks.call).toHaveBeenCalledWith(
+      'session::get',
+      { session_id: 'gone' },
+      expect.anything(),
+    )
+    expect(row()?.querySelector('[data-autocompact-locked]')?.textContent).toBe(
+      'Compacts as its conversation does.',
     )
   })
 

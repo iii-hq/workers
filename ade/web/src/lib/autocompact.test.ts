@@ -69,6 +69,14 @@ describe('parseTokens', () => {
     ['2M', 2_000_000],
     ['20k', 20_000],
     ['.5m', 500_000],
+    // Thousands groups on a bare number.
+    ['1,200,000', 1_200_000],
+    ['20,000', 20_000],
+    // One decimal comma, one or two digits, then a unit.
+    ['20,5k', 20_500],
+    ['1,5M', 1_500_000],
+    ['1,25m', 1_250_000],
+    [' 1,5 M ', 1_500_000],
   ])('reads %s as %d', (text, tokens) => {
     expect(parseTokens(text)).toEqual({ ok: true, tokens })
   })
@@ -83,24 +91,58 @@ describe('parseTokens', () => {
     },
   )
 
+  // A comma that could mean two sizes is refused, never scaled: `20,5` is
+  // 20.5 or 205, `1,234k` 1.234k or 1,234k, `400,000k` 400k or 400M.
+  it.each([
+    '20,5',
+    '1,234k',
+    '400,000k',
+    '1,200k',
+    '4,00,000',
+    '1,2,3k',
+    ',5k',
+    '20,k',
+    '1,5,0M',
+    '400,00',
+    '1.200,5k',
+  ])('refuses the ambiguous comma in %j', (text) => {
+    expect(parseTokens(text)).toEqual({
+      ok: false,
+      error: TOKENS_RANGE_ERROR,
+    })
+  })
+
   it('says the range in the harness words', () => {
     expect(TOKENS_RANGE_ERROR).toBe('Between 20k and 2M tokens')
   })
 })
 
+/*
+ * The size words, shared with harness/ui's `sizeWord` (the packages can't
+ * share code). Keep this table identical to the one in
+ * harness/ui/src/lib/autocompact.test.ts, so the two can't drift.
+ */
+const SIZE_WORDS: readonly [number, string][] = [
+  [Number.NaN, '0'],
+  [-5, '0'],
+  [0, '0'],
+  [999, '999'],
+  [1_000, '1k'],
+  [9_500, '9.5k'],
+  [9_999, '10k'],
+  [10_000, '10k'],
+  [34_000, '34k'],
+  [160_000, '160k'],
+  [161_400, '161k'],
+  [999_499, '999k'],
+  [999_500, '1M'],
+  [1_000_000, '1M'],
+  [1_200_000, '1.2M'],
+  [2_000_000, '2M'],
+]
+
 describe('formatTokens', () => {
-  it.each([
-    [9_500, '9.5k'],
-    [1_000, '1k'],
-    [34_000, '34k'],
-    [160_000, '160k'],
-    [161_400, '161k'],
-    [999_499, '999k'],
-    [999_500, '1M'],
-    [1_000_000, '1M'],
-    [1_200_000, '1.2M'],
-    [0, '0'],
-  ])('writes %d as %s', (n, text) => {
+  it.each(SIZE_WORDS)('writes %d as %s', (n, text) => {
     expect(formatTokens(n)).toBe(text)
   })
 })
@@ -200,7 +242,7 @@ describe('resolveAutocompact: conversation, then project, then global', () => {
         conversation: c,
         projects: [ACME, BILLING],
         global: GLOBAL_400K,
-      }).tokens,
+      })?.tokens,
     ).toBe(160_000)
     expect(autocompactOf(c)).toEqual(INHERIT)
   })
@@ -226,10 +268,46 @@ describe('resolveAutocompact: conversation, then project, then global', () => {
     expect(resolved).toEqual({ tokens: 600_000, rule: { scope: 'session' } })
   })
 
-  it('a side chat whose conversation is not loaded reads its own copy', () => {
+  it('a side chat whose conversation is not loaded reads the one read from the engine', () => {
     const side = conv('side', {
       projectId: 'p-acme',
-      sessionMetadata: { side_chat_of: 'gone' },
+      sessionMetadata: {
+        side_chat_of: 'parent',
+        autocompact: { mode: 'off' },
+      },
+    })
+    const parent = conv('parent', {
+      projectId: 'p-billing',
+      sessionMetadata: { autocompact: { mode: 'inherit' } },
+    })
+    expect(
+      conversationAutocompact({
+        conversation: side,
+        projects: [
+          ACME,
+          { ...BILLING, autocompact: { mode: 'tokens', tokens: 200_000 } },
+        ],
+        global: GLOBAL_400K,
+        conversations: [],
+        parent,
+      }),
+    ).toEqual({
+      tokens: 200_000,
+      rule: {
+        scope: 'project',
+        project_id: 'p-billing',
+        project_name: 'billing-api',
+      },
+    })
+  })
+
+  it('a side chat whose conversation is not read has no value, never its frozen copy', () => {
+    const side = conv('side', {
+      projectId: 'p-acme',
+      sessionMetadata: {
+        side_chat_of: 'gone',
+        autocompact: { mode: 'tokens', tokens: 600_000 },
+      },
     })
     expect(
       conversationAutocompact({
@@ -237,8 +315,17 @@ describe('resolveAutocompact: conversation, then project, then global', () => {
         projects: [ACME],
         global: GLOBAL_400K,
         conversations: [],
-      }).tokens,
-    ).toBe(160_000)
+      }),
+    ).toBeNull()
+    // Another conversation's read is not this one's.
+    expect(
+      conversationAutocompact({
+        conversation: side,
+        projects: [ACME],
+        global: GLOBAL_400K,
+        parent: conv('other'),
+      }),
+    ).toBeNull()
   })
 })
 
@@ -483,5 +570,7 @@ describe('the project dialog and Details words (§3.3.2, §3.3.4)', () => {
     expect(sideChatLine(null)).toBe(
       "Compacts at the model's limit, as its conversation does.",
     )
+    // Its conversation can't be read here: no size, no guess.
+    expect(sideChatLine(undefined)).toBe('Compacts as its conversation does.')
   })
 })

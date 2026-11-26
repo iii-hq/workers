@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { seedChatSettingsForTests } from '@/hooks/use-chat-settings'
+import type { SnapshotAutocompact } from '@/lib/autocompact'
 import type { ChatBackend } from '@/lib/backend'
 import type { ContextUsageReport } from '@/lib/backend/types'
 import { setChatCapabilitiesForTests } from '@/lib/chat-capabilities'
@@ -95,6 +96,8 @@ beforeEach(() => {
     autocompact: { mode: 'tokens', tokens: 400_000 },
   })
   mocks.conversations = []
+  turnObservers = []
+  backend = null
   // No engine: the seeded settings stand.
   mocks.call.mockReset().mockRejectedValue(new Error('no engine in tests'))
   host = document.createElement('div')
@@ -111,25 +114,46 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/** The turn snapshot observers ChatView opened (`onTurnAutocompact`). */
+let turnObservers: {
+  sessionId: string
+  onValue: (value: SnapshotAutocompact) => void
+  closed: boolean
+}[] = []
+const onTurnAutocompact = (
+  sessionId: string,
+  onValue: (value: SnapshotAutocompact) => void,
+) => {
+  const observer = { sessionId, onValue, closed: false }
+  turnObservers.push(observer)
+  return () => {
+    observer.closed = true
+  }
+}
+const backendFor = (report: ContextUsageReport) =>
+  ({
+    id: 'real',
+    stream: vi.fn(),
+    contextUsage: async () => report,
+    onTurnAutocompact,
+  }) as unknown as ChatBackend
+let backend: ChatBackend | null = null
+
 async function open(
   conversation: Conversation,
   report: ContextUsageReport,
   props: Partial<ComponentProps<typeof ChatView>> = {},
 ) {
   const noop = vi.fn()
+  backend ??= backendFor(report)
+  const shared = backend
   await act(async () => {
     root.render(
       <TooltipProvider>
         <ChatView
           key={conversation.id}
           conversation={conversation}
-          backend={
-            {
-              id: 'real',
-              stream: vi.fn(),
-              contextUsage: async () => report,
-            } as unknown as ChatBackend
-          }
+          backend={shared}
           modelOptions={[
             {
               id: 'anthropic::claude-sonnet-5-5',
@@ -209,4 +233,96 @@ it('has no chip on a harness without auto-compact (D168)', async () => {
   setChatCapabilitiesForTests({ autocompact: false, chatSettings: true })
   await open(chat, ONE_MILLION)
   expect(chip()).toBeNull()
+})
+
+/* While a turn runs, the tick, the label and the chip read the value the
+   turn froze, as the harness and the injected chip do; between turns, the
+   shared resolution (§3.3.3, D164). */
+it("reads the running turn's snapshot, and the resolution once it ends", async () => {
+  await open(chat, ONE_MILLION)
+  expect(chip()?.textContent).toBe('Auto-compact 400k')
+  expect(turnObservers).toEqual([])
+  // A turn starts: it keeps what it started with until a step writes.
+  await open({ ...chat, status: 'working' }, ONE_MILLION)
+  expect(chip()?.textContent).toBe('Auto-compact 400k')
+  expect(turnObservers.map((o) => o.sessionId)).toEqual(['c-auto'])
+  await act(async () =>
+    turnObservers[0]?.onValue({
+      setting_tokens: 600_000,
+      effective_tokens: 600_000,
+      cap_tokens: 660_000,
+      rule: { scope: 'session' },
+    }),
+  )
+  expect(chip()?.textContent).toBe('Auto-compact 600k')
+  expect(host.querySelector('[data-autocompact-label]')?.textContent).toContain(
+    'auto 600k',
+  )
+  // A change made during the turn waits for its end.
+  await act(async () =>
+    seedChatSettingsForTests({
+      descriptions: { agent_writes: true },
+      autocompact: { mode: 'tokens', tokens: 200_000 },
+    }),
+  )
+  expect(chip()?.textContent).toBe('Auto-compact 600k')
+  // The turn ends: the shared resolution, with the change.
+  await open({ ...chat, status: 'done' }, ONE_MILLION)
+  expect(turnObservers[0]?.closed).toBe(true)
+  expect(chip()?.textContent).toBe('Auto-compact 200k')
+})
+
+// Opened as a chat of its own (not beside its conversation), a side chat
+// has the header: the chip and the meter follow its conversation.
+describe("a side chat whose conversation isn't loaded here", () => {
+  const side: Conversation = {
+    ...chat,
+    id: 'c-side',
+    // The copy frozen at the fork: never what the meter shows.
+    sessionMetadata: {
+      side_chat_of: 'c-root',
+      autocompact: { mode: 'tokens', tokens: 100_000 },
+    },
+  }
+  const label = () =>
+    host.querySelector('[data-autocompact-label]')?.textContent ?? null
+
+  it('reads it from the engine', async () => {
+    mocks.call.mockImplementation(async (fn: string, payload: unknown) => {
+      if (
+        fn === 'session::get' &&
+        (payload as { session_id?: string }).session_id === 'c-root'
+      ) {
+        return {
+          meta: {
+            session_id: 'c-root',
+            metadata: { autocompact: { mode: 'tokens', tokens: 600_000 } },
+          },
+        }
+      }
+      throw new Error('no engine in tests')
+    })
+    await open(side, ONE_MILLION)
+    await act(async () => {
+      for (let i = 0; i < 20 && label() === null; i++)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(label()).toContain('auto 600k')
+    expect(chip()?.textContent).toBe('Auto-compact 600k')
+  })
+
+  it("shows no value when it can't be read", async () => {
+    await open(side, ONE_MILLION)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(mocks.call).toHaveBeenCalledWith(
+      'session::get',
+      { session_id: 'c-root' },
+      expect.anything(),
+    )
+    expect(label()).toBeNull()
+    expect(chip()).toBeNull()
+    expect(host.querySelector('[data-ring-tick]')).toBeNull()
+  })
 })

@@ -175,7 +175,7 @@ export function ProjectDialog({
   const [autocompactText, setAutocompactText] = useState(
     formatTokens(AUTOCOMPACT_START),
   )
-  const autocompactRef = useRef<HTMLElement>(null)
+  const autocompactRef = useRef<HTMLInputElement>(null)
   const autocompactFieldRef = useRef<HTMLInputElement>(null)
   const autocompactSectionRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
@@ -563,7 +563,7 @@ export function ProjectDialog({
                 }}
                 global={chatSettings.autocompact}
                 error={errors.autocompact}
-                firstRef={autocompactRef}
+                choiceRef={autocompactRef}
                 fieldRef={autocompactFieldRef}
               />
             </div>

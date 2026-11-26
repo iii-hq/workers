@@ -7,6 +7,7 @@ import {
   listAutocompactModels,
   parseAutocompactLog,
   parseAutocompactModels,
+  startTurnAutocompactSubscription,
 } from './autocompact'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
@@ -119,5 +120,93 @@ describe('harness::autocompact::log', () => {
     ])
     expect(parseAutocompactLog({ log: [] })).toEqual([])
     expect(parseAutocompactLog(undefined)).toEqual([])
+  })
+})
+
+describe("a running turn's snapshot", () => {
+  function fakeObserver() {
+    const handlers = new Map<string, (payload: unknown) => void>()
+    const offHandler = vi.fn()
+    const offObserver = vi.fn()
+    const client = {
+      browserId: 'b1',
+      on: vi.fn((fn: string, handler: (payload: unknown) => void) => {
+        handlers.set(fn, handler)
+        return offHandler
+      }),
+      observe: vi.fn(() => offObserver),
+    }
+    const fire = (payload: unknown) =>
+      handlers.get('iii::console::context_snapshot')?.(payload)
+    return { client, fire, offHandler, offObserver }
+  }
+
+  const SNAPSHOT = {
+    session_id: 's1',
+    total: 142_000,
+    usable: 916_000,
+    autocompact: {
+      setting_tokens: 160_000,
+      effective_tokens: 160_000,
+      cap_tokens: 180_000,
+      rule: { scope: 'project', project_id: 'p1', project_name: 'acme-web' },
+    },
+  }
+
+  it("observes the session's harness_context key, internally", () => {
+    const { client } = fakeObserver()
+    startTurnAutocompactSubscription(client as never, 's1', vi.fn())
+    expect(client.observe).toHaveBeenCalledWith(
+      {
+        function_id: 'state::on-changed',
+        filters: {
+          'input.scope': { $eq: 'harness_context' },
+          'input.key': { $eq: 's1' },
+        },
+      },
+      'iii::console::context_snapshot::b1',
+    )
+  })
+
+  it("hands over each step's auto-compact", () => {
+    const { client, fire } = fakeObserver()
+    const onValue = vi.fn()
+    startTurnAutocompactSubscription(client as never, 's1', onValue)
+    fire({ key: 's1', event_type: 'state:updated', new_value: SNAPSHOT })
+    expect(onValue).toHaveBeenCalledWith({
+      setting_tokens: 160_000,
+      effective_tokens: 160_000,
+      cap_tokens: 180_000,
+      rule: { scope: 'project', project_id: 'p1', project_name: 'acme-web' },
+    })
+  })
+
+  it("skips another session's write, a delete and an older harness's snapshot", () => {
+    const { client, fire } = fakeObserver()
+    const onValue = vi.fn()
+    startTurnAutocompactSubscription(client as never, 's1', onValue)
+    // The handler id is shared: another chat's observer delivers here too.
+    fire({ key: 's2', event_type: 'state:updated', new_value: SNAPSHOT })
+    fire({
+      key: 's1',
+      event_type: 'state:updated',
+      new_value: { ...SNAPSHOT, session_id: 's2' },
+    })
+    fire({ key: 's1', event_type: 'state:deleted', new_value: null })
+    fire({
+      key: 's1',
+      event_type: 'state:updated',
+      new_value: { ...SNAPSHOT, autocompact: undefined },
+    })
+    fire(null)
+    expect(onValue).not.toHaveBeenCalled()
+  })
+
+  it('closes the handler and the observer', () => {
+    const { client, offHandler, offObserver } = fakeObserver()
+    const off = startTurnAutocompactSubscription(client as never, 's1', vi.fn())
+    off()
+    expect(offHandler).toHaveBeenCalledOnce()
+    expect(offObserver).toHaveBeenCalledOnce()
   })
 })

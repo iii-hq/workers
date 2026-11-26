@@ -130,7 +130,7 @@ describe('New project / Edit project (§1.3.2)', () => {
     // Roots only: the subagent is not counted.
     expect(text).toContain('3 conversations')
     expect(text).toContain('Add folder…')
-    expect(button('Create project')).toBeDefined()
+    expect(button('Create project')).toBeInstanceOf(HTMLButtonElement)
     const swatches = [...dialog().querySelectorAll('[role="radio"]')].map((s) =>
       s.getAttribute('aria-label'),
     )
@@ -343,10 +343,11 @@ describe("the project's Auto-compact (§3.3.2)", () => {
     dialog().querySelector(
       `[data-autocompact-preset="${tokens}"]`,
     ) as HTMLButtonElement
-  const checked = () =>
-    [...(section()?.querySelectorAll('[role="radio"]') ?? [])].findIndex(
-      (r) => r.getAttribute('aria-checked') === 'true',
-    )
+  const radios = () => [
+    ...(section()?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ??
+      []),
+  ]
+  const checked = () => radios().findIndex((r) => r.checked)
 
   function typeTokens(value: string) {
     const setter = Object.getOwnPropertyDescriptor(
@@ -401,6 +402,27 @@ describe("the project's Auto-compact (§3.3.2)", () => {
     ).toEqual(['100k', '160k', '200k', '400k', '800k'])
     // A new project follows the global.
     expect(checked()).toBe(0)
+  })
+
+  it('is one clean group of three radios, the field and the sizes beside it', () => {
+    withPhase3()
+    render()
+    // A fieldset named by its legend; the radios share one name.
+    expect(section()?.tagName).toBe('FIELDSET')
+    expect(section()?.querySelector('legend')?.textContent).toBe('Auto-compact')
+    expect(radios().map((r) => r.value)).toEqual(['inherit', 'tokens', 'off'])
+    expect(new Set(radios().map((r) => r.name)).size).toBe(1)
+    expect(radios().map((r) => r.labels?.[0]?.textContent)).toEqual([
+      'Use the global setting',
+      'Compact at',
+      "Only at the model's limit",
+    ])
+    // No radio group owns anything but radios: the field and the presets
+    // sit beside the radios, not inside a group of them.
+    expect(section()?.querySelector('[role="radiogroup"]')).toBeNull()
+    expect(section()?.closest('[role="radiogroup"]')).toBeNull()
+    expect(field().closest('[role="radiogroup"]')).toBeNull()
+    expect(preset(160_000).closest('[role="radiogroup"]')).toBeNull()
   })
 
   it('creates with a preset size', async () => {
@@ -518,9 +540,12 @@ describe("the project's Auto-compact (§3.3.2)", () => {
     )
   })
 
-  it('opens on the section with its first choice focused', async () => {
+  it('opens on the section with its checked choice focused', async () => {
     withPhase3()
-    render({ project: billing, initialSection: 'autocompact' })
+    render({
+      project: { ...billing, autocompact: { mode: 'off' } },
+      initialSection: 'autocompact',
+    })
     await act(async () => {
       for (
         let i = 0;
@@ -529,6 +554,6 @@ describe("the project's Auto-compact (§3.3.2)", () => {
       )
         await new Promise((resolve) => requestAnimationFrame(resolve))
     })
-    expect(section()?.contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).toBe(radios()[2])
   })
 })

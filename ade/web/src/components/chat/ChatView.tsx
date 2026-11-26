@@ -43,6 +43,8 @@ import {
   useMediaQuery,
   WIDE_HEADER_QUERY,
 } from '@/hooks/use-media-query'
+import { useSideChatParent } from '@/hooks/use-side-chat-parent'
+import { useTurnAutocompact } from '@/hooks/use-turn-autocompact'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import { expandAttachments } from '@/lib/attachments'
@@ -1542,23 +1544,42 @@ export function ChatView({
     contextReport?.id === conversation.id ? contextReport.report : undefined
   /* Auto-compact (chat-projects phase 3, D164): the setting chain as the
    * engine resolves it (conversation, project, global; a side chat follows
-   * its conversation), measured on the last reported `usable`. The meter's
-   * tick, its line and the header chip read this one value between turns. */
-  const autocompact = chatCaps.autocompact
+   * its conversation, read from the engine when it isn't loaded here),
+   * measured on the last reported `usable`. The meter's tick, its line and
+   * the header chip read this one value between turns; while a turn runs
+   * they read the value the turn froze, as the harness does. */
+  const sideChatParent = useSideChatParent({
+    conversation,
+    conversations: listedConversations,
+    enabled: chatCaps.autocompact,
+  })
+  const resolvedAutocompact = chatCaps.autocompact
     ? conversationAutocompact({
         conversation,
         projects: chatProjects.projects,
         global: chatSettings.autocompact,
         conversations: listedConversations,
+        parent: sideChatParent,
       })
     : null
-  const autocompactEffective = autocompact
-    ? effectiveTokens(autocompact.tokens, reportedContext?.usable)
-    : null
+  const autocompact = useTurnAutocompact({
+    sessionId: conversation.id,
+    running: chatCaps.autocompact && streamingIndicator && !conversation.draft,
+    between: resolvedAutocompact
+      ? {
+          effective: effectiveTokens(
+            resolvedAutocompact.tokens,
+            reportedContext?.usable,
+          ),
+          rule: resolvedAutocompact.rule,
+        }
+      : null,
+    observe: backend.onTurnAutocompact,
+  })
   // The chip is for wide surfaces only (D138), like the account chip.
   const chipAutocompact =
-    !side && wideHeader && autocompactEffective !== null
-      ? autocompactEffective
+    !side && wideHeader && autocompact?.effective != null
+      ? autocompact.effective
       : null
 
   /* Injected turn summaries live beside the composer rather than in the
@@ -3767,14 +3788,7 @@ export function ChatView({
                       messages={conversation.messages}
                       contextWindow={contextWindow}
                       reported={reportedContext}
-                      autocompact={
-                        autocompact
-                          ? {
-                              effective: autocompactEffective,
-                              rule: autocompact.rule,
-                            }
-                          : undefined
-                      }
+                      autocompact={autocompact ?? undefined}
                     />
                   )}
                 </div>
