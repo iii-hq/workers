@@ -20,10 +20,11 @@ const rows = [
     id,
     claude_session_id: id,
     name,
+    external_only: i !== 1 && i !== 3,
     kind: i === 2 ? 'background' : 'interactive',
     alive: i !== 4,
     status: i === 2 ? 'busy' : i === 4 ? 'done' : 'idle',
-    cwd: '/fixture/workspace',
+    cwd: i === 0 ? '/fixture/external-only' : '/fixture/workspace',
     ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
     ...(i === 3 ? { pty_session_id: 'fixture-other-console' } : {}),
     ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
@@ -42,8 +43,7 @@ const watches = new Set<{
 }>();
 const configId = 'fixture-claude';
 let allowed = true;
-let finishedPty: { id: string; confirmed: boolean } | undefined;
-let mismatchedDescribe = false;
+let sourceAvailable = true;
 let backgroundFinished = false;
 const currentRow = (row: (typeof rows)[number]) =>
   row === rows[2] && backgroundFinished ? { ...row, alive: false, status: 'done' } : row;
@@ -66,6 +66,12 @@ let activeReplies = [{ offset, reply: lastReply }];
 let delayAdmission = false;
 let afterLookup: (() => void) | undefined;
 let holdNextLookup: Promise<void> | undefined;
+let releaseHeldLookup: (() => void) | undefined;
+const replyWatchCount = () => {
+  document.documentElement.dataset.replyWatches = String(
+    [...watches].filter((watch) => watch.source.function_id === 'claude::agents::on-reply').length,
+  );
+};
 const host = {
   iii: {
     browserId: 'fixture',
@@ -78,6 +84,7 @@ const host = {
       let removed = false;
       const admit = () => {
         if (!removed) watches.add(w);
+        replyWatchCount();
       };
       if (delayAdmission && w.source.function_id === 'claude::agents::on-reply')
         afterLookup = admit;
@@ -85,6 +92,7 @@ const host = {
       return () => {
         removed = true;
         watches.delete(w);
+        replyWatchCount();
       };
     },
     addConnectionStateListener: () => () => {},
@@ -100,19 +108,26 @@ const host = {
     ) {
       if (fn === 'claude::agents::list') {
         return {
-          agents: allowed ? rows.map(currentRow) : [rows[1]],
+          agents: allowed ? rows.map(currentRow) : rows.filter((entry) => !entry.external_only),
           ...(p.include_config_id ? { config_id: configId } : {}),
         };
       }
       const listed = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
       const row = listed && currentRow(listed);
-      if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
-        throw new Error('Session unavailable');
-      if (fn === 'claude::agents::get' || fn === 'claude::agents::follow-snapshot') {
+      if (!row || !allowed) throw new Error('Session unavailable');
+      if (fn === 'claude::agents::follow-snapshot') {
         const hold = holdNextLookup;
         holdNextLookup = undefined;
         if (hold) await hold;
-        if (!allowed) throw new Error('Session unavailable');
+        if (!allowed || !sourceAvailable) throw new Error('Session unavailable');
+        if (row.id !== rows[0].id) {
+          return {
+            ...row,
+            last_reply: { id: row.id, text: `Synthetic reply for ${row.name}.` },
+            cursor: '1',
+            replies: [],
+          };
+        }
         return {
           ...row,
           last_reply: lastReply,
@@ -125,31 +140,15 @@ const host = {
                   .map((entry) => entry.reply),
         };
       }
-      if (fn === 'claude::terminal::describe') {
+      if (fn === 'claude::terminal::describe' && p.mode === 'fork') {
         if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
-        if (p.mode === 'original' && row.pty_session_id)
-          return {
-            pty_session_id: row.pty_session_id,
-            claude_session_id: mismatchedDescribe ? rows[3].id : row.id,
-          };
-        if (p.mode === 'original' && row.alive && !row.short_id)
-          return { follow: true, claude_session_id: row.id };
-        if (p.mode === 'original' && row.id === rows[4].id && finishedPty) {
-          if (!finishedPty.confirmed)
-            throw new Error('Could not verify which conversation a console terminal is running');
-          return { pty_session_id: finishedPty.id, claude_session_id: row.id };
-        }
-        const args =
-          row.alive && row.short_id && p.mode !== 'fork'
-            ? ['attach', row.short_id]
-            : ['--resume', row.id, ...(p.mode === 'fork' ? ['--fork-session'] : [])];
         return {
           claude_session_id: row.id,
           program: 'mock-claude',
           cwd: '/fixture',
           env: {},
-          args,
-          copy: args.includes('--fork-session'),
+          args: ['--resume', row.id, '--fork-session'],
+          copy: true,
         };
       }
       throw new Error(`Unexpected synthetic call: ${fn}`);
@@ -184,54 +183,24 @@ function Preview() {
   const [narrow, setNarrow] = useState(false);
   const [count, setCount] = useState(0);
   const nextPtyId = useRef(0);
-  const firstPtys = useRef(new Map<string, string>());
-  const [reopened, setReopened] = useState<{ text: string; reused: boolean } | null>(null);
-  const [leases] = useState(() => new Map<string, typeof screen>());
   const [openCalls, setOpenCalls] = useState(0);
   const terminal: AgentTerminalApi = {
     current: screen.pty || null,
     currentKey: screen.key || null,
-    has: (key) => leases.has(key),
+    has: () => false,
     claim: () => {},
     async open({ key, pty, spec }) {
       setOpenCalls((n) => n + 1);
-      if (pty === 'fixture-other-console')
-        throw new Error('It is open in another console tab or window.');
-      const held = pty ? [...leases.values()].find((lease) => lease.pty === pty) : leases.get(key);
-      const args = spec?.args ?? [];
-      const text =
-        pty === 'fixture-console'
-          ? 'Original console PTY'
-          : (held?.text ??
-            (args.includes('--fork-session')
-              ? 'Separate fork terminal'
-              : args[0] === 'attach' && args[1] === rows[2].short_id
-                ? 'Original background terminal'
-                : args[0] === '--resume' && args[1] === rows[4].id
-                  ? 'Finished original at workspace trust'
-                  : args[0] === '--resume' && args[1] === rows[2].id
-                    ? 'Finished background original'
-                    : null));
-      if (!text) {
-        if (!pty && !spec) return false;
-        throw new Error('No matching fixture terminal');
-      }
-      if (!pty && !held) setCount((n) => n + 1);
-      const next = { key, pty: pty ?? held?.pty ?? `fixture-${++nextPtyId.current}`, text };
-      if (!held && text === 'Finished original at workspace trust')
-        finishedPty = { id: next.pty, confirmed: false };
-      if (
-        text === 'Original background terminal' ||
-        text === 'Finished original at workspace trust'
-      ) {
-        const firstPty = firstPtys.current.get(text);
-        if (firstPty) setReopened({ text, reused: next.pty === firstPty });
-        else firstPtys.current.set(text, next.pty);
-      } else {
-        setReopened(null);
-      }
-      leases.set(key, next);
-      setScreen(next);
+      const args = spec?.args;
+      if (pty || args?.at(-3) !== '--resume' || args.at(-1) !== '--fork-session')
+        throw new Error('The fixture only supports an explicit fork');
+      const copy = ++nextPtyId.current;
+      setCount(copy);
+      setScreen({
+        pty: `fixture-fork-${copy}`,
+        key,
+        text: `Separate fork terminal · copy-${copy}`,
+      });
       return true;
     },
   };
@@ -287,6 +256,17 @@ function Preview() {
       afterLookup?.();
     }
     if (e.code === 'KeyB') scenario('burst');
+    if (e.code === 'KeyL') {
+      sourceAvailable = false;
+      deliver();
+    }
+    if (e.code === 'KeyT') {
+      holdNextLookup = new Promise<void>((resolve) => {
+        releaseHeldLookup = resolve;
+      });
+      deliver();
+    }
+    if (e.code === 'KeyY') releaseHeldLookup?.();
   };
   return (
     <TooltipProvider>
@@ -332,34 +312,6 @@ function Preview() {
             <button
               type="button"
               onClick={() => {
-                if (finishedPty && finishedPty.id !== screen.pty) {
-                  const id = finishedPty.id;
-                  for (const [key, lease] of leases) if (lease.pty === id) leases.delete(key);
-                  finishedPty = undefined;
-                }
-              }}
-            >
-              Expire detached finished PTY
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (finishedPty) finishedPty.confirmed = true;
-              }}
-            >
-              Confirm finished PTY identity
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                mismatchedDescribe = true;
-              }}
-            >
-              Return mismatched terminal identity
-            </button>
-            <button
-              type="button"
-              onClick={() => {
                 delayAdmission = true;
               }}
             >
@@ -400,15 +352,6 @@ function Preview() {
               <p>{screen.text}</p>
               <p className="text-sm">Terminal open calls: {openCalls}</p>
               <p className="text-sm">Terminals created: {count}</p>
-              {reopened?.text === screen.text ? (
-                <p className="text-sm">
-                  {screen.text === 'Original background terminal'
-                    ? 'Background attachment'
-                    : 'Finished resume'}
-                  {' on reopen: '}
-                  {reopened.reused ? 'reused' : 'replaced'}
-                </p>
-              ) : null}
             </main>
           </div>
         </div>

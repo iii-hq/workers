@@ -619,9 +619,11 @@ describe('authorization', () => {
       await captured.promise;
       s.host.config = async () => null;
       await s.configEvent(event);
-      expect((await s.list()).agents).toHaveLength(1);
+      expect(s.externalSetting).toBe(true);
+      expect((await s.list()).agents).toEqual([]);
       response.resolve({ external_sessions: false });
       await update;
+      expect(s.externalSetting).toBe(false);
       expect((await s.list()).agents).toEqual([]);
       await expect(lookup(s)).rejects.toThrow('reply access disabled');
     });

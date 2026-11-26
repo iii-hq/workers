@@ -205,7 +205,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   const permission = new ReplyPermission();
   const refresh = () => permission.refresh(iii);
   let external = true;
-  // An enabled seed for ordinary inventory never authorizes the reply surface.
+  // An enabled legacy setting never authorizes live inventory or reply disclosure.
   const agents = registerAgents(
     iii,
     () => ({
@@ -217,6 +217,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
     }),
     () => external,
     { has: () => false },
+    () => permission.epoch,
   );
   const register = () =>
     registerExternalReplies(iii, permission, agents.replyRow, (f) => {
@@ -254,6 +255,9 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
     host,
     client,
     refresh,
+    get externalSetting() {
+      return external;
+    },
     list: () =>
       backend.call({
         function_id: 'claude::agents::list',

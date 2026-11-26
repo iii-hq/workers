@@ -213,8 +213,8 @@ export function SessionDetail({
       <DialogContent showCloseButton={false} initialFocus={close} finalFocus={opener}>
         <DialogTitle>Follow original</DialogTitle>
         <DialogDescription>
-          Read only. This session has no terminal you can attach to here. Use its original terminal
-          to send input.
+          Read only. ADE can’t verify that terminal input and output stay with this conversation.
+          Use its original terminal to continue.
         </DialogDescription>
         {available && configId ? (
           <Follow key={configId} iii={iii} id={id} configId={configId} />
@@ -222,7 +222,7 @@ export function SessionDetail({
           <StatusPanel
             role="alert"
             variant="warn"
-            headline="Session unavailable"
+            headline="Replies unavailable"
             detail="Close this view and refresh the session list."
           />
         )}

@@ -269,8 +269,8 @@ reads as `unknown`, and a failed or unreadable listing leaves only the
 headless rows, with the reason in `detail`. By default a host session is
 listed only when this worker saw it (its hooks reached
 `claude::terminal::activity`) or it runs in a console terminal; the others are
-counted in `detail`. Set `external_sessions: true` to list every session on
-that host.
+counted in `detail`. A confirmed live `external_sessions: true` setting is
+required to list external-only sessions; a startup setting alone is not enough.
 
 `claude::agents::stop` (`{ id }`, the Claude Code session id) stops one
 background session by the short id a fresh listing gives it. It refuses, with a
@@ -285,9 +285,20 @@ and `claude_turns` in state), when a hooked terminal reports a session start, a
 prompt, a stop or an end, when the terminal beside it changes session, when the
 window gains focus, and on its refresh button.
 
-Select a row to open the **original**. ADE reopens an identified console terminal, or uses native `claude attach` for a live background session with a verified short ID. A finished run can resume in its recorded directory once fresh inventory rules out another writer. A saved terminal is not proof of its current conversation. If a Claude terminal is not yet identified (for example, while it is waiting for workspace trust), return to that terminal directly or wait for it to appear in the session list before trying again. When a live host session has no attachable terminal, ADE can follow its latest assistant reply **read only**, with `external_sessions` enabled. No input is sent; use the original terminal to continue the conversation. Close the viewer to stop following. ADE uses `claude::agents::on-reply` as a wakeup and refreshes from the active branch before showing text. A bounded snapshot also catches replies completed after the first view but before the observer starts. This is not a transcript archive or a durable feed. If access or the source is lost, the viewer hides the reply.
+Select **Open original** to follow the conversation’s status and latest assistant
+replies **read only**, when live `external_sessions` permission and a readable
+host transcript are available. A terminal key, process ID, or fresh inventory
+match cannot guarantee that terminal input and output stay with that
+conversation. ADE does not acquire a terminal, resume the session, or create a
+copy. Use the original terminal to continue the conversation.
 
-Choose **Fork** and confirm **Create fork** to start a separate conversation from the selected conversation’s history (`--fork-session`). Canceling opens nothing. Opening the original never selects that copy. An unavailable inventory or failed attach is not an invitation to resume or fork.
+Close the viewer to stop following. ADE uses `claude::agents::on-reply` as a
+wakeup and reads the active branch before showing text. A bounded snapshot also
+catches replies completed after the first view but before the observer starts.
+This is not a transcript archive or a durable feed. If access or the source is
+lost, the viewer clears the reply and shows that replies are unavailable.
+
+Choose **Fork** and confirm **Create fork** to start a separate conversation from the selected conversation’s history (`--fork-session`). Canceling opens nothing. Opening the original never selects that copy. An unavailable original never falls back to a resume or fork.
 
 ### Reading a terminal session’s replies
 
@@ -393,10 +404,10 @@ starts in the chat's working directory, else in the compose project's folder
 (the folder holding the project's worker-compose file, from `compose::list`),
 never in the ide worker's own folder. Picking another folder closes the
 session and starts a new one there: Claude Code cannot change folder
-mid-session. `claude::terminal::describe { cwd?, session? }` is what the page
-calls; it prepares the session right then, every time. A session opened from
-the Sessions panel (`session`: a `claude::agents::list` row id) is prepared in
-that session's own folder, and its resume argv goes after the prepared one.
+mid-session. `claude::terminal::describe { cwd?, session? }` prepares new
+terminals when they are opened. For a confirmed fork, the selected session's own
+folder is used, and the fork argv goes after the prepared argv. Following an
+original does not prepare a terminal.
 
 When `terminal.setup_workspace` is on, that preparation:
 

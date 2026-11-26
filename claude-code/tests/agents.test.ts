@@ -285,7 +285,7 @@ function host(
     () => options.prepared ?? prepared,
     () => options.external ?? false,
     { has: (id) => tracked.has(id) },
-    options.visibilityEpoch,
+    options.visibilityEpoch ?? (() => (options.external ? 1 : null)),
   );
   return { ...fake, ...agents };
 }
@@ -347,6 +347,53 @@ describe('claude::agents::list', () => {
     expect(res.detail).toBe(
       '2 sessions on the terminal host are hidden; set external_sessions: true to list them',
     );
+  });
+
+  it('keeps external names and directories hidden until live permission is confirmed', async () => {
+    let epoch: number | null = null;
+    const fake = host(
+      ok([
+        interactive('known', 'idle'),
+        interactive('external', 'idle', { cwd: '/fixture/external-only' }),
+      ]),
+      { external: true, tracked: ['known'], visibilityEpoch: () => epoch },
+    );
+    const read = () => list(fake, { include_config_id: true });
+    expect((await read()).agents.map((row) => row.id)).toEqual(['known']);
+    epoch = 1;
+    expect((await read()).agents).toMatchObject([
+      { id: 'known' },
+      { id: 'external', external_only: true, name: 'n-external', cwd: '/fixture/external-only' },
+    ]);
+    epoch = null;
+    const revoked = await read();
+    expect(revoked.agents.map((row) => row.id)).toEqual(['known']);
+    expect(JSON.stringify(revoked)).not.toMatch(/n-external|external-only/);
+  });
+
+  it('withholds external rows from an inventory read spanning a permission change', async () => {
+    let epoch = 1;
+    let inventoryStarted!: () => void;
+    let releaseInventory!: () => void;
+    const started = new Promise<void>((resolve) => {
+      inventoryStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseInventory = resolve;
+    });
+    const fake = host(
+      async () => {
+        inventoryStarted();
+        await release;
+        return ok([interactive('external', 'idle')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const pending = list(fake);
+    await started;
+    epoch++;
+    releaseInventory();
+    expect((await pending).agents).toEqual([]);
   });
 
   it('reads the console terminal of a session, only from the claude page', async () => {
@@ -596,37 +643,20 @@ describe('opening a listed session', () => {
     expect(await fake.heldElsewhere(ID)).toBe(true);
   });
 
-  it('returns only the PID-matched Claude PTY, not a shell PTY or the separate copy', async () => {
-    const copyId = 'ba553300-0000-4000-8000-012345678900';
-    const rows = [interactive(ID, 'idle', { pid: 12 }), interactive(copyId, 'busy', { pid: 13 })];
-    const ptys = [
-      { session_id: 'copy-pty', pid: 13, ui: 'claude' },
-      { session_id: 'shell-pty', pid: 12, ui: 'shell' },
-    ];
-    const fake = host(ok(rows), { external: true, ptys: () => ({ sessions: ptys }) });
+  it('follows an original without accessing even a PID-matched console PTY', async () => {
+    const ptys = vi.fn(() => ({
+      sessions: [{ session_id: 'fixture-pty', pid: 42, ui: 'claude', status: 'attached' }],
+    }));
+    const fake = host(ok([interactive(ID, 'idle')]), { external: true, ptys });
     expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-    ptys.push({ session_id: 'original-pty', pid: 12, ui: 'claude', status: 'detached' });
-    expect(await fake.resolveOpen(ID, original)).toEqual({
-      pty_session_id: 'original-pty',
-      claude_session_id: ID,
-    });
+    expect(ptys).not.toHaveBeenCalled();
   });
 
-  it('uses a fresh background short ID for original and the conversation UUID for fork', async () => {
-    const row = background(ID, 'working', { id: 'abcdef98', pid: 99 });
+  it.each([
+    background(ID, 'working', { id: 'abcdef98', pid: 99 }),
+    background(ID, 'done'),
+  ])('only follows an unbound background original (%j)', async (row) => {
     const fake = host(ok([row]), { external: true });
-    expect(await fake.resolveOpen(ID, original)).toEqual({
-      args: ['attach', 'abcdef98'],
-      cwd: '/repo',
-    });
-    expect(await fake.resolveOpen(ID, fork)).toEqual({
-      args: [...RESUME, '--fork-session'],
-      copy: true,
-      cwd: '/repo',
-    });
-    row.id = '--bad';
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-    row.pid = undefined;
     expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
   });
 
@@ -649,72 +679,16 @@ describe('opening a listed session', () => {
     );
     await expect(
       host(() => ({ exit_code: 1, stderr: 'failed', stdout: '' })).resolveOpen(ID, request),
-    ).rejects.toThrow(/failed/);
+    ).rejects.toThrow('session inventory unavailable');
   });
 
-  it('refuses an original PTY when two conversations claim its process', async () => {
-    const fake = host(ok([interactive(ID, 'idle'), interactive('another-conversation', 'idle')]), {
-      external: true,
-      ptys: () => ({
-        sessions: [{ session_id: 'ambiguous', pid: 42, ui: 'claude', status: 'attached' }],
-      }),
-    });
-    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
-  });
-
-  it('does not expose a PTY when CLI deduplication would hide a second live process', async () => {
-    const fake = host(
-      ok([interactive(ID, 'idle', { pid: 12 }), interactive(ID, 'idle', { pid: 13 })]),
-      {
-        external: true,
-        ptys: () => ({
-          sessions: [{ session_id: 'fixture-pty', pid: 12, ui: 'claude', status: 'detached' }],
-        }),
-      },
-    );
-    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
-  });
-
-  it('refuses an unconfirmed console PTY but resumes by UUID after it exits', async () => {
-    const pty = { session_id: 'fixture-pty', pid: 42, ui: 'claude', status: 'detached' as unknown };
-    const fake = host(ok([]), { ptys: () => ({ sessions: [pty] }) });
+  it('never reserves a finished original as a terminal launch', async () => {
+    const fake = host(ok([]), { external: true });
     fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
-    pty.status = { exited: { exit_code: 0 } };
-    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
-  });
-
-  it('resumes the selected UUID without taking a PTY identified as another conversation', async () => {
-    const other = 'ba553300-0000-4000-8000-012345678900';
-    const fake = host(ok([interactive(other, 'idle')]), {
-      ptys: () => ({
-        sessions: [{ session_id: 'other-pty', pid: 42, ui: 'claude', status: 'detached' }],
-      }),
-    });
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
-  });
-
-  it('refuses an explicit resume when terminal inventory cannot be confirmed', async () => {
-    const fake = host(ok([]), { ptys: () => ({}) });
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
-  });
-
-  it('resumes a finished background original by UUID rather than using its inactive short ID', async () => {
-    const fake = host(ok([background(ID, 'done')]), { external: true });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ args: RESUME, cwd: '/repo' });
-  });
-
-  it('does not attach a finished background row by a short ID reused by another session', async () => {
-    const fake = host(
-      ok([
-        background(ID, 'done'),
-        background('new-conversation', 'working', { pid: 9, id: ID.slice(0, 8) }),
-      ]),
-      { external: true },
-    );
-    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
+    expect(await fake.resolveOpen('h', original)).toEqual({ follow: true, claude_session_id: ID });
+    expect(await fake.resolveOpen('h', original)).toEqual({ follow: true, claude_session_id: ID });
+    expect(await fake.heldElsewhere(ID)).toBe(false);
+    expect(await fake.resolveOpen('h')).toEqual({ args: RESUME, cwd: '/work' });
   });
 
   it('does not grant an explicit fork across an off/on refresh', async () => {
@@ -729,22 +703,13 @@ describe('opening a listed session', () => {
     await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
   });
 
-  it('does not resume a conversation that became live or hidden', async () => {
-    const row = interactive(ID, 'idle');
-    const fake = host(ok([row]), { external: true });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-    row.pid = undefined;
-    row.status = 'done';
-    await expect(host(ok([row])).resolveOpen(ID, original)).rejects.toThrow(
-      'no session with that id is listed',
-    );
-  });
-
-  it('reserves a finished original without ever returning a fallback copy', async () => {
-    const fake = host(ok([]));
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
-    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/already open/);
+  it('requires live reply permission even for a tracked original', async () => {
+    const fake = host(ok([interactive(ID, 'idle')]), {
+      external: true,
+      tracked: [ID],
+      visibilityEpoch: () => null,
+    });
+    await expect(fake.resolveOpen(ID, original)).rejects.toThrow('reply access disabled');
   });
 
   it('resumes a finished run in its own directory', async () => {
@@ -845,23 +810,6 @@ describe('opening a listed session', () => {
   describe('before the CLI lists the process', () => {
     beforeEach(() => void vi.useFakeTimers({ toFake: ['Date'] }));
     afterEach(() => void vi.useRealTimers());
-
-    it('allows reopening a resumed original only after its current PTY is confirmed', async () => {
-      const rows: CliRow[] = [];
-      const ptys: Array<{ session_id: string; pid: number; ui: string; status: string }> = [];
-      const fake = host(ok(rows), { ptys: () => ({ sessions: ptys }) });
-      fake.state.set('claude_sessions/h', record('h', 'done', ID));
-
-      expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
-      ptys.push({ session_id: 'fixture-resume', pid: 42, ui: 'claude', status: 'detached' });
-      vi.advanceTimersByTime(15_000);
-      await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
-      rows.push(interactive(ID, 'idle'));
-      expect(await fake.resolveOpen(ID, original)).toEqual({
-        pty_session_id: 'fixture-resume',
-        claude_session_id: ID,
-      });
-    });
 
     it('gives one plain resume, then copies, for a while', async () => {
       const fake = host(ok([]));

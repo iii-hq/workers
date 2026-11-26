@@ -15,7 +15,6 @@ import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
 
 const DescribePayloadSchema = z.object({
-  reopen_held_resume: z.boolean().optional().describe('Obsolete; lease-only reopen is refused.'),
   mode: z
     .enum(['original', 'fork'])
     .optional()
@@ -58,38 +57,36 @@ export function registerTerminal(
   iii.registerFunction(
     'claude::terminal::describe',
     async (payload: unknown) => {
-      const { cwd, session, mode, claude_session_id, reopen_held_resume } =
-        DescribePayloadSchema.parse(payload ?? {});
+      const { cwd, session, mode, claude_session_id } = DescribePayloadSchema.parse(payload ?? {});
       const prepared = host();
       if (!prepared.executable) {
         throw new Error(prepared.detail || 'claude is not available on the terminal host');
       }
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
-      if (reopen_held_resume)
-        throw new Error(
-          'a saved terminal cannot verify the original conversation; refresh the list',
-        );
       const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
       const open = session
         ? request
-          ? await resolveOpen(session, request, false)
+          ? await resolveOpen(session, request)
           : await resolveOpen(session)
         : undefined;
-      // A viewer or an existing PTY needs no new process, plugin or workspace setup.
-      if (open && !('args' in open)) return open;
+      if (mode === 'original') {
+        if (open && 'follow' in open && open.claude_session_id === claude_session_id) return open;
+        throw new Error('the original is unavailable for read-only follow');
+      }
+      if (open && !('args' in open)) throw new Error('no terminal launch plan');
+      if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
       const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
       if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
       if (!open) return spec;
-      // Plugin preparation can take minutes. Never give out an earlier attach,
-      // resume or copy if the inventory now calls for something different.
+      // Plugin preparation can take minutes. Revalidate the explicit fork before returning it.
       if (session && request) {
         const samePlan = (fresh: OpenSpec) =>
           fresh.cwd === open.cwd &&
           fresh.copy === open.copy &&
           fresh.args.length === open.args.length &&
           fresh.args.every((arg, i) => arg === open.args[i]);
-        const fresh = await resolveOpen(session, request, samePlan);
+        const fresh = await resolveOpen(session, request);
         if (!('args' in fresh) || !samePlan(fresh)) {
           throw new Error('the session changed while opening; refresh the list');
         }
@@ -103,20 +100,15 @@ export function registerTerminal(
     },
     {
       description:
-        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit original action can instead return an existing PTY or a read-only follow target. An explicit fork always creates a separate conversation.',
+        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit original action only returns a read-only follow target. An explicit fork always creates a separate conversation.',
       request_format: jsonSchema(DescribePayloadSchema),
       response_format: {
         type: 'object',
         anyOf: [
           { required: ['program', 'args', 'cwd', 'env'] },
-          { required: ['pty_session_id', 'claude_session_id'] },
           { required: ['follow', 'claude_session_id'] },
         ],
         properties: {
-          pty_session_id: {
-            type: 'string',
-            description: 'Reopen this identified original console PTY; do not launch a program.',
-          },
           follow: {
             const: true,
             description: 'No original transport: use the read-only reply APIs.',

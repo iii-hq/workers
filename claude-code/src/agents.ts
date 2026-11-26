@@ -39,6 +39,7 @@ const AgentRowSchema = z.object({
   kind: z.enum(['headless', 'interactive', 'background']),
   status: z.enum(['busy', 'idle', 'waiting', 'done', 'error', 'stopped', 'unknown']),
   alive: z.boolean().describe('A process is running the session now'),
+  external_only: z.boolean().optional().describe('This row requires live external visibility.'),
   session_id: z.string().optional(),
   claude_session_id: z.string().optional(),
   short_id: z
@@ -64,15 +65,8 @@ export type OpenRequest = {
   mode: OpenMode;
   claude_session_id: string;
 };
-export type OpenPlan =
-  | OpenSpec
-  | { pty_session_id: string; claude_session_id: string }
-  | { follow: true; claude_session_id: string };
-export type ResolveOpen = (
-  id: string,
-  request?: OpenRequest,
-  reserve?: boolean | ((plan: OpenSpec) => boolean),
-) => Promise<OpenPlan>;
+export type OpenPlan = OpenSpec | { follow: true; claude_session_id: string };
+export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenPlan>;
 
 const ListPayloadSchema = z.object({
   all: z
@@ -99,8 +93,6 @@ const SHORT_ID = /^[0-9a-f]{8}$/;
 /**
  * How long a conversation counts as open after a plain `--resume` was handed
  * out for it: the CLI lists the session only once its process has started.
- * A live console PTY whose conversation is not listed also blocks an explicit
- * resume; the CLI is not yet able to rule out a second writer.
  */
 const OPENING_MS = 15_000;
 
@@ -144,6 +136,7 @@ export function mergeInventory(input: {
   /** The console terminal whose process is `pid`. */
   ptyOf: (pid: number) => string | undefined;
   external: boolean;
+  markExternal?: boolean;
 }): { agents: AgentRow[]; hidden: number } {
   const ours = new Set(input.records.map((r) => r.claude_session_id).filter(Boolean));
   const runningHere = new Set(
@@ -202,8 +195,9 @@ export function mergeInventory(input: {
 
   let hidden = 0;
   const visible = [...cli.values()].filter((agent) => {
-    // Neither a run of ours, open in a terminal, nor a console terminal is an external session.
-    if (input.external || ours.has(agent.id) || agent.pty_session_id || input.known(agent.id)) {
+    if (ours.has(agent.id) || agent.pty_session_id || input.known(agent.id)) return true;
+    if (input.external) {
+      if (input.markExternal) agent.external_only = true;
       return true;
     }
     hidden++;
@@ -261,11 +255,6 @@ async function hookSessions(iii: IIIClient): Promise<Set<string>> {
 type PtyRow = { session_id?: unknown; pid?: unknown; ui?: unknown; status?: unknown };
 
 const livePty = (pty: PtyRow) => pty.status === 'attached' || pty.status === 'detached';
-const exitedPty = (pty: PtyRow) =>
-  !!pty.status && typeof pty.status === 'object' && 'exited' in pty.status;
-const pidOf = (pid: unknown) =>
-  typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
-
 /** Read fresh PTY metadata, never the output or the browser's lease book. */
 async function claudePtys(iii: IIIClient): Promise<PtyRow[] | null> {
   try {
@@ -286,7 +275,7 @@ export function registerAgents(
   current: () => Prepared,
   external: () => boolean,
   tracker: { has(sessionId: string): boolean },
-  visibilityEpoch: () => number | null = () => (external() ? 0 : null),
+  visibilityEpoch: () => number | null = () => null,
 ): {
   replyRow: (id: string) => Promise<{ row: AgentRow; env: Prepared['env'] }>;
   /** How a terminal opens a listed session; throws why one cannot be. */
@@ -299,37 +288,50 @@ export function registerAgents(
 
   const inventory = async (
     all: boolean,
-    host = current(),
-    replies = false,
-    showAll = replies || external(),
+    {
+      host = current(),
+      replies = false,
+      showAll = replies || external(),
+      readPtys = !replies,
+      markExternal = false,
+    } = {},
   ) => {
     const [records, snapshot, hooked, ptys] = await Promise.all([
       listSessions(iii),
       cliSnapshot(iii, host, all),
-      showAll ? new Set<string>() : hookSessions(iii),
-      replies ? null : claudePtys(iii),
+      !showAll || markExternal ? hookSessions(iii) : new Set<string>(),
+      readPtys ? claudePtys(iii) : null,
     ]);
-    const merged = mergeInventory({
-      // Older headless records must not shadow an explicitly listed CLI row.
-      // Keep excluding CLI rows for headless runs this worker still owns.
-      records: replies ? records.filter((record) => isLive(record.session_id)) : records,
-      isLive,
-      cliRows: replies
-        ? snapshot.rows.filter((row) => row.kind === 'interactive' || row.kind === 'background')
-        : snapshot.rows,
-      known: (id) => tracker.has(id) || hooked.has(id),
-      ptyOf: (pid) => str(ptys?.find((pty) => pty.pid === pid && livePty(pty))?.session_id),
-      external: showAll,
-    });
-    return { ...merged, detail: snapshot.detail, cliRows: snapshot.rows, ptys };
+    const merge = (externalVisibility = showAll) =>
+      mergeInventory({
+        // Older headless records must not shadow an explicitly listed CLI row.
+        // Keep excluding CLI rows for headless runs this worker still owns.
+        records: replies ? records.filter((record) => isLive(record.session_id)) : records,
+        isLive,
+        cliRows: replies
+          ? snapshot.rows.filter((row) => row.kind === 'interactive' || row.kind === 'background')
+          : snapshot.rows,
+        known: (id) => tracker.has(id) || hooked.has(id),
+        ptyOf: (pid) => str(ptys?.find((pty) => pty.pid === pid && livePty(pty))?.session_id),
+        external: externalVisibility,
+        markExternal,
+      });
+    return { merge, detail: snapshot.detail };
   };
 
   iii.registerFunction(
     'claude::agents::list',
     async (payload: unknown) => {
       const { all, include_config_id } = ListPayloadSchema.parse(payload ?? {});
-      const { agents, hidden, detail } = await inventory(all === true);
-      const details = detail ? [detail] : [];
+      const epoch = visibilityEpoch();
+      const { merge, detail } = await inventory(all === true, {
+        showAll: false,
+        markExternal: include_config_id,
+      });
+      // Recheck at publication; merge the same snapshot without external rows if revoked.
+      const authorized = epoch !== null && epoch === visibilityEpoch();
+      const { agents, hidden } = merge(authorized);
+      const details = detail ? [authorized ? detail : 'Terminal host inventory unavailable'] : [];
       if (hidden > 0) {
         details.push(
           `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
@@ -343,7 +345,7 @@ export function registerAgents(
     },
     {
       description:
-        "List Claude Code sessions: this worker's headless runs (claude_sessions) plus the interactive and background sessions on the terminal host, read from its `claude agents --json`. Host sessions this worker never saw are hidden unless the external_sessions setting is on.",
+        "List Claude Code sessions: this worker's headless runs (claude_sessions) plus the interactive and background sessions on the terminal host, read from its `claude agents --json`. External-only host sessions require confirmed live external_sessions permission.",
       request_format: jsonSchema(ListPayloadSchema),
       response_format: jsonSchema(
         z.object({
@@ -398,19 +400,16 @@ export function registerAgents(
     },
   );
 
-  const resolveOpen: ResolveOpen = async (id, request, reserve = true) => {
+  const resolveOpen: ResolveOpen = async (id, request) => {
     const epoch = visibilityEpoch();
-    const { agents, detail, cliRows, ptys } = await inventory(
-      true,
-      current(),
-      false,
-      request ? epoch !== null : external(),
-    );
+    const { merge, detail } = await inventory(true, {
+      showAll: request ? epoch !== null : external(),
+      readPtys: request?.mode !== 'original',
+    });
     if (request && epoch !== visibilityEpoch())
       throw new Error('session visibility changed; refresh the list');
-    // Without the CLI's listing, a session open in another terminal reads as
-    // closed, and resuming it would put a second writer on its transcript.
-    if (detail) throw new Error(detail);
+    if (detail) throw new Error(request ? 'session inventory unavailable' : detail);
+    const { agents } = merge();
     const row = agents.find((agent) => agent.id === id);
     if (!row) throw new Error('no session with that id is listed');
     const prepared = current();
@@ -423,65 +422,21 @@ export function registerAgents(
       ) {
         throw new Error('the listed conversation changed or is unavailable');
       }
-      if (request.mode === 'fork') {
-        if (!row.cwd) throw new Error('this session has no recorded working directory');
-        return {
-          args: [...prepared.args, '--resume', claudeId, '--fork-session'],
-          cwd: row.cwd,
-          copy: true,
-        };
+      if (request.mode === 'original') {
+        if (epoch === null) throw new Error('reply access disabled');
+        // PTY metadata and CLI IDs only identify a process at one instant.
+        // The current transport cannot bind streaming output and input to this UUID.
+        return { follow: true, claude_session_id: claudeId };
       }
-      // The display list deduplicates and hides rows; neither operation makes
-      // ambiguous raw process evidence safe for an interactive open.
-      const processes = new Set(
-        cliRows
-          .filter((r) => r.sessionId === claudeId)
-          .map((r) => pidOf(r.pid))
-          .filter((pid) => pid !== undefined),
-      );
-      const [pid] = processes;
-      if (
-        processes.size > 1 ||
-        (pid !== undefined && cliRows.some((r) => r.pid === pid && r.sessionId !== claudeId))
-      )
-        throw new Error('ambiguous original terminal');
-      if (row.pty_session_id) {
-        const matches = ptys?.filter((pty) => pty.session_id === row.pty_session_id) ?? [];
-        const pty = matches[0];
-        if (
-          !pty ||
-          matches.length !== 1 ||
-          pid === undefined ||
-          pty.pid !== pid ||
-          ptys?.some((other) => other !== pty && other.pid === pid && !exitedPty(other))
-        )
-          throw new Error('ambiguous original terminal');
-        return { pty_session_id: row.pty_session_id, claude_session_id: claudeId };
-      }
-      if (
-        row.kind === 'background' &&
-        row.short_id &&
-        cliRows.some((r) => r.id === row.short_id && r.sessionId !== claudeId)
-      )
-        throw new Error('ambiguous background session id');
-      if (row.kind !== 'headless') {
-        if (
-          row.kind === 'background' &&
-          pid !== undefined &&
-          row.short_id &&
-          SHORT_ID.test(row.short_id) &&
-          epoch !== null
-        ) {
-          return { args: ['attach', row.short_id], cwd: row.cwd ?? prepared.workspace };
-        }
-        // A missing pid is not proof of a finished external conversation.
-        if (row.alive || !['done', 'stopped', 'error'].includes(row.status)) {
-          if (epoch === null) throw new Error('external session access is disabled');
-          return { follow: true, claude_session_id: claudeId };
-        }
-      }
+      if (!row.cwd) throw new Error('this session has no recorded working directory');
+      return {
+        args: [...prepared.args, '--resume', claudeId, '--fork-session'],
+        cwd: row.cwd,
+        copy: true,
+      };
     }
-    if (!request && row.kind === 'background') {
+    // Calls without a mode keep the legacy terminal behavior.
+    if (row.kind === 'background') {
       if (!external()) {
         throw new Error('external_sessions is off: this worker does not open host sessions');
       }
@@ -499,32 +454,10 @@ export function registerAgents(
     // By conversation, not by row: `options.resume` can give two runs the same one.
     const alive =
       isOpening(claudeId) ||
-      agents.some((agent) => agent.alive && agent.claude_session_id === claudeId) ||
-      (request && cliRows.some((r) => r.sessionId === claudeId && pidOf(r.pid) !== undefined));
-    if (request && alive)
-      throw new Error('the conversation is already open and has no attachable terminal');
+      agents.some((agent) => agent.alive && agent.claude_session_id === claudeId);
     if (alive) return { args: [...args, '--fork-session'], cwd: row.cwd, copy: true };
-    // A Claude PTY with no current conversation match could be waiting for
-    // workspace trust. Do not take it or start a second possible writer.
-    if (
-      request &&
-      (!ptys ||
-        ptys.some((pty) => {
-          if (exitedPty(pty)) return false;
-          const pid = pidOf(pty.pid);
-          if (!livePty(pty) || pid === undefined) return true;
-          const ids = new Set(cliRows.filter((r) => r.pid === pid).map((r) => r.sessionId));
-          const [id] = ids;
-          return ids.size !== 1 || !z.guid().safeParse(id).success;
-        }))
-    )
-      throw new Error('could not verify which conversation a console terminal is running');
-    const plan = { args, cwd: row.cwd };
-    // Revalidation can find a resume in place of the attach being prepared.
-    // Don't reserve it unless the caller is actually returning that plan.
-    if (typeof reserve === 'function' ? reserve(plan) : reserve)
-      opening.set(claudeId, Date.now() + OPENING_MS);
-    return plan;
+    opening.set(claudeId, Date.now() + OPENING_MS);
+    return { args, cwd: row.cwd };
   };
 
   const heldElsewhere = async (claudeId: string) => {
@@ -538,9 +471,11 @@ export function registerAgents(
 
   const replyRow = async (id: string) => {
     const host = current();
-    const snapshot = await inventory(true, host, true).catch(() => null);
+    const snapshot = await inventory(true, { host, replies: true }).catch(() => null);
     if (!snapshot || snapshot.detail) throw new Error('inventory unavailable');
-    const row = snapshot.agents.find((r) => r.kind !== 'headless' && r.claude_session_id === id);
+    const row = snapshot
+      .merge()
+      .agents.find((r) => r.kind !== 'headless' && r.claude_session_id === id);
     if (!row) throw new Error('session not listed');
     return { row, env: host.env };
   };

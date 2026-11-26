@@ -123,6 +123,7 @@ async function testSessionActions(code) {
         const observer = new window.MutationObserver(check);
         const timer = setTimeout(() => {
           observer.disconnect();
+          document.removeEventListener('focusin', check);
           reject(new Error(`Expected UI state was not rendered: ${document.body.textContent}`));
         }, 2000);
         function check() {
@@ -130,6 +131,7 @@ async function testSessionActions(code) {
           if (!value) return;
           clearTimeout(timer);
           observer.disconnect();
+          document.removeEventListener('focusin', check);
           resolve(value);
         }
         observer.observe(document.body, {
@@ -138,6 +140,7 @@ async function testSessionActions(code) {
           characterData: true,
           attributes: true,
         });
+        document.addEventListener('focusin', check);
         check();
       });
     const click = async (name) => {
@@ -157,7 +160,15 @@ async function testSessionActions(code) {
       await click('Open original: Design review');
       await text('The layout review is ready.');
     };
-    return { document, click, text, shortcut, follow };
+    const focus = (name) =>
+      until(() => {
+        const element = document.activeElement;
+        return (
+          element?.matches('button') &&
+          (element.getAttribute('aria-label') ?? element.textContent) === name
+        );
+      });
+    return { document, click, text, shortcut, follow, focus };
   }
 
   await test('hides replies on the config event without waiting for refresh or polling', async (t) => {
@@ -169,7 +180,8 @@ async function testSessionActions(code) {
     shortcut('KeyR');
     await text('Replies unavailable');
     assert.equal(document.querySelector('[role="log"]'), null);
-    assert.doesNotMatch(document.body.textContent, /Review update 2:/);
+    assert.doesNotMatch(document.body.textContent, /Review update 2:|Design review|external-only/);
+    assert.equal(document.documentElement.dataset.replyWatches, '0');
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
@@ -211,43 +223,37 @@ async function testSessionActions(code) {
     );
   });
 
-  await test('one selection resumes a finished original after its detached PTY expires', async (t) => {
-    const { click, text, document } = setup(t);
-    await click('Open original: Finished review');
-    await text('Finished original at workspace trust');
-    await click('Open original: Console original');
-    await text('Original console PTY');
-    await click('Open original: Finished review');
-    await text('Could not verify which conversation a console terminal is running');
-    assert.match(document.querySelector('main').textContent, /Original console PTY/);
-    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*2/);
-    await click('Confirm finished PTY identity');
-    await click('Open original: Finished review');
-    await text('Finished resume on reopen: reused');
-    assert.match(document.querySelector('main').textContent, /Terminals created:\s*1/);
-    await click('Open original: Console original');
-    await text('Original console PTY');
-    await click('Expire detached finished PTY');
-    await click('Open original: Finished review');
-    await text('Finished resume on reopen: replaced');
-    assert.match(document.querySelector('main').textContent, /Terminals created:\s*2/);
-    assert.doesNotMatch(document.body.textContent, /That did not go through/);
+  await test('follows console, background and finished originals without a terminal', async (t) => {
+    const { click, text, document, focus } = setup(t);
+    for (const name of ['Console original', 'Background indexing', 'Finished review']) {
+      await click(`Open original: ${name}`);
+      await text(`Synthetic reply for ${name}.`);
+      const viewer = document.querySelector('[role="dialog"]');
+      assert.match(viewer.textContent, /Read only.*stay with this conversation/);
+      assert.equal(viewer.querySelector('input, textarea, [contenteditable="true"]'), null);
+      assert.equal(document.documentElement.dataset.replyWatches, '1');
+      await focus('Close');
+      await click('Close');
+      await focus(`Open original: ${name}`);
+      assert.equal(document.documentElement.dataset.replyWatches, '0');
+    }
+    assert.match(
+      document.querySelector('main').textContent,
+      /No terminal selected.*Terminal open calls:\s*0.*Terminals created:\s*0/,
+    );
   });
 
-  await test('opens the fresh finished original on the first click of a stale working row', async (t) => {
+  await test('reads the fresh state when an original finished after it was listed', async (t) => {
     const { click, text, document } = setup(t);
     await text('Working · Background');
     await click('Finish background without refreshing');
     assert.match(document.body.textContent, /Working · Background/);
     await click('Open original: Background indexing');
-    await text('Finished background original');
-    const terminal = document.querySelector('main').textContent;
-    assert.match(terminal, /Terminal open calls:\s*1/);
-    assert.match(terminal, /Terminals created:\s*1/);
-    assert.doesNotMatch(document.body.textContent, /That did not go through/);
+    await text('Background indexing · Done');
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
-  await test('keeps follow, native background attach and fork distinct without randomUUID', async (t) => {
+  await test('only a confirmed fork creates a copy; reopening still follows the original', async (t) => {
     const { click, follow, shortcut, text, document } = setup(t, {
       plainHttp: true,
       heartbeat: false,
@@ -264,27 +270,42 @@ async function testSessionActions(code) {
     assert.match(terminal(), /Terminal open calls:\s*0/);
     await click('Fork Design review');
     await click('Create fork');
-    await text('Separate fork terminal');
+    await text('Separate fork terminal · copy-1');
     await click('Open original: Design review');
     await text('Review update 2:');
-    assert.match(terminal(), /Terminal open calls:\s*1/);
-    await click('Close');
-    await click('Open original: Background indexing');
-    await text('Original background terminal');
-    assert.match(terminal(), /Terminal open calls:\s*2/);
-    await click('Open original: Console original');
-    await text('Original console PTY');
-    assert.match(terminal(), /Terminal open calls:\s*3/);
+    assert.equal(document.documentElement.dataset.replyWatches, '1');
+    assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /copy-1/);
+    assert.match(terminal(), /Terminal open calls:\s*1.*Terminals created:\s*1/);
   });
 
-  await test('refuses an unconfirmed original transport before any terminal operation', async (t) => {
-    const { click, text, document } = setup(t);
-    await click('Return mismatched terminal identity');
+  await test('a late read from the previous selection cannot replace the current reply', async (t) => {
+    const { click, follow, shortcut, text, document } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyT');
+    await click('Close');
+    assert.equal(document.documentElement.dataset.replyWatches, '0');
     await click('Open original: Console original');
-    await text('The original conversation could not be verified.');
-    const terminal = document.querySelector('main').textContent;
-    assert.match(terminal, /No terminal selected/);
-    assert.match(terminal, /Terminal open calls:\s*0/);
-    assert.match(terminal, /Terminals created:\s*0/);
+    await text('Synthetic reply for Console original.');
+    shortcut('KeyY');
+    await new Promise((resolve) => document.defaultView.requestAnimationFrame(resolve));
+    assert.equal(
+      document.querySelector('[role="log"]').textContent,
+      'Synthetic reply for Console original.',
+    );
+    assert.equal(document.documentElement.dataset.replyWatches, '1');
+  });
+
+  await test('clears the viewer and reports unavailable when its source is lost', async (t) => {
+    const { follow, shortcut, text, document } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyL');
+    await text('Replies unavailable');
+    assert.equal(document.querySelector('[role="log"]'), null);
+    assert.doesNotMatch(
+      document.body.textContent,
+      /The layout review is ready|No assistant reply yet/,
+    );
+    assert.equal(document.documentElement.dataset.replyWatches, '0');
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 }
