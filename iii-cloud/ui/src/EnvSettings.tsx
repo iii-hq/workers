@@ -6,14 +6,18 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   EmptyState,
+  IconButton,
   Input,
   List,
   ListItem,
   Panel,
-  PanelBody,
-  PanelHeader,
   SegmentedControl,
+  ShadcnTextarea,
   Skeleton,
   Table,
   TableBody,
@@ -25,21 +29,20 @@ import {
 } from '@iii-dev/console-ui'
 import { errorCode, errorMessage } from '@iii-dev/console-ui/format'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
-import { Circle, CircleDot } from 'lucide-react'
+import { Ellipsis } from 'lucide-react'
 import { Fragment, type ReactNode, useId, useState } from 'react'
-import { type Cloud, cloudWrite, useCloud } from './api'
-import { ConfigImportDialog, fieldLines } from './ConfigImport'
+import { cloudWrite, useCloud } from './api'
+import { clock } from './asked'
 import { useActions } from './hub'
-import { ago, appFile, COMPOSE_ISSUE, composeFile, configDir, envPageUrl, plainMessage, servingDeploy } from './model'
-import { ErrorPanel, LinkButton, Mono, Notice, StatusChip } from './parts'
-import type { EnvTabProps, Route } from './route'
+import { plainMessage, plural, servingDeploy, valueMessage, when } from './model'
+import { ErrorPanel, Mono, Notice } from './parts'
+import type { EnvTabProps } from './route'
 import { SecretEntry } from './SecretEntry'
-import type { ComposeFile, SecretRequest, Status, WorkerError } from './types'
-import { useValues, ValuesEditor } from './ValuesEditor'
+import type { SecretRequest, Status, ValueItem, Values, ValuesSaved, WorkerError } from './types'
+import { parseEnv, ReadOnly, useValues, type ValuesRead } from './ValuesEditor'
 
-/* ── what iii cloud answers (cloud-v1.yaml: Environment, Variable, Resource) ── */
+/* ── what iii cloud answers (cloud-v1.yaml: Variable) ── */
 
-type EnvBody = { manifest: string | null; settings?: Record<string, unknown> | null; from_file?: string[] }
 type CloudVariable = {
   name: string
   type: 'secret' | 'variable' | 'builtin'
@@ -49,49 +52,10 @@ type CloudVariable = {
   applies: string | null
   updated_at: string | null
 }
-type Resource = {
-  id: string
-  kind: string
-  alias: string
-  mode: 'managed' | 'external'
-  tier?: string | null
-  connection?: { name: string }[]
-  credentials: { rotated_at: string | null; rotating: boolean } | null
-  created_at: string
-}
-type Override = NonNullable<Status['check']>['plan']['confirmations']['overrides'][number]
-/** `GET …/config` (cloud-v1.yaml ConfigView): every worker's fields; `ui` ones were set in iii cloud. */
-type ConfigView = {
-  version: number
-  draft_changed: boolean
-  workers: {
-    name: string
-    fields: { key: string; value: unknown; source: 'default' | 'manifest' | 'managed' | 'ui' }[]
-  }[]
-}
 
 type Ctx = { host: Host; status: Status; envId: string; envName: string }
 type Ask = { title: string; description: string; label: string; tone?: 'danger'; run: () => Promise<void> }
-
-/** A `cloud:` block key (what a plan override names) in words, and the environment setting that holds it. */
-const SETTING: Record<string, { label: string; noun: string; key: string | null }> = {
-  release: { label: 'Release command', noun: 'release command', key: 'release' },
-  web: { label: 'Web traffic', noun: 'web traffic setting', key: 'web' },
-  healthcheck: { label: 'Health check', noun: 'health check', key: 'healthcheck' },
-  build: { label: 'Build command', noun: 'build command', key: 'build_command' },
-  runtimes: { label: 'Runtimes', noun: 'runtimes', key: 'runtimes' },
-  root_directory: { label: 'Root directory', noun: 'root directory', key: 'root_directory' },
-  groups: { label: 'Machine groups', noun: 'machine groups', key: null },
-}
-
-/** A resource kind: the row's label and what it is. */
-const RESOURCE: Record<string, [string, string]> = {
-  database: ['Database', 'Postgres'],
-  postgres: ['Database', 'Postgres'],
-  storage: ['Storage', 'object storage'],
-  queue: ['Queue', 'RabbitMQ'],
-  state: ['State', 'Redis'],
-}
+type Kind = 'secret' | 'variable'
 
 const and = (xs: string[]) => (xs.length < 2 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`)
 const enc = encodeURIComponent
@@ -100,22 +64,7 @@ const enc = encodeURIComponent
 const groupsOf = (applies: string | null | undefined) =>
   applies?.startsWith('after_restart:') ? applies.slice('after_restart:'.length).split(',').filter(Boolean) : []
 
-/** A setting's value in the block's shape, in one line. */
-function show(v: unknown): string {
-  if (v == null) return 'nothing'
-  if (typeof v !== 'object') return String(v)
-  const o = v as Record<string, unknown>
-  if (typeof o.command === 'string') return o.command
-  if (typeof o.path === 'string') return o.timeout ? `${o.path} · timeout ${o.timeout}` : o.path
-  if (o.serve === 'container') return `the ${o.container ?? 'detected'} container${o.port ? `, port ${o.port}` : ''}`
-  if (o.serve === 'static') return `static files from ${o.directory ?? 'the build'}`
-  if (o.serve === 'none') return 'no web part'
-  return Object.entries(o)
-    .map(([k, x]) => `${k}: ${show(x)}`)
-    .join(', ')
-}
-
-/** One cloud write at a time per section: the busy key and the cloud's error, its 403 message kept. */
+/** One cloud write at a time: the busy key and the cloud's error, its 403 message kept. */
 function useWrite() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<WorkerError | null>(null)
@@ -135,66 +84,383 @@ function useWrite() {
   return { busy, error, run }
 }
 
-const overrideKey = (envId: string, o: Override) => `override:${envId}:${o.setting}:${JSON.stringify(o.console)}`
 const restartKey = (envId: string, v: CloudVariable) => `restart:${envId}:${v.name}:${v.updated_at}`
 
+/* ── the rows: every name once ──────────────────────────────────────── */
+
+type Row = {
+  name: string
+  /** `managed`: iii cloud fills it in (a database URL, a built-in). */
+  kind: Kind | 'managed'
+  set: boolean
+  /** The file defaults it, so the environment deploys without it. */
+  optional: boolean
+  /** A variable's value, never a secret's. */
+  value: string | null
+  updated: string | null
+  /** `undefined`: not known (iii cloud's list was not read). */
+  applies?: string | null
+  required_by: string[]
+  containers: string[]
+  default: string | null
+  request?: SecretRequest
+}
+
 /**
- * An environment's Settings tab (Mng3) and the change-file dialog (Mng11): the values the app file reads
- * (`ValuesEditor`, the agent's asks among them), console values that differ from the app file, what the next
- * deploy runs, and the other secrets and variables. Every change here is the person's: the file's values go
- * through `iii-cloud::values::save`, other variables and settings through `api::write`, other secret values
- * only through `iii-cloud::secret::provide` (`SecretEntry`).
+ * Every name once: the ones the compose file reads (file order), then the other secrets and variables of
+ * the environment in iii cloud (else the ones the worker last read), then names only the agent asked for.
  */
-export function EnvSettings({ host, status, go, narrow, paneKey, envId }: EnvTabProps) {
-  const env = useCloud<EnvBody>(host, status, envId, '')
+function secretRows(s: Status, envId: string, values: Values | null, cloud: CloudVariable[] | null): Row[] {
+  const latest = new Map<string, SecretRequest>()
+  for (const r of s.secrets) if (r.environment_id === envId && !latest.has(r.name)) latest.set(r.name, r)
+  const known = cloud !== null
+  const list: CloudVariable[] =
+    cloud ?? s.variables.map((v) => ({ ...v, value: null, applies: null, updated_at: null }))
+  const byName = new Map(list.map((v) => [v.name, v]))
+  const rows: Row[] = []
+  const seen = new Set<string>()
+  for (const i of values?.items ?? []) {
+    seen.add(i.name)
+    const c = byName.get(i.name)
+    const set = c ? c.status === 'set' : i.in_cloud === 'set'
+    rows.push({
+      name: i.name,
+      // A name typed from here starts as a secret; the row's menu makes it a variable.
+      kind: i.database || c?.type === 'builtin' ? 'managed' : set ? (c?.type ?? i.type) : 'secret',
+      set,
+      optional: !set && i.need !== 'required',
+      value: set ? (c?.value ?? i.value) : null,
+      updated: c?.updated_at ?? i.updated_at,
+      applies: known ? c?.applies : undefined,
+      required_by: c?.required_by ?? [],
+      containers: i.containers,
+      default: i.default,
+      request: latest.get(i.name),
+    })
+  }
+  for (const v of list) {
+    if (seen.has(v.name)) continue
+    seen.add(v.name)
+    rows.push({
+      name: v.name,
+      kind: v.type === 'builtin' ? 'managed' : v.status === 'set' ? v.type : 'secret',
+      set: v.status === 'set',
+      optional: v.status === 'empty_default',
+      value: v.value,
+      updated: v.updated_at,
+      applies: known ? v.applies : undefined,
+      required_by: v.required_by,
+      containers: [],
+      default: null,
+      request: latest.get(v.name),
+    })
+  }
+  for (const r of latest.values()) {
+    if (seen.has(r.name)) continue
+    rows.push({
+      name: r.name,
+      kind: 'secret',
+      set: false,
+      optional: false,
+      value: null,
+      updated: null,
+      required_by: [],
+      containers: [],
+      default: null,
+      request: r,
+    })
+  }
+  return rows
+}
+
+const kindText = (r: Row) => (r.kind === 'managed' ? 'set by iii cloud' : !r.set && r.optional ? 'optional' : r.kind)
+
+/** What the Value column says: the value or where it came from, or why there is none. */
+function valueText(r: Row, env: string): ReactNode {
+  if (r.kind === 'managed') return 'iii cloud makes the database and fills this in. Nothing to do.'
+  if (r.set) {
+    if (r.kind === 'secret') return `Set${r.updated ? ` · ${when(r.updated)}` : ''}`
+    return r.value === '' ? 'Left empty' : r.value === null ? 'Set' : <Mono>{r.value}</Mono>
+  }
+  if (r.request?.state === 'waiting') return 'Asked by your agent: type it here.'
+  if (r.optional)
+    return `Not set. Your compose file gives it ${r.default ? `the default ${r.default}` : 'an empty default'}, so ${env} deploys without it.`
+  return `Not set. ${r.containers.length ? `${and(r.containers)} reads it` : 'A worker needs it'}: the check asks for it too.`
+}
+
+/** When a saved value reaches the running machines. */
+function takesText(r: Row): string {
+  if (r.applies === undefined || !r.set || r.kind === 'managed') return '—'
+  if (r.applies === 'live') return 'live'
+  const g = groupsOf(r.applies)
+  return g.length ? `after ${and(g)} restart${g.length > 1 ? '' : 's'}` : 'next deploy'
+}
+
+/* ── the page ───────────────────────────────────────────────────────── */
+
+/**
+ * An environment's Secrets and variables: the one place that lists every name the compose file reads. A secret's
+ * value goes only through `iii-cloud::secret::provide` (`SecretEntry`), a variable's through `api::write`, a
+ * pasted .env through `iii-cloud::values::save`.
+ */
+export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProps) {
   const vars = useCloud<{ variables: CloudVariable[] }>(host, status, envId, '/variables')
-  const res = useCloud<{ resources: Resource[] }>(host, status, envId, '/resources')
+  const values = useValues(host, status, {})
   const [dismissed, setDismissed] = usePaneState<string[]>(`iii-cloud:settings-dismissed:${paneKey}`, [])
   const dismiss = (...keys: string[]) => setDismissed((d) => [...d, ...keys])
   const [confirm, setConfirm] = useState<Ask | null>(null)
-  const [changing, setChanging] = useState(false)
-  const values = useValues(host, status, {})
+  const [open, setOpen] = useState<{ name: string; kind: Kind } | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [pasting, setPasting] = useState(false)
   const c: Ctx = { host, status, envId, envName: status.project?.environment?.name ?? 'this environment' }
-  const check = status.check?.environment_id === envId ? status.check : null
-  const overrides = check?.plan.confirmations.overrides ?? []
+  const v = values.data
+  const rows = secretRows(status, envId, v, vars.data?.variables ?? null)
+  const readOnly = !!v && v.save !== 'ok'
+  const loading = (vars.loading && !vars.data) || (values.loading && !v)
+  const optional = rows.filter((r) => !r.set && r.optional).length
+  const missing = rows.filter((r) => !r.set && !r.optional && r.kind !== 'managed').length
+  const reads = rows.find((r) => r.required_by.length > 0)
+
+  const done = () => {
+    setOpen(null)
+    vars.refetch()
+    values.refetch()
+  }
+  const action = (r: Row) => {
+    if (r.kind === 'managed') return null
+    const label = !r.set ? 'Set' : r.kind === 'secret' ? 'Replace' : 'Edit'
+    return (
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={readOnly}
+        aria-label={`${label} ${r.name}`}
+        aria-expanded={open?.name === r.name}
+        onClick={() => setOpen(open?.name === r.name ? null : { name: r.name, kind: r.kind as Kind })}
+      >
+        {label}
+      </Button>
+    )
+  }
+  /** The kind is the row's own; turning a secret into a variable (or back) takes the value again. */
+  const kindCell = (r: Row) => (
+    <span className="iii-cloud-kind">
+      {kindText(r)}
+      {r.kind === 'managed' || readOnly ? null : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton label={`Change the kind of ${r.name}`} variant="ghost">
+              <Ellipsis />
+            </IconButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem
+              onSelect={() => setOpen({ name: r.name, kind: r.kind === 'secret' ? 'variable' : 'secret' })}
+            >
+              {r.kind === 'secret' ? 'Make it a variable' : 'Make it a secret'}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </span>
+  )
+  const remove = (r: Row) =>
+    r.set ? (
+      <Button
+        variant="secondary"
+        disabled={r.required_by.length > 0}
+        onClick={() =>
+          setConfirm({
+            title: `Delete ${r.name} from ${c.envName}?`,
+            description: `${r.name} is removed from iii cloud for ${c.envName}. This can't be undone.`,
+            label: 'Delete',
+            tone: 'danger',
+            run: async () => {
+              await cloudWrite(host, status, envId, 'DELETE', `/variables/${enc(r.name)}?confirm=${enc(r.name)}`)
+              done()
+            },
+          })
+        }
+      >
+        Delete
+      </Button>
+    ) : null
+  const form = (r: Row) =>
+    open?.kind === 'secret' ? (
+      <SecretEntry
+        host={host}
+        status={status}
+        name={r.name}
+        why={
+          r.request?.description ||
+          (r.required_by.length ? `Read by ${and(r.required_by)}.` : 'Set on the Secrets and variables page.')
+        }
+        request={r.request?.state === 'waiting' ? r.request : undefined}
+        onSaved={vars.refetch}
+        extra={
+          <>
+            <Button variant="secondary" onClick={() => setOpen(null)}>
+              Close
+            </Button>
+            {remove(r)}
+          </>
+        }
+      />
+    ) : (
+      <VariableForm
+        c={c}
+        name={r.name}
+        initial={r.value ?? ''}
+        onCancel={() => setOpen(null)}
+        onSaved={done}
+        extra={remove(r)}
+      />
+    )
+
   return (
     <div className="iii-cloud-set">
-      {values.data || values.error ? (
-        <Panel aria-label="Values your app file reads">
-          <PanelHeader className="iii-cloud-panel-head">Values your app file reads</PanelHeader>
-          <PanelBody className="iii-cloud-set-body">
-            <ValuesEditor host={host} status={status} mode="settings" narrow={narrow} read={values} />
-          </PanelBody>
+      <div className="iii-cloud-set-head">
+        <div className="iii-cloud-rec-title">
+          <h2 className="iii-cloud-h">Secrets and variables</h2>
+          <p className="iii-cloud-desc">
+            {v ? (
+              <>
+                <Mono>{v.manifest}</Mono> reads {plural(v.items.length, 'name')} in {c.envName}
+              </>
+            ) : (
+              `${plural(rows.length, 'name')} in ${c.envName}`
+            )}
+            {missing ? ` · ${missing} not set` : ''}
+            {optional ? ` · ${optional} optional ${optional === 1 ? "one isn't" : "ones aren't"} set` : ''}
+          </p>
+        </div>
+        <span className="iii-cloud-row">
+          <Button variant="secondary" disabled={!v || readOnly} onClick={() => setPasting(true)}>
+            Paste a .env
+          </Button>
+          <Button variant="primary" disabled={readOnly} aria-expanded={adding} onClick={() => setAdding(!adding)}>
+            Add
+          </Button>
+        </span>
+      </div>
+      {v && readOnly ? <ReadOnly host={host} status={status} values={v} /> : null}
+      <Restart c={c} vars={vars.data?.variables ?? []} dismissed={dismissed} dismiss={dismiss} ask={setConfirm} />
+      <Asked c={c} />
+      {values.error ? (
+        <Notice
+          variant="warn"
+          headline={`Couldn't read the names your compose file reads`}
+          detail={plainMessage(values.error)}
+          action={
+            <Button size="sm" variant="secondary" onClick={values.refetch}>
+              Retry
+            </Button>
+          }
+        />
+      ) : null}
+      {vars.error ? (
+        <Notice
+          variant="warn"
+          headline="Couldn't read the secrets and variables from iii cloud"
+          detail={plainMessage(vars.error)}
+          action={
+            <Button size="sm" variant="secondary" onClick={vars.refetch}>
+              Retry
+            </Button>
+          }
+        />
+      ) : null}
+      {adding ? (
+        <Panel className="iii-cloud-panel iii-cloud-set-add">
+          <AddForm
+            c={c}
+            onClose={() => setAdding(false)}
+            onSaved={() => {
+              setAdding(false)
+              done()
+            }}
+            onSecretSaved={vars.refetch}
+          />
         </Panel>
       ) : null}
-      <Asked c={c} />
-      <Overrides c={c} env={env} overrides={overrides} dismissed={dismissed} dismiss={dismiss} ask={setConfirm} />
-      <div className="iii-cloud-mng-grid">
-        <div className="iii-cloud-set-col">
-          <NextDeploy
-            c={c}
-            env={env}
-            res={res}
-            overridden={new Set(overrides.map((o) => o.setting))}
-            narrow={narrow}
-            onChange={() => setChanging(true)}
+      <Panel className="iii-cloud-panel" role="region" aria-label="Secrets and variables">
+        {loading && rows.length === 0 ? (
+          <Skeleton className="iii-cloud-set-skel" />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            compact
+            title="No secrets or variables yet"
+            description="Add one, paste a .env, or let your agent ask you for the ones the app needs."
           />
-          <WorkersConfig c={c} />
-          <Restart c={c} vars={vars} dismissed={dismissed} dismiss={dismiss} ask={setConfirm} />
-        </div>
-        <Variables
-          c={c}
-          vars={vars}
-          res={res}
-          narrow={narrow}
-          ask={setConfirm}
-          read={new Set(values.data?.items.map((i) => i.name))}
-        />
-      </div>
-      {changing ? <ChangeFile c={c} go={go} onClose={() => setChanging(false)} /> : null}
+        ) : narrow ? (
+          <List aria-label="Names">
+            {rows.map((r) => (
+              <Fragment key={r.name}>
+                <ListItem
+                  as="div"
+                  label={<Mono>{r.name}</Mono>}
+                  description={
+                    <>
+                      {kindText(r)} · {valueText(r, c.envName)}
+                      {r.set ? ` · ${takesText(r)}` : ''}
+                    </>
+                  }
+                  trailing={action(r)}
+                />
+                {open?.name === r.name ? <div className="iii-cloud-set-form">{form(r)}</div> : null}
+              </Fragment>
+            ))}
+          </List>
+        ) : (
+          <TableViewport>
+            <Table inset className="iii-cloud-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Kind</TableHead>
+                  <TableHead>Value</TableHead>
+                  <TableHead>Takes effect</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <Fragment key={r.name}>
+                    <TableRow>
+                      <TableCell>
+                        <Mono>{r.name}</Mono>
+                      </TableCell>
+                      <TableCell>{kindCell(r)}</TableCell>
+                      <TableCell>
+                        <span className="iii-cloud-desc">{valueText(r, c.envName)}</span>
+                      </TableCell>
+                      <TableCell>{takesText(r)}</TableCell>
+                      <TableCell>{action(r)}</TableCell>
+                    </TableRow>
+                    {open?.name === r.name ? (
+                      <TableRow>
+                        <TableCell colSpan={5}>{form(r)}</TableCell>
+                      </TableRow>
+                    ) : null}
+                  </Fragment>
+                ))}
+              </TableBody>
+            </Table>
+          </TableViewport>
+        )}
+      </Panel>
+      <p className="iii-cloud-desc iii-cloud-set-note">
+        This is the only place that lists every name. A value you type, or one read from a .env file, is saved as a
+        secret; a row's menu turns it into a variable. Secret values are never shown here.
+        {reads ? ` A name a worker needs can't be deleted: ${and(reads.required_by)} reads ${reads.name}.` : ''} A value
+        a deploy is missing shows up in its check, where you enter it.
+      </p>
+      {pasting && v ? (
+        <PasteEnv host={host} values={v} read={values} onClose={() => setPasting(false)} onSaved={vars.refetch} />
+      ) : null}
       <ConfirmDialog
         open={confirm !== null}
-        onOpenChange={(open) => (open ? undefined : setConfirm(null))}
+        onOpenChange={(o) => (o ? undefined : setConfirm(null))}
         title={confirm?.title ?? ''}
         description={confirm?.description}
         confirmLabel={confirm?.label}
@@ -205,7 +471,7 @@ export function EnvSettings({ host, status, go, narrow, paneKey, envId }: EnvTab
   )
 }
 
-/* ── what became of the agent's asks: the asks themselves are rows of the values editor ── */
+/* ── what became of the agent's asks ────────────────────────────────── */
 
 function Asked({ c }: { c: Ctx }) {
   const mine = c.status.secrets.filter((r) => r.environment_id === c.envId)
@@ -233,288 +499,7 @@ function Asked({ c }: { c: Ctx }) {
   )
 }
 
-/* ── console values the app file would replace ──────────────────────── */
-
-function Overrides({
-  c,
-  env,
-  overrides,
-  dismissed,
-  dismiss,
-  ask,
-}: {
-  c: Ctx
-  env: Cloud<EnvBody>
-  overrides: Override[]
-  dismissed: string[]
-  dismiss: (...keys: string[]) => void
-  ask: (a: Ask) => void
-}) {
-  // The check is older than the environment: a console value cleared since then is no conflict.
-  const open = overrides.filter((o) => {
-    const key = SETTING[o.setting]?.key
-    const cleared = !!env.data && !!key && env.data.settings?.[key] == null && o.console != null
-    return !cleared && !dismissed.includes(overrideKey(c.envId, o))
-  })
-  return (
-    <>
-      {open.map((o) => {
-        const s = SETTING[o.setting] ?? { label: o.setting, noun: o.setting, key: null }
-        const key = s.key
-        return (
-          <Notice
-            key={o.setting}
-            variant="warn"
-            headline={`The ${s.noun} on ${c.envName} ${s.noun.endsWith('s') ? 'were' : 'was'} changed in the iii cloud console`}
-            detail={
-              <>
-                iii cloud console: <Mono>{show(o.console)}</Mono> · your app file: <Mono>{show(o.file)}</Mono>.{' '}
-                {key ? 'Using your file removes the console value. ' : ''}Keeping it hides this note: the review before
-                your next deploy shows the difference again.
-              </>
-            }
-            action={
-              <span className="iii-cloud-row">
-                {key ? (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() =>
-                      ask({
-                        title: `Use your app file's ${s.noun} on ${c.envName}?`,
-                        description: `iii cloud removes the console's value, ${show(o.console)}. The next deploy of ${c.envName} runs your app file's, ${show(o.file)}.`,
-                        label: 'Use my app file',
-                        run: async () => {
-                          await cloudWrite(c.host, c.status, c.envId, 'PATCH', '', { settings: { [key]: null } })
-                          env.refetch()
-                        },
-                      })
-                    }
-                  >
-                    Use my app file (recommended)
-                  </Button>
-                ) : null}
-                <Button size="sm" variant="secondary" onClick={() => dismiss(overrideKey(c.envId, o))}>
-                  Not now
-                </Button>
-              </span>
-            }
-          />
-        )
-      })}
-    </>
-  )
-}
-
-/* ── what the next deploy runs ──────────────────────────────────────── */
-
-type SettingRow = { label: string; value: ReactNode; where: ReactNode }
-
-function settingRows(env: EnvBody | null, overridden: Set<string>): SettingRow[] {
-  if (!env) return []
-  return Object.entries(SETTING).flatMap(([block, s]) => {
-    const v = s.key ? env.settings?.[s.key] : null
-    if (v == null || (typeof v === 'object' && Object.keys(v).length === 0)) return []
-    const where = overridden.has(block) ? (
-      <StatusChip tone="warning">iii cloud console</StatusChip>
-    ) : env.from_file?.includes(block) ? (
-      'app file'
-    ) : (
-      'iii cloud console'
-    )
-    return [{ label: s.label, value: block === 'web' ? show(v) : <Mono>{show(v)}</Mono>, where }]
-  })
-}
-
-/** The environment's resources, then the ones its latest check would create. */
-function resourceRows(resources: Resource[], s: Status): SettingRow[] {
-  const line = (r: { kind: string; alias: string; tier?: string | null }) =>
-    [`${RESOURCE[r.kind]?.[1] ?? r.kind} ${r.alias}`, r.tier].filter(Boolean).join(', ')
-  const made = resources.map((r) => ({ kind: r.kind, text: line(r) }))
-  const planned = (s.check?.plan.confirmations.resources ?? [])
-    .filter((p) => !resources.some((r) => r.alias === p.alias))
-    .map((p) => ({ kind: p.kind, text: `${line(p)}, made when you deploy` }))
-  return [...made, ...planned].map((r) => ({
-    label: RESOURCE[r.kind]?.[0] ?? r.kind,
-    value: r.text,
-    where: 'iii cloud',
-  }))
-}
-
-function NextDeploy({
-  c,
-  env,
-  res,
-  overridden,
-  narrow,
-  onChange,
-}: {
-  c: Ctx
-  env: Cloud<EnvBody>
-  res: Cloud<{ resources: Resource[] }>
-  overridden: Set<string>
-  narrow: boolean
-  onChange: () => void
-}) {
-  const current = composeFile(env.data?.manifest ?? c.status.project?.environment?.manifest)
-  const checked = appFile(c.status)
-  const canChange = (c.status.compose_files ?? []).some((f) => f.choosable && f.path !== current)
-  const rows: SettingRow[] = [
-    {
-      label: 'App file',
-      value: (
-        <span className="iii-cloud-set-value">
-          <Mono>{current}</Mono>
-          {canChange ? (
-            <button type="button" className="iii-cloud-linkbtn" onClick={onChange}>
-              Change…
-            </button>
-          ) : null}
-        </span>
-      ),
-      where: 'environment',
-    },
-    ...settingRows(env.data, overridden),
-    ...resourceRows(res.data?.resources ?? [], c.status),
-  ]
-  return (
-    <Panel aria-label="What the next deploy runs">
-      <PanelHeader className="iii-cloud-panel-head">What the next deploy runs</PanelHeader>
-      {env.error ? (
-        <PanelBody>
-          <Notice
-            variant="warn"
-            headline={`Couldn't read the settings of ${c.envName} from iii cloud`}
-            detail={plainMessage(env.error)}
-            action={
-              <Button size="sm" variant="secondary" onClick={env.refetch}>
-                Retry
-              </Button>
-            }
-          />
-        </PanelBody>
-      ) : null}
-      {env.loading && !env.data ? (
-        <PanelBody>
-          <Skeleton className="iii-cloud-set-skel" />
-        </PanelBody>
-      ) : narrow ? (
-        <List aria-label="What the next deploy runs">
-          {rows.map((r) => (
-            <ListItem
-              as="div"
-              key={r.label}
-              label={r.label}
-              description={
-                <span className="iii-cloud-set-value">
-                  {r.value} · {r.where}
-                </span>
-              }
-            />
-          ))}
-        </List>
-      ) : (
-        <TableViewport>
-          <Table inset className="iii-cloud-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead>Setting</TableHead>
-                <TableHead>Value</TableHead>
-                <TableHead>Set in</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.label}>
-                  <TableCell>{r.label}</TableCell>
-                  <TableCell>{r.value}</TableCell>
-                  <TableCell>{r.where}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableViewport>
-      )}
-      {checked.switches ? (
-        <PanelBody>
-          <p className="iii-cloud-desc">
-            The latest check used <Mono>{checked.path}</Mono>: {checked.note}.
-          </p>
-        </PanelBody>
-      ) : null}
-    </Panel>
-  )
-}
-
-/* ── O4: the workers' config iii cloud keeps, and the copy of the local folder ── */
-
-/**
- * The fields set in iii cloud, per worker, read-only; "Copy ./config again" opens the import dialog. Shown once
- * something is set, or while the check says the config folder isn't in iii cloud (LOCAL_CONFIG_NOT_SET).
- */
-function WorkersConfig({ c }: { c: Ctx }) {
-  const view = useCloud<ConfigView>(c.host, c.status, c.envId, '/config')
-  const [importing, setImporting] = useState(false)
-  const check = c.status.check?.environment_id === c.envId ? c.status.check : null
-  const problem = check?.problems.find((p) => p.code === 'LOCAL_CONFIG_NOT_SET') ?? null
-  const set = (view.data?.workers ?? [])
-    .map((w) => ({ name: w.name, fields: w.fields.filter((f) => f.source === 'ui') }))
-    .filter((w) => w.fields.length)
-  if (!problem && !set.length) return null
-  const dir = configDir(problem) ?? 'the config folder'
-  const url = envPageUrl(c.status, 'config')
-  return (
-    <Panel aria-label="Workers' config">
-      <PanelHeader className="iii-cloud-panel-head">Workers' config</PanelHeader>
-      <PanelBody className="iii-cloud-set-body">
-        {view.loading && !view.data ? (
-          <Skeleton className="iii-cloud-set-skel" />
-        ) : view.error ? (
-          <Notice
-            variant="warn"
-            headline={`Couldn't read the workers' config of ${c.envName} from iii cloud`}
-            detail={plainMessage(view.error)}
-            action={
-              <Button size="sm" variant="secondary" onClick={view.refetch}>
-                Retry
-              </Button>
-            }
-          />
-        ) : set.length ? (
-          <ul className="iii-cloud-ci-list" aria-label="Set in iii cloud">
-            {set.map((w) => (
-              <li key={w.name}>
-                <b className="iii-cloud-ci-head">{w.name}</b>
-                <pre className="iii-cloud-ci-fields">{fieldLines(w.fields)}</pre>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="iii-cloud-desc">{`Nothing copied yet: the workers start with their defaults on ${c.envName}. ${dir} isn't in the repository.`}</p>
-        )}
-        <span className="iii-cloud-row">
-          <Button size="sm" variant="secondary" onClick={() => setImporting(true)}>
-            {set.length ? `Copy ${dir} again` : `Copy ${dir} to iii cloud`}
-          </Button>
-          {url ? <LinkButton href={url}>Open in iii cloud</LinkButton> : null}
-        </span>
-      </PanelBody>
-      {importing ? (
-        <ConfigImportDialog
-          host={c.host}
-          status={c.status}
-          envId={c.envId}
-          env={c.envName}
-          dir={dir}
-          onClose={() => setImporting(false)}
-          onApplied={view.refetch}
-        />
-      ) : null}
-    </Panel>
-  )
-}
-
-/* ── a value changed after the serving deploy started ───────────────── */
+/* ── a value changed after the serving deployment started ───────────── */
 
 function Restart({
   c,
@@ -524,14 +509,14 @@ function Restart({
   ask,
 }: {
   c: Ctx
-  vars: Cloud<{ variables: CloudVariable[] }>
+  vars: CloudVariable[]
   dismissed: string[]
   dismiss: (...keys: string[]) => void
   ask: (a: Ask) => void
 }) {
   const serving = servingDeploy(c.status, c.envId)
   const since = serving ? Date.parse(serving.created_at) : Number.NaN
-  const changed = (vars.data?.variables ?? []).filter(
+  const changed = vars.filter(
     (v) =>
       groupsOf(v.applies).length > 0 &&
       !!v.updated_at &&
@@ -542,17 +527,21 @@ function Restart({
   const names = changed.map((v) => v.name)
   const groups = [...new Set(changed.flatMap((v) => groupsOf(v.applies)))]
   const many = groups.length > 1
+  const at = changed
+    .map((v) => v.updated_at as string)
+    .sort()
+    .at(-1) as string
   const done = () => dismiss(...changed.map((v) => restartKey(c.envId, v)))
   return (
     <Notice
       variant="warn"
-      headline={`${and(names)} changed after the running deploy started`}
-      detail={`${and(groups)} read ${names.length > 1 ? 'them' : 'it'} when ${many ? 'they restart' : 'it restarts'}. The next deploy restarts ${many ? 'them' : 'it'} too.`}
+      headline={`${and(names)} changed at ${clock(at)}`}
+      detail={`The ${and(groups)} ${many ? 'groups keep' : 'group keeps'} the old ${names.length > 1 ? 'values' : 'value'} until ${many ? 'they restart' : 'it restarts'}. The next deploy restarts ${many ? 'them' : 'it'} too.`}
       action={
         <span className="iii-cloud-row">
           <Button
             size="sm"
-            variant="secondary"
+            variant="primary"
             onClick={() =>
               ask({
                 title: `Restart ${and(groups)} on ${c.envName}?`,
@@ -578,325 +567,7 @@ function Restart({
   )
 }
 
-/* ── secrets and variables ──────────────────────────────────────────── */
-
-type VarRow = {
-  name: string
-  type: 'secret' | 'variable' | 'builtin' | 'managed'
-  status: 'set' | 'missing' | 'empty_default'
-  value: string | null
-  /** `undefined`: unknown (the worker's list, not iii cloud's). */
-  applies?: string | null
-  updated?: string | null
-  required_by: string[]
-  request?: SecretRequest
-  resource?: Resource
-}
-
-/** iii cloud's variables (else the ones the worker last read), the agent's latest ask winning the words, then the managed resources. */
-function varRows(s: Status, envId: string, cloud: CloudVariable[] | null, resources: Resource[]): VarRow[] {
-  const latest = new Map<string, SecretRequest>()
-  for (const r of s.secrets) if (r.environment_id === envId && !latest.has(r.name)) latest.set(r.name, r)
-  const known = cloud !== null
-  const list: CloudVariable[] =
-    cloud ?? s.variables.map((v) => ({ ...v, value: null, applies: null, updated_at: null }))
-  const rows: VarRow[] = list.map((v) => ({
-    name: v.name,
-    type: v.type,
-    status: v.status,
-    required_by: v.required_by,
-    value: v.value,
-    applies: known ? v.applies : undefined,
-    updated: known ? v.updated_at : undefined,
-    request: latest.get(v.name),
-  }))
-  for (const r of latest.values()) {
-    if (!rows.some((x) => x.name === r.name)) {
-      rows.push({ name: r.name, type: 'secret', status: 'missing', value: null, required_by: [], request: r })
-    }
-  }
-  for (const r of resources) {
-    if (r.mode !== 'managed' || !r.credentials) continue
-    rows.push({
-      name: r.connection?.map((x) => x.name).join(', ') || `${r.kind} ${r.alias}`,
-      type: 'managed',
-      status: 'set',
-      value: null,
-      updated: r.credentials.rotated_at ?? r.created_at,
-      required_by: [],
-      resource: r,
-    })
-  }
-  return rows
-}
-
-const ASKED: Partial<Record<SecretRequest['state'], string>> = {
-  waiting: 'asked by your agent',
-  left_empty: 'left empty',
-  failed: 'not saved',
-}
-
-function kindText(r: VarRow): string {
-  if (r.type === 'managed') return 'managed by iii cloud'
-  if (r.type === 'builtin') return 'set by iii cloud'
-  const q = r.request
-  const said = q?.state === 'noted' ? (q.mode === 'decide' ? 'your decision' : 'not needed') : q && ASKED[q.state]
-  if (said) return `${r.type} · ${said}`
-  if (r.status === 'empty_default') return 'optional · not set'
-  return r.status === 'missing' ? `${r.type} · not set` : r.type
-}
-
-function takesText(r: VarRow): string {
-  if (r.applies === undefined || r.status !== 'set' || r.type === 'managed' || r.type === 'builtin') return '—'
-  if (r.applies === 'live') return 'live'
-  const g = groupsOf(r.applies)
-  return g.length ? `after ${and(g)} restart${g.length > 1 ? '' : 's'}` : 'next deploy'
-}
-
-const ADD = '+add'
-const NAME = /^[A-Z_][A-Z0-9_]*$/
-
-function Variables({
-  c,
-  vars,
-  res,
-  narrow,
-  ask,
-  read,
-}: {
-  c: Ctx
-  vars: Cloud<{ variables: CloudVariable[] }>
-  res: Cloud<{ resources: Resource[] }>
-  narrow: boolean
-  ask: (a: Ask) => void
-  /** The names the values editor lists: they are its rows, not these. */
-  read: Set<string>
-}) {
-  const [open, setOpen] = useState<string | null>(null)
-  const rows = varRows(c.status, c.envId, vars.data?.variables ?? null, res.data?.resources ?? []).filter(
-    (r) => !read.has(r.name),
-  )
-  const reads = vars.data?.variables?.find((v) => v.required_by.length > 0)
-  const toggle = (name: string) => setOpen(open === name ? null : name)
-
-  const action = (r: VarRow) => {
-    if (r.type === 'builtin') return null
-    if (r.type === 'managed') {
-      const rotating = !!r.resource?.credentials?.rotating
-      return (
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={rotating}
-          onClick={() =>
-            ask({
-              title: `Rotate the credentials of ${r.name}?`,
-              description: `iii cloud makes new credentials, gives them to every environment that uses it and redeploys the running ones. The old credentials keep working until those deploys are ready, at least 10 minutes.`,
-              label: 'Rotate credentials',
-              run: async () => {
-                await cloudWrite(
-                  c.host,
-                  c.status,
-                  c.envId,
-                  'POST',
-                  `/resources/${enc(r.resource?.id ?? '')}/rotate-credentials`,
-                )
-                res.refetch()
-              },
-            })
-          }
-        >
-          {rotating ? 'Rotating…' : 'Rotate credentials'}
-        </Button>
-      )
-    }
-    const label = r.status !== 'set' ? 'Set' : r.type === 'secret' ? 'Replace' : 'Edit'
-    return (
-      <Button
-        size="sm"
-        variant="secondary"
-        aria-label={`${label} ${r.name}`}
-        aria-expanded={open === r.name}
-        onClick={() => toggle(r.name)}
-      >
-        {label}
-      </Button>
-    )
-  }
-
-  const remove = (r: VarRow) =>
-    r.status === 'set' ? (
-      <Button
-        variant="secondary"
-        disabled={r.required_by.length > 0}
-        onClick={() =>
-          ask({
-            title: `Delete ${r.name} from ${c.envName}?`,
-            description: `${r.name} is removed from iii cloud for ${c.envName}. This can't be undone.`,
-            label: 'Delete',
-            tone: 'danger',
-            run: async () => {
-              await cloudWrite(c.host, c.status, c.envId, 'DELETE', `/variables/${enc(r.name)}?confirm=${enc(r.name)}`)
-              setOpen(null)
-              vars.refetch()
-            },
-          })
-        }
-      >
-        Delete
-      </Button>
-    ) : null
-
-  const form = (r: VarRow) =>
-    r.type === 'secret' ? (
-      <SecretEntry
-        host={c.host}
-        status={c.status}
-        name={r.name}
-        why={
-          r.request?.description ||
-          (r.required_by.length ? `Read by ${and(r.required_by)}.` : 'Set on the Settings page.')
-        }
-        request={r.request?.state === 'waiting' ? r.request : undefined}
-        onSaved={vars.refetch}
-        extra={
-          <>
-            <Button variant="secondary" onClick={() => setOpen(null)}>
-              Close
-            </Button>
-            {remove(r)}
-          </>
-        }
-      />
-    ) : (
-      <VariableForm
-        c={c}
-        name={r.name}
-        initial={r.value ?? ''}
-        onCancel={() => setOpen(null)}
-        onSaved={() => {
-          setOpen(null)
-          vars.refetch()
-        }}
-        extra={remove(r)}
-      />
-    )
-
-  return (
-    <Panel aria-label="Secrets and variables">
-      <PanelHeader className="iii-cloud-panel-head">
-        <span className="iii-cloud-grow">Secrets and variables</span>
-        <Button size="sm" variant="secondary" aria-expanded={open === ADD} onClick={() => toggle(ADD)}>
-          Add
-        </Button>
-      </PanelHeader>
-      {vars.error ? (
-        <PanelBody>
-          <Notice
-            variant="warn"
-            headline="Couldn't read the variables from iii cloud"
-            detail={plainMessage(vars.error)}
-            action={
-              <Button size="sm" variant="secondary" onClick={vars.refetch}>
-                Retry
-              </Button>
-            }
-          />
-        </PanelBody>
-      ) : null}
-      {open === ADD ? (
-        <PanelBody>
-          <AddForm
-            c={c}
-            onClose={() => setOpen(null)}
-            onSaved={() => {
-              setOpen(null)
-              vars.refetch()
-            }}
-            onSecretSaved={vars.refetch}
-          />
-        </PanelBody>
-      ) : null}
-      {vars.loading && !vars.data && rows.length === 0 ? (
-        <PanelBody>
-          <Skeleton className="iii-cloud-set-skel" />
-        </PanelBody>
-      ) : rows.length === 0 ? (
-        <PanelBody>
-          {read.size ? (
-            <EmptyState
-              compact
-              title="No other secrets or variables"
-              description="The ones your app file reads are above."
-            />
-          ) : (
-            <EmptyState
-              compact
-              title="No secrets or variables yet"
-              description="Add one, or your agent asks you for the ones the app needs."
-            />
-          )}
-        </PanelBody>
-      ) : narrow ? (
-        <List aria-label="Secrets and variables">
-          {rows.map((r) => (
-            <Fragment key={r.name}>
-              <ListItem
-                as="div"
-                label={<Mono>{r.name}</Mono>}
-                description={`${kindText(r)} · ${takesText(r)}`}
-                trailing={action(r)}
-              />
-              {open === r.name ? <div className="iii-cloud-set-form">{form(r)}</div> : null}
-            </Fragment>
-          ))}
-        </List>
-      ) : (
-        <TableViewport>
-          <Table inset className="iii-cloud-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Kind</TableHead>
-                <TableHead>Takes effect</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <Fragment key={r.name}>
-                  <TableRow>
-                    <TableCell>
-                      <Mono>{r.name}</Mono>
-                    </TableCell>
-                    <TableCell>{kindText(r)}</TableCell>
-                    <TableCell>
-                      {r.applies === 'live' ? <StatusChip tone="success">live</StatusChip> : takesText(r)}
-                    </TableCell>
-                    <TableCell>{r.updated ? ago(r.updated) : '—'}</TableCell>
-                    <TableCell>{action(r)}</TableCell>
-                  </TableRow>
-                  {open === r.name ? (
-                    <TableRow>
-                      <TableCell colSpan={5}>{form(r)}</TableCell>
-                    </TableRow>
-                  ) : null}
-                </Fragment>
-              ))}
-            </TableBody>
-          </Table>
-        </TableViewport>
-      )}
-      <PanelBody>
-        <p className="iii-cloud-desc">
-          Secret values are never shown here.
-          {reads ? ` A name a worker needs can't be deleted: ${and(reads.required_by)} reads ${reads.name}.` : ''}
-        </p>
-      </PanelBody>
-    </Panel>
-  )
-}
+/* ── forms ──────────────────────────────────────────────────────────── */
 
 /** A variable's value, written as the person with `PUT /variables/{name}`. Never a secret: `api::write` refuses those. */
 function VariableForm({
@@ -945,6 +616,9 @@ function VariableForm({
   )
 }
 
+const NAME = /^[A-Z_][A-Z0-9_]*$/
+
+/** Add: a name and its kind (a secret unless said otherwise), then the value. */
 function AddForm({
   c,
   onClose,
@@ -957,7 +631,7 @@ function AddForm({
   onSecretSaved: () => void
 }) {
   const [name, setName] = useState('')
-  const [kind, setKind] = useState<'variable' | 'secret'>('variable')
+  const [kind, setKind] = useState<Kind>('secret')
   const id = useId()
   const reserved = name.startsWith('III_')
   return (
@@ -980,8 +654,8 @@ function AddForm({
           value={kind}
           onChange={setKind}
           options={[
-            { value: 'variable', label: 'Variable', icon: false },
             { value: 'secret', label: 'Secret', icon: false },
+            { value: 'variable', label: 'Variable', icon: false },
           ]}
         />
       </div>
@@ -998,7 +672,7 @@ function AddForm({
           host={c.host}
           status={c.status}
           name={name}
-          why="Added on the Settings page."
+          why="Added on the Secrets and variables page."
           onSaved={onSecretSaved}
           extra={
             <Button variant="secondary" onClick={onClose}>
@@ -1013,76 +687,95 @@ function AddForm({
   )
 }
 
-/* ── Mng11: check another compose file ──────────────────────────────── */
-
-function fileLine(f: ComposeFile, current: string, env: string): string {
-  return [
-    f.path === current ? `what ${env} runs now` : null,
-    f.workers != null ? `${f.workers} worker${f.workers === 1 ? '' : 's'}` : null,
-    f.choosable ? null : ((f.issue && COMPOSE_ISSUE[f.issue]) ?? f.issue),
-  ]
-    .filter(Boolean)
-    .join(' · ')
-}
-
 /**
- * The compose files of the check's copy of the code. Checking one never changes the environment: it
- * switches only when the person confirms a deploy of that check.
+ * Paste a .env: the names the compose file reads are saved as secrets through `iii-cloud::values::save` (the
+ * row's menu makes one a variable afterwards). The pasted text lives in this dialog's state only and is gone
+ * when it closes; a name that did not save is listed with why, and the rest are done.
  */
-function ChangeFile({ c, go, onClose }: { c: Ctx; go: (r: Route) => void; onClose: () => void }) {
-  const files = c.status.compose_files ?? []
-  const current = composeFile(c.status.project?.environment?.manifest)
-  const checked = appFile(c.status).path
-  const [pick, setPick] = useState(checked)
-  const { call } = useActions(c.host)
-  const ws = c.status.project?.workspace
-  const ok = files.some((f) => f.path === pick && f.choosable) && pick !== checked
-  const start = () => {
-    // The check runs on; its stage shows it from the hub's `checking` count.
-    void call('check', 'iii-cloud::check', { run: true, manifest: pick })
-    onClose()
-    go({ at: 'deploy', env: c.envId })
+function PasteEnv({
+  host,
+  values: v,
+  read,
+  onClose,
+  onSaved,
+}: {
+  host: Host
+  values: Values
+  read: ValuesRead
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [text, setText] = useState('')
+  const [failed, setFailed] = useState<{ name: string; message: string }[]>([])
+  const { busy, error, call } = useActions(host)
+  const id = useId()
+  const listed = new Map<string, ValueItem>(v.items.map((i) => [i.name, i]))
+  const found = parseEnv(text)
+  const mine = found.filter((e) => listed.has(e.name) && !listed.get(e.name)?.database)
+  const other = found.filter((e) => !listed.has(e.name)).map((e) => e.name)
+  const save = async () => {
+    const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
+      environment_id: v.environment_id,
+      manifest: v.manifest,
+      items: mine.map((e) => ({ name: e.name, from: 'typed', type: 'secret', value: e.value })),
+    })
+    if (out === null) return
+    onSaved()
+    read.refetch()
+    const bad = (out.results ?? []).filter((r) => !r.ok)
+    if (!bad.length) return onClose()
+    setFailed(
+      bad.map((r) => ({
+        name: r.name,
+        message: r.error ? valueMessage(r.error, { env: v.environment, name: r.name }) : "iii cloud didn't take it.",
+      })),
+    )
+    // What saved is done: only the names that did not stay in the box.
+    setText((t) =>
+      parseEnv(t)
+        .filter((e) => bad.some((b) => b.name === e.name))
+        .map((e) => `${e.name}=${e.value}`)
+        .join('\n'),
+    )
   }
   return (
-    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
-      <DialogContent className="iii-cloud-cf">
-        <DialogTitle>Change the compose file {c.envName} runs</DialogTitle>
-        {ws ? (
-          <DialogDescription>
-            Files found in <Mono>{ws.path}</Mono> on <Mono>{ws.branch}</Mono>.
-          </DialogDescription>
-        ) : null}
-        <List role="radiogroup" aria-label="Compose file">
-          {files.map((f) => (
-            <ListItem
-              key={f.path}
-              role="radio"
-              aria-checked={pick === f.path}
-              selected={pick === f.path}
-              disabled={!f.choosable}
-              leading={pick === f.path ? <CircleDot /> : <Circle />}
-              label={<Mono>{f.path}</Mono>}
-              description={fileLine(f, current, c.envName)}
-              onClick={() => setPick(f.path)}
-            />
-          ))}
-        </List>
-        <Panel aria-label={`What changes on ${c.envName}`}>
-          <PanelHeader className="iii-cloud-panel-head">What changes on {c.envName}</PanelHeader>
-          <PanelBody className="iii-cloud-set-body">
-            The check plans this file and shows every difference before you deploy.
-          </PanelBody>
-        </Panel>
-        <div className="iii-cloud-cf-foot">
+    <Dialog open onOpenChange={(o) => (o ? undefined : onClose())}>
+      <DialogContent>
+        <DialogTitle>Paste a .env</DialogTitle>
+        <DialogDescription>
+          Names that <Mono>{v.manifest}</Mono> reads are saved to {v.environment} as secrets. Nothing else is kept, and
+          the pasted text is gone when this closes.
+        </DialogDescription>
+        <label className="iii-cloud-lbl" htmlFor={id}>
+          The lines of a .env file
+        </label>
+        <ShadcnTextarea
+          id={id}
+          className="iii-cloud-val-area"
+          value={text}
+          rows={8}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => setText(e.target.value)}
+        />
+        {found.length ? (
           <p className="iii-cloud-desc">
-            {c.envName} keeps the current file until a deploy with the new one passes the check and you confirm it.
-            Pushes until then still use the current file.
+            {mine.length
+              ? `${plural(mine.length, 'name')} will be saved.`
+              : 'None of these names is read by the compose file.'}
+            {other.length ? ` Not read by the compose file, so skipped: ${other.join(', ')}.` : ''}
           </p>
+        ) : null}
+        {failed.map((f) => (
+          <Notice key={f.name} variant="alert" headline={`${f.name} did not save`} detail={f.message} />
+        ))}
+        {error ? <ErrorPanel error={error} /> : null}
+        <div className="iii-cloud-dlg-foot">
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={!ok} onClick={start}>
-            Check with this file
+          <Button variant="primary" disabled={!mine.length || busy === 'save'} onClick={() => void save()}>
+            {busy === 'save' ? 'Saving…' : mine.length ? `Save ${plural(mine.length, 'secret')}` : 'Save'}
           </Button>
         </div>
       </DialogContent>

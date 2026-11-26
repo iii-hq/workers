@@ -192,23 +192,21 @@ describe('an environment of another project', () => {
 })
 
 describe('the environment page', () => {
-  it('the waiting panel: the check passed on a commit dev does not serve; Review and deploy opens the check and deploy screen', async () => {
+  it('a check that passed on a commit dev does not serve is the next action: Review and deploy opens the check and deploy screen', async () => {
     await board('manage-home')
     await settle()
-    const wait = byText('[role=status] b', `Waiting for you: 1 commit passed the check`)?.parentElement
-    expect(wait?.getAttribute('data-variant')).toBe('warn')
-    expect(wait?.textContent).toContain(
-      `${NEW_SHA.slice(0, 7)} "Search: tweak weights" · checked on iii cloud and here`,
-    )
+    const card = el.querySelector('section[aria-label=Next]')
+    expect(card?.textContent).toContain(`${NEW_SHA.slice(0, 7)} passed the check at ${clock(T(1))}`)
+    expect(card?.hasAttribute('data-wait')).toBe(true)
     await click(btn('Review and deploy'))
     expect(path()).toBe('Projects / registry · dev / Deploy')
   })
 
-  it('no waiting panel when the check is not ready, or dev already serves the checked commit', async () => {
+  it('no passed-check card when the check is not ready, or dev already serves the checked commit', async () => {
     await showHome({ ...home, check: { ...home.check!, ready: false } })
-    expect(text()).not.toContain('Waiting for you')
+    expect(text()).not.toContain('passed the check')
     await showHome({ ...home, check: { ...home.check!, commit: LIVE_SHA } })
-    expect(text()).not.toContain('Waiting for you')
+    expect(text()).not.toContain('passed the check')
   })
 
   it('the header: the state, its address, as of and Refresh', async () => {
@@ -235,19 +233,18 @@ describe('page states (Mng9)', () => {
     // `mount` hands the status to fakeHost, which reads a function on every call.
     await mount(status as unknown as Status, ctx({ at: 'env', env: DEV.id }), cloudAnswers(b.cloud ?? {}))
     await settle()
-    expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(false)
+    expect((btn('Review and deploy') as HTMLButtonElement).disabled).toBe(false)
     down = true
     await click(btn('Refresh'))
     const note = byText('[role=status] b', `iii cloud isn't answering · showing what it said at ${clock(T(9))}`)
     expect(note?.parentElement?.textContent).toContain('Deploying and saves stay locked.')
     expect(el.querySelector('[data-stale]')).not.toBeNull()
-    expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(true)
     expect((btn('Review and deploy') as HTMLButtonElement).disabled).toBe(true)
     expect(text()).toContain('Search: rank by stars')
     down = false
     await click(btn('Try again'))
     expect(text()).not.toContain("iii cloud isn't answering")
-    expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(false)
+    expect((btn('Review and deploy') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('deleted: the project is gone in iii cloud, with the restore date and the way to the console', async () => {
@@ -257,7 +254,7 @@ describe('page states (Mng9)', () => {
     expect(note?.getAttribute('data-variant')).toBe('alert')
     const until = shortDate(new Date(Date.UTC(2026, 11, 3, 12)).toISOString())
     expect(note?.textContent).toContain(
-      `It can be restored until ${until} in the iii cloud console. Nothing here can deploy to it.`,
+      `It can be restored until ${until} in the iii cloud console. Nothing can deploy to it.`,
     )
     expect(byText('a', 'Open in iii cloud')?.getAttribute('href')).toBe('https://cloud.iii.dev/iii')
     expect(reads(h)).toEqual([`/teams/${TEAM.id}/deletions`])
@@ -275,9 +272,9 @@ describe('page states (Mng9)', () => {
     )
     await settle()
     const note = byText('[role=status] b', 'dev was deleted in iii cloud')?.parentElement
-    expect(note?.textContent).toContain('Nothing here can deploy to it.')
+    expect(note?.textContent).toContain('Nothing can deploy to it.')
     expect(note?.textContent).not.toContain('restored')
-    expect(panel('Serving')).toBeNull()
+    expect(panel('Live now')).toBeNull()
     expect(row('production')).toBeTruthy()
   })
 

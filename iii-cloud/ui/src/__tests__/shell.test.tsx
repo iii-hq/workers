@@ -75,7 +75,7 @@ describe('Manage', () => {
     // No environment tabs on a wide pane (the old Overview/Deploys/Settings/Checks bar is gone too).
     expect(tabs()).not.toContain('production')
     expect(tabs()).not.toContain('Overview')
-    expect(el.querySelector('section[aria-label=Serving]')).not.toBeNull()
+    expect(el.querySelector('section[aria-label="Live now"]')).not.toBeNull()
     await click(btn('Refresh'))
     expect(h.calls.at(-1)).toEqual({ id: 'iii-cloud::status', payload: { refresh: true } })
     await click(btn('Secrets and variables'))
@@ -95,11 +95,11 @@ describe('Manage', () => {
       { path: '/home/you/workspaces/registry', environment_id: 'e-dev', mode: 'worktree' },
     ])
     expect(row('dev')?.getAttribute('aria-current')).toBe('page')
-    expect(el.querySelector('section[aria-label=Serving]')).toBeNull()
+    expect(el.querySelector('section[aria-label="Live now"]')).toBeNull()
     const project = { ...live.project!, environment: { ...dev, manifest: null, url: null } }
     await fire(h, { kind: 'project', id: 'p1', terminal: true, summary: '', record: project })
     expect(path()).toBe('Projects / registry · dev')
-    expect(el.querySelector('section[aria-label=Serving]')).not.toBeNull()
+    expect(el.querySelector('section[aria-label="Live now"]')).not.toBeNull()
     expect(uses(h)).toHaveLength(1)
   })
 
@@ -186,12 +186,14 @@ describe('Manage', () => {
     expect(text()).toContain('Secrets and variables')
     await at(3, { tab: 'deploys', deployId: earlierReady.id })
     expect(path()).toBe(`Projects / registry · production / Deployment #${earlierReady.number}`)
-    expect(text()).toContain('Deployment #40 · 1a2b3c4')
+    expect(text()).toContain('Deployment #40 is live')
   })
 
   it('Deploy to production opens the check and deploy screen of the environment', async () => {
-    await mount(live, ctx({ at: 'env', env: ENV.id }))
+    // With nothing the check is holding the person for, the folder's changes are the next action.
+    const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
     expect(path()).toBe('Projects / registry · production / Deploy')
     expect(rail('Deploy steps')).toEqual(['current', 'todo', 'todo', 'todo'])
     expect(text()).toContain('What goes to production?')

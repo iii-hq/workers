@@ -1,4 +1,4 @@
-// The values the app file reads (Values step, VALUES-PLAN §3.1): one row per name, where its value comes from,
+// The secrets and variables the compose file reads, in a dialog (the check's and the deploy's): one row per name, where its value comes from,
 // one Save through `iii-cloud::values::save`. Typed and pasted values live in this component's state only: never
 // in pane state, the route, storage or a log. A row's value clears once it is saved, and all of them on unmount.
 
@@ -63,7 +63,7 @@ export function parseEnv(text: string): { name: string; value: string }[] {
 }
 
 /** A name with no value in iii cloud the person is asked about (a default in the file is not asked). */
-/** The run here has no value for it (`LOCAL_VARIABLE_UNSET`); never the database, the run here makes its own Postgres. */
+/** The local run has no value for it (`LOCAL_VARIABLE_UNSET`); never the database, the local run makes its own Postgres. */
 export const unsetHere = (i: ValueItem) => i.here === 'unset' && !i.database
 export const notSet = (i: ValueItem) => (i.in_cloud !== 'set' && i.need !== 'has_default') || unsetHere(i)
 
@@ -124,12 +124,12 @@ export function useValues(host: Host, status: Status, ask: Ask | null): ValuesRe
   }
 }
 
-type Mode = 'step' | 'dialog' | 'settings'
+type Mode = 'step' | 'dialog'
 type Kind = 'secret' | 'variable'
 /** Where a row's value comes from: `env_file:<file>`, `copy:<environment id>` or one of the plain ones. */
 type Source = string
 type Pick = { source: Source; value?: string; multi?: boolean }
-/** `note`: a saved value the run here's .env didn't get (LOCAL_NOT_SAVED); `file`: the source it failed with. */
+/** `note`: a saved value the local run's .env didn't get (LOCAL_NOT_SAVED); `file`: the source it failed with. */
 type RowState =
   | { s: 'saving' }
   | { s: 'saved'; note?: WorkerError }
@@ -152,9 +152,9 @@ export type ValuesEditorProps = {
   after?: string
   /** Buttons off (a check is running). */
   disabled?: boolean
-  /** A read the caller already holds: EnvSettings lists the other names beside it. */
+  /** A read the caller already holds. */
   read?: ValuesRead
-  /** Only these names (the check's "values the run here needs"); every name the file reads when none of them is listed. */
+  /** Only these names (the check's "values the local run needs"); every name the file reads when none of them is listed. */
   only?: string[]
   /** step: the line under the step's title (its header holds the forward action: Save N values and check, or Check). */
   lead?: ReactNode
@@ -181,7 +181,7 @@ function Need({ item: i }: { item: ValueItem }) {
   )
 }
 
-/** Where the name stands in iii cloud, or what just happened to it here. */
+/** Where the name stands in iii cloud, or what just happened to it. */
 function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
   if (i.skipped && !saved)
     return (
@@ -206,7 +206,7 @@ function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
   )
 }
 
-/** The row's choice before the person makes one: Keep a set name (unless the run here lacks it), else the first preselected source. */
+/** The row's choice before the person makes one: Keep a set name (unless the local run lacks it), else the first preselected source. */
 function initial(i: ValueItem): Pick {
   if (i.skipped) return { source: 'skip' }
   if (i.in_cloud === 'set' && !unsetHere(i)) return { source: 'keep' }
@@ -217,7 +217,7 @@ function initial(i: ValueItem): Pick {
   return { source: 'typed', value: '' }
 }
 
-/** `skip`: "Skip for now" on a row the cloud or the run here needs (never in Settings). */
+/** `skip`: "Skip for now" on a row the cloud or the local run needs. */
 function options(i: ValueItem, skip: boolean): { value: string; label: string }[] {
   const out: { value: string; label: string }[] = []
   if (i.in_cloud === 'set') out.push({ value: 'keep', label: 'Keep' })
@@ -307,7 +307,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
   const chosen = readOnly ? [] : items.map(toSave).filter((x): x is SaveItem => x !== null)
   const n = chosen.length
   // Skipped for now (`values::skip`) on Save, after the values; a recorded skip is not sent again.
-  const canSkip = !readOnly && mode !== 'settings'
+  const canSkip = !readOnly
   const skips = canSkip ? items.filter((i) => !i.skipped && pickOf(i).source === 'skip').map((i) => i.name) : []
   const k = skips.length
   // "Skip the rest": every "Not set" row still without a choice (and with a picker).
@@ -393,8 +393,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
   }
 
   // Read-only lists every name (nothing to choose); else what isn't set comes first.
-  const shown = readOnly ? 'all' : (filter ?? (mode !== 'settings' && unset ? 'unset' : 'all'))
-  const allSet = !!v && unset === 0 && mode !== 'settings'
+  const shown = readOnly ? 'all' : (filter ?? (unset ? 'unset' : 'all'))
+  const allSet = !!v && unset === 0
   const listed = allSet && !showAll ? [] : shown === 'unset' ? items.filter((i) => notSet(i) || rows[i.name]) : items
   const first = (i: ValueItem) => i.containers[0] ?? ''
   const groups = new Set(listed.map(first)).size > 1
@@ -416,7 +416,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
       {n ? 'Check without saving' : 'Check'}
     </Button>
   )
-  // The step's actions are in its header (P1); a dialog's and Settings' in the footer, the primary last.
+  // The step's actions are in its header (P1); a dialog's in the footer, the primary last.
   const acts =
     mode === 'step' ? null : mode === 'dialog' ? (
       <>
@@ -437,7 +437,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
           : "Continue still works: the check lists what's missing."
         : allSet
           ? 'Nothing to save. The check reads these.'
-          : v && mode !== 'settings'
+          : v
             ? 'Nothing chosen yet'
             : null
 
@@ -518,7 +518,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
       {read.error ? (
         <Notice
           variant="warn"
-          headline="Couldn't read the values your app file reads"
+          headline="Couldn't read the names your compose file reads"
           detail={plainMessage(read.error)}
           action={
             <Button size="sm" variant="secondary" onClick={read.refetch}>
@@ -572,7 +572,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
                       : ''}
                 </span>
               )}
-              {unset && mode !== 'settings' ? (
+              {unset ? (
                 <SegmentedControl
                   variant="radio"
                   aria-label="Which names"
@@ -685,7 +685,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
 }
 
 /** An API key, or production without Owner or Admin: the list only, and where to set the values instead. */
-function ReadOnly({ host, status, values }: { host: Host; status: Status; values: Values }) {
+export function ReadOnly({ host, status, values }: { host: Host; status: Status; values: Values }) {
   const { busy, call } = useActions(host)
   const url = variablesUrl(status)
   if (values.save === 'role')
@@ -867,11 +867,11 @@ function ValueRow({
   const notes = [
     i.asked ? `Your agent: “${i.asked.description}”` : null,
     also.length ? `Also read by ${also.join(', ')}.` : null,
-    // A copy stays in iii cloud: the run here's .env gets only what is typed or read from a file.
-    p.source.startsWith('copy:') && i.need === 'required' ? 'iii cloud only; the run here needs it typed.' : null,
-    // P3: what the run here has for it (saving a typed or file value writes the run's .env).
+    // A copy stays in iii cloud: the local run's .env gets only what is typed or read from a file.
+    p.source.startsWith('copy:') && i.need === 'required' ? 'iii cloud only; the local run needs it typed.' : null,
+    // P3: what the local run has for it (saving a typed or file value writes the run's .env).
     unsetHere(i) && state?.s !== 'saved' ? 'needed to run here' : null,
-    i.here === 'from_file' && i.here_file ? `the run here takes it from ${i.here_file}` : null,
+    i.here === 'from_file' && i.here_file ? `the local run takes it from ${i.here_file}` : null,
     state?.s === 'saved' && state.note ? valueMessage(state.note, { env, name: i.name }) : null,
   ].filter((x): x is string => !!x)
   return (
@@ -954,7 +954,7 @@ function ValueRow({
   )
 }
 
-/** The editor in a dialog (Deploy step 1, the check): "Values for test", the file's names, Save or Cancel. */
+/** The editor in a dialog (Deploy step 1, the check): "Secrets and variables for test", the file's names, Save or Cancel. */
 export function ValuesDialog({
   onClose,
   onSaved,

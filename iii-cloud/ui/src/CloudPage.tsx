@@ -138,7 +138,7 @@ export function CloudPage({
           <SetupArea {...props} route={route} />
         ) : route.at === 'deploy' ? (
           <DeployArea key={route.env} {...props} route={route} />
-        ) : route.at === 'env' ? (
+        ) : route.at === 'env' && !route.deploy ? (
           <ProjectShell host={host} status={status} route={route} go={go} narrow={narrow}>
             <ManageArea {...props} route={route} />
           </ProjectShell>
