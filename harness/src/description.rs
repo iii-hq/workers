@@ -254,12 +254,13 @@ pub fn did_other_work<'a>(mut function_ids: impl Iterator<Item = Option<&'a str>
     function_ids.any(|id| id != Some(SET_DESCRIPTION_ID))
 }
 
-/// The description's result with [`GO_ON_NOTE`] as `next`.
+/// The description's result with [`GO_ON_NOTE`] as `next`, its content kept
+/// (a failed write's error included) and the note added after it.
 pub fn with_go_on(mut data: ResultData) -> ResultData {
     if let Value::Object(details) = &mut data.details {
         details.insert("next".into(), Value::String(GO_ON_NOTE.into()));
-        data.content = vec![ContentBlock::text(data.details.to_string())];
     }
+    data.content.push(ContentBlock::text(GO_ON_NOTE));
     data
 }
 
@@ -497,9 +498,27 @@ mod tests {
         }));
         assert_eq!(data.details["ok"], json!(true));
         assert_eq!(data.details["next"], json!(GO_ON_NOTE));
+        let texts: Vec<&str> = data
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts[0].contains("\"ok\":true"), "{texts:?}");
+        assert_eq!(texts[1], GO_ON_NOTE);
+    }
+
+    #[test]
+    fn go_on_note_keeps_a_failed_writes_error() {
+        let failed = write_failed(&HarnessError::Dependency("session store is down".into()));
+        let data = with_go_on(failed);
         let ContentBlock::Text { text, .. } = &data.content[0] else {
             panic!("text content")
         };
-        assert!(text.contains("end your turn now"), "{text}");
+        assert!(text.contains("session store is down"), "{text}");
+        assert_eq!(data.details["next"], json!(GO_ON_NOTE));
     }
 }

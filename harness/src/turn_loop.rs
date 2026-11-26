@@ -2421,6 +2421,11 @@ async fn finish_step(
                     Vec::new(),
                 );
                 mark_done(&mut record, &call.id, &entry_id);
+                // Answered here, so no dispatch checkpoint named it: name it, or
+                // the next step would count it as other work.
+                if let Some(checkpoint) = record.calls.get_mut(&call.id) {
+                    checkpoint.function_id = Some(crate::description::SET_DESCRIPTION_ID.into());
+                }
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
             }
@@ -3246,7 +3251,12 @@ async fn finalize_with_contract(
     strategy: &crate::contract::OutputStrategy,
     message: &AssistantMessage,
 ) -> Result<TurnStepResult, HarnessError> {
-    let text = ContentBlock::join_text(&message.content);
+    let mut text = ContentBlock::join_text(&message.content);
+    if text.trim().is_empty()
+        && let Some(opening) = opening_reply(session, record).await
+    {
+        text = opening;
+    }
     match strategy {
         crate::contract::OutputStrategy::Text => {
             complete_validated(deps, session, record, json!(text)).await
@@ -3267,6 +3277,33 @@ async fn finalize_with_contract(
             retry_or_giveup(deps, session, record, &msg, json!(text)).await
         }
     }
+}
+
+/// The reply a description opened the turn with, when the step after it ends
+/// with no text and the turn made no other call: [`description::GO_ON_NOTE`]
+/// asked for that empty end when the reply was already the answer, so the
+/// turn's result is that reply (a sub-agent's parent reads it).
+async fn opening_reply(session: &SessionClient, record: &TurnRecord) -> Option<String> {
+    let described = record
+        .calls
+        .values()
+        .any(|call| call.function_id.as_deref() == Some(crate::description::SET_DESCRIPTION_ID));
+    let worked = crate::description::did_other_work(
+        record
+            .calls
+            .values()
+            .map(|call| call.function_id.as_deref()),
+    );
+    if !described || worked || record.step == 0 {
+        return None;
+    }
+    let entry_id = ids::assistant_entry_id(&record.turn_id, record.step - 1);
+    session
+        .message_text(&record.session_id, &entry_id)
+        .await
+        .ok()
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
 }
 
 /// Nudge a validation retry (bounded by `max_validation_retries`); after the

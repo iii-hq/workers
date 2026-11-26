@@ -2834,7 +2834,7 @@ async fn a_description_beside_the_reply_ends_the_turn_after_other_work() {
 /// turn itself when the text was its answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_description_beside_the_reply_at_the_turns_start_asks_the_model_again() {
-    let (result, calls, _) = generate(describe_reply(true)).await;
+    let (result, calls, turn) = generate(describe_reply(true)).await;
     assert_eq!(result.unwrap().next_step, Some(2));
     assert!(
         calls
@@ -2851,6 +2851,53 @@ async fn a_description_beside_the_reply_at_the_turns_start_asks_the_model_again(
         .expect("the call's result is written");
     assert_eq!(result["details"]["ok"], true);
     assert_eq!(result["details"]["next"], crate::description::GO_ON_NOTE);
+    assert_eq!(
+        turn["calls"]["call_describe"]["function_id"], "harness::set-description",
+        "the next step must not count the description as other work: {turn}"
+    );
+}
+
+fn empty_reply() -> Value {
+    json!({"role": "assistant", "stop_reason": "end",
+        "model": "fake", "provider": "fake", "timestamp": 3,
+        "usage": {"input": 10, "output": 0, "cost_usd": 0.1},
+        "content": []})
+}
+
+/// After an opening description, an empty end keeps the opening reply as the
+/// turn's result: the note asked for that empty end when the reply was the
+/// answer (the fake engine serves the earlier message as "done").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_end_after_an_opening_description_keeps_the_opening_reply() {
+    let (result, _, turn) = run_on_fake_engine(
+        json!({"call_describe": {"state": "done", "function_id": "harness::set-description",
+            "entry_id": "e_t1_call_describe"}}),
+        json!([]),
+        Some(empty_reply()),
+        json!({}),
+        step_one,
+    )
+    .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
+    assert_eq!(turn["result"], "done", "{turn}");
+}
+
+/// After other work an empty end is the turn's own (empty) result: an
+/// announcement is never taken for the answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_end_after_other_work_keeps_its_empty_result() {
+    let (result, _, turn) = run_on_fake_engine(
+        json!({"call_describe": {"state": "done", "function_id": "harness::set-description",
+            "entry_id": "e_t1_call_describe"},
+            "call_read": {"state": "done", "function_id": "shell::exec"}}),
+        json!([]),
+        Some(empty_reply()),
+        json!({}),
+        step_one,
+    )
+    .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
+    assert_eq!(turn["result"], "", "{turn}");
 }
 
 /// The same call with no reply text continues like any tool step.

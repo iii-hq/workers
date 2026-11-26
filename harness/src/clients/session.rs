@@ -708,6 +708,28 @@ impl SessionClient {
         Ok(resp.get("revision").and_then(Value::as_u64).unwrap_or(0))
     }
 
+    /// An entry's text blocks joined, or `None` when it is gone.
+    pub async fn message_text(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<String>, HarnessError> {
+        let resp = self
+            .call(
+                "session::get-message",
+                json!({ "session_id": session_id, "entry_id": entry_id, "include_image_data": false }),
+            )
+            .await?;
+        let Some(content) = resp["entry"]["message"]["content"].as_array() else {
+            return Ok(None);
+        };
+        let blocks: Vec<ContentBlock> = content
+            .iter()
+            .filter_map(|block| serde_json::from_value(block.clone()).ok())
+            .collect();
+        Ok(Some(ContentBlock::join_text(&blocks)))
+    }
+
     /// An entry's revision (0 when it is gone): every `update_message` moves it.
     pub async fn revision(&self, session_id: &str, entry_id: &str) -> Result<u64, HarnessError> {
         let resp = self
