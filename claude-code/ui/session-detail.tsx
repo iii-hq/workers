@@ -48,11 +48,13 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
     let active = true;
     let reading = false;
     let again = false;
-    const recent = new Map<string, Reply>();
+    let recent = new Map<string, Reply>();
+    const pending = new Map<string, Reply>();
     const cleanup: (() => void)[] = [];
     const stop = () => {
       active = false;
       recent.clear();
+      pending.clear();
       for (const off of cleanup.splice(0).reverse()) off();
     };
     const unavailable = () => {
@@ -77,6 +79,16 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
           );
           if (data.claude_session_id !== id) throw new Error('Session changed');
           if (active && !again) {
+            if (data.last_reply === null) {
+              // The active branch has no assistant text. Even a valid reply
+              // delivery can have come from a branch abandoned since the poll.
+              recent.clear();
+            } else if (pending.size) {
+              // Trim only previously displayed history, never an unpublished
+              // burst. The observer can deliver many replies in one poll.
+              recent = new Map([...Array.from(recent).slice(-RECENT_REPLIES), ...pending]);
+            }
+            pending.clear();
             setView({ state: 'ready', data, recent: Array.from(recent.values()) });
           }
         } while (active && again);
@@ -95,14 +107,10 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
           if (!active || event?.claude_session_id !== id) return;
           const reply = event.reply;
           if (typeof reply?.id !== 'string' || !reply.id || typeof reply.text !== 'string') return;
-          if (recent.has(reply.id)) return;
+          if (recent.has(reply.id) || pending.has(reply.id)) return;
           // Keep the source's order, but publish only after a lookup started
           // after delivery confirms this viewer still has access.
-          recent.set(reply.id, reply);
-          if (recent.size > RECENT_REPLIES) {
-            const oldest = recent.keys().next();
-            if (!oldest.done) recent.delete(oldest.value);
-          }
+          pending.set(reply.id, reply);
           void read();
         }),
       );

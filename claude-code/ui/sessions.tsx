@@ -244,27 +244,37 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       )
         return;
       const resumeKey = mode === 'original' ? originalResumeKey(row) : undefined;
-      const reopenHeldResume = resumeKey && terminal.has(resumeKey);
-      const spec = await host.iii.call(
-        'claude::terminal::describe',
-        {
-          session: row.id,
-          mode,
-          claude_session_id: row.claude_session_id,
-          ...(reopenHeldResume ? { reopen_held_resume: true } : {}),
-        },
-        { timeoutMs: DESCRIBE_TIMEOUT_MS },
-      );
-      if (mode === 'original' && spec.follow && spec.claude_session_id === row.claude_session_id) {
+      const describeOpen = (held: boolean) =>
+        host.iii.call(
+          'claude::terminal::describe',
+          {
+            session: row.id,
+            mode,
+            claude_session_id: row.claude_session_id,
+            ...(held ? { reopen_held_resume: true } : {}),
+          },
+          { timeoutMs: DESCRIBE_TIMEOUT_MS },
+        );
+      let spec = await describeOpen(!!resumeKey && terminal.has(resumeKey));
+      const newKey = () => `${mode}:${crypto.randomUUID()}`;
+      let opened = false;
+      if (spec.reopen_held_resume && resumeKey) {
+        opened = await terminal.open({ key: resumeKey });
+        // A lease-only open with no remaining lease has nothing to show. Ask
+        // describe again, this time for a fresh original plan: it may refuse,
+        // return a live transport or follow target, or authorize a safe resume.
+        if (!opened && !terminal.has(resumeKey)) spec = await describeOpen(false);
+      }
+      if (
+        !opened &&
+        mode === 'original' &&
+        spec.follow &&
+        spec.claude_session_id === row.claude_session_id
+      ) {
         setFollow(spec.claude_session_id);
         return;
       }
-      const newKey = () => `${mode}:${crypto.randomUUID()}`;
-      let opened: boolean;
-      if (spec.reopen_held_resume && resumeKey) {
-        // Do not launch another process if the lease is gone or was taken.
-        opened = await terminal.open({ key: resumeKey });
-      } else if (mode === 'original' && spec.pty_session_id) {
+      if (!opened && mode === 'original' && spec.pty_session_id) {
         const take = terminal.open({ key: newKey(), pty: spec.pty_session_id });
         if (row.kind === 'interactive' && row.claude_session_id) {
           // A listed PTY may belong to another browser. Follow the same UUID
@@ -277,7 +287,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         } else {
           opened = await take;
         }
-      } else {
+      } else if (!opened && !spec.reopen_held_resume) {
         if (
           !spec.program ||
           !Array.isArray(spec.args) ||

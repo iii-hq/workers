@@ -43,6 +43,9 @@ const reply = () => ({
       ? 'The layout review is ready.'
       : `Review update ${sequence}: the changes are ready to check.`,
 });
+type Reply = ReturnType<typeof reply>;
+let lastReply: Reply | null = reply();
+let holdNextLookup: Promise<void> | undefined;
 const host = {
   iii: {
     browserId: 'fixture',
@@ -72,7 +75,13 @@ const host = {
       const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
       if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
         throw new Error('Session unavailable');
-      if (fn === 'claude::agents::get') return { ...row, last_reply: reply() };
+      if (fn === 'claude::agents::get') {
+        const hold = holdNextLookup;
+        holdNextLookup = undefined;
+        if (hold) await hold;
+        if (!allowed) throw new Error('Session unavailable');
+        return { ...row, last_reply: lastReply };
+      }
       if (fn === 'claude::terminal::describe') {
         if (p.mode === 'original' && row.pty_session_id)
           return { pty_session_id: row.pty_session_id };
@@ -115,6 +124,7 @@ function Preview() {
   const firstPtys = useRef(new Map<string, string>());
   const [reopened, setReopened] = useState<{ text: string; reused: boolean } | null>(null);
   const [leases] = useState(() => new Map<string, typeof screen>());
+  const expired = useRef(new Set<string>());
   const terminal: AgentTerminalApi = {
     current: screen.pty || null,
     currentKey: screen.key || null,
@@ -123,7 +133,14 @@ function Preview() {
     async open({ key, pty, spec }) {
       if (pty === 'fixture-other-console')
         throw new Error('It is open in another console tab or window.');
-      const held = leases.get(key);
+      let held = leases.get(key);
+      if (held && expired.current.delete(held.pty)) {
+        // Match terminal.open: a gone detached PTY drops its book entry and a
+        // lease-only call returns false, leaving the current terminal alone.
+        leases.delete(key);
+        held = undefined;
+        if (!spec) return false;
+      }
       const args = spec?.args ?? [];
       const text =
         pty === 'fixture-console'
@@ -162,12 +179,37 @@ function Preview() {
   const deliver = () => {
     if (allowed) {
       sequence++;
-      emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: reply() });
+      lastReply = reply();
+      emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: lastReply });
     }
   };
-  // A fixture keyboard shortcut also works while the real modal owns focus.
+  const scenario = (mode: 'stale' | 'burst') => {
+    // Hold the first post-delivery read until all deliveries (or the branch
+    // switch) have happened. No dependence on network speed or a timer.
+    let release = () => {};
+    holdNextLookup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (mode === 'stale') {
+      lastReply = { id: 'abandoned-reply', text: 'Abandoned branch answer' };
+      emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: lastReply });
+      lastReply = null;
+    } else {
+      for (let i = 1; i <= 21; i++) {
+        lastReply = { id: `burst-${i}`, text: `Burst reply ${i}` };
+        const event = { claude_session_id: rows[0].id, reply: lastReply };
+        emit('claude::agents::on-reply', event);
+        if (i === 1) emit('claude::agents::on-reply', event);
+      }
+    }
+    release();
+  };
+  // Fixture keyboard shortcuts work while the real modal owns focus.
   window.onkeydown = (e) => {
-    if (e.altKey && e.code === 'KeyU') deliver();
+    if (!e.altKey || e.repeat) return;
+    if (e.code === 'KeyU') deliver();
+    if (e.code === 'KeyS') scenario('stale');
+    if (e.code === 'KeyB') scenario('burst');
   };
   return (
     <TooltipProvider>
@@ -207,6 +249,20 @@ function Preview() {
             >
               Toggle access
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                const finished = Array.from(leases.values()).find(
+                  (held) => held.text === 'Finished original at workspace trust',
+                );
+                if (finished && finished.pty !== screen.pty) expired.current.add(finished.pty);
+              }}
+            >
+              Expire detached finished PTY
+            </button>
+            <span>
+              While following: Alt+S switches to an empty branch; Alt+B delivers 21 replies.
+            </span>
             <button type="button" onClick={() => setNarrow(!narrow)}>
               Resize pane
             </button>
