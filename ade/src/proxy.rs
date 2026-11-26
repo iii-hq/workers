@@ -1,13 +1,16 @@
-//! Transparent WebSocket proxy at `/ws`.
+//! Transparent WebSocket proxies: the worker socket at `/ws` and the SDK
+//! stream sockets at `/ws/ws/channels/{id}`.
 //!
-//! For every incoming `/ws` upgrade we open a fresh outbound WebSocket
-//! to the iii engine (`engine_url`) and pump frames between the two
-//! sockets until either side closes. Frame types are translated 1:1
-//! between [`axum::extract::ws::Message`] and
+//! For every incoming upgrade we open a fresh outbound WebSocket to the iii
+//! engine and pump frames between the two sockets until either side closes:
+//! `/ws` dials `engine_url`, a stream socket dials the engine's
+//! `/ws/channels/{id}` for the same end (see [`channel_proxy`]). Frame types
+//! are translated 1:1 between [`axum::extract::ws::Message`] and
 //! [`tokio_tungstenite::tungstenite::Message`].
 //!
-//! The proxy is intentionally dumb — no buffering, no auth — with THREE
-//! exceptions on the browser→engine leg:
+//! The proxy is intentionally dumb — no buffering, no auth. A stream
+//! socket's frames are the stream's own data and pass untouched. The worker
+//! socket has THREE exceptions on the browser→engine leg:
 //!
 //! 1. The browser worker registration gets the ADE worker's namespace
 //!    stamped on (see [`enforce_worker_namespace`]). This is authoritative at
@@ -32,11 +35,12 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, header, uri::Authority};
 use axum::response::{IntoResponse, Response};
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
+use iii_sdk::protocol::ChannelDirection;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 
@@ -68,7 +72,71 @@ pub async fn ws_proxy(
     }
     ws.max_message_size(usize::MAX)
         .max_frame_size(usize::MAX)
-        .on_upgrade(move |socket| handle_ws(socket, config))
+        .on_upgrade(move |socket| handle_ws(socket, Upstream::Worker(config)))
+}
+
+/// The end of an engine pipe a stream socket opens, as the SDKs ask for it.
+#[derive(serde::Deserialize)]
+pub struct ChannelQuery {
+    pub key: String,
+    pub dir: ChannelDirection,
+}
+
+/// Axum handler for an SDK stream socket: a `File`, `Blob` or stream in a
+/// browser call payload travels through an engine pipe, and the browser SDK
+/// opens each end beside its socket address. The engine checks the access
+/// key; the same Origin check as [`ws_proxy`] applies. Both legs keep the
+/// default size limits, which are the engine's own channel endpoint limits.
+pub async fn channel_proxy(
+    headers: HeaderMap,
+    Path(channel_id): Path<String>,
+    Query(query): Query<ChannelQuery>,
+    ws: WebSocketUpgrade,
+    State(config): State<ProxyConfig>,
+) -> Response {
+    if !browser_origin_allowed(&headers) {
+        tracing::warn!("rejected cross-origin browser stream WebSocket upgrade");
+        return (StatusCode::FORBIDDEN, "cross-origin WebSocket denied").into_response();
+    }
+    let Some(url) = channel_url(&config.engine_url, &channel_id, &query.key, query.dir) else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            "cannot build the engine channel URL",
+        )
+            .into_response();
+    };
+    ws.on_upgrade(move |socket| handle_ws(socket, Upstream::Channel(url)))
+}
+
+/// `<engine_url>/ws/channels/<channel_id>?<engine query>&key=…&dir=…`, the
+/// URL the SDKs dial for one end of a pipe. Only `key` and `dir` are
+/// forwarded and the id is one encoded segment, so nothing but a channel
+/// endpoint can be reached. `None` when `engine_url` cannot take a path or
+/// the id would not stay one segment.
+fn channel_url(
+    engine_url: &str,
+    channel_id: &str,
+    key: &str,
+    dir: ChannelDirection,
+) -> Option<String> {
+    // The segment setter skips `.` and `..` and strips tabs and newlines, so
+    // such an id would not stay the last segment.
+    if matches!(channel_id, "." | "..") || channel_id.contains(['\t', '\n', '\r']) {
+        return None;
+    }
+    let mut url = url::Url::parse(engine_url).ok()?;
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .extend(["ws", "channels", channel_id]);
+    let dir = match dir {
+        ChannelDirection::Read => "read",
+        ChannelDirection::Write => "write",
+    };
+    url.query_pairs_mut()
+        .append_pair("key", key)
+        .append_pair("dir", dir);
+    Some(url.into())
 }
 
 /// Browsers always send `Origin` on a WebSocket handshake. Require its
@@ -112,12 +180,31 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
     origin_host.eq_ignore_ascii_case(request_host) && origin_port == request_port
 }
 
-async fn handle_ws(client: WebSocket, config: ProxyConfig) {
-    let engine_ws_config = WebSocketConfig::default()
-        .max_message_size(None)
-        .max_frame_size(None);
+/// What a browser socket is relayed to.
+enum Upstream {
+    /// The engine's worker socket: no size limits, text frames rewritten.
+    Worker(ProxyConfig),
+    /// One end of an engine pipe at this URL: default limits, frames 1:1.
+    Channel(String),
+}
+
+async fn handle_ws(client: WebSocket, upstream: Upstream) {
+    let (url, engine_ws_config, dial_failed) = match &upstream {
+        Upstream::Worker(config) => (
+            config.engine_url.as_str(),
+            WebSocketConfig::default()
+                .max_message_size(None)
+                .max_frame_size(None),
+            "engine WS dial failed",
+        ),
+        Upstream::Channel(url) => (
+            url.as_str(),
+            WebSocketConfig::default(),
+            "engine channel dial failed",
+        ),
+    };
     let (engine, _resp) = match tokio_tungstenite::connect_async_with_config(
-        config.engine_url.as_str(),
+        url,
         Some(engine_ws_config),
         false,
     )
@@ -127,7 +214,8 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                engine_url = %config.engine_url,
+                // A channel URL's query carries the pipe's access key.
+                engine_url = %url.split_once('?').map_or(url, |(base, _)| base),
                 "failed to dial iii engine WebSocket; closing browser WS"
             );
             // Best-effort close; ignore the result. axum will drop the
@@ -136,7 +224,7 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
             let _ = client
                 .send(AxumMessage::Close(Some(AxumCloseFrame {
                     code: 1011, // 1011 = "internal error"
-                    reason: "engine WS dial failed".into(),
+                    reason: dial_failed.into(),
                 })))
                 .await;
             return;
@@ -156,8 +244,8 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
                 }
             };
             let is_close = matches!(msg, AxumMessage::Close(_));
-            let msg = match msg {
-                AxumMessage::Text(t) => {
+            let msg = match (msg, &upstream) {
+                (AxumMessage::Text(t), Upstream::Worker(config)) => {
                     if is_provider_registration(&t) {
                         tracing::warn!(
                             "dropped a browser registerfunction for a function the console \
@@ -174,7 +262,7 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
                         None => AxumMessage::Text(t),
                     }
                 }
-                other => other,
+                (other, _) => other,
             };
             if let Some(out) = axum_to_tungstenite(msg)
                 && let Err(e) = engine_tx.send(out).await
@@ -587,5 +675,63 @@ mod tests {
         // forward them. Use a real Frame ctor — `default()` panics.
         let frame = tokio_tungstenite::tungstenite::protocol::frame::Frame::ping(vec![]);
         assert!(tungstenite_to_axum(TungMessage::Frame(frame)).is_none());
+    }
+
+    fn url(engine: &str, id: &str, key: &str, dir: ChannelDirection) -> String {
+        channel_url(engine, id, key, dir).unwrap()
+    }
+
+    #[test]
+    fn channel_url_names_the_engine_endpoint_of_one_pipe_end() {
+        use ChannelDirection::{Read, Write};
+        assert_eq!(
+            url("ws://e", "c1", "k", Write),
+            "ws://e/ws/channels/c1?key=k&dir=write"
+        );
+        assert_eq!(
+            url("ws://e/", "c1", "k", Read),
+            "ws://e/ws/channels/c1?key=k&dir=read"
+        );
+        // The engine URL's own query stays ahead of the channel's.
+        assert_eq!(
+            url("ws://e/?token=abc", "c1", "k", Read),
+            "ws://e/ws/channels/c1?token=abc&key=k&dir=read"
+        );
+        assert_eq!(
+            url("ws://e/?", "c1", "k", Read),
+            "ws://e/ws/channels/c1?key=k&dir=read"
+        );
+        assert_eq!(
+            url("ws://e/p/", "c1", "k", Write),
+            "ws://e/p/ws/channels/c1?key=k&dir=write"
+        );
+        assert_eq!(
+            url("ws://e", "c1", "a+b/c=", Read),
+            "ws://e/ws/channels/c1?key=a%2Bb%2Fc%3D&dir=read"
+        );
+        assert_eq!(
+            url("wss://u:p@e:49134", "c1", "k", Read),
+            "wss://u:p@e:49134/ws/channels/c1?key=k&dir=read"
+        );
+    }
+
+    #[test]
+    fn channel_url_keeps_the_id_one_segment_under_ws_channels() {
+        use ChannelDirection::Read;
+        assert_eq!(
+            url("ws://e", "../../otel", "k", Read),
+            "ws://e/ws/channels/..%2F..%2Fotel?key=k&dir=read"
+        );
+        // Ids the segment setter would drop or turn into `..`.
+        for id in [".", "..", ".\t.", "..\n"] {
+            assert!(channel_url("ws://e", id, "k", Read).is_none(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn channel_url_needs_an_engine_url_that_takes_a_path() {
+        use ChannelDirection::Read;
+        assert!(channel_url("not a url", "c1", "k", Read).is_none());
+        assert!(channel_url("mailto:engine@example.com", "c1", "k", Read).is_none());
     }
 }

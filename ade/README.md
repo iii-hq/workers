@@ -371,6 +371,7 @@ removes it from the entry.
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
 | `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops a browser `registerfunction` of the console's own observable functions — `ade::ui::*`, `ade::workspace::on-changed`, `ade::compose::on-changed` — strips `private`, `args_format` and `observable` from browser registrations, and stamps `metadata.internal` on `registerfunction`) |
+| `GET /ws/ws/channels/{id}` (Upgrade) | Relays an SDK stream socket (a `File`, `Blob` or stream in a browser call payload) to the engine's `/ws/channels/{id}`, frames unchanged. Forwards only `key` and `dir`; same `Origin` check as `/ws`; the engine checks the access key. An engine that refuses the channel closes the socket with 1011 |
 | anything else | `404 Not Found` |
 
 The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `ade` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.

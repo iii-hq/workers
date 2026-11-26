@@ -29,7 +29,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::{sleep, timeout};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::server::Request;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message, http};
 use uuid::Uuid;
 
 /// The oldest engine (major, minor) the test runs against: the first with
@@ -1353,4 +1358,314 @@ async fn ws_proxy_forwards_oversized_engine_message() {
         other => panic!("expected oversized text message, got {other:?}"),
     }
     let _ = ws.close(None).await;
+}
+
+/// Serves the ADE router in front of `engine_url`. Returns its port and the
+/// sender whose drop stops it.
+async fn serve_ade(engine_url: String) -> (u16, tokio::sync::oneshot::Sender<()>) {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(ade::server::serve(
+        0,
+        ade::server::AppState::new(std::sync::Arc::new(engine_url), None, None, None),
+        shutdown_rx,
+        Some(bound_tx),
+    ));
+    (bound_rx.await.expect("server bound").port(), shutdown_tx)
+}
+
+/// Accepts the proxy's dial on a fake engine: the request target it asked
+/// for and the socket.
+// Tungstenite's handshake callback fixes this error type; boxing would violate its API.
+#[expect(clippy::result_large_err)]
+async fn accept_engine_dial(listener: &TcpListener) -> (String, WebSocketStream<TcpStream>) {
+    let (stream, _) = timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("the proxy never dialled the engine")
+        .expect("accept the proxy dial");
+    let mut target = String::new();
+    let ws = tokio_tungstenite::accept_hdr_async(stream, |request: &Request, response| {
+        target = request.uri().to_string();
+        Ok(response)
+    })
+    .await
+    .expect("ws handshake from the proxy");
+    (target, ws)
+}
+
+async fn next_frame(
+    ws: &mut (impl futures_util::Stream<Item = Result<Message, WsError>> + Unpin),
+    what: &str,
+) -> Message {
+    timeout(Duration::from_secs(10), ws.next())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        .unwrap_or_else(|| panic!("the socket ended before {what}"))
+        .unwrap_or_else(|error| panic!("read error before {what}: {error}"))
+}
+
+/// The HTTP status a refused WebSocket handshake answered.
+async fn refused(request: impl IntoClientRequest + Unpin) -> u16 {
+    match tokio_tungstenite::connect_async(request).await {
+        Err(WsError::Http(response)) => response.status().as_u16(),
+        Err(error) => panic!("handshake failed without an HTTP answer: {error}"),
+        Ok(_) => panic!("the handshake was accepted"),
+    }
+}
+
+/// A stream socket the browser SDK opens at `<origin>/ws/ws/channels/<id>`
+/// reaches the engine's `/ws/channels/<id>` with only `key` and `dir`
+/// forwarded after the engine URL's own query, and its frames pass
+/// unchanged: a text frame shaped like a console registration is user data
+/// on a channel and is not rewritten.
+#[tokio::test]
+async fn ws_channel_route_relays_a_writer_to_the_engine_channel_path() {
+    const PAGE_FRAME: &str = r#"{"type":"registerfunction","id":"ade::ui::asset","private":true}"#;
+
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}/?token=abc")).await;
+    let id = Uuid::new_v4();
+    let (mut client, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws/ws/channels/{id}?key=k%2B1&dir=write&extra=1"
+    ))
+    .await
+    .expect("connect to the channel route");
+    let (target, mut engine_ws) = accept_engine_dial(&engine).await;
+    assert_eq!(
+        target,
+        format!("/ws/channels/{id}?token=abc&key=k%2B1&dir=write")
+    );
+
+    let chunk: Vec<u8> = (0..=255).cycle().take(70_000).collect();
+    client
+        .send(Message::binary(chunk.clone()))
+        .await
+        .expect("send the binary frame");
+    client
+        .send(Message::text(PAGE_FRAME))
+        .await
+        .expect("send the text frame");
+    client
+        .send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "stream_complete".into(),
+        })))
+        .await
+        .expect("send the close");
+
+    match next_frame(&mut engine_ws, "the binary frame").await {
+        Message::Binary(bytes) => assert!(bytes == chunk, "the bytes changed on the way"),
+        other => panic!("expected the binary frame, got {other:?}"),
+    }
+    match next_frame(&mut engine_ws, "the text frame").await {
+        Message::Text(text) => assert_eq!(text.as_str(), PAGE_FRAME),
+        other => panic!("expected the text frame, got {other:?}"),
+    }
+    match next_frame(&mut engine_ws, "the close").await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Normal);
+            assert_eq!(frame.reason.as_str(), "stream_complete");
+        }
+        other => panic!("expected the close, got {other:?}"),
+    }
+}
+
+/// The engine's frames reach the reading end as sent, and its error close
+/// keeps its code and reason.
+#[tokio::test]
+async fn ws_channel_route_relays_a_reader_with_its_close_reason() {
+    const ABORT: &str = "channel writer aborted: closed with code 4011";
+
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}")).await;
+    let id = Uuid::new_v4();
+    let (mut client, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws/ws/channels/{id}?key=k&dir=read"
+    ))
+    .await
+    .expect("connect to the channel route");
+    let (target, mut engine_ws) = accept_engine_dial(&engine).await;
+    assert_eq!(target, format!("/ws/channels/{id}?key=k&dir=read"));
+
+    engine_ws
+        .send(Message::binary(vec![1, 2, 3]))
+        .await
+        .expect("send the binary frame");
+    engine_ws
+        .send(Message::text(r#"{"kind":"progress"}"#))
+        .await
+        .expect("send the text frame");
+    engine_ws
+        .send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Error,
+            reason: ABORT.into(),
+        })))
+        .await
+        .expect("send the close");
+
+    match next_frame(&mut client, "the binary frame").await {
+        Message::Binary(bytes) => assert_eq!(bytes.as_ref(), [1, 2, 3]),
+        other => panic!("expected the binary frame, got {other:?}"),
+    }
+    match next_frame(&mut client, "the text frame").await {
+        Message::Text(text) => assert_eq!(text.as_str(), r#"{"kind":"progress"}"#),
+        other => panic!("expected the text frame, got {other:?}"),
+    }
+    match next_frame(&mut client, "the close").await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Error);
+            assert_eq!(frame.reason.as_str(), ABORT);
+        }
+        other => panic!("expected the close, got {other:?}"),
+    }
+}
+
+/// A cross-origin page, a request that names no channel end, and any path
+/// beside `/ws/ws/channels/<one segment>` never dial the engine.
+#[tokio::test]
+async fn ws_channel_route_refuses_what_is_not_a_channel_end() {
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}")).await;
+    let id = Uuid::new_v4();
+
+    let mut hostile = format!("ws://127.0.0.1:{port}/ws/ws/channels/{id}?key=k&dir=read")
+        .into_client_request()
+        .expect("request");
+    hostile.headers_mut().insert(
+        "origin",
+        http::HeaderValue::from_static("http://hostile.invalid"),
+    );
+    assert_eq!(refused(hostile).await, 403);
+
+    for (path, status) in [
+        (format!("/ws/ws/channels/{id}?key=k&dir=sideways"), 400),
+        (format!("/ws/ws/channels/{id}?dir=read"), 400),
+        ("/ws/ws/otel?key=k&dir=read".to_string(), 404),
+        ("/ws/ws/channels/a/b?key=k&dir=read".to_string(), 404),
+        ("/ws/channels/x?key=k&dir=read".to_string(), 404),
+    ] {
+        assert_eq!(
+            refused(format!("ws://127.0.0.1:{port}{path}")).await,
+            status,
+            "{path}"
+        );
+    }
+    assert!(
+        timeout(Duration::from_millis(300), engine.accept())
+            .await
+            .is_err(),
+        "a refused request dialled the engine"
+    );
+}
+
+/// The ADE upgrades before it dials, so an engine that refuses the channel
+/// (unknown id or wrong key) reaches the page as a 1011 close.
+#[tokio::test]
+// Tungstenite's handshake callback fixes this error type; boxing would violate its API.
+#[expect(clippy::result_large_err)]
+async fn ws_channel_route_closes_1011_when_the_engine_refuses() {
+    let engine = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake engine");
+    let engine_addr = engine.local_addr().expect("fake engine addr");
+    tokio::spawn(async move {
+        let (stream, _) = engine.accept().await.expect("accept the proxy dial");
+        let _ = tokio_tungstenite::accept_hdr_async(stream, |_: &Request, _| {
+            Err(http::Response::builder()
+                .status(404)
+                .body(Some("Channel not found".to_string()))
+                .expect("404 response"))
+        })
+        .await;
+    });
+    let (port, _shutdown) = serve_ade(format!("ws://{engine_addr}")).await;
+    let (mut client, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{port}/ws/ws/channels/{}?key=k&dir=read",
+        Uuid::new_v4()
+    ))
+    .await
+    .expect("connect to the channel route");
+    match next_frame(&mut client, "the close").await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Error);
+            assert_eq!(frame.reason.as_str(), "engine channel dial failed");
+        }
+        other => panic!("expected the close, got {other:?}"),
+    }
+}
+
+/// Both ends of a real engine pipe, opened through the ADE route the browser
+/// SDK uses, carry the bytes and the clean end.
+#[tokio::test]
+async fn ws_channel_route_carries_a_real_engine_pipe() {
+    if !in_private_home("ws_channel_route_carries_a_real_engine_pipe") {
+        return;
+    }
+    let Some(harness) = boot().await else {
+        return;
+    };
+    let pipe = harness
+        .client
+        .call(CallRequest {
+            function_id: "engine::channels::create".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("engine::channels::create failed");
+    // Ids and keys are UUIDs, so they need no encoding.
+    let end = |side: &str| {
+        let end = &pipe[side];
+        format!(
+            "ws://127.0.0.1:{}/ws/ws/channels/{}?key={}&dir={}",
+            harness.http_port,
+            end["channel_id"].as_str().expect("channel_id"),
+            end["access_key"].as_str().expect("access_key"),
+            end["direction"].as_str().expect("direction"),
+        )
+    };
+    let (mut reader, _) = tokio_tungstenite::connect_async(end("reader"))
+        .await
+        .expect("open the reading end");
+    let (mut writer, _) = tokio_tungstenite::connect_async(end("writer"))
+        .await
+        .expect("open the writing end");
+
+    let bytes: Vec<u8> = (0..=255).cycle().take(100_000).collect();
+    writer
+        .send(Message::binary(bytes.clone()))
+        .await
+        .expect("write the bytes");
+    writer
+        .send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "".into(),
+        })))
+        .await
+        .expect("close the writing end");
+
+    match next_frame(&mut reader, "the bytes").await {
+        Message::Binary(read) => assert!(read == bytes, "the bytes changed on the way"),
+        other => panic!("expected the bytes, got {other:?}"),
+    }
+    match next_frame(&mut reader, "the end of the stream").await {
+        Message::Close(frame) => assert!(
+            frame
+                .as_ref()
+                .is_none_or(|frame| frame.code == CloseCode::Normal),
+            "the stream did not end cleanly: {frame:?}"
+        ),
+        other => panic!("expected the end of the stream, got {other:?}"),
+    }
+    harness.client.shutdown_async().await;
 }
