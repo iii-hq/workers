@@ -5,7 +5,6 @@ import {
   EmptyState,
   Eyebrow,
   type Host,
-  IconButton,
   ImageThumbnailButton,
   ImageViewer,
   Input,
@@ -279,9 +278,10 @@ export function ImageResizeView({
               {source ? 'Choose another' : 'Choose an image'}
             </Button>
             {source ? (
-              <IconButton label="Remove image" onClick={handlers.onRemove}>
+              <Button variant="secondary" size="sm" data-settings-narrow-action="" onClick={handlers.onRemove}>
                 <Trash2 />
-              </IconButton>
+                Remove
+              </Button>
             ) : null}
             <input
               ref={refs.input}

@@ -34,7 +34,6 @@ vi.mock('@iii-dev/console-ui', () => ({
     </div>
   ),
   Eyebrow: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  IconButton: ({ label }: { label: string }) => <button type="button" aria-label={label} />,
   ImageThumbnailButton: ({ children, title }: { children?: ReactNode; title: string }) => (
     <button type="button" aria-label={`View ${title}`}>
       {children}
@@ -179,7 +178,8 @@ describe('ImageResizeView', () => {
     expect(html).toContain('photo.jpg')
     expect(html).toContain(formatBytes(1000))
     expect(html).toContain('Choose another')
-    expect(html).toContain('aria-label="Remove image"')
+    // A text button, so the shared narrow-pane rule gives it the same touch height as Choose another.
+    expect(html).toMatch(/<button[^>]*data-settings-narrow-action=""[^>]*>(?:(?!<\/button>).)*Remove<\/button>/)
     expect(html).toContain('src="blob:source" alt="Original: photo.jpg"')
     expect(html).toContain('1600 × 1200')
     expect(html).toContain('Not resized yet|Set the options and select Resize.')
