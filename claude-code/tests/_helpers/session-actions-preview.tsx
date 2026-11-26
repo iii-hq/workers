@@ -35,6 +35,8 @@ const watches = new Set<{
   target: string;
 }>();
 let allowed = true;
+let finishedPty: { id: string; confirmed: boolean } | undefined;
+let mismatchedDescribe = false;
 let sequence = 1;
 const reply = () => ({
   id: `reply-${sequence}`,
@@ -81,7 +83,6 @@ const host = {
         session?: string;
         claude_session_id?: string;
         mode?: string;
-        reopen_held_resume?: boolean;
         cursor?: string;
       },
     ) {
@@ -107,17 +108,25 @@ const host = {
         };
       }
       if (fn === 'claude::terminal::describe') {
+        if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
         if (p.mode === 'original' && row.pty_session_id)
-          return { pty_session_id: row.pty_session_id };
+          return {
+            pty_session_id: row.pty_session_id,
+            claude_session_id: mismatchedDescribe ? rows[3].id : row.id,
+          };
         if (p.mode === 'original' && row.alive && !row.short_id)
           return { follow: true, claude_session_id: row.id };
-        if (p.mode === 'original' && !row.alive && p.reopen_held_resume)
-          return { reopen_held_resume: true };
+        if (p.mode === 'original' && row.id === rows[4].id && finishedPty) {
+          if (!finishedPty.confirmed)
+            throw new Error('Could not verify which conversation a console terminal is running');
+          return { pty_session_id: finishedPty.id, claude_session_id: row.id };
+        }
         const args =
           row.short_id && p.mode !== 'fork'
             ? ['attach', row.short_id]
             : ['--resume', row.id, ...(p.mode === 'fork' ? ['--fork-session'] : [])];
         return {
+          claude_session_id: row.id,
           program: 'mock-claude',
           cwd: '/fixture',
           env: {},
@@ -148,23 +157,17 @@ function Preview() {
   const firstPtys = useRef(new Map<string, string>());
   const [reopened, setReopened] = useState<{ text: string; reused: boolean } | null>(null);
   const [leases] = useState(() => new Map<string, typeof screen>());
-  const expired = useRef(new Set<string>());
+  const [openCalls, setOpenCalls] = useState(0);
   const terminal: AgentTerminalApi = {
     current: screen.pty || null,
     currentKey: screen.key || null,
     has: (key) => leases.has(key),
     claim: () => {},
     async open({ key, pty, spec }) {
+      setOpenCalls((n) => n + 1);
       if (pty === 'fixture-other-console')
         throw new Error('It is open in another console tab or window.');
-      let held = leases.get(key);
-      if (held && expired.current.delete(held.pty)) {
-        // Match terminal.open: a gone detached PTY drops its book entry and a
-        // lease-only call returns false, leaving the current terminal alone.
-        leases.delete(key);
-        held = undefined;
-        if (!spec) return false;
-      }
+      const held = pty ? [...leases.values()].find((lease) => lease.pty === pty) : leases.get(key);
       const args = spec?.args ?? [];
       const text =
         pty === 'fixture-console'
@@ -183,8 +186,8 @@ function Preview() {
       }
       if (!pty && !held) setCount((n) => n + 1);
       const next = { key, pty: pty ?? held?.pty ?? `fixture-${crypto.randomUUID()}`, text };
-      // The finished resume stays unlisted by PID, as at a trust prompt.
-      // Switch to the console or a fork, then reopen either original without a new PTY.
+      if (!held && text === 'Finished original at workspace trust')
+        finishedPty = { id: next.pty, confirmed: false };
       if (
         text === 'Original background terminal' ||
         text === 'Finished original at workspace trust'
@@ -286,13 +289,30 @@ function Preview() {
             <button
               type="button"
               onClick={() => {
-                const finished = Array.from(leases.values()).find(
-                  (held) => held.text === 'Finished original at workspace trust',
-                );
-                if (finished && finished.pty !== screen.pty) expired.current.add(finished.pty);
+                if (finishedPty && finishedPty.id !== screen.pty) {
+                  const id = finishedPty.id;
+                  for (const [key, lease] of leases) if (lease.pty === id) leases.delete(key);
+                  finishedPty = undefined;
+                }
               }}
             >
               Expire detached finished PTY
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (finishedPty) finishedPty.confirmed = true;
+              }}
+            >
+              Confirm finished PTY identity
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                mismatchedDescribe = true;
+              }}
+            >
+              Return mismatched terminal identity
             </button>
             <button
               type="button"
@@ -327,6 +347,7 @@ function Preview() {
             <main className="min-w-0 flex-1 p-4">
               <h1 className="font-medium">Claude terminal</h1>
               <p>{screen.text}</p>
+              <p className="text-sm">Terminal open calls: {openCalls}</p>
               <p className="text-sm">Terminals created: {count}</p>
               {reopened?.text === screen.text ? (
                 <p className="text-sm">

@@ -142,7 +142,7 @@ describe('claude::terminal::describe', () => {
   const original = { session: id, mode: 'original', claude_session_id: id };
   it.each([
     { follow: true as const, claude_session_id: id },
-    { pty_session_id: 'fixture-original' },
+    { pty_session_id: 'fixture-original', claude_session_id: id },
   ])('does not prepare a terminal for %j', async (plan) => {
     const { describeFn, resolveOpen, claude } = setup();
     resolveOpen.mockResolvedValueOnce(plan);
@@ -170,30 +170,20 @@ describe('claude::terminal::describe', () => {
     expect(first).not.toHaveProperty('copy');
     expect(await describeFn.handler({ ...original, mode: 'fork' })).toMatchObject({ copy: true });
     const reopened = await describeFn.handler(original);
-    expect(reopened).toMatchObject({ args, cwd });
+    expect(reopened).toMatchObject({ args, cwd, claude_session_id: id });
     expect(reopened).not.toHaveProperty('copy');
   });
 
-  it('describes reopening a held resume without preparing a new process', async () => {
+  it.each([
+    'original',
+    'fork',
+  ])('refuses a lease-only %s without resolving or preparing a process', async (mode) => {
     const { describeFn, resolveOpen, claude } = setup();
-    const reopen = { ...original, reopen_held_resume: true };
-    resolveOpen.mockImplementation(async (_id, request) =>
-      request?.reopen_held_resume
-        ? { reopen_held_resume: true }
-        : { args: ['--resume', id], cwd: '/repo' },
-    );
-
-    expect(await describeFn.handler(reopen)).toEqual({ reopen_held_resume: true });
-    expect(resolveOpen).toHaveBeenCalledTimes(1);
-    expect(claude.installs).toEqual([]);
-  });
-
-  it('does not accept a held resume with an explicit fork', async () => {
-    const { describeFn, resolveOpen } = setup();
     await expect(
-      describeFn.handler({ ...original, mode: 'fork', reopen_held_resume: true }),
-    ).rejects.toThrow(/original/);
+      describeFn.handler({ ...original, mode, reopen_held_resume: true }),
+    ).rejects.toThrow(/cannot verify the original conversation/);
     expect(resolveOpen).not.toHaveBeenCalled();
+    expect(claude.installs).toEqual([]);
   });
 
   it('will not launch a stale attach after preparation', async () => {
@@ -211,7 +201,7 @@ describe('claude::terminal::describe', () => {
     resolveOpen.mockResolvedValue({ args, cwd: '/fixture', copy: true });
     const spec = await describeFn.handler({ ...original, mode: 'fork' });
     expect(resolveOpen).toHaveBeenLastCalledWith(id, { mode: 'fork', claude_session_id: id });
-    expect(spec.copy).toBe(true);
+    expect(spec).toMatchObject({ copy: true, claude_session_id: id });
     expect((spec.args as string[]).slice(-3)).toEqual(args);
   });
 

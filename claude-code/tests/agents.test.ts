@@ -273,7 +273,7 @@ function host(
     function_id: string;
     payload: Record<string, unknown>;
   }) => {
-    if (req.function_id === 'shell::pty::sessions' && options.ptys) return options.ptys();
+    if (req.function_id === 'shell::pty::sessions') return options.ptys?.() ?? { sessions: [] };
     if (req.function_id !== 'shell::exec') return realCall(req as never);
     fake.calls.push({ function_id: req.function_id, payload: req.payload });
     return exec(String(req.payload.command));
@@ -587,8 +587,11 @@ describe('opening a listed session', () => {
     ];
     const fake = host(ok(rows), { external: true, ptys: () => ({ sessions: ptys }) });
     expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
-    ptys.push({ session_id: 'original-pty', pid: 12, ui: 'claude' });
-    expect(await fake.resolveOpen(ID, original)).toEqual({ pty_session_id: 'original-pty' });
+    ptys.push({ session_id: 'original-pty', pid: 12, ui: 'claude', status: 'detached' });
+    expect(await fake.resolveOpen(ID, original)).toEqual({
+      pty_session_id: 'original-pty',
+      claude_session_id: ID,
+    });
   });
 
   it('uses a fresh background short ID for original and the conversation UUID for fork', async () => {
@@ -634,9 +637,55 @@ describe('opening a listed session', () => {
   it('refuses an original PTY when two conversations claim its process', async () => {
     const fake = host(ok([interactive(ID, 'idle'), interactive('another-conversation', 'idle')]), {
       external: true,
-      ptys: () => ({ sessions: [{ session_id: 'ambiguous', pid: 42, ui: 'claude' }] }),
+      ptys: () => ({
+        sessions: [{ session_id: 'ambiguous', pid: 42, ui: 'claude', status: 'attached' }],
+      }),
     });
     await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
+  });
+
+  it('does not expose a PTY when CLI deduplication would hide a second live process', async () => {
+    const fake = host(
+      ok([interactive(ID, 'idle', { pid: 12 }), interactive(ID, 'idle', { pid: 13 })]),
+      {
+        external: true,
+        ptys: () => ({
+          sessions: [{ session_id: 'fixture-pty', pid: 12, ui: 'claude', status: 'detached' }],
+        }),
+      },
+    );
+    await expect(fake.resolveOpen(ID, original)).rejects.toThrow(/ambiguous/);
+  });
+
+  it('refuses an unconfirmed console PTY but resumes by UUID after it exits', async () => {
+    const pty = { session_id: 'fixture-pty', pid: 42, ui: 'claude', status: 'detached' as unknown };
+    const fake = host(ok([]), { ptys: () => ({ sessions: [pty] }) });
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
+    pty.status = { exited: { exit_code: 0 } };
+    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
+  });
+
+  it('resumes the selected UUID without taking a PTY identified as another conversation', async () => {
+    const other = 'ba553300-0000-4000-8000-012345678900';
+    const fake = host(ok([interactive(other, 'idle')]), {
+      ptys: () => ({
+        sessions: [{ session_id: 'other-pty', pid: 42, ui: 'claude', status: 'detached' }],
+      }),
+    });
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
+  });
+
+  it('refuses an explicit resume when terminal inventory cannot be confirmed', async () => {
+    const fake = host(ok([]), { ptys: () => ({}) });
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
+  });
+
+  it('resumes a finished background original by UUID rather than using its inactive short ID', async () => {
+    const fake = host(ok([background(ID, 'done')]), { external: true });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ args: RESUME, cwd: '/repo' });
   });
 
   it('does not attach a finished background row by a short ID reused by another session', async () => {
@@ -662,14 +711,13 @@ describe('opening a listed session', () => {
     await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
   });
 
-  it('does not reopen an old resume lease for a now-live or hidden conversation', async () => {
-    const reopen = { ...original, reopen_held_resume: true };
+  it('does not resume a conversation that became live or hidden', async () => {
     const row = interactive(ID, 'idle');
     const fake = host(ok([row]), { external: true });
-    expect(await fake.resolveOpen(ID, reopen)).toEqual({ follow: true, claude_session_id: ID });
+    expect(await fake.resolveOpen(ID, original)).toEqual({ follow: true, claude_session_id: ID });
     row.pid = undefined;
     row.status = 'done';
-    await expect(host(ok([row])).resolveOpen(ID, reopen)).rejects.toThrow(
+    await expect(host(ok([row])).resolveOpen(ID, original)).rejects.toThrow(
       'no session with that id is listed',
     );
   });
@@ -780,19 +828,21 @@ describe('opening a listed session', () => {
     beforeEach(() => void vi.useFakeTimers({ toFake: ['Date'] }));
     afterEach(() => void vi.useRealTimers());
 
-    it('authorizes reopening a held finished original without extending the launch reservation', async () => {
-      const fake = host(ok([]));
+    it('allows reopening a resumed original only after its current PTY is confirmed', async () => {
+      const rows: CliRow[] = [];
+      const ptys: Array<{ session_id: string; pid: number; ui: string; status: string }> = [];
+      const fake = host(ok(rows), { ptys: () => ({ sessions: ptys }) });
       fake.state.set('claude_sessions/h', record('h', 'done', ID));
-      const reopen = { ...original, reopen_held_resume: true };
 
       expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
-      vi.advanceTimersByTime(10_000);
-      expect(await fake.resolveOpen('h', reopen)).toEqual({ reopen_held_resume: true });
-      await expect(fake.resolveOpen('h', original)).rejects.toThrow(/already open/);
-      vi.advanceTimersByTime(5_000);
-      expect(await fake.heldElsewhere(ID)).toBe(false);
-      expect(await fake.resolveOpen('h', reopen)).toEqual({ reopen_held_resume: true });
-      expect(await fake.heldElsewhere(ID)).toBe(false);
+      ptys.push({ session_id: 'fixture-resume', pid: 42, ui: 'claude', status: 'detached' });
+      vi.advanceTimersByTime(15_000);
+      await expect(fake.resolveOpen('h', original)).rejects.toThrow(/could not verify/);
+      rows.push(interactive(ID, 'idle'));
+      expect(await fake.resolveOpen(ID, original)).toEqual({
+        pty_session_id: 'fixture-resume',
+        claude_session_id: ID,
+      });
     });
 
     it('gives one plain resume, then copies, for a while', async () => {

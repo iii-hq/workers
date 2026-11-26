@@ -134,13 +134,16 @@ async function testSessionActions(code) {
           childList: true,
           subtree: true,
           characterData: true,
+          attributes: true,
         });
         check();
       });
     const click = async (name) => {
       const button = await until(() =>
         Array.from(document.querySelectorAll('button')).find(
-          (el) => (el.getAttribute('aria-label') ?? el.textContent) === name,
+          (el) =>
+            (el.getAttribute('aria-label') ?? el.textContent) === name &&
+            el.getAttribute('aria-disabled') !== 'true',
         ),
       );
       button.click();
@@ -200,6 +203,11 @@ async function testSessionActions(code) {
     await click('Open original: Console original');
     await text('Original console PTY');
     await click('Open original: Finished review');
+    await text('Could not verify which conversation a console terminal is running');
+    assert.match(document.querySelector('main').textContent, /Original console PTY/);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*2/);
+    await click('Confirm finished PTY identity');
+    await click('Open original: Finished review');
     await text('Finished resume on reopen: reused');
     assert.match(document.querySelector('main').textContent, /Terminals created:\s*1/);
     await click('Open original: Console original');
@@ -209,5 +217,36 @@ async function testSessionActions(code) {
     await text('Finished resume on reopen: replaced');
     assert.match(document.querySelector('main').textContent, /Terminals created:\s*2/);
     assert.doesNotMatch(document.body.textContent, /That did not go through/);
+  });
+
+  await test('keeps the read-only original and native background attach distinct from a fork', async (t) => {
+    const { click, follow, text, document } = setup(t);
+    const terminal = () => document.querySelector('main').textContent;
+    await follow();
+    assert.match(terminal(), /Terminal open calls:\s*0/);
+    await click('Close');
+    await click('Fork Design review');
+    await click('Cancel');
+    assert.match(terminal(), /Terminal open calls:\s*0/);
+    await click('Fork Design review');
+    await click('Create fork');
+    await text('Separate fork terminal');
+    await follow();
+    assert.match(terminal(), /Terminal open calls:\s*1/);
+    await click('Close');
+    await click('Open original: Background indexing');
+    await text('Original background terminal');
+    assert.match(terminal(), /Terminal open calls:\s*2/);
+  });
+
+  await test('refuses an unconfirmed original transport before any terminal operation', async (t) => {
+    const { click, text, document } = setup(t);
+    await click('Return mismatched terminal identity');
+    await click('Open original: Console original');
+    await text('The original conversation could not be verified.');
+    const terminal = document.querySelector('main').textContent;
+    assert.match(terminal, /No terminal selected/);
+    assert.match(terminal, /Terminal open calls:\s*0/);
+    assert.match(terminal, /Terminals created:\s*0/);
   });
 }

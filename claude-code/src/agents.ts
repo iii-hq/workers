@@ -62,12 +62,10 @@ export type OpenMode = 'original' | 'fork';
 export type OpenRequest = {
   mode: OpenMode;
   claude_session_id: string;
-  reopen_held_resume?: boolean;
 };
 export type OpenPlan =
   | OpenSpec
-  | { pty_session_id: string }
-  | { reopen_held_resume: true }
+  | { pty_session_id: string; claude_session_id: string }
   | { follow: true; claude_session_id: string };
 export type ResolveOpen = (
   id: string,
@@ -96,8 +94,8 @@ const SHORT_ID = /^[0-9a-f]{8}$/;
 /**
  * How long a conversation counts as open after a plain `--resume` was handed
  * out for it: the CLI lists the session only once its process has started.
- * shortcut: time-based, a slow start or a trust prompt outlasts it; upgrade if
- * shell::pty::sessions ever reports args.
+ * A live console PTY whose conversation is not listed also blocks an explicit
+ * resume; the CLI is not yet able to rule out a second writer.
  */
 const OPENING_MS = 15_000;
 
@@ -255,22 +253,27 @@ async function hookSessions(iii: IIIClient): Promise<Set<string>> {
   }
 }
 
-/** The console's claude terminals: the pid of each one's process, to its PTY session. */
-async function claudePtys(iii: IIIClient): Promise<Map<number, string>> {
-  const byPid = new Map<number, string>();
+type PtyRow = { session_id?: unknown; pid?: unknown; ui?: unknown; status?: unknown };
+
+const livePty = (pty: PtyRow) => pty.status === 'attached' || pty.status === 'detached';
+const exitedPty = (pty: PtyRow) =>
+  !!pty.status && typeof pty.status === 'object' && 'exited' in pty.status;
+const pidOf = (pid: unknown) =>
+  typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+
+/** Read fresh PTY metadata, never the output or the browser's lease book. */
+async function claudePtys(iii: IIIClient): Promise<PtyRow[] | null> {
   try {
-    const res = await iii.call<
-      unknown,
-      { sessions?: Array<{ session_id?: unknown; pid?: unknown; ui?: unknown }> } | null
-    >({ function_id: 'shell::pty::sessions', payload: {}, timeoutMs: 15_000 });
-    for (const s of Array.isArray(res?.sessions) ? res.sessions : []) {
-      const id = str(s?.session_id);
-      if (s?.ui === 'claude' && typeof s.pid === 'number' && id) byPid.set(s.pid, id);
-    }
+    const res = await iii.call<unknown, { sessions?: PtyRow[] } | null>({
+      function_id: 'shell::pty::sessions',
+      payload: {},
+      timeoutMs: 15_000,
+    });
+    return Array.isArray(res?.sessions) ? res.sessions.filter((s) => s?.ui === 'claude') : null;
   } catch (err) {
     console.warn(`claude-code: could not list the console terminals: ${String(err)}`);
+    return null;
   }
-  return byPid;
 }
 
 export function registerAgents(
@@ -299,7 +302,7 @@ export function registerAgents(
       listSessions(iii),
       cliSnapshot(iii, host, all),
       showAll ? new Set<string>() : hookSessions(iii),
-      replies ? new Map<number, string>() : claudePtys(iii),
+      replies ? null : claudePtys(iii),
     ]);
     const merged = mergeInventory({
       // Older headless records must not shadow an explicitly listed CLI row.
@@ -310,10 +313,10 @@ export function registerAgents(
         ? snapshot.rows.filter((row) => row.kind === 'interactive' || row.kind === 'background')
         : snapshot.rows,
       known: (id) => tracker.has(id) || hooked.has(id),
-      ptyOf: (pid) => ptys.get(pid),
+      ptyOf: (pid) => str(ptys?.find((pty) => pty.pid === pid && livePty(pty))?.session_id),
       external: showAll,
     });
-    return { ...merged, detail: snapshot.detail, cliRows: snapshot.rows };
+    return { ...merged, detail: snapshot.detail, cliRows: snapshot.rows, ptys };
   };
 
   iii.registerFunction(
@@ -384,7 +387,7 @@ export function registerAgents(
 
   const resolveOpen: ResolveOpen = async (id, request, reserve = true) => {
     const epoch = visibilityEpoch();
-    const { agents, detail, cliRows } = await inventory(
+    const { agents, detail, cliRows, ptys } = await inventory(
       true,
       current(),
       false,
@@ -415,15 +418,32 @@ export function registerAgents(
           copy: true,
         };
       }
+      // The display list deduplicates and hides rows; neither operation makes
+      // ambiguous raw process evidence safe for an interactive open.
+      const processes = new Set(
+        cliRows
+          .filter((r) => r.sessionId === claudeId)
+          .map((r) => pidOf(r.pid))
+          .filter((pid) => pid !== undefined),
+      );
+      const [pid] = processes;
+      if (
+        processes.size > 1 ||
+        (pid !== undefined && cliRows.some((r) => r.pid === pid && r.sessionId !== claudeId))
+      )
+        throw new Error('ambiguous original terminal');
       if (row.pty_session_id) {
+        const matches = ptys?.filter((pty) => pty.session_id === row.pty_session_id) ?? [];
+        const pty = matches[0];
         if (
-          agents.some(
-            (agent) =>
-              agent.pty_session_id === row.pty_session_id && agent.claude_session_id !== claudeId,
-          )
+          !pty ||
+          matches.length !== 1 ||
+          pid === undefined ||
+          pty.pid !== pid ||
+          ptys?.some((other) => other !== pty && other.pid === pid && !exitedPty(other))
         )
           throw new Error('ambiguous original terminal');
-        return { pty_session_id: row.pty_session_id };
+        return { pty_session_id: row.pty_session_id, claude_session_id: claudeId };
       }
       if (
         row.kind === 'background' &&
@@ -434,7 +454,7 @@ export function registerAgents(
       if (row.kind !== 'headless') {
         if (
           row.kind === 'background' &&
-          row.alive &&
+          pid !== undefined &&
           row.short_id &&
           SHORT_ID.test(row.short_id) &&
           epoch !== null
@@ -448,7 +468,7 @@ export function registerAgents(
         }
       }
     }
-    if (row.kind === 'background') {
+    if (!request && row.kind === 'background') {
       if (!external()) {
         throw new Error('external_sessions is off: this worker does not open host sessions');
       }
@@ -464,16 +484,28 @@ export function registerAgents(
     if (!row.cwd) throw new Error('this session has no recorded working directory');
     const args = [...prepared.args, '--resume', claudeId];
     // By conversation, not by row: `options.resume` can give two runs the same one.
-    const reopenHeldResume = request?.mode === 'original' && request.reopen_held_resume;
     const alive =
-      (!reopenHeldResume && isOpening(claudeId)) ||
-      agents.some((agent) => agent.alive && agent.claude_session_id === claudeId);
+      isOpening(claudeId) ||
+      agents.some((agent) => agent.alive && agent.claude_session_id === claudeId) ||
+      (request && cliRows.some((r) => r.sessionId === claudeId && pidOf(r.pid) !== undefined));
     if (request && alive)
       throw new Error('the conversation is already open and has no attachable terminal');
     if (alive) return { args: [...args, '--fork-session'], cwd: row.cwd, copy: true };
-    // The browser may hold a PTY waiting at workspace trust. Authorize taking
-    // that lease only: no launch spec and no new reservation.
-    if (reopenHeldResume) return { reopen_held_resume: true };
+    // A Claude PTY with no current conversation match could be waiting for
+    // workspace trust. Do not take it or start a second possible writer.
+    if (
+      request &&
+      (!ptys ||
+        ptys.some((pty) => {
+          if (exitedPty(pty)) return false;
+          const pid = pidOf(pty.pid);
+          if (!livePty(pty) || pid === undefined) return true;
+          const ids = new Set(cliRows.filter((r) => r.pid === pid).map((r) => r.sessionId));
+          const [id] = ids;
+          return ids.size !== 1 || !z.guid().safeParse(id).success;
+        }))
+    )
+      throw new Error('could not verify which conversation a console terminal is running');
     if (reserve) opening.set(claudeId, Date.now() + OPENING_MS);
     return { args, cwd: row.cwd };
   };

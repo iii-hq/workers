@@ -101,16 +101,6 @@ function nameOf(row: AgentRow): string {
   return row.name ?? row.short_id ?? row.id.slice(0, 8);
 }
 
-function backgroundAttachmentKey(row: AgentRow): string | undefined {
-  if (row.kind === 'background' && row.claude_session_id)
-    return `original:background:${row.claude_session_id}`;
-}
-
-function originalResumeKey(row: AgentRow): string | undefined {
-  if (row.kind !== 'background' && !row.alive && row.claude_session_id)
-    return `original:resume:${row.claude_session_id}`;
-}
-
 function describe(row: AgentRow): string {
   const parts = [
     row.status === 'waiting' && row.waiting_for
@@ -214,11 +204,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const here = byAttention(rows.filter((row) => row.pty_session_id));
   const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
-  const onScreen = (
-    rows.find((row) => row.pty_session_id && row.pty_session_id === terminal.current) ??
-    rows.find(
-      (row) => (backgroundAttachmentKey(row) ?? originalResumeKey(row)) === terminal.currentKey,
-    )
+  const onScreen = rows.find(
+    (row) => row.pty_session_id && row.pty_session_id === terminal.current,
   )?.id;
   const followed = rows.find((row) => row.claude_session_id === follow && row.kind !== 'headless');
 
@@ -243,39 +230,23 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         }))
       )
         return;
-      const resumeKey = mode === 'original' ? originalResumeKey(row) : undefined;
-      const describeOpen = (held: boolean) =>
-        host.iii.call(
-          'claude::terminal::describe',
-          {
-            session: row.id,
-            mode,
-            claude_session_id: row.claude_session_id,
-            ...(held ? { reopen_held_resume: true } : {}),
-          },
-          { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      const spec = await host.iii.call(
+        'claude::terminal::describe',
+        { session: row.id, mode, claude_session_id: row.claude_session_id },
+        { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      );
+      if (!row.claude_session_id || spec.claude_session_id !== row.claude_session_id)
+        throw new Error(
+          'The original conversation could not be verified. Refresh the list and try again.',
         );
-      let spec = await describeOpen(!!resumeKey && terminal.has(resumeKey));
-      const newKey = () => `${mode}:${crypto.randomUUID()}`;
-      let opened = false;
-      if (spec.reopen_held_resume && resumeKey) {
-        opened = await terminal.open({ key: resumeKey });
-        // A lease-only open with no remaining lease has nothing to show. Ask
-        // describe again, this time for a fresh original plan: it may refuse,
-        // return a live transport or follow target, or authorize a safe resume.
-        if (!opened && !terminal.has(resumeKey)) spec = await describeOpen(false);
-      }
-      if (
-        !opened &&
-        mode === 'original' &&
-        spec.follow &&
-        spec.claude_session_id === row.claude_session_id
-      ) {
+      const key = `${mode}:${row.claude_session_id}:${crypto.randomUUID()}`;
+      if (mode === 'original' && spec.follow) {
         setFollow(spec.claude_session_id);
         return;
       }
-      if (!opened && mode === 'original' && spec.pty_session_id) {
-        const take = terminal.open({ key: newKey(), pty: spec.pty_session_id });
+      let opened: boolean;
+      if (mode === 'original' && spec.pty_session_id) {
+        const take = terminal.open({ key, pty: spec.pty_session_id });
         if (row.kind === 'interactive' && row.claude_session_id) {
           // A listed PTY may belong to another browser. Follow the same UUID
           // through the gated lookup instead of trying a different writer.
@@ -287,7 +258,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         } else {
           opened = await take;
         }
-      } else if (!opened && !spec.reopen_held_resume) {
+      } else {
         if (
           !spec.program ||
           !Array.isArray(spec.args) ||
@@ -298,14 +269,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             'The original session changed or has no available terminal. Refresh the list and try again.',
           );
         }
-        // The native attach runs in a PTY whose PID can differ from the one in
-        // inventory. Reuse its lease after a fresh describe authorizes the attach.
-        // A fork or a resume must never claim this attachment key.
-        const attachmentKey =
-          mode === 'original' && spec.args[0] === 'attach'
-            ? backgroundAttachmentKey(row)
-            : undefined;
-        opened = await terminal.open({ key: attachmentKey ?? resumeKey ?? newKey(), spec });
+        // Do not let terminal.open prefer a cached PTY over this fresh plan.
+        opened = await terminal.open({ key, spec });
       }
       if (!opened)
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
@@ -386,7 +351,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const status = STATUS[row.status];
     const isStopping = stopping === row.id;
     // Open in the terminal, or about to be: a message would put a second writer on its transcript.
-    const inTerminal = row.id === onScreen || row.id === opening;
+    // A launch key can conservatively suppress Message at workspace trust,
+    // but it cannot identify a terminal for opening or selection.
+    const inTerminal =
+      row.id === onScreen ||
+      row.id === opening ||
+      (!!row.claude_session_id &&
+        terminal.currentKey?.startsWith(`original:${row.claude_session_id}:`));
     const canMessage =
       row.kind === 'headless' && !row.alive && row.status !== 'unknown' && !inTerminal;
     // A background session is stoppable where the list gives it a short id.
