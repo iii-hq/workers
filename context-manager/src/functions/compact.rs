@@ -7,7 +7,10 @@
 //! (scope `context_lease`) keeps two callers from summarising the same
 //! logical history concurrently. Without `llm-router` the summariser
 //! is unavailable and the response is `{ status: "overflow" }` —
-//! callers treat it as "compaction unavailable".
+//! callers treat it as "compaction unavailable". Every `overflow` carries
+//! the summariser's `failure` (its kind, a message, the router's
+//! `error_details`), so a caller can tell a usage limit from an input
+//! too large for the window.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,7 +23,7 @@ use crate::core::selection::{fit_tail, select};
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeError};
-use crate::types::{AgentMessage, ModelInput};
+use crate::types::{AgentMessage, Failure, ModelInput, ProviderOptions};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct CompactOptions {
@@ -45,6 +48,11 @@ pub struct CompactOptions {
     /// it again to steer a later compaction.
     #[serde(default)]
     pub instructions: Option<String>,
+    /// `router::chat` `provider_options`, namespaced by provider id (e.g.
+    /// the conversation's account under `claude-code`), forwarded verbatim
+    /// to every summariser call. Absent: the router's defaults.
+    #[serde(default)]
+    pub provider_options: Option<ProviderOptions>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -78,7 +86,12 @@ pub enum CompactResponse {
     /// Nothing to compact.
     Empty,
     /// The summariser is unavailable, overflowed, or returned no summary.
-    Overflow,
+    Overflow {
+        /// Why: present on every `overflow` from 1.3.0; older versions sent
+        /// none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure: Option<Failure>,
+    },
 }
 
 pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse, ContextError> {
@@ -122,6 +135,7 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
             previous_summary: options.previous_summary.as_deref(),
             instructions: options.instructions.as_deref(),
         },
+        options.provider_options.as_ref(),
         estimator,
     )
     .await;
@@ -140,6 +154,7 @@ async fn summarise(
     input_budget: u64,
     tail_turns: usize,
     steering: PromptSteering<'_>,
+    provider_options: Option<&ProviderOptions>,
     estimator: &dyn Estimator,
 ) -> CompactResponse {
     // One estimate per message; select, tokens_before, and tokens_after
@@ -162,26 +177,35 @@ async fn summarise(
     let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
     // A direct compaction takes no per-request cap: the configured one.
     let max_result_tokens = deps.config().await.max_result_tokens;
-    let summary =
-        match summarize_head(deps, model, head, input_budget, max_result_tokens, steering).await {
-            Ok(summary) => summary,
-            // `empty` means "nothing to compact"; a blank summary is the
-            // summariser failing on a non-empty head.
-            Err(SummarizeError::Empty) => {
-                tracing::error!("summariser produced an empty summary");
-                return CompactResponse::Overflow;
-            }
-            Err(err @ SummarizeError::Unavailable(_)) => {
+    let summary = match summarize_head(
+        deps,
+        model,
+        head,
+        input_budget,
+        max_result_tokens,
+        steering,
+        provider_options,
+    )
+    .await
+    {
+        Ok(summary) => summary,
+        Err(err) => {
+            match &err {
+                // `empty` means "nothing to compact"; a blank summary is the
+                // summariser failing on a non-empty head.
+                SummarizeError::Empty => tracing::error!("summariser produced an empty summary"),
                 // Spec: without llm-router, compact returns overflow with a
                 // permanent error_kind in the worker log.
-                tracing::error!(error = %err, error_kind = "permanent", "compaction unavailable");
-                return CompactResponse::Overflow;
+                SummarizeError::Unavailable(_) => {
+                    tracing::error!(error = %err, error_kind = "permanent", "compaction unavailable")
+                }
+                _ => tracing::error!(error = %err, "summariser failed"),
             }
-            Err(err) => {
-                tracing::error!(error = %err, "summariser failed");
-                return CompactResponse::Overflow;
-            }
-        };
+            return CompactResponse::Overflow {
+                failure: Some(err.failure()),
+            };
+        }
+    };
 
     let tokens_after = estimator.text(&summary) + sizes[selection.head_len..].iter().sum::<u64>();
 

@@ -257,6 +257,24 @@
               "null"
             ]
           },
+          "compaction_budget": {
+            "default": null,
+            "description": "Soft compaction threshold, in tokens: prune and compaction start once the request passes `min(usable, compaction_budget)`, and the provider's count from `min(usable / 3, 0.8 × compaction_budget)`. Emergency reduction and the `context/overflow` error still hold to `usable` alone. Echoed as the response's `compaction_budget`; absent, compaction starts at `usable` as before.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "compaction_instructions": {
+            "default": null,
+            "description": "Guidance for an inline compaction's summariser, as `context::compact`'s `instructions`: trimmed, ignored when blank, cut past 2000 chars.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "lease_key": {
             "default": null,
             "description": "Compaction mutual-exclusion key (e.g. a session id); default: hash of the message set.",
@@ -303,6 +321,15 @@
             "default": false,
             "description": "Also return `input_indices` and `summary_origin` (default false). For a byte-level generation witness only; ordinary callers leave it off.",
             "type": "boolean"
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "default": null,
+            "description": "`router::chat` `provider_options`, namespaced by provider id (e.g. the conversation's account under `claude-code`), forwarded verbatim to every summariser call this assembly makes.",
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "request_overhead_tokens": {
             "default": null,
@@ -1135,6 +1162,85 @@
         ],
         "type": "object"
       },
+      "CompactionReport": {
+        "description": "The inline compaction this call tried.",
+        "properties": {
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Failure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when `status` is `failed`."
+          },
+          "status": {
+            "$ref": "#/definitions/CompactionStatus"
+          },
+          "trigger": {
+            "$ref": "#/definitions/CompactionTrigger"
+          }
+        },
+        "required": [
+          "status",
+          "trigger"
+        ],
+        "type": "object"
+      },
+      "CompactionStatus": {
+        "description": "How an inline compaction attempt ended.",
+        "oneOf": [
+          {
+            "description": "The head was summarised (`applied.compacted`).",
+            "enum": [
+              "compacted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The summariser failed; `failure` says why.",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Another caller holds the compaction lease.",
+            "enum": [
+              "busy"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Nothing could be summarised without taking the whole request.",
+            "enum": [
+              "skipped"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CompactionTrigger": {
+        "description": "Which threshold made the assembly compact.",
+        "oneOf": [
+          {
+            "description": "The request passed `options.compaction_budget` while still within `usable`.",
+            "enum": [
+              "budget"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The request passed `usable`, the model's limit (as before 1.3.0).",
+            "enum": [
+              "usable"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ContentBlock": {
         "description": "The atomic unit of message content. A message's `content` is an ordered array of these.",
         "oneOf": [
@@ -1305,6 +1411,37 @@
           }
         ]
       },
+      "ErrorDetails": {
+        "description": "llm-router's `error_details` (D147), passed through from the router's error: what an error's kind alone does not say.",
+        "properties": {
+          "resets_at_ms": {
+            "description": "When that limit resets, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "default": false,
+            "description": "The account's usage limit is reached.",
+            "type": "boolean"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/UsageWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which limit was reached, when the provider said so."
+          }
+        },
+        "type": "object"
+      },
       "ErrorKind": {
         "description": "Coarse error classification carried by failed assistant messages.",
         "enum": [
@@ -1323,6 +1460,81 @@
           "heuristic"
         ],
         "type": "string"
+      },
+      "Failure": {
+        "description": "The cause of a failed summary: `context::compact`'s `overflow`, the assemble's `compaction.failure`, and the tail of a `context/overflow` error that follows a failed inline compaction.",
+        "properties": {
+          "error_details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The router's `error_details`, when it sent them."
+          },
+          "kind": {
+            "$ref": "#/definitions/FailureKind"
+          },
+          "message": {
+            "description": "What happened, in a sentence: the router's user-facing message when the router said why, else this worker's own.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FailureKind": {
+        "description": "Why a summariser produced no summary, in words a caller can show.",
+        "oneOf": [
+          {
+            "description": "The account's usage limit is reached (llm-router's `error_details.usage_limit`): waiting a moment does not help.",
+            "enum": [
+              "usage_limit"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The provider is busy right now (`rate_limited` without a usage limit).",
+            "enum": [
+              "rate_limited"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The input did not fit: the provider refused it as larger than the model's window, or the history needs more summary calls, or more room than the window leaves. The only kind a larger window would fix.",
+            "enum": [
+              "input_too_large"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The summary took longer than its time budget, or the router's stream timed out.",
+            "enum": [
+              "timeout"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No summariser: llm-router is absent, or no provider can serve it.",
+            "enum": [
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Anything else: an authentication problem, a transient provider error, an empty summary.",
+            "enum": [
+              "other"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "ModelResolvedWire": {
         "description": "How the model limits were resolved.",
@@ -1424,6 +1636,14 @@
           }
         },
         "type": "object"
+      },
+      "UsageWindow": {
+        "description": "The usage window an account's limit belongs to (llm-router's `UsageWindow`).",
+        "enum": [
+          "five_hour",
+          "week"
+        ],
+        "type": "string"
       }
     },
     "properties": {
@@ -1432,6 +1652,26 @@
       },
       "breakdown": {
         "$ref": "#/definitions/AssembleBreakdown"
+      },
+      "compaction": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CompactionReport"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Present only when this call tried an inline compaction."
+      },
+      "compaction_budget": {
+        "description": "The soft compaction threshold this call applied, `min(usable, options.compaction_budget)`; `null` without the option. Always present from 1.3.0, so a caller can tell an older context-manager (which drops the option) by the field's absence.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "effective_max_output_tokens": {
         "description": "Effective output allocation used to derive `usable`. This is the router-resolved request limit, not the model catalog ceiling.",
