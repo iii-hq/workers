@@ -174,6 +174,28 @@ describe('claude::terminal::describe', () => {
     expect(reopened).not.toHaveProperty('copy');
   });
 
+  it('describes reopening a held resume without preparing a new process', async () => {
+    const { describeFn, resolveOpen, claude } = setup();
+    const reopen = { ...original, reopen_held_resume: true };
+    resolveOpen.mockImplementation(async (_id, request) =>
+      request?.reopen_held_resume
+        ? { reopen_held_resume: true }
+        : { args: ['--resume', id], cwd: '/repo' },
+    );
+
+    expect(await describeFn.handler(reopen)).toEqual({ reopen_held_resume: true });
+    expect(resolveOpen).toHaveBeenCalledTimes(1);
+    expect(claude.installs).toEqual([]);
+  });
+
+  it('does not accept a held resume with an explicit fork', async () => {
+    const { describeFn, resolveOpen } = setup();
+    await expect(
+      describeFn.handler({ ...original, mode: 'fork', reopen_held_resume: true }),
+    ).rejects.toThrow(/original/);
+    expect(resolveOpen).not.toHaveBeenCalled();
+  });
+
   it('will not launch a stale attach after preparation', async () => {
     const { describeFn, resolveOpen } = setup();
     resolveOpen

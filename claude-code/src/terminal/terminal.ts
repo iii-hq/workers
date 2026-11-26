@@ -15,6 +15,10 @@ import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
 
 const DescribePayloadSchema = z.object({
+  reopen_held_resume: z
+    .boolean()
+    .optional()
+    .describe('Only reopen a browser-held original resume lease; do not prepare a launch.'),
   mode: z
     .enum(['original', 'fork'])
     .optional()
@@ -57,14 +61,20 @@ export function registerTerminal(
   iii.registerFunction(
     'claude::terminal::describe',
     async (payload: unknown) => {
-      const { cwd, session, mode, claude_session_id } = DescribePayloadSchema.parse(payload ?? {});
+      const { cwd, session, mode, claude_session_id, reopen_held_resume } =
+        DescribePayloadSchema.parse(payload ?? {});
       const prepared = host();
       if (!prepared.executable) {
         throw new Error(prepared.detail || 'claude is not available on the terminal host');
       }
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
-      const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
+      if (reopen_held_resume && mode !== 'original')
+        throw new Error('only an explicit original action can reopen a held resume');
+      const request =
+        mode && claude_session_id
+          ? { mode, claude_session_id, ...(reopen_held_resume ? { reopen_held_resume } : {}) }
+          : undefined;
       const open = session
         ? request
           ? await resolveOpen(session, request, false)
@@ -72,6 +82,7 @@ export function registerTerminal(
         : undefined;
       // A viewer or an existing PTY needs no new process, plugin or workspace setup.
       if (open && !('args' in open)) return open;
+      if (reopen_held_resume) throw new Error('the session changed; refresh the list');
       const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
       if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
       if (!open) return spec;
@@ -103,12 +114,17 @@ export function registerTerminal(
         anyOf: [
           { required: ['program', 'args', 'cwd', 'env'] },
           { required: ['pty_session_id'] },
+          { required: ['reopen_held_resume'] },
           { required: ['follow', 'claude_session_id'] },
         ],
         properties: {
           pty_session_id: {
             type: 'string',
             description: 'Reopen this identified original console PTY; do not launch a program.',
+          },
+          reopen_held_resume: {
+            const: true,
+            description: 'Reopen only the original resume lease held by this browser.',
           },
           follow: {
             const: true,

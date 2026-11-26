@@ -122,6 +122,10 @@
     line-height: 1.5;
   }
 
+  .claude-follow-text + .claude-follow-text {
+    margin-top: 12px;
+  }
+
   .claude-follow-actions {
     display: flex;
     justify-content: flex-end;

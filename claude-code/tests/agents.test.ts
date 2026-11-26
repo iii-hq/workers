@@ -593,6 +593,18 @@ describe('opening a listed session', () => {
     await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
   });
 
+  it('does not reopen an old resume lease for a now-live or hidden conversation', async () => {
+    const reopen = { ...original, reopen_held_resume: true };
+    const row = interactive(ID, 'idle');
+    const fake = host(ok([row]), { external: true });
+    expect(await fake.resolveOpen(ID, reopen)).toEqual({ follow: true, claude_session_id: ID });
+    row.pid = undefined;
+    row.status = 'done';
+    await expect(host(ok([row])).resolveOpen(ID, reopen)).rejects.toThrow(
+      'no session with that id is listed',
+    );
+  });
+
   it('reserves a finished original without ever returning a fallback copy', async () => {
     const fake = host(ok([]));
     fake.state.set('claude_sessions/h', record('h', 'done', ID));
@@ -698,6 +710,21 @@ describe('opening a listed session', () => {
   describe('before the CLI lists the process', () => {
     beforeEach(() => void vi.useFakeTimers({ toFake: ['Date'] }));
     afterEach(() => void vi.useRealTimers());
+
+    it('authorizes reopening a held finished original without extending the launch reservation', async () => {
+      const fake = host(ok([]));
+      fake.state.set('claude_sessions/h', record('h', 'done', ID));
+      const reopen = { ...original, reopen_held_resume: true };
+
+      expect(await fake.resolveOpen('h', original)).toEqual({ args: RESUME, cwd: '/work' });
+      vi.advanceTimersByTime(10_000);
+      expect(await fake.resolveOpen('h', reopen)).toEqual({ reopen_held_resume: true });
+      await expect(fake.resolveOpen('h', original)).rejects.toThrow(/already open/);
+      vi.advanceTimersByTime(5_000);
+      expect(await fake.heldElsewhere(ID)).toBe(false);
+      expect(await fake.resolveOpen('h', reopen)).toEqual({ reopen_held_resume: true });
+      expect(await fake.heldElsewhere(ID)).toBe(false);
+    });
 
     it('gives one plain resume, then copies, for a while', async () => {
       const fake = host(ok([]));

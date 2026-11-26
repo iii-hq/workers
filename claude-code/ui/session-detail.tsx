@@ -25,14 +25,18 @@ export const STATUS: Record<
   unknown: { word: 'Unknown', tone: 'ghost' },
 };
 
-type ReplySignal = { claude_session_id: string };
+const RECENT_REPLIES = 20;
+type Reply = { id: string; text: string };
+type ReplyDelivery = { claude_session_id: string; reply: Reply };
 type Snapshot = {
   claude_session_id: string;
   name: string | null;
   status: Status;
-  last_reply: { id: string; text: string } | null;
+  last_reply: Reply | null;
 };
-type View = { state: 'loading' | 'unavailable' } | { state: 'ready'; data: Snapshot };
+type View =
+  | { state: 'loading' | 'unavailable' }
+  | { state: 'ready'; data: Snapshot; recent: Reply[] };
 
 function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
   const [view, setView] = useState<View>({ state: 'loading' });
@@ -44,9 +48,11 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
     let active = true;
     let reading = false;
     let again = false;
+    const recent = new Map<string, Reply>();
     const cleanup: (() => void)[] = [];
     const stop = () => {
       active = false;
+      recent.clear();
       for (const off of cleanup.splice(0).reverse()) off();
     };
     const unavailable = () => {
@@ -70,7 +76,9 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
             { timeoutMs: 30000 },
           );
           if (data.claude_session_id !== id) throw new Error('Session changed');
-          if (active && !again) setView({ state: 'ready', data });
+          if (active && !again) {
+            setView({ state: 'ready', data, recent: Array.from(recent.values()) });
+          }
         } while (active && again);
       } catch {
         unavailable();
@@ -81,12 +89,21 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
     setView({ state: 'loading' });
     try {
       cleanup.push(
-        iii.on<ReplySignal | { output: ReplySignal }>(base, (delivery) => {
+        iii.on<ReplyDelivery | { output: ReplyDelivery }>(base, (delivery) => {
           // Custom deliveries carry captured output; ADE may also project it.
           const event = delivery && 'output' in delivery ? delivery.output : delivery;
-          // Treat delivery only as a change signal. A queued reply cannot bypass
-          // the current permission check, or overwrite a newer lookup with old text.
-          if (event?.claude_session_id === id) void read();
+          if (!active || event?.claude_session_id !== id) return;
+          const reply = event.reply;
+          if (typeof reply?.id !== 'string' || !reply.id || typeof reply.text !== 'string') return;
+          if (recent.has(reply.id)) return;
+          // Keep the source's order, but publish only after a lookup started
+          // after delivery confirms this viewer still has access.
+          recent.set(reply.id, reply);
+          if (recent.size > RECENT_REPLIES) {
+            const oldest = recent.keys().next();
+            if (!oldest.done) recent.delete(oldest.value);
+          }
+          void read();
         }),
       );
       cleanup.push(iii.on(`${base}-config`, unavailable));
@@ -128,16 +145,27 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
       />
     );
   if (view.state !== 'ready') return <p role="status">Checking reply access…</p>;
-  const { data } = view;
+  const { data, recent } = view;
+  const last = data.last_reply;
+  const replies =
+    last && !recent.some((reply) => reply.id === last.id) ? [...recent, last] : recent;
   return (
     <div className="claude-follow-content">
       <p className="claude-follow-state">
         {data.name ?? id.slice(0, 8)} · {(STATUS[data.status] ?? STATUS.unknown).word}
       </p>
-      <h3>Latest assistant reply</h3>
-      <p aria-live="polite" className="claude-follow-text">
-        {data.last_reply?.text ?? 'No assistant reply yet.'}
-      </p>
+      <h3>{replies.length > 1 ? 'Assistant replies' : 'Latest assistant reply'}</h3>
+      <div role="log" aria-label="Assistant replies">
+        {replies.length ? (
+          replies.map((reply) => (
+            <p key={reply.id} className="claude-follow-text">
+              {reply.text}
+            </p>
+          ))
+        ) : (
+          <p className="claude-follow-text">No assistant reply yet.</p>
+        )}
+      </div>
     </div>
   );
 }

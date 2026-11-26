@@ -57,10 +57,15 @@ export type AgentRow = z.infer<typeof AgentRowSchema>;
 /** How a terminal opens a listed session; `copy` when it opens a fork of it. */
 export type OpenSpec = { args: string[]; cwd: string; copy?: true };
 export type OpenMode = 'original' | 'fork';
-export type OpenRequest = { mode: OpenMode; claude_session_id: string };
+export type OpenRequest = {
+  mode: OpenMode;
+  claude_session_id: string;
+  reopen_held_resume?: boolean;
+};
 export type OpenPlan =
   | OpenSpec
   | { pty_session_id: string }
+  | { reopen_held_resume: true }
   | { follow: true; claude_session_id: string };
 export type ResolveOpen = (
   id: string,
@@ -457,12 +462,16 @@ export function registerAgents(
     if (!row.cwd) throw new Error('this session has no recorded working directory');
     const args = [...prepared.args, '--resume', claudeId];
     // By conversation, not by row: `options.resume` can give two runs the same one.
+    const reopenHeldResume = request?.mode === 'original' && request.reopen_held_resume;
     const alive =
-      isOpening(claudeId) ||
+      (!reopenHeldResume && isOpening(claudeId)) ||
       agents.some((agent) => agent.alive && agent.claude_session_id === claudeId);
     if (request && alive)
       throw new Error('the conversation is already open and has no attachable terminal');
     if (alive) return { args: [...args, '--fork-session'], cwd: row.cwd, copy: true };
+    // The browser may hold a PTY waiting at workspace trust. Authorize taking
+    // that lease only: no launch spec and no new reservation.
+    if (reopenHeldResume) return { reopen_held_resume: true };
     if (reserve) opening.set(claudeId, Date.now() + OPENING_MS);
     return { args, cwd: row.cwd };
   };

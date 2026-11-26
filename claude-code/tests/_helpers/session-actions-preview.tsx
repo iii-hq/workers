@@ -8,23 +8,27 @@ import '../../../ade/web/src/index.css';
 import '../../ui/styles.css';
 import { SessionsRail } from '../../ui/sessions';
 
-const rows = ['Design review', 'Console original', 'Background indexing', 'Other console'].map(
-  (name, i) => {
-    const id = `1234567${i}-1234-4321-8123-000000000001`;
-    return {
-      id,
-      claude_session_id: id,
-      name,
-      kind: i === 2 ? 'background' : 'interactive',
-      alive: true,
-      status: i === 2 ? 'busy' : 'idle',
-      cwd: '/fixture/workspace',
-      ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
-      ...(i === 3 ? { pty_session_id: 'fixture-other-console' } : {}),
-      ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
-    };
-  },
-);
+const rows = [
+  'Design review',
+  'Console original',
+  'Background indexing',
+  'Other console',
+  'Finished review',
+].map((name, i) => {
+  const id = `1234567${i}-1234-4321-8123-000000000001`;
+  return {
+    id,
+    claude_session_id: id,
+    name,
+    kind: i === 2 ? 'background' : 'interactive',
+    alive: i !== 4,
+    status: i === 2 ? 'busy' : i === 4 ? 'done' : 'idle',
+    cwd: '/fixture/workspace',
+    ...(i === 1 ? { pty_session_id: 'fixture-console' } : {}),
+    ...(i === 3 ? { pty_session_id: 'fixture-other-console' } : {}),
+    ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
+  };
+});
 const handlers = new Map<string, (event: unknown) => void>();
 const watches = new Set<{
   source: { function_id: string; args?: { claude_session_id?: string } };
@@ -55,7 +59,15 @@ const host = {
       return () => watches.delete(w);
     },
     addConnectionStateListener: () => () => {},
-    async call(fn: string, p: { session?: string; claude_session_id?: string; mode?: string }) {
+    async call(
+      fn: string,
+      p: {
+        session?: string;
+        claude_session_id?: string;
+        mode?: string;
+        reopen_held_resume?: boolean;
+      },
+    ) {
       if (fn === 'claude::agents::list') return { agents: allowed ? rows : [rows[1]] };
       const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
       if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
@@ -64,12 +76,14 @@ const host = {
       if (fn === 'claude::terminal::describe') {
         if (p.mode === 'original' && row.pty_session_id)
           return { pty_session_id: row.pty_session_id };
-        if (p.mode === 'original' && !row.short_id)
+        if (p.mode === 'original' && row.alive && !row.short_id)
           return { follow: true, claude_session_id: row.id };
+        if (p.mode === 'original' && !row.alive && p.reopen_held_resume)
+          return { reopen_held_resume: true };
         const args =
           row.short_id && p.mode !== 'fork'
             ? ['attach', row.short_id]
-            : ['--resume', row.id, '--fork-session'];
+            : ['--resume', row.id, ...(p.mode === 'fork' ? ['--fork-session'] : [])];
         return {
           program: 'mock-claude',
           cwd: '/fixture',
@@ -98,8 +112,8 @@ function Preview() {
   const [screen, setScreen] = useState({ pty: '', key: '', text: 'No terminal selected' });
   const [narrow, setNarrow] = useState(false);
   const [count, setCount] = useState(0);
-  const firstBackgroundPty = useRef<string | null>(null);
-  const [reopening, setReopening] = useState<'reused' | 'replaced' | null>(null);
+  const firstPtys = useRef(new Map<string, string>());
+  const [reopened, setReopened] = useState<{ text: string; reused: boolean } | null>(null);
   const [leases] = useState(() => new Map<string, typeof screen>());
   const terminal: AgentTerminalApi = {
     current: screen.pty || null,
@@ -119,16 +133,26 @@ function Preview() {
               ? 'Separate fork terminal'
               : args[0] === 'attach' && args[1] === rows[2].short_id
                 ? 'Original background terminal'
-                : null));
-      if (!text) throw new Error('No matching fixture terminal');
+                : args[0] === '--resume' && args[1] === rows[4].id
+                  ? 'Finished original at workspace trust'
+                  : null));
+      if (!text) {
+        if (!pty && !spec) return false;
+        throw new Error('No matching fixture terminal');
+      }
       if (!pty && !held) setCount((n) => n + 1);
       const next = { key, pty: pty ?? held?.pty ?? `fixture-${crypto.randomUUID()}`, text };
-      // Open Background indexing, switch to Console original (or a confirmed
-      // fork), then reopen Background indexing without a PID match. Its PTY
-      // must be reused and Terminals created must not increase on the return.
-      if (text === 'Original background terminal') {
-        if (firstBackgroundPty.current === null) firstBackgroundPty.current = next.pty;
-        else setReopening(next.pty === firstBackgroundPty.current ? 'reused' : 'replaced');
+      // The finished resume stays unlisted by PID, as at a trust prompt.
+      // Switch to the console or a fork, then reopen either original without a new PTY.
+      if (
+        text === 'Original background terminal' ||
+        text === 'Finished original at workspace trust'
+      ) {
+        const firstPty = firstPtys.current.get(text);
+        if (firstPty) setReopened({ text, reused: next.pty === firstPty });
+        else firstPtys.current.set(text, next.pty);
+      } else {
+        setReopened(null);
       }
       leases.set(key, next);
       setScreen(next);
@@ -164,6 +188,17 @@ function Preview() {
             </button>
             <button
               type="button"
+              onClick={() =>
+                window.setTimeout(() => {
+                  deliver();
+                  deliver();
+                }, 5000)
+              }
+            >
+              Deliver two replies after 5 seconds
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 allowed = !allowed;
                 emit('configuration::on-updated', {});
@@ -195,8 +230,14 @@ function Preview() {
               <h1 className="font-medium">Claude terminal</h1>
               <p>{screen.text}</p>
               <p className="text-sm">Terminals created: {count}</p>
-              {screen.text === 'Original background terminal' && reopening ? (
-                <p className="text-sm">Background attachment on reopen: {reopening}</p>
+              {reopened?.text === screen.text ? (
+                <p className="text-sm">
+                  {screen.text === 'Original background terminal'
+                    ? 'Background attachment'
+                    : 'Finished resume'}
+                  {' on reopen: '}
+                  {reopened.reused ? 'reused' : 'replaced'}
+                </p>
               ) : null}
             </main>
           </div>

@@ -106,6 +106,11 @@ function backgroundAttachmentKey(row: AgentRow): string | undefined {
     return `original:background:${row.claude_session_id}`;
 }
 
+function originalResumeKey(row: AgentRow): string | undefined {
+  if (row.kind !== 'background' && !row.alive && row.claude_session_id)
+    return `original:resume:${row.claude_session_id}`;
+}
+
 function describe(row: AgentRow): string {
   const parts = [
     row.status === 'waiting' && row.waiting_for
@@ -211,7 +216,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
   const onScreen = (
     rows.find((row) => row.pty_session_id && row.pty_session_id === terminal.current) ??
-    rows.find((row) => backgroundAttachmentKey(row) === terminal.currentKey)
+    rows.find(
+      (row) => (backgroundAttachmentKey(row) ?? originalResumeKey(row)) === terminal.currentKey,
+    )
   )?.id;
   const followed = rows.find((row) => row.claude_session_id === follow && row.kind !== 'headless');
 
@@ -236,12 +243,15 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         }))
       )
         return;
+      const resumeKey = mode === 'original' ? originalResumeKey(row) : undefined;
+      const reopenHeldResume = resumeKey && terminal.has(resumeKey);
       const spec = await host.iii.call(
         'claude::terminal::describe',
         {
           session: row.id,
           mode,
           claude_session_id: row.claude_session_id,
+          ...(reopenHeldResume ? { reopen_held_resume: true } : {}),
         },
         { timeoutMs: DESCRIBE_TIMEOUT_MS },
       );
@@ -251,7 +261,10 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       }
       const newKey = () => `${mode}:${crypto.randomUUID()}`;
       let opened: boolean;
-      if (mode === 'original' && spec.pty_session_id) {
+      if (spec.reopen_held_resume && resumeKey) {
+        // Do not launch another process if the lease is gone or was taken.
+        opened = await terminal.open({ key: resumeKey });
+      } else if (mode === 'original' && spec.pty_session_id) {
         const take = terminal.open({ key: newKey(), pty: spec.pty_session_id });
         if (row.kind === 'interactive' && row.claude_session_id) {
           // A listed PTY may belong to another browser. Follow the same UUID
@@ -282,7 +295,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           mode === 'original' && spec.args[0] === 'attach'
             ? backgroundAttachmentKey(row)
             : undefined;
-        opened = await terminal.open({ key: attachmentKey ?? newKey(), spec });
+        opened = await terminal.open({ key: attachmentKey ?? resumeKey ?? newKey(), spec });
       }
       if (!opened)
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
