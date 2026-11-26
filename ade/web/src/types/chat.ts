@@ -159,6 +159,11 @@ export interface AssistantMessage extends BaseMessage {
    */
   agent?: string
   model?: ModelId
+  /**
+   * The provider that served it, as the transcript names it (`claude-code`);
+   * with a plain `model` id it says which catalog entry the reply was.
+   */
+  provider?: string
   streaming?: boolean
   /**
    * Why the provider ended this assistant entry. `function_call` marks an
@@ -391,6 +396,17 @@ export interface SystemNoticeFailure {
   recoveryAttempted?: number
   recoveryMaxAttempts?: number
   phase?: string
+  /**
+   * A Claude Code account's usage limit (`llm.usage_limit`, D147): the
+   * window that is full, when it resets and the turn's account.
+   */
+  usageLimit?: {
+    window: 'five_hour' | 'week' | null
+    resetsAtMs: number | null
+    account: string | null
+  }
+  /** A pin to a removed account (`harness.unknown_account`): the id it names. */
+  unknownAccount?: string
 }
 
 /**

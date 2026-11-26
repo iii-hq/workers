@@ -211,7 +211,7 @@ impl Accounts {
     }
 
     /// The registry as a swap leaves it (its step 7).
-    fn commit_swap(&self, journal: &Journal) -> Result<(), String> {
+    pub(super) fn commit_swap(&self, journal: &Journal) -> Result<(), String> {
         self.update_registry(|registry| {
             registry.global = journal.to.clone();
             if let Some(record) = &journal.record {

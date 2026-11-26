@@ -109,6 +109,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::side-chat::close",
             "harness::side-chat::keep",
             "harness::side-chat::summarize",
+            "harness::retry",
+            "harness::metrics::account-split",
         ]
     );
 }

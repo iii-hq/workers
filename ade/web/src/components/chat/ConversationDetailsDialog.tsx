@@ -14,19 +14,36 @@ import {
   FormDialogTitle,
   FormSelectTrigger,
 } from '@/components/ui/FormDialog'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { getDefaultBackend } from '@/lib/backend'
+import {
+  CLAUDE_CODE_PROVIDER,
+  useClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
+import type { AccountResolution } from '@/lib/claude-accounts-words'
+import {
+  chatAccountResolution,
+  lockedAccountOf,
+} from '@/lib/conversation-account'
 import {
   type ConversationDetailsDraft,
+  claudeAccountOf,
   DESCRIPTION_COUNTER_FROM,
   DESCRIPTION_MAX,
   descriptionHistory,
   detailsDraftOf,
 } from '@/lib/conversation-details'
+import { effectiveProvider } from '@/lib/conversation-provider'
 import { errText } from '@/lib/errors'
 import { shortAge } from '@/lib/short-age'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ByAgentPill } from './ByAgentPill'
+import { ConversationAccountRow } from './ConversationAccountRow'
+
+/** A section the dialog can open on (the account chip). */
+export type ConversationDetailsSection = 'account'
 
 interface ConversationDetailsDialogProps {
   open: boolean
@@ -38,7 +55,8 @@ interface ConversationDetailsDialogProps {
     | 'descriptionAtMs'
     | 'projectId'
     | 'sessionMetadata'
-  >
+  > &
+    Partial<Pick<Conversation, 'model' | 'parentId' | 'messages' | 'id'>>
   onOpenChange: (open: boolean) => void
   /** Write the draft; a rejection keeps the dialog open with the error. */
   onSave: (draft: ConversationDetailsDraft) => Promise<void> | void
@@ -53,6 +71,23 @@ interface ConversationDetailsDialogProps {
   agentSwitch?: boolean
   /** Clock for the relative times (tests). */
   now?: number
+  /** Open on this section, its control focused (the account chip). */
+  initialSection?: ConversationDetailsSection
+  /** A side chat: the account row is text only (its account is locked, D2). */
+  sideChat?: boolean
+  /**
+   * The provider of the conversation's next turn as the chat reads it (the
+   * account chip's); read from the conversation when absent.
+   */
+  provider?: string | null
+  /**
+   * A side chat's or a sub-agent's account as the chat resolved it (the
+   * chip's and the limit card's); null for a conversation that chooses its
+   * own. Read from the loaded conversations when absent.
+   */
+  lockedResolution?: AccountResolution | null
+  /** The loaded conversations, where a sub-agent's parent is looked for. */
+  conversations?: readonly Conversation[]
 }
 
 const FIELD =
@@ -73,6 +108,11 @@ export function ConversationDetailsDialog({
   projects,
   agentSwitch = false,
   now,
+  initialSection,
+  sideChat = false,
+  provider,
+  lockedResolution,
+  conversations,
 }: ConversationDetailsDialogProps) {
   const [draft, setDraft] = useState<ConversationDetailsDraft>(() =>
     detailsDraftOf(conversation),
@@ -80,7 +120,32 @@ export function ConversationDetailsDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
+  const accountRef = useRef<HTMLButtonElement>(null)
   const ids = useId()
+  // §4.3.5: the account row, for claude-code conversations on an engine
+  // with the whole feature (§4.3.6).
+  const realBackend = getDefaultBackend().id === 'real'
+  const accounts = useClaudeAccounts(realBackend && open)
+  const chatProjects = useChatProjects(realBackend && open)
+  const showAccount =
+    accounts.gate === 'full' &&
+    (provider !== undefined ? provider : effectiveProvider(conversation)) ===
+      CLAUDE_CODE_PROVIDER
+  const locked = lockedAccountOf(conversation, sideChat)
+  const projectList = projects ?? chatProjects.projects
+  const resolution =
+    lockedResolution !== undefined
+      ? lockedResolution
+      : showAccount && locked
+        ? chatAccountResolution({
+            conversation,
+            sideChat,
+            projects: projectList,
+            global: accounts.claude?.global ?? null,
+            conversations,
+          })
+        : null
+  const openOnAccount = initialSection === 'account' && showAccount
   const history = descriptionHistory(conversation.sessionMetadata)
 
   // Every open starts from the live values, with the name selected: most
@@ -92,6 +157,11 @@ export function ConversationDetailsDialog({
     setError(null)
     setSaving(false)
     const frame = requestAnimationFrame(() => {
+      if (openOnAccount && accountRef.current) {
+        accountRef.current.focus()
+        accountRef.current.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
       nameRef.current?.focus()
       nameRef.current?.select()
     })
@@ -145,7 +215,7 @@ export function ConversationDetailsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FormDialogContent
         className="w-[min(30rem,calc(100vw-2rem))] [--dialog-max-width:30rem]"
-        initialFocus={nameRef}
+        initialFocus={openOnAccount ? accountRef : nameRef}
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
         // tree, so pointer and key events would bubble to the row.
@@ -325,6 +395,26 @@ export function ConversationDetailsDialog({
                 </SelectContent>
               </Select>
             </div>
+          ) : null}
+
+          {showAccount ? (
+            <ConversationAccountRow
+              value={
+                draft.claudeAccount ??
+                claudeAccountOf(conversation.sessionMetadata)
+              }
+              onChange={(claudeAccount) =>
+                setDraft((current) => ({ ...current, claudeAccount }))
+              }
+              project={
+                projectList.find((project) => project.id === draft.projectId) ??
+                null
+              }
+              data={accounts}
+              readOnly={locked !== null}
+              resolution={resolution}
+              triggerRef={accountRef}
+            />
           ) : null}
 
           {error ? (

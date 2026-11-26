@@ -1,15 +1,20 @@
-//! The `provider::claude-code::stream` iii function: resolve a fresh OAuth
-//! token from the vault (or the ~/.claude/.credentials.json dev fallback),
-//! build an Anthropic Messages request, and relay AssistantMessageEvent frames
-//! into the router-owned channel. Login + refresh live in the oauth-claude-code
-//! worker / auth-credentials vault — this provider only *calls* a refresh
-//! when the token is near expiry.
+//! The `provider::claude-code::stream` iii function: get the OAuth token of
+//! the turn's account (`provider_options.account`) from the account source
+//! (the tmux worker), or, without one, from the vault (or the
+//! ~/.claude/.credentials.json dev fallback); build an Anthropic Messages
+//! request; and relay AssistantMessageEvent frames into the router-owned
+//! channel. Sign-in and renewal live with the account source (or the
+//! oauth-claude-code worker / auth-credentials vault): this provider only
+//! asks for tokens.
+use std::sync::Arc;
+
+use crate::accounts::{self, AccountSource, Credential};
 use crate::config::build_config;
 use crate::errors::{SIGN_IN_EXPIRED, classify_bus_error};
 use crate::request::{BodyArgs, build_body, build_headers};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
-use crate::upstream::{UpstreamArgs, spawn_upstream};
+use crate::upstream::{Reauth, UpstreamArgs, spawn_upstream};
 use crate::wire::cache::{cache_enabled, cache_ttl, messages_cache_ttl};
 use crate::{auth, router_client, state};
 use futures::future::BoxFuture;
@@ -30,12 +35,19 @@ pub fn make_stream(
     http: reqwest::Client,
     cache: ScaffoldCache,
     aborts: StreamAborts,
+    accounts: Arc<dyn AccountSource>,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
 + Send
 + Sync
 + 'static {
     move |input: ProviderStreamInput| {
-        let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
+        let (iii, http, cache, aborts, accounts) = (
+            iii.clone(),
+            http.clone(),
+            cache.clone(),
+            aborts.clone(),
+            accounts.clone(),
+        );
         Box::pin(async move {
             // Register BEFORE the first await: an abort landing while the sink
             // opens must latch, not hit an unknown id. The RAII guard
@@ -46,7 +58,16 @@ pub fn make_stream(
                 .as_ref()
                 .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, &cache, abort_reg.as_ref(), input, sink.as_ref()).await;
+            run_stream_call(
+                &iii,
+                http,
+                &cache,
+                &accounts,
+                abort_reg.as_ref(),
+                input,
+                sink.as_ref(),
+            )
+            .await;
             sink.close();
             Ok(ProviderStreamOutput { ok: true })
         })
@@ -65,10 +86,25 @@ pub(crate) fn default_resolve() -> ProviderResolveResponse {
     }
 }
 
+/// After a 401, the account's token is dropped and asked for once more.
+fn reauth_for(accounts: &Arc<dyn AccountSource>, refused: accounts::AccountToken) -> Reauth {
+    let accounts = accounts.clone();
+    let rejected = accounts::rejected_message(&refused.account);
+    Reauth {
+        ask_again: Box::pin(async move {
+            accounts::ask_again(accounts.as_ref(), &refused)
+                .await
+                .map(|fresh| fresh.map(|token| token.access_token))
+        }),
+        rejected,
+    }
+}
+
 async fn run_stream_call(
     iii: &IIIClient,
     http: reqwest::Client,
     cache: &ScaffoldCache,
+    accounts: &Arc<dyn AccountSource>,
     abort_reg: Option<&AbortGuard>,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
@@ -87,7 +123,9 @@ async fn run_stream_call(
     // Token + resolve are cached (ScaffoldCache): zero engine round trips on
     // the hot path within the TTL. The vault credential lookup below is NOT
     // cached — the vault refreshes expiring OAuth tokens on its own resolve,
-    // so a cached access token could be served after expiry. Resolve only
+    // so a cached access token could be served after expiry (an account
+    // source's token is cached per account until a minute before it
+    // expires, `accounts::TmuxAccounts`). Resolve only
     // carries api_url/max_tokens here; a missing router degrades to defaults
     // so the ~/.claude dev fallback still works without a full router.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
@@ -104,14 +142,33 @@ async fn run_stream_call(
         }
     };
 
-    let credential = auth::fetch_fresh_credential(iii).await;
-    if credential.as_ref().is_some_and(auth::expired) {
-        let _ = send_event(
-            sink,
-            &synthetic_error_event(SIGN_IN_EXPIRED, &model, ErrorKind::AuthExpired),
-        );
-        return;
-    }
+    // The account source (tmux) when it holds the accounts: the turn's
+    // account, never the vault. Without it, today's vault / ~/.claude path,
+    // but only for a turn on the global account: a pinned turn fails as
+    // transient rather than run on another account's token.
+    let requested = accounts::requested_account(input.provider_options.as_ref());
+    let (credential, account_token) =
+        match accounts::credential(accounts.as_ref(), requested, || {
+            auth::fetch_fresh_credential(iii)
+        })
+        .await
+        {
+            Ok(Credential::Account(token)) => (Some(token.credential()), Some(token)),
+            Ok(Credential::Legacy(credential)) => {
+                if credential.as_ref().is_some_and(auth::expired) {
+                    let _ = send_event(
+                        sink,
+                        &synthetic_error_event(SIGN_IN_EXPIRED, &model, ErrorKind::AuthExpired),
+                    );
+                    return;
+                }
+                (credential, None)
+            }
+            Err(e) => {
+                let _ = send_event(sink, &synthetic_error_event(&e.message(), &model, e.kind()));
+                return;
+            }
+        };
     let cfg = match build_config(
         &model,
         input.max_output_tokens,
@@ -185,6 +242,9 @@ async fn run_stream_call(
             body,
             headers,
             warnings,
+            reauth: account_token
+                .clone()
+                .map(|token| reauth_for(accounts, token)),
         },
     );
     let kind = match abort_reg {
@@ -192,8 +252,12 @@ async fn run_stream_call(
         None => pump(rx, sink, PING_INTERVAL).await,
     };
     // An upstream auth terminal means the cached credential was rotated out
-    // from under us: drop the cache so the next attempt re-resolves.
+    // from under us: drop the cache so the next attempt re-resolves, and the
+    // account's token so the next turn asks for it again.
     if kind == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
+        if let Some(token) = &account_token {
+            accounts.invalidate(&token.account);
+        }
     }
 }

@@ -217,6 +217,7 @@ pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
         native_stop_reason: state.native_stop_reason.clone(),
         error_message: state.error_message.clone(),
         error_kind: None,
+        error_details: None,
         warnings: (!warnings.is_empty()).then_some(warnings),
         usage: Some(state.usage.clone()),
         model: model.to_string(),

@@ -4,8 +4,13 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { seedClaudeAccountsForTests } from '@/lib/backend/claude-accounts'
 import type { ChatProject } from '@/lib/backend/projects'
 import type { ConversationDetailsDraft } from '@/lib/conversation-details'
+import {
+  splitsFixture,
+  usageFixture,
+} from '@/stories/fixtures/claude-accounts-fixtures'
 import { ConversationDetailsDialog } from './ConversationDetailsDialog'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -171,5 +176,150 @@ describe('Conversation details (§1.3.5)', () => {
     expect(dialog().querySelector('[role="alert"]')?.textContent).toContain(
       'engine said no',
     )
+  })
+})
+
+describe('the Claude Code account row (§4.3.5)', () => {
+  const claudeCode = { ...conversation, model: 'claude-code::claude-opus-4-5' }
+  const row = () => dialog().querySelector('[data-conversation-account]')
+  const resolution = () =>
+    dialog().querySelector('[data-account-resolution]') as HTMLElement | null
+
+  afterEach(() => seedClaudeAccountsForTests(null))
+
+  it('says where a claude-code conversation runs, with a select', () => {
+    seedClaudeAccountsForTests({
+      usage: usageFixture(NOW),
+      splits: splitsFixture(NOW),
+    })
+    render({ conversation: claudeCode })
+    expect(row()?.textContent).toContain('Claude Code account')
+    expect(resolution()?.dataset.accountResolution).toBe('global')
+    expect(resolution()?.textContent).toBe(
+      'Runs on Work, the global account, because acme-web follows the global.',
+    )
+    expect(row()?.querySelector('button')).not.toBeNull()
+  })
+
+  it("reads a conversation's own pin", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...claudeCode,
+        sessionMetadata: { claude_account: 'personal' },
+      },
+    })
+    expect(resolution()?.textContent).toBe(
+      'Runs on Personal, pinned for this conversation.',
+    )
+  })
+
+  it('is text only in a side chat', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation: claudeCode, sideChat: true })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+    expect(row()?.querySelector('button')).toBeNull()
+  })
+
+  // Turns sent through harness::send by another client, sub-agents: no
+  // metadata.model, but the chip shows, so the row must too.
+  it("reads a conversation without a model from its last reply's provider", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...conversation,
+        model: null,
+        messages: [
+          {
+            id: 'a1',
+            role: 'assistant',
+            content: 'Done',
+            model: 'claude-opus-4-5',
+            provider: 'claude-code',
+            createdAt: NOW,
+          },
+        ],
+      },
+    })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+  })
+
+  it("follows the chat's provider when it hands one", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation, provider: 'claude-code' })
+    expect(resolution()?.textContent).toContain('Runs on Work')
+    act(() => root?.unmount())
+    host?.remove()
+    render({ conversation: claudeCode, provider: 'openai' })
+    expect(row()).toBeNull()
+  })
+
+  // Opened from the sidebar, the dialog resolves a locked conversation itself.
+  it("reads a sub-agent on its parent's account and a side chat on its lock", () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: { ...claudeCode, parentId: 'parent' },
+      conversations: [
+        {
+          id: 'parent',
+          title: 'Parent',
+          model: null,
+          messages: [],
+          createdAt: 0,
+          updatedAt: 0,
+          sessionMetadata: { claude_account: 'personal' },
+        },
+      ],
+    })
+    expect(resolution()?.textContent).toBe(
+      "Runs on Personal, its conversation's account.",
+    )
+    expect(row()?.querySelector('button')).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+    render({
+      conversation: {
+        ...claudeCode,
+        sessionMetadata: {
+          side_chat_of: 'root',
+          side_chat_lock: { model: 'claude-code::x', account: 'personal' },
+        },
+      },
+    })
+    expect(resolution()?.textContent).toBe(
+      "Runs on Personal, locked to its conversation's account.",
+    )
+  })
+
+  // Another client wrote "global" in a project that follows the global (or
+  // in no project): the select reads it as the global choice, not "global".
+  it.each([
+    ['a project that follows the global', 'prj_web'],
+    ['no project', undefined],
+  ])('labels "global" as the global choice in %s', (_, projectId) => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({
+      conversation: {
+        ...claudeCode,
+        projectId,
+        sessionMetadata: { claude_account: 'global' },
+      },
+    })
+    // The trigger's text, then its chevron.
+    expect(row()?.querySelector('button')?.textContent).toMatch(
+      /^Global \(Work\)\W*$/,
+    )
+    expect(resolution()?.textContent).toBe('Runs on Work, the global account.')
+  })
+
+  it('is absent for other providers and short of the whole feature (§4.3.6)', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW) })
+    render({ conversation: { ...conversation, model: 'openai::gpt-5.4' } })
+    expect(row()).toBeNull()
+    act(() => root?.unmount())
+    host?.remove()
+    seedClaudeAccountsForTests({ usage: usageFixture(NOW), gate: 'update' })
+    render({ conversation: claudeCode })
+    expect(row()).toBeNull()
   })
 })

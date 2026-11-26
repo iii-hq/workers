@@ -10,6 +10,8 @@ import {
   FormDialogTitle,
 } from '@/components/ui/FormDialog'
 import { refreshChatProjects } from '@/hooks/use-chat-projects'
+import { getDefaultBackend } from '@/lib/backend'
+import { useClaudeAccounts } from '@/lib/backend/claude-accounts'
 import {
   type ChatProject,
   createProject,
@@ -18,14 +20,20 @@ import {
   PROJECT_COLORS,
   PROJECT_FOLDERS_MAX,
   PROJECT_NAME_MAX,
+  type ProjectAccount,
   type ProjectColor,
+  parseProjectAccount,
   projectOf,
   tildePath,
   updateProject,
 } from '@/lib/backend/projects'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
+import { ProjectAccountSection } from './ProjectAccountSection'
 import { ProjectDot } from './ProjectDot'
+
+/** A section the dialog can open on (the Projects tab of Claude Code accounts). */
+export type ProjectDialogSection = 'account'
 
 export interface ProjectDialogProps {
   open: boolean
@@ -44,6 +52,8 @@ export interface ProjectDialogProps {
   onSaved?: (project: ChatProject, moved: number) => void
   /** The engine call; tests and stories replace it. */
   save?: typeof saveProject
+  /** Open scrolled to this section, its first control focused. */
+  initialSection?: ProjectDialogSection
 }
 
 /** Create or update, then re-read the store. */
@@ -53,8 +63,15 @@ export async function saveProject(input: {
   color: ProjectColor
   folders: string[]
   bringExisting: boolean
+  /** The Claude Code account (§4.3.2); left out when the engine has no accounts. */
+  account?: ProjectAccount
   /** Edit: what changed, so the update stays a patch. */
-  changed?: { name: boolean; color: boolean; folders: boolean }
+  changed?: {
+    name: boolean
+    color: boolean
+    folders: boolean
+    account?: boolean
+  }
 }): Promise<{ project: ChatProject; moved: number }> {
   const result = input.id
     ? await updateProject({
@@ -64,12 +81,16 @@ export async function saveProject(input: {
         ...(input.changed?.folders !== false
           ? { folders: input.folders, bring_existing: input.bringExisting }
           : {}),
+        ...(input.account && input.changed?.account !== false
+          ? { account: input.account }
+          : {}),
       })
     : await createProject({
         name: input.name,
         color: input.color,
         folders: input.folders,
         bring_existing: input.bringExisting,
+        ...(input.account ? { account: input.account } : {}),
       })
   void refreshChatProjects()
   return result
@@ -86,6 +107,7 @@ function plural(n: number): string {
 interface Errors {
   name?: string
   folders?: string
+  account?: string
   form?: string
 }
 
@@ -104,8 +126,15 @@ export function ProjectDialog({
   initialFolders,
   onSaved,
   save = saveProject,
+  initialSection,
 }: ProjectDialogProps) {
   const editing = Boolean(project)
+  // §4.3.6: the account section only on an engine with the whole feature.
+  const accounts = useClaudeAccounts(getDefaultBackend().id === 'real' && open)
+  const withAccounts = accounts.gate === 'full'
+  const [account, setAccount] = useState<ProjectAccount>({ mode: 'global' })
+  const accountRef = useRef<HTMLElement>(null)
+  const accountSectionRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
   const [color, setColor] = useState<ProjectColor>('blue')
   const [folders, setFolders] = useState<string[]>([])
@@ -125,9 +154,19 @@ export function ProjectDialog({
         (initialFolders ?? []).map(normalizeFolder).filter(Boolean),
     )
     setBring(true)
+    setAccount(parseProjectAccount(project?.account))
     setErrors({})
     setSaving(false)
   }, [open])
+
+  // Opened on the account section: bring it into view.
+  useEffect(() => {
+    if (!open || initialSection !== 'account' || !withAccounts) return
+    const frame = window.requestAnimationFrame(() =>
+      accountSectionRef.current?.scrollIntoView?.({ block: 'nearest' }),
+    )
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, initialSection, withAccounts])
 
   const roots = useMemo(
     () => conversations.filter((c) => !c.draft && !c.parentId && c.workingDir),
@@ -203,6 +242,7 @@ export function ProjectDialog({
         color,
         folders,
         bringExisting: bring && bringable > 0,
+        ...(withAccounts ? { account } : {}),
         changed: project
           ? {
               name: trimmed !== project.name,
@@ -210,6 +250,13 @@ export function ProjectDialog({
               folders:
                 folders.join('\n') !==
                 project.folders.map(normalizeFolder).join('\n'),
+              ...(withAccounts
+                ? {
+                    account:
+                      JSON.stringify(account) !==
+                      JSON.stringify(parseProjectAccount(project.account)),
+                  }
+                : {}),
             }
           : undefined,
       })
@@ -228,7 +275,9 @@ export function ProjectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FormDialogContent
         className="w-[min(32rem,calc(100vw-2rem))] [--dialog-max-width:32rem]"
-        initialFocus={nameRef}
+        initialFocus={
+          initialSection === 'account' && withAccounts ? accountRef : nameRef
+        }
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
       >
@@ -388,6 +437,23 @@ export function ProjectDialog({
               <label htmlFor={`${ids}-bring`}>
                 {`Bring the ${bringable} ${bringable === 1 ? 'conversation' : 'conversations'} already in these folders`}
               </label>
+            </div>
+          ) : null}
+
+          {withAccounts ? (
+            <div ref={accountSectionRef}>
+              <ProjectAccountSection
+                value={account}
+                onChange={(next) => {
+                  setAccount(next)
+                  if (errors.account) {
+                    setErrors((c) => ({ ...c, account: undefined }))
+                  }
+                }}
+                data={accounts}
+                error={errors.account}
+                firstRef={accountRef}
+              />
             </div>
           ) : null}
 

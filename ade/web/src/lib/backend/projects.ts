@@ -8,8 +8,9 @@
  * (`ChatCapabilities.projects`); the saved-folder catalogue that used to
  * answer `harness::projects::*` is `./folders.ts`.
  *
- * A write never sends `account` or `autocompact` (phases 4 and 3): `update`
- * is a patch, so a phase-1 client cannot erase what a later one set.
+ * A write sends `account` only when the caller sets it (phase 4, §4.3.2) and
+ * never sends `autocompact` (phase 3): `update` is a patch, so a client
+ * cannot erase what another one set.
  */
 import { errorCode } from '@iii-dev/console-ui/format'
 import { errText } from '@/lib/errors'
@@ -57,6 +58,29 @@ export function isProjectColor(value: unknown): value is ProjectColor {
 export const PROJECT_NAME_MAX = 40
 export const PROJECT_FOLDERS_MAX = 20
 
+/**
+ * A project's Claude Code account (§4.3.2): follow the global account, or pin
+ * to one. The harness stores `{mode: "global"}` by default.
+ */
+export type ProjectAccount =
+  | { mode: 'global' }
+  | { mode: 'pinned'; account_id: string }
+
+/** A project's `account` out of the wire; anything else follows the global. */
+export function parseProjectAccount(raw: unknown): ProjectAccount {
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>
+    if (
+      record.mode === 'pinned' &&
+      typeof record.account_id === 'string' &&
+      record.account_id.length > 0
+    ) {
+      return { mode: 'pinned', account_id: record.account_id }
+    }
+  }
+  return { mode: 'global' }
+}
+
 export interface ChatProject {
   id: string
   name: string
@@ -64,8 +88,9 @@ export interface ChatProject {
   folders: string[]
   created_at_ms: number
   updated_at_ms: number
-  /** Phase 4 and 3 fields, kept as the engine sent them and never written here. */
+  /** Phase 4: its Claude Code account, as the engine sent it (read it with `parseProjectAccount`). */
   account?: unknown
+  /** Phase 3, kept as the engine sent it and never written here. */
   autocompact?: unknown
 }
 
@@ -192,18 +217,20 @@ export async function createProject(input: {
   color: ProjectColor
   folders: string[]
   bring_existing?: boolean
+  account?: ProjectAccount
 }): Promise<ProjectWrite> {
   const c = await client()
   return parseWrite(await c.call(PROJECTS_CREATE_FUNCTION_ID, { ...input }))
 }
 
-/** A patch: only the fields given change; `account`/`autocompact` are never sent. */
+/** A patch: only the fields given change; `autocompact` is never sent. */
 export async function updateProject(input: {
   id: string
   name?: string
   color?: ProjectColor
   folders?: string[]
   bring_existing?: boolean
+  account?: ProjectAccount
 }): Promise<ProjectWrite> {
   const c = await client()
   const payload: Record<string, unknown> = { id: input.id }
@@ -212,6 +239,7 @@ export async function updateProject(input: {
   if (input.folders !== undefined) payload.folders = input.folders
   if (input.bring_existing !== undefined)
     payload.bring_existing = input.bring_existing
+  if (input.account !== undefined) payload.account = input.account
   return parseWrite(await c.call(PROJECTS_UPDATE_FUNCTION_ID, payload))
 }
 
@@ -251,6 +279,7 @@ export type ProjectErrorCode =
   | 'too_many_folders'
   | 'folder_not_absolute'
   | 'bad_color'
+  | 'invalid_account'
   | 'not_found'
   | 'bad_request'
 
@@ -332,7 +361,7 @@ export function parseProjectError(err: unknown): ProjectError | null {
 
 /** Where a project error belongs in the dialog, with its copy (§1.3.2). */
 export interface ProjectErrorDisplay {
-  field: 'name' | 'folders' | 'form'
+  field: 'name' | 'folders' | 'account' | 'form'
   message: string
 }
 
@@ -393,6 +422,12 @@ export function describeProjectError(
       }
     case 'bad_color':
       return { field: 'form', message: said ?? 'Pick one of the six colours' }
+    case 'invalid_account':
+      return {
+        field: 'account',
+        message:
+          said ?? 'Follow the global account, or pin to one of the accounts',
+      }
     case 'not_found':
       return {
         field: 'form',

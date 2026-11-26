@@ -19,6 +19,13 @@
 # writes a pasted file to the cache folder), the config-reload callback and
 # the Console asset function are bus-internal.
 #
+# `tmux::accounts::credential` is denied: it returns an account's access
+# token (renewing it first when it expires soon) and exists only for
+# provider-claude-code, a worker, which the deny does not reach; the apps
+# never call it either (chat-projects D141). `tmux::usage::claude_outside`
+# is denied too: devices read it for the Chat's split of the week, and an
+# agent has no use for it (chat-projects spec §4.2.1).
+#
 # `tmux::usage::read` and `tmux::accounts::list` only read: Claude Code and
 # Codex usage and the Claude Code accounts (names, emails, plans), never a
 # token; `refresh: true` asks Anthropic's usage endpoint again, at most once
@@ -35,6 +42,8 @@ rules:
   - '!tmux::terminal::*'
   - '!tmux::on-config-change'
   - '!tmux::ui-content'
+  - '!tmux::accounts::credential'
+  - '!tmux::usage::claude_outside'
   - tmux::status
   - tmux::sessions::list
   - tmux::ports::list

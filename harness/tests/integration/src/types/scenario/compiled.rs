@@ -58,6 +58,9 @@ pub struct CompiledSendOptionsV1 {
     /// Directory agent profile id, resolved server-side (`options.agent`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The send's `options.metadata` (`fs_scope`, …), passed through as is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

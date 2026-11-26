@@ -41,6 +41,35 @@ export const TRANSCRIPT_OLDER_PAGE_LIMIT = 25
 /** Sidebar page size (one page; `updated_desc` keeps recent chats first). */
 const LIST_PAGE_LIMIT = 200
 
+/**
+ * The last `session::list` page had a `next_cursor`: older sessions aren't
+ * listed here, so counts made from the list are lower bounds ("12+").
+ */
+let listHasMore = false
+const listHasMoreListeners = new Set<() => void>()
+
+function setListHasMore(next: boolean): void {
+  if (next === listHasMore) return
+  listHasMore = next
+  for (const listener of listHasMoreListeners) listener()
+}
+
+export function sessionListHasMore(): boolean {
+  return listHasMore
+}
+
+export function subscribeSessionListHasMore(listener: () => void): () => void {
+  listHasMoreListeners.add(listener)
+  return () => {
+    listHasMoreListeners.delete(listener)
+  }
+}
+
+/** Tests and stories: say whether the list stopped at its page. */
+export function setSessionListHasMoreForTests(next: boolean): void {
+  setListHasMore(next)
+}
+
 export async function listSessions(): Promise<SessionMeta[]> {
   const client = await getIiiClient()
   const resp = await client.call<{
@@ -51,6 +80,7 @@ export async function listSessions(): Promise<SessionMeta[]> {
     { limit: LIST_PAGE_LIMIT, order: 'updated_desc' },
     { timeoutMs: 10_000 },
   )
+  setListHasMore(Boolean(resp?.next_cursor))
   return resp?.sessions ?? []
 }
 

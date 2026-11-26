@@ -111,7 +111,7 @@
             ]
           },
           "token_expired": {
-            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "description": "Its access token expired. Claude Code renews it when it runs there, and so does the worker when `tmux::accounts::credential` asks for it.",
             "type": "boolean"
           },
           "usage": {

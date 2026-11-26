@@ -10,6 +10,9 @@ export const DESKTOP_POINTER_QUERY = '(hover: hover) and (pointer: fine)'
 /** The single-column phone layout: everything below the `sm` breakpoint. */
 export const MOBILE_LAYOUT_QUERY = '(max-width: 639px)'
 
+/** Wide enough for the chat header's account chip (chat-projects D138): wider than 768. */
+export const WIDE_HEADER_QUERY = '(min-width: 769px)'
+
 /** The reader asked the OS for less motion: presence runs instantly. */
 export const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 

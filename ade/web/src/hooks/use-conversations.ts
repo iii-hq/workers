@@ -51,6 +51,7 @@ import {
   releaseRemovedDraftAttachments,
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
+import { setConversationAccount } from '@/lib/backend/claude-accounts'
 import { upsertSavedFolder } from '@/lib/backend/folders'
 import { assignProject, projectOf } from '@/lib/backend/projects'
 import { getChatCapabilities } from '@/lib/chat-capabilities'
@@ -1387,6 +1388,13 @@ export interface ConversationsApi {
    * the project changed. Rejects with the engine's error.
    */
   saveDetails: (id: string, draft: ConversationDetailsDraft) => Promise<void>
+  /**
+   * A conversation's Claude Code account (chat-projects §4.3.4): an account
+   * id pins it, `"global"` follows the global, null goes back to its
+   * project's. One `session::patch-meta` of `claude_account` alone, never a
+   * `set-meta`; the local conversation follows, and comes back on a refusal.
+   */
+  setClaudeAccount: (id: string, account: string | null) => Promise<void>
   /** Move a conversation (and its subagents and sidechats) to a project, or `none`. */
   moveToProject: (id: string, projectId: string) => Promise<void>
   remove: (id: string, options?: DeleteSessionTreeOptions) => Promise<void>
@@ -3249,6 +3257,37 @@ export function useConversations(
     [serverEnabled, patchConversation, moveToProject],
   )
 
+  const setClaudeAccount = useCallback(
+    async (id: string, account: string | null) => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      if (!conv) return
+      const previous = conv.sessionMetadata?.claude_account
+      const write =
+        (value: unknown) =>
+        (c: Conversation): Conversation => ({
+          ...c,
+          sessionMetadata: patchSessionMetadata(c.sessionMetadata, {
+            claude_account: value ?? undefined,
+          }),
+        })
+      conversationsRef.current = conversationsRef.current.map((c) =>
+        c.id === id ? write(account)(c) : c,
+      )
+      patchConversation(id, write(account))
+      if (!serverEnabled || conv.draft) return
+      try {
+        await setConversationAccount(id, account)
+      } catch (err) {
+        conversationsRef.current = conversationsRef.current.map((c) =>
+          c.id === id ? write(previous)(c) : c,
+        )
+        patchConversation(id, write(previous))
+        throw err
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
   const remove = useCallback(
     async (id: string, options?: DeleteSessionTreeOptions): Promise<void> => {
       const conv = conversationsRef.current.find((c) => c.id === id)
@@ -3967,6 +4006,7 @@ export function useConversations(
     watchConversation,
     rename,
     saveDetails,
+    setClaudeAccount,
     moveToProject,
     remove,
     setModel,

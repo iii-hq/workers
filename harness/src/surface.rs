@@ -147,5 +147,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::side_chat::SideChatRequest, crate::side_chat::SideChatSummarizeResponse>(
             crate::side_chat::SUMMARIZE_ID,
         ),
+        // chat-projects phase 4
+        spec::<crate::accounts::RetryRequest, crate::accounts::RetryResponse>(
+            crate::accounts::RETRY_ID,
+        ),
+        spec::<crate::accounts::AccountSplitRequest, Vec<crate::accounts::AccountSplit>>(
+            crate::accounts::ACCOUNT_SPLIT_ID,
+        ),
     ]
 }

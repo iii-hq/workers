@@ -1254,6 +1254,7 @@ mod tests {
             result_error: None,
             stop_reason: None,
             failure: None,
+            account: None,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,

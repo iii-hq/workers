@@ -41,6 +41,7 @@ import {
   DESKTOP_POINTER_QUERY,
   MOBILE_LAYOUT_QUERY,
   useMediaQuery,
+  WIDE_HEADER_QUERY,
 } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
@@ -58,6 +59,15 @@ import {
 } from '@/lib/attachments/store'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
+import {
+  CLAUDE_CODE_PROVIDER,
+  parseAccountsError,
+  refreshClaudeAccounts,
+  retryTurn,
+  setConversationAccount,
+  setGlobalAccount,
+  useClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import {
   badgeCount,
   contextItemCount,
@@ -102,7 +112,17 @@ import {
   useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { useChatCapabilities } from '@/lib/chat-capabilities'
+import { ACCOUNT_ROW_LABEL, globalRefusal } from '@/lib/claude-accounts-words'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
+import {
+  chatAccountResolution,
+  lockedAccountOf,
+  type TurnAccountRef,
+} from '@/lib/conversation-account'
+import {
+  effectiveModel as effectiveModelOf,
+  effectiveProvider,
+} from '@/lib/conversation-provider'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -112,6 +132,14 @@ import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  accountFailure,
+  dismissLimit,
+  LockedAccountContext,
+  lastTurnFailure,
+  limitCardModel,
+  limitDismissed,
+} from '@/lib/limit-card'
 import { useMentionProviderRefresh } from '@/lib/mentions/providers'
 import {
   onboardingWizardAvailable,
@@ -184,6 +212,7 @@ import {
   type WorkingDirScope,
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
+import { AccountDot } from './AccountCard'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_AGENT_ID, idleComposerPlaceholder } from './agent-defaults'
@@ -207,8 +236,13 @@ import {
   composerControlNodes,
 } from './Composer'
 import { ContextUsage } from './ContextUsage'
-import { ConversationDetailsDialog } from './ConversationDetailsDialog'
+import {
+  ConversationDetailsDialog,
+  type ConversationDetailsSection,
+} from './ConversationDetailsDialog'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
+import { requestClaudeAccountsDialog } from './claude-accounts-dialog-request'
+import { LimitCard } from './LimitCard'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
 import { QuestionNotice } from './QuestionNotice'
@@ -503,12 +537,24 @@ export function ChatView({
     ? contextItemCount(contextItems.items, dismissedPrKeys)
     : 0
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsSection, setDetailsSection] = useState<
+    ConversationDetailsSection | undefined
+  >(undefined)
+  const openDetails = useCallback((section?: ConversationDetailsSection) => {
+    setDetailsSection(section)
+    setDetailsOpen(true)
+  }, [])
   const chatProject =
     conversation.projectId && conversation.projectId !== NO_PROJECT
       ? (chatProjects.projects.find(
           (project) => project.id === conversation.projectId,
         ) ?? null)
       : null
+  // Claude Code accounts (chat-projects §4.3): the chip and the limit card,
+  // for claude-code conversations on an engine with the whole feature.
+  const claudeAccounts = useClaudeAccounts(realBackend)
+  // The chip is for wide surfaces only (D138): the ADE wider than 768.
+  const wideHeader = useMediaQuery(WIDE_HEADER_QUERY)
   // Putting the pane away is a request the pane carries out itself: it
   // knows whether it is the column (fold it) or the drawer beside a narrow
   // chat (close it). Writing the column's stored state alone left the
@@ -1235,28 +1281,153 @@ export function ChatView({
     [queuedDrafts, pendingQueueIds],
   )
 
-  // Discovered sessions (sub-agents especially) carry no client-side model
-  // choice — `conversation.model` is null. Fall back to the model the latest
-  // assistant reply actually used (transcript entries carry it), resolved
-  // against the catalog's composite ids so the picker preselects when it can.
-  // An agent profile may name a plain router id (`claude-opus-5-5`) rather
-  // than a catalog key; it resolves the same way, or the picker shows
-  // "Choose model" for a model the session is running.
-  const effectiveModel = useMemo(() => {
-    const toCatalog = (model: string) =>
-      modelOptions.find((o) => o.id === model || o.id.endsWith(`::${model}`))
-        ?.id ?? model
-    if (conversation.model) return toCatalog(conversation.model)
-    if (imported) return null
-    const last = [...conversation.messages]
-      .reverse()
-      .find(
-        (m): m is AssistantMessage =>
-          m.role === 'assistant' && Boolean(m.model),
-      )
-    if (!last?.model) return null
-    return toCatalog(last.model)
-  }, [conversation.model, conversation.messages, modelOptions, imported])
+  // Discovered sessions (sub-agents, turns other clients sent) carry no
+  // client-side model choice: the latest reply's model stands in, and its
+  // provider decides the Claude Code surfaces (the chip, the limit card and
+  // Details' account row read the same `chatProvider`).
+  const effectiveModel = useMemo(
+    () => effectiveModelOf(conversation, modelOptions),
+    [conversation, modelOptions],
+  )
+  const chatProvider = useMemo(
+    () =>
+      effectiveProvider(conversation, {
+        catalog: modelOptions,
+        lockedModel: side?.locked?.model,
+      }),
+    [conversation, modelOptions, side?.locked?.model],
+  )
+
+  const claudeCodeChat =
+    claudeAccounts.gate === 'full' && chatProvider === CLAUDE_CODE_PROVIDER
+  // A side chat keeps its lock's account (D2, D80); a sub-agent runs on its
+  // conversation's. The card and the transcript's account notices offer no
+  // other account then, each with its own words.
+  const lockedAccount = lockedAccountOf(conversation, Boolean(side))
+  // A sub-agent whose parent isn't loaded here: the parent turn's account,
+  // as the verbose `harness::status` reports it.
+  const parentId = conversation.parentId
+  const parentLoaded = Boolean(
+    parentId && listedConversations?.some((c) => c.id === parentId),
+  )
+  const [parentTurnAccount, setParentTurnAccount] =
+    useState<TurnAccountRef | null>(null)
+  const readsParentTurn =
+    claudeCodeChat && lockedAccount === 'sub-agent' && !parentLoaded
+  // A new turn of the sub-agent may run on another account: read again then.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-read per status change
+  useEffect(() => {
+    if (!readsParentTurn || !parentId) return
+    let cancelled = false
+    getIiiClient()
+      .then((client) => getTurnStatus(client, parentId))
+      .then((report) => {
+        const account = report?.account
+        if (!cancelled) {
+          setParentTurnAccount(
+            account && typeof account.id === 'string' && account.id
+              ? account
+              : null,
+          )
+        }
+      })
+      .catch(() => {
+        // The sub-agent's own resolution stands.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [readsParentTurn, parentId, conversation.status])
+  // The one resolution the chip, the limit card and Details' row read.
+  const accountResolution = claudeCodeChat
+    ? chatAccountResolution({
+        conversation,
+        sideChat: Boolean(side),
+        projects: chatProjects.projects,
+        global: claudeAccounts.claude?.global ?? null,
+        conversations: listedConversations,
+        parentTurnAccount: readsParentTurn ? parentTurnAccount : null,
+      })
+    : null
+  const chipAccount =
+    !side && wideHeader && accountResolution?.account
+      ? {
+          id: accountResolution.account,
+          name: claudeAccounts.nameOf(accountResolution.account),
+          color:
+            claudeAccounts.account(accountResolution.account)?.color ?? 'gray',
+        }
+      : null
+  // The limit card (§4.3.4): the last turn failed with the usage limit, or
+  // the conversation is idle and its account's reading is at 100 %.
+  // The X writes the put-away key outside React; this re-renders to read it.
+  const [, setLimitTick] = useState(0)
+  const lastFailure = useMemo(
+    () => lastTurnFailure(conversation.messages),
+    [conversation.messages],
+  )
+  const limitModel = claudeCodeChat
+    ? limitCardModel({
+        sessionId: conversation.id,
+        failure: lastFailure,
+        idle:
+          !streamingIndicator &&
+          !sessionHydrating &&
+          conversation.status !== 'working',
+        resolved: accountResolution?.account ?? null,
+        account: claudeAccounts.account,
+        now: Date.now(),
+      })
+    : null
+  const limitCard =
+    limitModel && !readOnly && !limitDismissed(conversation.id, limitModel.key)
+      ? limitModel
+      : null
+  // The card turns to "The limit has reset" (or a reading's card goes) when
+  // the window resets: render again then.
+  const limitResetsAt = limitModel?.reset ? null : limitModel?.resetsAtMs
+  useEffect(() => {
+    if (limitResetsAt == null) return
+    const wait = limitResetsAt - Date.now()
+    if (wait <= 0) return
+    const timer = window.setTimeout(
+      () => setLimitTick((tick) => tick + 1),
+      Math.min(wait + 250, 2 ** 31 - 1),
+    )
+    return () => window.clearTimeout(timer)
+  }, [limitResetsAt])
+  /** Pin the conversation: `claude_account` alone, through `session::patch-meta`. */
+  const pinConversationAccount = useCallback(
+    async (account: string) => {
+      if (conversationsCtx) {
+        await conversationsCtx.setClaudeAccount(conversation.id, account)
+      } else {
+        await setConversationAccount(conversation.id, account)
+      }
+    },
+    [conversationsCtx, conversation.id],
+  )
+  /** "Make Work the global": tmux's answer, or its refusal in the apps' words. */
+  const switchGlobalAccount = useCallback(
+    async (account: string) => {
+      try {
+        return await setGlobalAccount(account)
+      } catch (err) {
+        throw new Error(
+          globalRefusal(
+            parseAccountsError(err),
+            claudeAccounts.nameOf(account),
+          ),
+        )
+      } finally {
+        void refreshClaudeAccounts()
+      }
+    },
+    [claudeAccounts],
+  )
+  const retryFailedTurn = useCallback(async () => {
+    await retryTurn(conversation.id)
+  }, [conversation.id])
 
   const modelSwitch = useModelSwitch({
     backend,
@@ -3669,7 +3840,7 @@ export function ChatView({
                 /* The name opens Conversation details (§1.3.4). */
                 <button
                   type="button"
-                  onClick={() => setDetailsOpen(true)}
+                  onClick={() => openDetails()}
                   className="max-w-full truncate rounded-sm text-left hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
                 >
                   {panelTitle ?? 'Chat'}
@@ -3693,7 +3864,7 @@ export function ChatView({
           </div>
         </PageHeader>
       )}
-      {!side && (conversation.description || chatProject) ? (
+      {!side && (conversation.description || chatProject || chipAccount) ? (
         /* Line 2 and the chips row of the header (chat-projects §1.3.4):
            the description in Muted with "by agent · 2m" when the agent
            wrote it, then the project and folder chips. */
@@ -3710,7 +3881,7 @@ export function ChatView({
                 type="button"
                 data-chat-description=""
                 disabled={!canEditDetails}
-                onClick={() => setDetailsOpen(true)}
+                onClick={() => openDetails()}
                 title={conversation.description}
                 className="min-w-0 truncate rounded-sm text-left text-xs text-muted-foreground enabled:hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
               >
@@ -3721,23 +3892,25 @@ export function ChatView({
               ) : null}
             </div>
           ) : null}
-          {chatProject ? (
+          {chatProject || chipAccount ? (
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                data-project-chip=""
-                onClick={() =>
-                  requestProjectDialog({
-                    mode: 'edit',
-                    projectId: chatProject.id,
-                  })
-                }
-                className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
-              >
-                <ProjectDot color={chatProject.color} />
-                <span className="truncate">{chatProject.name}</span>
-              </button>
-              {conversation.workingDir ? (
+              {chatProject ? (
+                <button
+                  type="button"
+                  data-project-chip=""
+                  onClick={() =>
+                    requestProjectDialog({
+                      mode: 'edit',
+                      projectId: chatProject.id,
+                    })
+                  }
+                  className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  <ProjectDot color={chatProject.color} />
+                  <span className="truncate">{chatProject.name}</span>
+                </button>
+              ) : null}
+              {chatProject && conversation.workingDir ? (
                 <span
                   data-folder-chip=""
                   data-keep-mono=""
@@ -3750,6 +3923,21 @@ export function ChatView({
                   </span>
                 </span>
               ) : null}
+              {chipAccount ? (
+                /* The account chip (§4.3.3, D138): Conversation details on
+                   the account row. */
+                <button
+                  type="button"
+                  data-account-chip={chipAccount.id}
+                  disabled={!canEditDetails}
+                  onClick={() => openDetails('account')}
+                  title={ACCOUNT_ROW_LABEL}
+                  className="inline-flex h-6 max-w-48 items-center gap-1.5 rounded-md bg-surface px-2 text-xs text-ink enabled:hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                >
+                  <AccountDot color={chipAccount.color} />
+                  <span className="truncate">{chipAccount.name}</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -3759,11 +3947,14 @@ export function ChatView({
           open={detailsOpen}
           conversation={conversation}
           onOpenChange={setDetailsOpen}
+          initialSection={detailsSection}
           onSave={(draft) =>
             conversationsCtx.saveDetails(conversation.id, draft)
           }
           projects={chatProjects.available ? chatProjects.projects : undefined}
           agentSwitch={chatCaps.setDescription && chatSettings.agentWrites}
+          provider={chatProvider}
+          lockedResolution={lockedAccount ? accountResolution : null}
         />
       ) : null}
       <div
@@ -3793,62 +3984,64 @@ export function ChatView({
             <AskInSideChatContext.Provider value={sideChatValue}>
               <SideChatQuotesContext.Provider value={sideQuotesValue}>
                 <SideChatRepliesContext.Provider value={sideRepliesValue}>
-                  <MessageList
-                    messages={shownMessages}
-                    header={
-                      side && shownMessages.length === 0
-                        ? side.empty
-                        : undefined
-                    }
-                    agentName={conversation.agentProfile?.name}
-                    sessionId={conversation.id}
-                    spawnContext={{
-                      title: conversation.title,
-                      model: effectiveModel,
-                      appearance: conversation.subagentAppearance,
-                    }}
-                    transcriptHydrated={conversation.hydrated !== false}
-                    isThinking={isThinking || waitingOnAnswer}
-                    waitingOnPerson={waitingOnAnswer}
-                    turnVisualPhase={turnVisualState.phase}
-                    turnKey={turnVisualState.turnKey}
-                    thinkingDetail={
-                      waitingOnAnswer
-                        ? WAITING_ON_ANSWER_LABEL
-                        : conversation.status === 'working' &&
-                            conversation.statusReason
-                          ? conversation.statusReason
-                          : (phaseDetail ?? waitingFallback)
-                    }
-                    density={density}
-                    onResolveApproval={resolveApproval}
-                    onAlwaysAllow={handleAlwaysAllow}
-                    onResolveFilesystemAccess={handleFilesystemResolve}
-                    onManageFilesystemAccess={handleManageFilesystemAccess}
-                    onConfigureProvider={handleConfigureProvider}
-                    workingDir={conversation.workingDir ?? null}
-                    onWorkingDirChange={
-                      workingDirEnabled ? handleWorkingDirChange : undefined
-                    }
-                    defaultWorkingDir={defaultWorkingDir}
-                    worktreePicker={
-                      worktreeEnabled
-                        ? { enabled: true, onPick: handlePickWorktree }
-                        : undefined
-                    }
-                    observersById={observersById}
-                    awaitingQuestionIds={awaitingQuestionIds}
-                    onQuestionsOffscreen={handleQuestionsOffscreen}
-                    focusMessageId={quoteFocusId ?? focusMessageId}
-                    onFocusMessageHandled={() => {
-                      setQuoteFocusId(null)
-                      handleFocusMessageHandled()
-                    }}
-                    history={side ? undefined : conversation.history}
-                    onLoadOlder={side ? undefined : handleLoadOlder}
-                    onLoadActivityEntries={handleLoadActivityEntries}
-                    onShowObservers={asideEnabled ? showObservers : undefined}
-                  />
+                  <LockedAccountContext.Provider value={lockedAccount}>
+                    <MessageList
+                      messages={shownMessages}
+                      header={
+                        side && shownMessages.length === 0
+                          ? side.empty
+                          : undefined
+                      }
+                      agentName={conversation.agentProfile?.name}
+                      sessionId={conversation.id}
+                      spawnContext={{
+                        title: conversation.title,
+                        model: effectiveModel,
+                        appearance: conversation.subagentAppearance,
+                      }}
+                      transcriptHydrated={conversation.hydrated !== false}
+                      isThinking={isThinking || waitingOnAnswer}
+                      waitingOnPerson={waitingOnAnswer}
+                      turnVisualPhase={turnVisualState.phase}
+                      turnKey={turnVisualState.turnKey}
+                      thinkingDetail={
+                        waitingOnAnswer
+                          ? WAITING_ON_ANSWER_LABEL
+                          : conversation.status === 'working' &&
+                              conversation.statusReason
+                            ? conversation.statusReason
+                            : (phaseDetail ?? waitingFallback)
+                      }
+                      density={density}
+                      onResolveApproval={resolveApproval}
+                      onAlwaysAllow={handleAlwaysAllow}
+                      onResolveFilesystemAccess={handleFilesystemResolve}
+                      onManageFilesystemAccess={handleManageFilesystemAccess}
+                      onConfigureProvider={handleConfigureProvider}
+                      workingDir={conversation.workingDir ?? null}
+                      onWorkingDirChange={
+                        workingDirEnabled ? handleWorkingDirChange : undefined
+                      }
+                      defaultWorkingDir={defaultWorkingDir}
+                      worktreePicker={
+                        worktreeEnabled
+                          ? { enabled: true, onPick: handlePickWorktree }
+                          : undefined
+                      }
+                      observersById={observersById}
+                      awaitingQuestionIds={awaitingQuestionIds}
+                      onQuestionsOffscreen={handleQuestionsOffscreen}
+                      focusMessageId={quoteFocusId ?? focusMessageId}
+                      onFocusMessageHandled={() => {
+                        setQuoteFocusId(null)
+                        handleFocusMessageHandled()
+                      }}
+                      history={side ? undefined : conversation.history}
+                      onLoadOlder={side ? undefined : handleLoadOlder}
+                      onLoadActivityEntries={handleLoadActivityEntries}
+                      onShowObservers={asideEnabled ? showObservers : undefined}
+                    />
+                  </LockedAccountContext.Provider>
                 </SideChatRepliesContext.Provider>
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
@@ -3986,7 +4179,31 @@ export function ChatView({
                   {side.metaLine}
                 </p>
               ) : null}
-              {!side && !conversation.parentId && backend.turnRest ? (
+              {limitCard ? (
+                <LimitCard
+                  model={limitCard}
+                  data={claudeAccounts}
+                  time={{ now: Date.now() }}
+                  locked={lockedAccount}
+                  followsGlobal={
+                    accountResolution?.source === 'global' &&
+                    limitCard.account === claudeAccounts.claude?.global
+                  }
+                  onPin={pinConversationAccount}
+                  onSetGlobal={switchGlobalAccount}
+                  onRetry={retryFailedTurn}
+                  onOpenAccounts={() => requestClaudeAccountsDialog()}
+                  onDismiss={() => {
+                    dismissLimit(conversation.id, limitCard.key)
+                    setLimitTick((tick) => tick + 1)
+                  }}
+                />
+              ) : !side &&
+                !conversation.parentId &&
+                backend.turnRest &&
+                // "Continue" would run the same account into the same limit:
+                // closing the limit card doesn't bring it back.
+                !accountFailure(lastFailure) ? (
                 <TurnRestRow
                   sessionId={conversation.id}
                   // A reconnect reloads the transcript while the status stays

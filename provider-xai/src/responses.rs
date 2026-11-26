@@ -135,6 +135,7 @@ fn partial(state: &ResponsesState, model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        error_details: None,
         warnings: (!warnings.is_empty()).then_some(warnings),
         usage: state.usage_seen.then(|| state.usage.clone()),
         model: model.to_string(),

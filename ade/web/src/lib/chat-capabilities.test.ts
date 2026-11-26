@@ -58,6 +58,10 @@ describe('chat capabilities (spec §0.2)', () => {
       contextItems: true,
       chatSettings: true,
       sideChats: true,
+      harnessRetry: false,
+      tmuxAccounts: false,
+      tmuxCredential: false,
+      claudeAccounts: false,
     })
   })
 
@@ -80,6 +84,10 @@ describe('chat capabilities (spec §0.2)', () => {
       contextItems: true,
       chatSettings: false,
       sideChats: true,
+      harnessRetry: false,
+      tmuxAccounts: false,
+      tmuxCredential: false,
+      claudeAccounts: false,
     })
   })
 
@@ -96,6 +104,31 @@ describe('chat capabilities (spec §0.2)', () => {
       setDescription: 'harness::set-description',
       chatSettings: 'harness::chat-settings::get',
     })
+  })
+
+  it('turns Claude Code accounts on with retry, the credential and patch-meta together', () => {
+    const ids = [
+      'harness::retry',
+      'tmux::accounts::list',
+      'tmux::accounts::credential',
+      'session::patch-meta',
+    ]
+    const with_ = (list: string[]) =>
+      capabilitiesFromCatalog({
+        functions: list.map((function_id) => ({ function_id })),
+      }).claudeAccounts
+    expect(with_(ids)).toBe(true)
+    // Never written through set-meta: no patch-meta, no accounts.
+    expect(with_(ids.filter((id) => id !== 'session::patch-meta'))).toBe(false)
+    expect(with_(ids.filter((id) => id !== 'harness::retry'))).toBe(false)
+    setChatCapabilitiesForTests({ harnessRetry: true, tmuxCredential: true })
+    expect(getChatCapabilities().claudeAccounts).toBe(false)
+    setChatCapabilitiesForTests({
+      harnessRetry: true,
+      tmuxCredential: true,
+      patchMeta: true,
+    })
+    expect(getChatCapabilities().claudeAccounts).toBe(true)
   })
 
   it('is off until read, and a test can pin an answer', () => {

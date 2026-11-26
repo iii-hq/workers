@@ -1,5 +1,6 @@
 //! Boot wiring: function surface, the router::on-ready observer, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
+use crate::accounts::{AccountSource, TmuxAccounts};
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models, refresh_models_periodically};
 use crate::errors::{invalid_request, invalid_request_from_serde};
@@ -131,10 +132,26 @@ pub async fn declare_with_backoff(iii: IIIClient, lock: DeclareLock) {
 /// credential yet (best-effort, read-only), then populate the catalog from the
 /// live API. The declaration carries no models, so the slice is empty until
 /// this refresh lands; failures are logged and left to the next refresh.
-pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client, lock: DeclareLock) {
+/// While an account source (tmux) holds the accounts, the vault is neither
+/// read nor written, so there is no import (D140).
+pub async fn declare_and_refresh(
+    iii: IIIClient,
+    http: reqwest::Client,
+    lock: DeclareLock,
+    accounts: Arc<dyn AccountSource>,
+) {
     declare_with_backoff(iii.clone(), lock).await;
-    auth::import_claude_home_if_absent(&iii).await;
-    match refresh_models(&iii, &http).await {
+    // Only a confirmed absence imports: a listing that could not be read
+    // (after its retries) may hide a tmux that holds the accounts.
+    match accounts.holds_accounts().await {
+        Ok(false) => auth::import_claude_home_if_absent(&iii).await,
+        Ok(true) => {}
+        Err(error) => eprintln!(
+            "[provider-claude-code] could not tell whether the tmux worker holds the Claude Code \
+             accounts ({error}); skipping the ~/.claude import"
+        ),
+    }
+    match refresh_models(&iii, &http, accounts.as_ref()).await {
         Ok(count) => println!("[provider-claude-code] catalog refreshed: {count} models"),
         Err(e) => eprintln!(
             "[provider-claude-code] post-register refresh failed ({e}); keeping last known catalog"
@@ -174,11 +191,20 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // request_id → live upstream cancel, shared by stream (registers) and
     // abort (signals) — see llm_router::provider_scaffold::aborts.
     let aborts = StreamAborts::new();
+    // Every token comes through here: the tmux worker's accounts when it
+    // runs, else the vault / ~/.claude path (D30, D140).
+    let accounts: Arc<dyn AccountSource> = Arc::new(TmuxAccounts::new(iii.clone()));
 
     iii.register_function(
         surface::STREAM_ID,
         typed_async_with_bad_request(
-            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
+            make_stream(
+                iii.clone(),
+                http.clone(),
+                cache.clone(),
+                aborts.clone(),
+                accounts.clone(),
+            ),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC)
@@ -192,9 +218,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
-        RegisterFunction::new_async(make_refresh_models(iii.clone(), http.clone()))
-            .description(surface::REFRESH_MODELS_DESC)
-            .metadata(json!({ "internal": true })),
+        RegisterFunction::new_async(make_refresh_models(
+            iii.clone(),
+            http.clone(),
+            accounts.clone(),
+        ))
+        .description(surface::REFRESH_MODELS_DESC)
+        .metadata(json!({ "internal": true })),
     );
 
     // Re-declare whenever the router starts: this handler is the target of
@@ -204,13 +234,19 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         let http_ready = http.clone();
         let lock_ready = declare_lock.clone();
         let cache_ready = cache.clone();
+        let accounts_ready = accounts.clone();
         iii.register_function(
             surface::ON_ROUTER_READY_ID,
             RegisterFunction::new_async(move |_event: RouterReadyEvent| {
-                let (iii, http, lock) = (iii_ready.clone(), http_ready.clone(), lock_ready.clone());
+                let (iii, http, lock, accounts) = (
+                    iii_ready.clone(),
+                    http_ready.clone(),
+                    lock_ready.clone(),
+                    accounts_ready.clone(),
+                );
                 cache_ready.invalidate();
                 async move {
-                    tokio::spawn(declare_and_refresh(iii, http, lock));
+                    tokio::spawn(declare_and_refresh(iii, http, lock, accounts));
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
@@ -222,14 +258,22 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Exact prompt token count behind router::count_tokens, authenticated
     // with the same OAuth credential path as stream.
     {
-        let (iii_count, http_count, cache_count) = (iii.clone(), http.clone(), cache.clone());
+        let (iii_count, http_count, cache_count, accounts_count) =
+            (iii.clone(), http.clone(), cache.clone(), accounts.clone());
         iii.register_function(
             surface::COUNT_TOKENS_ID,
             typed_async_with_bad_request(
                 move |req: crate::count_tokens::CountTokensRequest| {
-                    let (iii, http, cache) =
-                        (iii_count.clone(), http_count.clone(), cache_count.clone());
-                    async move { crate::count_tokens::handle(&iii, &http, &cache, req).await }
+                    let (iii, http, cache, accounts) = (
+                        iii_count.clone(),
+                        http_count.clone(),
+                        cache_count.clone(),
+                        accounts_count.clone(),
+                    );
+                    async move {
+                        crate::count_tokens::handle(&iii, &http, &cache, accounts.as_ref(), req)
+                            .await
+                    }
                 },
                 |e: serde_json::Error| invalid_request(format!("bad CountTokensRequest: {e}")),
             )
@@ -242,8 +286,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
 
     // Boot declare, off the boot path (a missing router must not block boot).
-    tokio::spawn(declare_and_refresh(iii.clone(), http.clone(), declare_lock));
-    tokio::spawn(refresh_models_periodically(iii, http));
+    tokio::spawn(declare_and_refresh(
+        iii.clone(),
+        http.clone(),
+        declare_lock,
+        accounts.clone(),
+    ));
+    tokio::spawn(refresh_models_periodically(iii, http, accounts));
     Ok(())
 }
 

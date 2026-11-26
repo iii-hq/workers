@@ -328,3 +328,118 @@ describe('model-switch context overflow', () => {
     ).toBe('internal')
   })
 })
+
+describe('Claude Code account failures (chat-projects D147)', () => {
+  it("reads llm.usage_limit as the account's limit, never as billing", () => {
+    // The billing pattern matches "usage limit"; the code wins.
+    expect(
+      categorizeTurnFailure({
+        code: 'llm.usage_limit',
+        class: 'llm.usage_limit',
+        text: 'Claude AI usage limit reached|1764000000',
+      }),
+    ).toBe('usage-limit')
+    expect(
+      categorizeTurnFailure({
+        code: 'router/provider_rejected',
+        class: 'llm.usage_limit',
+        text: 'usage limit',
+      }),
+    ).toBe('usage-limit')
+    expect(
+      categorizeTurnFailure({ text: 'usage limit', usageLimit: true }),
+    ).toBe('usage-limit')
+    // Without the code, a provider's "usage limit" text stays billing.
+    expect(
+      categorizeTurnFailure({ code: 'llm.permanent', text: 'usage limit' }),
+    ).toBe('billing')
+  })
+
+  it("reads a removed account as the user's, not as iii's", () => {
+    expect(
+      categorizeTurnFailure({
+        code: 'harness.unknown_account',
+        text: 'unknown Claude Code account "old-team"',
+      }),
+    ).toBe('account')
+  })
+
+  it('points at the limit card above the composer', () => {
+    const presentation = classifyTurnFailure({
+      content: 'Claude AI usage limit reached',
+      technicalDetails: { code: 'llm.usage_limit', class: 'llm.usage_limit' },
+      failure: {
+        usageLimit: { window: 'five_hour', resetsAtMs: 1, account: 'personal' },
+      },
+      nextActions: ['Retry the turn later.'],
+    })
+    expect(presentation.category).toBe('usage-limit')
+    expect(presentation.owner).toBe('user')
+    expect(presentation.title).toBe(
+      'This Claude Code account reached its usage limit',
+    )
+    // Still true once the turn ran again in another account.
+    expect(presentation.actions).toEqual([
+      'Another account can take over from the limit card above the composer.',
+      'Or wait until the limit resets, then try again.',
+    ])
+    const gone = classifyTurnFailure({
+      content: 'unknown account',
+      technicalDetails: { code: 'harness.unknown_account' },
+      failure: { unknownAccount: 'old-team' },
+    })
+    expect(gone.category).toBe('account')
+    expect(gone.title).toBe('This conversation’s Claude Code account is gone')
+  })
+
+  const limit = {
+    content: 'Claude AI usage limit reached',
+    technicalDetails: { code: 'llm.usage_limit' },
+    failure: {
+      usageLimit: {
+        window: 'week' as const,
+        resetsAtMs: 1,
+        account: 'personal',
+      },
+    },
+  }
+  const removed = {
+    content: 'unknown account',
+    technicalDetails: { code: 'harness.unknown_account' },
+    failure: { unknownAccount: 'old-team' },
+  }
+
+  it("offers no other account in a side chat, whose card doesn't", () => {
+    expect(
+      classifyTurnFailure(limit, { lockedAccount: 'side-chat' }).actions,
+    ).toEqual([
+      'Wait until the limit resets, then try again.',
+      "This side chat stays on its account so it keeps the conversation's cache.",
+    ])
+    expect(
+      classifyTurnFailure(removed, { lockedAccount: 'side-chat' }).actions,
+    ).toEqual([
+      "Its account was removed from tmux, and a side chat keeps its conversation's account. Continue in the main conversation.",
+    ])
+  })
+
+  it("keeps a sub-agent on its conversation's account, in its own words", () => {
+    expect(
+      classifyTurnFailure(limit, { lockedAccount: 'sub-agent' }).actions,
+    ).toEqual([
+      'Wait until the limit resets, then try again.',
+      "This sub-agent stays on its conversation's account.",
+    ])
+    expect(
+      classifyTurnFailure(removed, { lockedAccount: 'sub-agent' }).actions,
+    ).toEqual([
+      'Its account was removed from tmux. Continue in the main conversation.',
+    ])
+    // Neither: the main conversation's steps.
+    expect(
+      classifyTurnFailure(removed, { lockedAccount: null }).actions,
+    ).toEqual([
+      'Choose another account from the card above the composer, or in Conversation details.',
+    ])
+  })
+})

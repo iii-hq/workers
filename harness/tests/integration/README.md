@@ -55,6 +55,7 @@ No provider key or network access is required.
 | INT-045 | `set-description-ends-turn` | direct | a step whose only call is `harness::set-description`, beside reply text, is answered by the turn loop for the turn's own session (one `session::patch-meta`), `session::on-meta-updated` carries the description, and the turn completes without another model call |
 | INT-046 | `side-chat-same-prefix` | direct | after the conversation's turn, the probe opens a side chat at its reply (`harness::side-chat::open`) and sends in it; the side chat's first router request carries the conversation's system prompt (its frozen runtime context included), system sections and tools, its history starts with the conversation's, and nothing reaches the conversation |
 | INT-047 | `ask-open-answer` | direct | an ask remains listed and observable while steering continues the turn; a later operator answer arrives once, agent answers remain denied, and status/completion expose `open_asks` |
+| INT-048 | `account-usage-limit-retry` | direct | a stand-in `tmux::accounts::list` offers two Claude Code accounts and a setup call creates a project over the send's folder pinned to the second; the conversation joins it, its turn carries `provider_options.claude-code.account` of the pinned account, and the router answers `rate_limited` with `error_details.usage_limit`. The turn fails once with `llm.usage_limit` naming the account and no resume; after `session::patch-meta` names the other account, `harness::retry` runs the turn on it with no second user message, and the verbose status shows `account {id, source: "session"}` |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |
@@ -62,6 +63,7 @@ No provider key or network access is required.
 | UI-005 | `console-openai-responses-error` | playground | an OpenAI Responses permanent provider failure is shown and the chat recovers |
 | UI-006 | `console-set-description` | playground | a Console turn whose reply comes with `harness::set-description`: the description reaches the header and the sidebar, the transcript shows no call, and the turn makes one model call |
 | UI-007 | `console-side-chat` | playground | after the conversation's turn, the Console opens a side chat at its reply (`harness::side-chat::open`) and sends in it with no model or effort; the run waits for that second generation (`await_generations`). Its request carries the conversation's system prompt, system sections and tools, its history starts with the conversation's, nothing reaches the conversation, and the run makes exactly two model calls |
+| UI-008 | `console-account-usage-limit` | playground | Playwright stands in for tmux (`tmux::accounts::list` and the rest, registered with iii-browser-sdk; the fixture has no stand-in of its own) with `personal` global, and a setup call creates the project `acme-web` over the send's folder, following the global. The turn runs on `personal` and the router answers its five-hour usage limit; the Console's limit card ("Continue in Work") writes `claude_account: default` and calls `harness::retry`, and the turn runs again on `default` with no second user message. `verify` is INT-048's |
 | UI-SEC-001 | `adversarial-content-rendering` | playground | hostile-looking user, model, function-argument, and function-result content remains inert across persistence, rendering, and reload |
 
 Each fixture is defined end to end in its own `src/scenarios/*.rs` file with a
@@ -70,6 +72,13 @@ response behavior, controlled function, function history, and verification
 visible at the call site. Builders compile directly to the runtime types; there
 is no YAML, macro layer, inferred history, or generic authored-scenario
 compiler.
+
+Two builders reach outside the stack's workers. A stand-in function
+(`stand_in_function`) is registered by the probe before the harness starts
+and answers every call with a fixed value, standing in for a worker the stack
+does not run (INT-048's `tmux::accounts::list`). A setup call (`setup_call`)
+runs once the harness is ready and before the send, and its response must
+contain the expected subset (INT-048's `harness::projects::create`).
 
 ## Run the direct scenarios
 
@@ -156,7 +165,7 @@ cargo clippy --manifest-path harness/Cargo.toml \
 ```
 
 `validate --scenario all` checks every fixture. `run --scenario all` executes
-all direct scenarios; UI-001 through UI-007 and UI-SEC-001 must use
+all direct scenarios; UI-001 through UI-008 and UI-SEC-001 must use
 `playground`. INT-003 produces
 two terminal turns from one send: generation 1
 steers a message into the running session (it parks durably) and then fails,

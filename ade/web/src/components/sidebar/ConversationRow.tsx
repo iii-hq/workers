@@ -106,6 +106,8 @@ interface ConversationRowProps {
   onMoveToProject?: (projectId: string) => Promise<void> | void
   /** Show "Let the agent keep it up to date" in the details. */
   agentSwitch?: boolean
+  /** The listed conversations: Details reads a sub-agent's account from its parent. */
+  conversations?: readonly Conversation[]
   /**
    * The row's second line (chat-projects §1.3.1): `full` always draws it
    * (status, else description, else folder); `status` only when there is a
@@ -221,6 +223,7 @@ export function ConversationRow({
   projects,
   onMoveToProject,
   agentSwitch = false,
+  conversations,
   secondLine,
   folderTail = false,
 }: ConversationRowProps) {
@@ -541,6 +544,7 @@ export function ConversationRow({
         returnFocusTo={rowRef}
         projects={depth === 0 ? projects : undefined}
         agentSwitch={agentSwitch}
+        conversations={conversations}
       />
     </div>
   )

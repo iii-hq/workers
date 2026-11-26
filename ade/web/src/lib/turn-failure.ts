@@ -15,10 +15,19 @@
  * therefore win over the transport's class when they are unambiguous.
  */
 
+import {
+  LIMIT_WAIT_STEP,
+  type LockedAccount,
+  lockedAccountRemoved,
+  SIDE_CHAT_LIMIT_STEP,
+  SUB_AGENT_LIMIT_HINT,
+} from '@/lib/claude-accounts-words'
 import type { SystemMessage } from '@/types/chat'
 
 export type TurnFailureCategory =
   | 'auth'
+  | 'usage-limit'
+  | 'account'
   | 'billing'
   | 'configuration'
   | 'context'
@@ -58,6 +67,10 @@ export interface TurnFailurePresentation {
 export const SEND_FAILED_CODE = 'console.send_failed'
 /** The harness kickoff failure prefix the real backend surfaces as a stop reason. */
 export const KICKOFF_FAILED_PREFIX = 'harness::send failed'
+/** A Claude Code account's usage limit (chat-projects D147): its own card, not billing. */
+export const USAGE_LIMIT_FAILURE_CODE = 'llm.usage_limit'
+/** A conversation pinned to a Claude Code account that was removed. */
+export const UNKNOWN_ACCOUNT_FAILURE_CODE = 'harness.unknown_account'
 
 const BILLING_PATTERN =
   /insufficient[_ ]quota|credit[_ ]balance|credits?\b[^.]{0,40}\b(?:exhausted|too low|depleted|remaining)|exceeded your (?:current )?quota|quota exceeded|\bbilling\b|payment (?:required|method)|hard limit|spending (?:limit|cap)|out of credits|\b402\b|top up|purchase (?:credits|more)|usage limit/i
@@ -103,12 +116,25 @@ export function categorizeTurnFailure(input: {
   code?: string
   class?: string
   text: string
+  /** The failure's details say `usage_limit` (D147). */
+  usageLimit?: boolean
 }): TurnFailureCategory {
   const code = input.code ?? ''
   const klass = input.class ?? ''
   const text = input.text
 
   if (code === SEND_FAILED_CODE) return 'send'
+  // Keyed on the harness's code, before the billing pattern (whose "usage
+  // limit" would read a Claude Code plan's limit as a credit balance) and
+  // before the `harness.*` codes read as iii's own failures.
+  if (
+    code === USAGE_LIMIT_FAILURE_CODE ||
+    klass === USAGE_LIMIT_FAILURE_CODE ||
+    input.usageLimit
+  ) {
+    return 'usage-limit'
+  }
+  if (code === UNKNOWN_ACCOUNT_FAILURE_CODE) return 'account'
   // Assembly overflows are context failures, including older llm.permanent records.
   if (code === 'harness.context_overflow') return 'context'
   if (
@@ -152,6 +178,8 @@ export function categorizeTurnFailure(input: {
 
 const OWNER_BY_CATEGORY: Record<TurnFailureCategory, TurnFailureOwner> = {
   auth: 'user',
+  'usage-limit': 'user',
+  account: 'user',
   billing: 'user',
   configuration: 'user',
   context: 'user',
@@ -189,6 +217,7 @@ function copyFor(
   code: string,
   provider: string | undefined,
   unreachable: boolean,
+  locked: LockedAccount,
 ): Copy {
   const name = provider ?? 'The provider'
   const lower = provider ?? 'the provider'
@@ -201,6 +230,37 @@ function copyFor(
           `Update the API key for ${lower} in the model picker (Configure provider).`,
           'Then try again.',
         ],
+      }
+    case 'usage-limit':
+      return {
+        title: 'This Claude Code account reached its usage limit',
+        ownership:
+          'The account’s plan takes no more messages until its limit resets. This is the plan’s limit, not an iii or ADE failure.',
+        // The notice stays in the transcript after the turn ran again in
+        // another account: step 1 still holds then. A side chat's or a
+        // sub-agent's card offers no other account (its account is locked).
+        actions: locked
+          ? [
+              LIMIT_WAIT_STEP,
+              locked === 'side-chat'
+                ? SIDE_CHAT_LIMIT_STEP
+                : SUB_AGENT_LIMIT_HINT,
+            ]
+          : [
+              'Another account can take over from the limit card above the composer.',
+              'Or wait until the limit resets, then try again.',
+            ],
+      }
+    case 'account':
+      return {
+        title: 'This conversation’s Claude Code account is gone',
+        ownership:
+          'The conversation or its project is pinned to an account that was removed from tmux.',
+        actions: locked
+          ? [lockedAccountRemoved(locked)]
+          : [
+              'Choose another account from the card above the composer, or in Conversation details.',
+            ],
       }
     case 'billing':
       return {
@@ -338,6 +398,8 @@ function copyFor(
  */
 const PREFER_CONSOLE_ACTIONS = new Set<TurnFailureCategory>([
   'auth',
+  'usage-limit',
+  'account',
   'billing',
   'context',
   'send',
@@ -355,6 +417,11 @@ export function classifyTurnFailure(
     providerHint?: string
     /** How people name the provider (`OpenAI`); defaults to its id. */
     providerName?: string
+    /**
+     * The transcript's Claude Code account is locked (a side chat, a
+     * sub-agent): the account steps offer no other account.
+     */
+    lockedAccount?: LockedAccount
   } = {},
 ): TurnFailurePresentation {
   const details = message.technicalDetails
@@ -366,10 +433,17 @@ export function classifyTurnFailure(
     code,
     class: details?.class,
     text,
+    usageLimit: message.failure?.usageLimit !== undefined,
   })
   const owner = OWNER_BY_CATEGORY[category]
   const provider = options.providerName ?? details?.provider
-  const copy = copyFor(category, code, provider, UNREACHABLE_PATTERN.test(text))
+  const copy = copyFor(
+    category,
+    code,
+    provider,
+    UNREACHABLE_PATTERN.test(text),
+    options.lockedAccount ?? null,
+  )
   const harnessActions = message.nextActions?.filter(
     (action) => action.trim().length > 0,
   )

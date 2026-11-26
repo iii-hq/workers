@@ -80,6 +80,10 @@ pub const SIGN_IN_REJECTED: &str =
 pub const REQUEST_REFUSED: &str =
     "Anthropic refused this request for the current Claude Code sign-in.";
 
+/// Anthropic answered 429 with the account's usage limit reached
+/// (`limits::is_usage_limit`): waiting a moment does not help.
+pub const USAGE_LIMIT_REACHED: &str = "This Claude Code account has reached its usage limit.";
+
 /// A sign-in that cannot be used, as `provider/auth_expired`: the setup wizard
 /// reads that code as "sign in again" instead of waiting for models.
 pub fn auth_expired(message: impl Into<String>) -> Error {

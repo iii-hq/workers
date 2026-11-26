@@ -6,6 +6,11 @@
 //! fallback slice is reconciled instead of blanking a working provider. A 401
 //! (the token itself was turned down) or an expired token is `auth_expired`,
 //! and the last known slice stays.
+//!
+//! Discovery has no turn: while an account source holds the accounts, it
+//! uses the global account's token (`accounts::credential` with no account),
+//! and a 401 asks the source once more.
+use crate::accounts::{self, AccountError, AccountSource, AccountToken, Credential};
 use crate::config::{DEFAULT_API_URL, extract_access_token};
 use crate::errors::{SIGN_IN_EXPIRED, SIGN_IN_REJECTED, auth_expired, upstream_unavailable};
 use crate::request::{ANTHROPIC_VERSION, OAUTH_BETA, auth_header};
@@ -13,9 +18,11 @@ use crate::{PROVIDER_ID, auth, curated, router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::IIIClient;
 use iii_sdk::errors::Error;
+use llm_router::types::events::ErrorKind;
 use llm_router::types::model::Model;
 use llm_router::types::router::{RefreshModelsRequest, RefreshModelsResponse};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Periodic catalog refresh cadence. Anthropic's catalog moves slowly, so a
@@ -153,33 +160,88 @@ async fn fetch_live_models(
     }
 }
 
+/// One fetch; with an account source's token, one more after a 401 with the
+/// token the source gives when asked again (D140). A token refused twice is
+/// dropped from the source's cache; a source that gives none when asked
+/// again is its error (`busy` keeps the slice, not a sign-in to redo).
+async fn fetch_models(
+    http: &reqwest::Client,
+    url: &str,
+    access_token: &str,
+    account: Option<&AccountToken>,
+    accounts: &dyn AccountSource,
+) -> Result<FetchOutcome, AccountError> {
+    let outcome = fetch_live_models(http, url, access_token).await;
+    if matches!(outcome, FetchOutcome::Rejected)
+        && let Some(refused) = account
+        && let Some(fresh) = accounts::ask_again(accounts, refused).await?
+    {
+        let second = fetch_live_models(http, url, &fresh.access_token).await;
+        if matches!(second, FetchOutcome::Rejected) {
+            accounts.invalidate(&fresh.account);
+        }
+        return Ok(second);
+    }
+    Ok(outcome)
+}
+
+/// An account with no token to give: a sign-in to redo is `auth_expired`
+/// (setup asks for it); anything else keeps the last known slice.
+fn account_failure(error: AccountError) -> Error {
+    match error.kind() {
+        ErrorKind::AuthExpired => auth_expired(error.message()),
+        _ => upstream_unavailable(error.message()),
+    }
+}
+
 /// The refresh flow; returns the reconciled slice size. The credential comes
-/// from the vault / dev fallback (not the router config, unlike an API-key
-/// provider), so discovery and streaming share one OAuth source.
-pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<usize, Error> {
+/// from the account source (the global account), or without one from the
+/// vault / dev fallback (not the router config, unlike an API-key provider),
+/// so discovery and streaming share one OAuth source.
+pub async fn refresh_models(
+    iii: &IIIClient,
+    http: &reqwest::Client,
+    accounts: &dyn AccountSource,
+) -> Result<usize, Error> {
     let token = state::load_token(iii).await;
     let api_url = match router_client::resolve(iii, token.as_deref()).await {
         Ok(r) => r.api_url.unwrap_or_else(|| DEFAULT_API_URL.to_string()),
         Err(_) => DEFAULT_API_URL.to_string(),
     };
 
-    // No usable OAuth credential → genuinely unconfigured: prune the slice so
-    // the picker reflects that instead of showing rows that can't be called.
-    let credential = auth::fetch_fresh_credential(iii).await;
-    let Some(access_token) = credential.as_ref().and_then(extract_access_token) else {
-        eprintln!(
-            "[provider-claude-code] no Claude Code login found (vault, \
-             ~/.claude/.credentials.json, macOS Keychain); listing no models"
-        );
-        router_client::reconcile(iii, vec![], token.as_deref()).await?;
-        return Ok(0);
+    let credential = accounts::credential(accounts, None, || auth::fetch_fresh_credential(iii))
+        .await
+        .map_err(account_failure)?;
+    let (access_token, account): (String, Option<AccountToken>) = match credential {
+        Credential::Account(account) => (account.access_token.clone(), Some(account)),
+        Credential::Legacy(credential) => {
+            // No usable OAuth credential → genuinely unconfigured: prune the
+            // slice so the picker reflects that instead of showing rows that
+            // can't be called.
+            let Some(access_token) = credential.as_ref().and_then(extract_access_token) else {
+                eprintln!(
+                    "[provider-claude-code] no Claude Code login found (vault, \
+                     ~/.claude/.credentials.json, macOS Keychain); listing no models"
+                );
+                router_client::reconcile(iii, vec![], token.as_deref()).await?;
+                return Ok(0);
+            };
+            if credential.as_ref().is_some_and(auth::expired) {
+                return Err(auth_expired(SIGN_IN_EXPIRED));
+            }
+            (access_token, None)
+        }
     };
-    if credential.as_ref().is_some_and(auth::expired) {
-        return Err(auth_expired(SIGN_IN_EXPIRED));
-    }
 
     let url = models_url(&api_url);
-    match fetch_live_models(http, &url, &access_token).await {
+    let outcome = fetch_models(http, &url, &access_token, account.as_ref(), accounts)
+        .await
+        .map_err(account_failure)?;
+    let rejected = match &account {
+        Some(account) => accounts::rejected_message(&account.account),
+        None => SIGN_IN_REJECTED.to_string(),
+    };
+    match outcome {
         FetchOutcome::Ok(models) if !models.is_empty() => {
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
@@ -195,7 +257,7 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
             router_client::reconcile(iii, models, token.as_deref()).await?;
             Ok(count)
         }
-        FetchOutcome::Rejected => Err(auth_expired(SIGN_IN_REJECTED)),
+        FetchOutcome::Rejected => Err(auth_expired(rejected)),
         // Blip: keep the previous slice (spec § reconcile-to-empty guidance).
         FetchOutcome::Transient(msg) => Err(upstream_unavailable(msg)),
     }
@@ -204,14 +266,15 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
 pub fn make_refresh_models(
     iii: IIIClient,
     http: reqwest::Client,
+    accounts: Arc<dyn AccountSource>,
 ) -> impl Fn(RefreshModelsRequest) -> BoxFuture<'static, Result<RefreshModelsResponse, Error>>
 + Send
 + Sync
 + 'static {
     move |_req: RefreshModelsRequest| {
-        let (iii, http) = (iii.clone(), http.clone());
+        let (iii, http, accounts) = (iii.clone(), http.clone(), accounts.clone());
         Box::pin(async move {
-            let count = refresh_models(&iii, &http).await?;
+            let count = refresh_models(&iii, &http, accounts.as_ref()).await?;
             Ok(RefreshModelsResponse { ok: true, count })
         })
     }
@@ -219,12 +282,16 @@ pub fn make_refresh_models(
 
 /// Periodic catalog reconcile while the worker runs. A transient failure keeps
 /// the last known slice; the next tick retries.
-pub async fn refresh_models_periodically(iii: IIIClient, http: reqwest::Client) {
+pub async fn refresh_models_periodically(
+    iii: IIIClient,
+    http: reqwest::Client,
+    accounts: Arc<dyn AccountSource>,
+) {
     let mut ticker = tokio::time::interval(MODELS_REFRESH_INTERVAL);
     ticker.tick().await; // consume the immediate first tick (boot already refreshed)
     loop {
         ticker.tick().await;
-        match refresh_models(&iii, &http).await {
+        match refresh_models(&iii, &http, accounts.as_ref()).await {
             Ok(count) => {
                 println!("[provider-claude-code] periodic catalog refresh: {count} models")
             }
@@ -270,6 +337,166 @@ mod tests {
             fetch_live_models(&http, &url, "oauth-token").await,
             FetchOutcome::AuthFailed
         ));
+    }
+
+    /// `/v1/models` stub for many requests: a one-model list for `Bearer
+    /// <good>`, 401 otherwise; records each request's bearer.
+    async fn bearer_models_stub(
+        good: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let bearer = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("authorization: bearer "))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let (status, body) = if bearer == good {
+                    ("200 OK", r#"{"data":[{"id":"claude-opus-4-8"}]}"#)
+                } else {
+                    ("401 Unauthorized", "{}")
+                };
+                record.lock().unwrap().push(bearer);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+            }
+        });
+        (format!("http://{addr}/v1/models"), seen)
+    }
+
+    /// tmux with the global account `work`; its n-th token is `work-<n>`.
+    fn tmux_accounts() -> crate::accounts::TmuxAccounts<crate::accounts::testing::FakeEngine> {
+        use crate::accounts::testing::{FakeEngine, in_one_hour};
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        crate::accounts::TmuxAccounts::new(FakeEngine::new(move |function_id, payload| {
+            match function_id {
+                crate::accounts::CREDENTIAL_FN => {
+                    let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    Ok(serde_json::json!({
+                        "account": payload["account"],
+                        "access_token": format!("work-{n}"),
+                        "expires_at_ms": in_one_hour()
+                    }))
+                }
+                other => panic!("unexpected call {other}"),
+            }
+        }))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_401_on_an_account_token_asks_the_source_once_more() {
+        let accounts = tmux_accounts();
+        let token = accounts.token("work").await.unwrap();
+        let (url, seen) = bearer_models_stub("work-2").await;
+        let outcome = fetch_models(
+            &reqwest::Client::new(),
+            &url,
+            &token.access_token,
+            Some(&token),
+            &accounts,
+        )
+        .await;
+        assert!(matches!(&outcome, Ok(FetchOutcome::Ok(models)) if models.len() == 1));
+        assert_eq!(*seen.lock().unwrap(), ["work-1", "work-2"]);
+
+        // A second 401 stays a rejection; the vault path never asks again.
+        let (url, seen) = bearer_models_stub("never").await;
+        let token = accounts.token("work").await.unwrap();
+        assert!(matches!(
+            fetch_models(
+                &reqwest::Client::new(),
+                &url,
+                &token.access_token,
+                Some(&token),
+                &accounts
+            )
+            .await,
+            Ok(FetchOutcome::Rejected)
+        ));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // The token refused twice is asked for again, not served from the cache.
+        assert_eq!(accounts.token("work").await.unwrap().access_token, "work-4");
+        let (url, seen) = bearer_models_stub("never").await;
+        assert!(matches!(
+            fetch_models(
+                &reqwest::Client::new(),
+                &url,
+                "vault-token",
+                None,
+                &accounts
+            )
+            .await,
+            Ok(FetchOutcome::Rejected)
+        ));
+        assert_eq!(*seen.lock().unwrap(), ["vault-token"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_source_on_the_second_ask_keeps_the_slice_instead_of_asking_for_a_sign_in() {
+        use crate::accounts::testing::{FakeEngine, in_one_hour, tmux_error};
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let accounts = crate::accounts::TmuxAccounts::new(FakeEngine::new(move |_, _| match asked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        {
+            0 => Ok(serde_json::json!({
+                "account": "work", "access_token": "work-1", "expires_at_ms": in_one_hour()
+            })),
+            _ => Err(tmux_error("busy")),
+        }));
+        let token = accounts.token("work").await.unwrap();
+        let (url, seen) = bearer_models_stub("never").await;
+        let outcome = fetch_models(
+            &reqwest::Client::new(),
+            &url,
+            &token.access_token,
+            Some(&token),
+            &accounts,
+        )
+        .await;
+        let Err(error) = outcome else {
+            panic!("want the source's error")
+        };
+        assert_eq!(error, AccountError::Busy("work".into()));
+        assert_eq!(*seen.lock().unwrap(), ["work-1"], "no second request");
+        match account_failure(error) {
+            Error::Remote { code, .. } => assert_eq!(code, "provider/upstream_unavailable"),
+            other => panic!("want Remote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_account_to_sign_in_again_is_auth_expired_and_the_rest_keep_the_slice() {
+        let code = |e: Error| match e {
+            Error::Remote { code, .. } => code,
+            other => panic!("want Remote, got {other:?}"),
+        };
+        assert_eq!(
+            code(account_failure(AccountError::NotSignedIn("work".into()))),
+            "provider/auth_expired"
+        );
+        assert_eq!(
+            code(account_failure(AccountError::TokenExpired("work".into()))),
+            "provider/auth_expired"
+        );
+        assert_eq!(
+            code(account_failure(AccountError::Busy("work".into()))),
+            "provider/upstream_unavailable"
+        );
+        assert_eq!(
+            code(account_failure(AccountError::Unavailable("gone".into()))),
+            "provider/upstream_unavailable"
+        );
     }
 
     #[test]

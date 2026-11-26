@@ -10,6 +10,9 @@
  *   `description_manual` (on = false).
  * - The project is not metadata the dialog writes: a changed project is a
  *   `harness::projects::assign`, which also moves subagents and sidechats.
+ * - The Claude Code account (phase 4, §4.3.5) writes `claude_account`: an
+ *   account id pins the conversation, `"global"` follows the global, and the
+ *   project's choice removes the key.
  */
 import type { Conversation } from '@/types/chat'
 
@@ -24,6 +27,9 @@ export interface DescriptionHistoryEntry {
   at_ms: number
 }
 
+/** The account select's first option: the project's account (no `claude_account`). */
+export const ACCOUNT_DEFAULT = ':default'
+
 export interface ConversationDetailsDraft {
   title: string
   description: string
@@ -31,6 +37,20 @@ export interface ConversationDetailsDraft {
   agentKeepsIt: boolean
   /** A project id, or `none`. */
   projectId: string
+  /**
+   * `metadata.claude_account`: an account id, `"global"`, or
+   * `ACCOUNT_DEFAULT` for the project's. Absent (the draft's start) leaves
+   * it alone; the row reads `claudeAccountOf` until it is chosen.
+   */
+  claudeAccount?: string
+}
+
+/** A conversation's `claude_account` as the select shows it. */
+export function claudeAccountOf(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): string {
+  const value = metadata?.claude_account
+  return typeof value === 'string' && value.length > 0 ? value : ACCOUNT_DEFAULT
 }
 
 export interface DetailsPatch {
@@ -140,9 +160,18 @@ export function buildDetailsPatch(
     // Typed, then the switch was turned back on: the agent may write again.
     patch.set.description_manual = false
   }
+  if (
+    draft.claudeAccount !== undefined &&
+    draft.claudeAccount !== claudeAccountOf(conversation.sessionMetadata)
+  ) {
+    if (draft.claudeAccount === ACCOUNT_DEFAULT)
+      patch.unset.push('claude_account')
+    else patch.set.claude_account = draft.claudeAccount
+  }
   return patch.title !== undefined ||
     patch.description !== undefined ||
-    Object.keys(patch.set).length > 0
+    Object.keys(patch.set).length > 0 ||
+    patch.unset.length > 0
     ? patch
     : null
 }

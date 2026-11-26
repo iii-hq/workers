@@ -1,5 +1,5 @@
 {
-  "description": "The Claude Code accounts on this computer: each one's name, colour, config folder, email, plan, whether it is signed in, the Claude Code panes using it and its latest usage reading; which one is global (the sign-in of ~/.claude, what every Claude Code that isn't pinned uses, plain `claude` included); a switch waiting for windows to finish their turn (`pending_global`), how long a session may take to notice a switch (`switch_delay_s`), the rules for when the global account runs low, any suggestion and the latest switch. Without `accounts.json` there is one account, `default`.",
+  "description": "The Claude Code accounts on this computer: each one's name, colour, config folder, email, plan, whether it is signed in, the Claude Code panes using it and its latest usage reading; which one is global (the sign-in of ~/.claude, what every Claude Code that isn't pinned uses, plain `claude` included); a switch waiting for windows to finish their turn (`pending_global`), how long a session may take to notice a switch (`switch_delay_s`), the rules for when the global account runs low, any suggestion, the latest switch and `global_history` (who was global since when: the account global before the oldest change kept, at `at_ms` 0, then the last 49 changes). Without `accounts.json` there is one account, `default`. Never a token.",
   "function_id": "tmux::accounts::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -157,7 +157,7 @@
             ]
           },
           "token_expired": {
-            "description": "Its sign-in expired; running Claude Code there renews it.",
+            "description": "Its access token expired. Claude Code renews it when it runs there, and so does the worker when `tmux::accounts::credential` asks for it.",
             "type": "boolean"
           },
           "usage": {
@@ -353,6 +353,26 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      },
+      "GlobalChange": {
+        "description": "One change of the global account, as `global_history` keeps it.",
+        "properties": {
+          "account": {
+            "description": "The account that became global.",
+            "type": "string"
+          },
+          "at_ms": {
+            "description": "When. 0 on the first entry, which names the account global before the oldest change kept.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account",
+          "at_ms"
         ],
         "type": "object"
       },
@@ -670,6 +690,14 @@
       "global": {
         "description": "Id of the global account: the sign-in of the slot (`~/.claude`), what plain `claude` uses anywhere.",
         "type": "string"
+      },
+      "global_history": {
+        "default": [],
+        "description": "Which account was global when, oldest first: the account global before the oldest change kept (at 0), then the last 49 changes (`tmux::usage::claude_outside` dates the spend of sessions tmux never ran with it).",
+        "items": {
+          "$ref": "#/definitions/GlobalChange"
+        },
+        "type": "array"
       },
       "last_switch": {
         "anyOf": [

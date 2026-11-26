@@ -800,7 +800,7 @@ it does not know.
 | Function | Request | Response |
 |---|---|---|
 | `harness::projects::list` | `{ version: 2 }` | `{ version: 2, revision, projects }` |
-| `harness::projects::create` | `{ name, color, folders, bring_existing? }` | `{ project, moved }` |
+| `harness::projects::create` | `{ name, color, folders, account?, bring_existing? }` | `{ project, moved }` |
 | `harness::projects::update` | `{ id, name?, color?, folders?, account?, autocompact?, bring_existing? }` | `{ project, moved }` |
 | `harness::projects::delete` | `{ id }` | `{ released }` |
 | `harness::projects::assign` | `{ session_ids, project: <id> \| "none" }` | `{ updated }` |
@@ -823,7 +823,10 @@ a conversation in or out of a project keeps its `updated_at`, so the lists
 sorted by it keep their order. A refusal is one JSON object
 in the error message, `{ code, message, ... }`: `name_taken`, `folder_taken`
 (with `project_id`, `project_name`), `bad_name`, `bad_color`, `no_folders`,
-`too_many_folders`, `folder_not_absolute`, `not_found`, `bad_request`.
+`too_many_folders`, `folder_not_absolute`, `not_found`, `bad_request`,
+`invalid_account`. A project's `account` is `{ mode: "global" }` (the
+default) or `{ mode: "pinned", account_id }`: the Claude Code account its
+conversations run on (see [Claude Code accounts](#claude-code-accounts)).
 
 **Descriptions.** `harness::set-description { description, title? }` is a
 tool the model gets in every turn (with its own description, in the cached
@@ -910,7 +913,9 @@ names a different `model`, `provider`, `thinking_level`, `provider_options`,
 `reasoning`, `functions`, `skills` or `metadata.fs_scope`, or any
 `system_prompt`, `system_prompt_strategy` or `agent`, fails with
 `side_chat_locked` (`{ code, message, field, sent, locked }`); naming the
-lock's own value is accepted, and clients send none. A side chat the ADE forked
+lock's own value is accepted, and clients send none. The Claude Code
+account is not part of that comparison: a side chat runs on the account its
+lock stored (the conversation's at the fork) and resolves none of its own. A side chat the ADE forked
 before side chats (no lock in state) is locked at its next send to the
 conversation's options then (`source: "lazy"`), and starts from the
 conversation's turn record when it has none of its own. The first send names
@@ -943,6 +948,95 @@ since the fork (all of them for a side chat forked before side chats),
 `running`, `done` or `failed` as for subagents, and `running` is true while a
 turn runs. Deleting a conversation deletes its side chats.
 
+## Claude Code accounts
+
+A turn on the `claude-code` provider runs on one of the Claude Code accounts
+the tmux worker signs in (chat-projects phase 4). When the turn starts, the
+harness resolves the account once and freezes it on the turn:
+
+1. the conversation's `metadata.claude_account` (an account id, or `"global"`
+   for the global account), written by clients through `session::patch-meta`;
+2. else its project's `account`, when it is `{ mode: "pinned", account_id }`;
+3. else the global account, read from `tmux::accounts::list` (`global`).
+
+The id goes into `provider_options["claude-code"].account` after the preset,
+the inherited options and any named options, and a client's own `account`
+there is dropped. The turn record keeps `account { id, source }`, `source`
+being `session`, `project` or `global`. A sub-agent runs on the account of
+its parent's current turn, whatever it inherited when it was spawned (only a
+parent with no turn record leaves it the inherited id), and a side chat on
+its lock's. A pin, a parent's or a lock's account that tmux no longer lists
+fails the turn before any model call with `harness.unknown_account`. With no
+tmux worker (or tmux reporting Claude unavailable) no account is set, an
+inherited one is dropped, and the provider keeps its single sign-in.
+
+When tmux is there but cannot answer (an error or a timeout), or the projects
+file cannot be read for a conversation whose project may pin its account, the
+account cannot be decided: the turn's first step runs again after a short
+pause, spending one of its transient resumes (a `recovery` entry with `code:
+"harness.accounts_unavailable"`, phase `pre_turn`). When they run out, the
+turn fails with `harness.accounts_unavailable`, retryable, before any model
+call, and `harness::retry` can run it again. A side chat whose lock holds an
+account, and a sub-agent whose parent's turn has one, keep it while tmux
+cannot answer.
+
+The verbose `harness::status` and `harness::on-turn-started` /
+`harness::on-turn-completed` carry `account { id, source }`; the lean status
+does not.
+
+**The usage limit.** The router reports an account's plan limit as a
+`rate_limited` error whose `error_details` are `{ usage_limit: true, window?:
+"five_hour" | "week", resets_at_ms? }`, on the response, on its terminal
+message, or on the error of a call that could not be dispatched (its message
+then a JSON object carrying them). The turn is not resumed (no transient
+resume runs) and fails with `llm.usage_limit`, not retryable; the turn's
+`failure.details` and the transcript's error entry carry `{ usage_limit,
+window?, resets_at_ms?, account }`. The lean status leaves `details` out.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::retry` | `{ session_id }` | `{ turn_id }` |
+| `harness::metrics::account-split` | `{}` | `[{ account, week_percent, resets_at_ms?, outside_measured, segments }]` |
+
+Both are internal, and agents are denied them.
+
+**`harness::retry`** runs a session's failed last turn again, as a new turn
+with the same user message (no second one is appended), on the session's
+current options and a newly resolved account, so a client that wrote
+`claude_account` first ("Continue in …") runs it there. The options are
+those a send naming nothing would take: the last turn's model, provider,
+reasoning, prompt, skills and policy, the configured per-turn limits, and its
+working folder but none of its send's own metadata; the failed turn's output
+contract stays. A sub-agent's account resolves from its parent's current turn. A turn that had streamed part of an answer continues with the
+same nudge as a transient resume. Refusals: `nothing_to_retry` (no turn, or
+the last one did not fail) and `busy` (a turn is running).
+
+**The ledger.** `claude-code` turns have no price, so each model response's
+tokens (`input`, `output`, `cache_read`, `cache_write`) are added to the
+`state` scope `harness_account_usage`, one document per day, account and
+project (`<day>:<account>:<project id | none>`), by hour and Anthropic model.
+A response whose prompt (input, cache reads and cache writes) passes its
+model's long-prompt threshold (Haiku 5.5: 100,000 tokens) counts under
+`<model>#long`, priced on the long-prompt card. A day is kept for 35 days (the
+day and the 34 after it), then deleted. A day's document that cannot be read
+is moved to `harness_account_usage_unreadable` (`<key>@<unix ms>`) before the
+day is counted again, and the split skips one it cannot read.
+
+**`harness::metrics::account-split`** answers, for each account
+`tmux::usage::read` lists, its weekly percentage split into `segments`:
+`{ kind: "project", project_id, name, color, percent }`, `{ kind:
+"no_project", percent }` and `{ kind: "outside", percent }`. The week starts
+seven days before its reset. The Chat's tokens since then (the ledger) and the
+tokens tmux measured outside the Chat (`tmux::usage::claude_outside`) are
+priced at the Anthropic list price (`router::models::get`, else a built-in
+table, else the nearest model of the same family, else Sonnet 5.5's, logged
+once per model), and each segment gets `week_percent × its cost ÷ the total
+cost`. A project deleted since counts as no project. A week that reset after
+tmux read it is at 0% with no segments; when tmux no longer knows its reset,
+it starts now. When tmux cannot measure the outside, `outside_measured` is false
+and the Chat's segments share the whole week. With no tmux worker the answer
+is `[]`; a failing tmux is `tmux_unavailable`.
+
 ## Observable functions
 
 The harness hosts these functions. Every one is private: observers observe it,
@@ -956,8 +1050,8 @@ observes only `harness::on-timer` and its own post-turn validator.
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-ask` | none | `input.session_id`, `input.question_id` | The whole durable ask entry when a question is accepted. |
 | `harness::on-ask-settled` | none | `input.session_id`, `input.question_id` | The whole durable ask entry after it closes. |
-| `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, open_asks, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
+| `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id?, account? }`: a turn began executing (first loop step); `depth` is 0 at the top level. `account` is `{ id, source }` on a `claude-code` turn (see [Claude Code accounts](#claude-code-accounts)). |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, open_asks, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context?, account? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |

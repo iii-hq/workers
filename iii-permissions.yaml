@@ -226,6 +226,9 @@ rules:
   # options.orchestrator). The internal config/cron/session-deleted handlers
   # and the observer delivery hop must never be agent-callable.
   - '!harness::send'
+  # Re-runs a failed turn on another Claude Code account: the person's
+  # call from the limit card (chat-projects phase 4).
+  - '!harness::retry'
   - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
@@ -266,6 +269,9 @@ rules:
   - '!harness::side-chat::close'
   - '!harness::side-chat::keep'
   - '!harness::side-chat::summarize'
+  # The accounts' week split by project reads tmux's measure of the usage
+  # outside the Chat, which agents are denied (chat-projects phase 4).
+  - '!harness::metrics::account-split'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is
@@ -557,9 +563,13 @@ rules:
   # renaming, selecting (switches the person's own terminal) and killing stay
   # approval-gated. The Console terminal types into the person's sessions and
   # is driven only by the page; config reload and Console asset are internal.
+  # `accounts::credential` returns an account's token, for
+  # provider-claude-code alone; `usage::claude_outside` is the devices'.
   - '!tmux::terminal::*'
   - '!tmux::on-config-change'
   - '!tmux::ui-content'
+  - '!tmux::accounts::credential'
+  - '!tmux::usage::claude_outside'
   - tmux::status
   - tmux::sessions::list
   - tmux::ports::list

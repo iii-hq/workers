@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::types::credential::Credential;
-use crate::types::events::{ErrorKind, StopReason, Usage};
+use crate::types::events::{ErrorDetails, ErrorKind, StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, ModalityFilter, Model, ThinkingLevel};
 use iii_sdk::protocol::StreamChannelRef;
@@ -90,6 +90,14 @@ pub struct ErrorShape {
     /// `message` remains the stable, user-facing explanation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The provider's structured facts about the error, passed through from
+    /// the terminal frame's `error_details`, such as an account's usage limit.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::types::events::lenient_error_details"
+    )]
+    pub error_details: Option<ErrorDetails>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

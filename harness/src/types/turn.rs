@@ -379,6 +379,28 @@ pub struct TurnFailure {
     /// `max_transient_resumes` recovery generations, or a turn the harness could
     /// not schedule.
     pub retryable: bool,
+    /// What the code alone does not say: for `llm.usage_limit`, the limit's
+    /// window and reset and the account that hit it; for
+    /// `harness.unknown_account`, the account that is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<TurnFailureDetails>,
+}
+
+/// [`TurnFailure::details`] (chat-projects contract D).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnFailureDetails {
+    /// The Claude Code account reached its plan's usage limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_limit: bool,
+    /// The limit's window: `five_hour` or `week`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// When the limit's window resets, in unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
+    /// The tmux account id the turn ran on, or was pinned to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
@@ -496,6 +518,12 @@ pub struct TurnRecord {
     /// Why a `failed` turn failed, machine-readable; absent on any other turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<TurnFailure>,
+    /// The Claude Code account this turn runs on and why (chat-projects D139),
+    /// resolved once at its start and frozen: it is also written into
+    /// `options.provider_options["claude-code"].account`. Absent for any other
+    /// provider, and with no tmux worker to resolve it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::TurnAccount>,
     /// Function ids the spawn granted at dispatch level only (the discovery
     /// pair, the skills fetch): callable by id, never surfaced as native
     /// tools, so a narrowed child's toolset stays exactly its work functions.
@@ -687,6 +715,7 @@ pub(crate) mod tests {
             result_error: None,
             stop_reason: None,
             failure: None,
+            account: None,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,
@@ -711,6 +740,7 @@ pub(crate) mod tests {
             failure: Some(TurnFailure {
                 code: "router/provider_transient".into(),
                 retryable: true,
+                details: None,
             }),
             ..record()
         };
