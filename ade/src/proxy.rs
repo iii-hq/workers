@@ -337,10 +337,9 @@ async fn handle_ws(client: WebSocket, upstream: Upstream) {
     }
     // Tungstenite queues its reply to a peer's Close until the next write or
     // flush; send it before the sockets drop, bounded so a stalled peer
-    // cannot hold the task.
+    // cannot hold the task, and concurrently so it cannot starve the other.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        let _ = client_tx.flush().await;
-        let _ = engine_tx.flush().await;
+        tokio::join!(client_tx.flush(), engine_tx.flush())
     })
     .await;
 }
