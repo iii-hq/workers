@@ -70,6 +70,7 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
         done.truncate(20);
         open.extend(done);
         Status {
+            auto_fix: cfg.auto_fix,
             worker: WorkerInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 iii_version: s

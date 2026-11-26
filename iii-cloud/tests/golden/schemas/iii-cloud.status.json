@@ -266,6 +266,9 @@
       },
       "BriefProblem": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "detail": {
             "type": [
               "string",
@@ -284,6 +287,9 @@
               "null"
             ]
           },
+          "id": {
+            "type": "string"
+          },
           "line": {
             "format": "uint32",
             "minimum": 0.0,
@@ -292,11 +298,21 @@
               "null"
             ]
           },
+          "owner": {
+            "$ref": "#/definitions/Owner"
+          },
+          "severity": {
+            "$ref": "#/definitions/Severity"
+          },
           "title": {
             "type": "string"
           }
         },
         "required": [
+          "code",
+          "id",
+          "owner",
+          "severity",
           "title"
         ],
         "type": "object"
@@ -2597,6 +2613,10 @@
         ],
         "description": "The agent's work on the selected environment's open hand-off."
       },
+      "auto_fix": {
+        "description": "The worker's `auto_fix` setting: a person's check hands the agent its problems.",
+        "type": "boolean"
+      },
       "candidate": {
         "anyOf": [
           {
@@ -2759,6 +2779,7 @@
       }
     },
     "required": [
+      "auto_fix",
       "connection",
       "deploys",
       "secrets",

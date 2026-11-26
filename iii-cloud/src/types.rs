@@ -408,7 +408,8 @@ pub struct AgentState {
 /// `iii-cloud::handoff::progress` input: the agent says what it starts on.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HandoffProgressRequest {
-    /// The hand-off this progress is for (default: the selected environment's open one).
+    /// The hand-off this progress is for, by its id or the 8 characters of the
+    /// marker (default: the selected environment's open one).
     #[serde(default)]
     pub handoff_id: Option<String>,
     /// Problem ids, or codes (a code stands for every open problem of that code).
@@ -462,10 +463,49 @@ pub struct Handoff {
     /// did not come in), from `handoff::worktree`.
     #[serde(default)]
     pub worktree_note: Option<String>,
+    /// "Continue" messages the worker posted in the chat (at most 3).
+    #[serde(default)]
+    pub continues: u32,
+}
+
+impl Handoff {
+    /// `id` is this hand-off's id, or the 8 characters its marker line carries.
+    pub fn is(&self, id: &str) -> bool {
+        self.id == id || (id.len() == 8 && self.id.starts_with(id))
+    }
+}
+
+/// `iii-cloud::handoff::brief` input.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct HandoffBriefRequest {
+    /// The hand-off's id, or the 8 characters of its marker line.
+    pub handoff_id: String,
+}
+
+/// Why the hand-off's latest local run failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunFailure {
+    pub stage: StageName,
+    pub code: String,
+    pub message: String,
+    /// The run's last lines, oldest first, redacted.
+    pub log_tail: Vec<String>,
+}
+
+/// `iii-cloud::handoff::brief` output: the brief, and the failed run when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffBriefResponse {
+    #[serde(flatten)]
+    pub brief: HandoffBrief,
+    pub run_failure: Option<RunFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BriefProblem {
+    pub id: String,
+    pub code: String,
+    pub owner: Owner,
+    pub severity: Severity,
     pub title: String,
     pub file: Option<String>,
     pub line: Option<u32>,
@@ -1357,6 +1397,8 @@ pub struct WorkerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Status {
     pub worker: WorkerInfo,
+    /// The worker's `auto_fix` setting: a person's check hands the agent its problems.
+    pub auto_fix: bool,
     pub connection: Connection,
     pub project: Option<Project>,
     /// The selected environment's latest check.

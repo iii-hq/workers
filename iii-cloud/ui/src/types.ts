@@ -33,6 +33,8 @@ export type Status = {
   refreshed_at: string | null
   agent?: AgentRun | null
   handoff_brief?: HandoffBrief | null
+  /** The worker's `auto_fix` setting; absent on an older worker (read as on). */
+  auto_fix?: boolean
   /** The worktree's compose files for the app file picker; `choosable` false says why in `issue`. */
   compose_files?: ComposeFile[]
   /** Folders and cloud projects used before, newest first: never the current one, nor a folder that is gone. */

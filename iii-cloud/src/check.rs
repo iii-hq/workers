@@ -720,7 +720,7 @@ pub async fn selected_for(ctx: &Ctx, handoff_id: Option<&str>) -> Res<Selected> 
     };
     let h = ctx
         .store
-        .read(|s| s.handoffs.iter().find(|h| h.id == id).cloned())
+        .read(|s| s.handoffs.iter().find(|h| h.is(id)).cloned())
         .ok_or_else(|| CloudError::invalid("no such hand-off"))?;
     let (Some(env), false) = (h.env.clone(), h.workspace_path.is_empty()) else {
         // A hand-off made before it recorded its worktree: the global selection.
@@ -965,7 +965,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             ctx.store.read(|s| {
                 s.handoffs
                     .iter()
-                    .find(|h| h.id == id)
+                    .find(|h| h.is(id))
                     .and_then(|h| h.manifest.clone())
             })
         })
@@ -1155,7 +1155,15 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         problems,
         run: None,
         manifest: manifest_path,
-        handoff_id: request.handoff_id.clone(),
+        // The full id, even when the agent gave the marker's 8 characters.
+        handoff_id: request.handoff_id.as_deref().map(|id| {
+            ctx.store.read(|s| {
+                s.handoffs
+                    .iter()
+                    .find(|h| h.is(id))
+                    .map_or_else(|| id.to_string(), |h| h.id.clone())
+            })
+        }),
         commits,
     };
     ctx.store.update(|s| {

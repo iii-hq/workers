@@ -50,7 +50,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
     let mut payload = json!({
         "id": config_id(),
         "name": "iii cloud",
-        "description": "iii cloud worker: the cloud URL, the iii binary the run here uses, the pull request merge method, the local Postgres image, the run timeout and where records and run logs live.",
+        "description": "iii cloud worker: the cloud URL, the iii binary the run here uses, the pull request merge method, the local Postgres image, the run timeout, where records and run logs live, and whether a check hands the agent its problems (auto_fix).",
         "schema": Config::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });

@@ -924,7 +924,7 @@ describe('one hand-off at a time', () => {
       payload: {
         check_id: 'chk-blocked',
         kind: 'ready',
-        text: `${handoffMessage(base)}\nDetails: iii-cloud::status · skill iii://iii-cloud`,
+        text: `${handoffMessage(base)}\nDetails: iii-cloud::handoff::brief · skill iii://iii-cloud`,
       },
     })
     expect(h.compose.mock.calls[0][0].text.split('\n')[0]).toBe('[iii-cloud handoff ho-9]')
@@ -1051,7 +1051,7 @@ describe('hand-offs', () => {
     ;(h.host as unknown as { chat: unknown }).chat = chat
     return h
   }
-  const POINTER = 'Details: iii-cloud::status · skill iii://iii-cloud'
+  const POINTER = 'Details: iii-cloud::handoff::brief · skill iii://iii-cloud'
   const WT = '~/workspaces/registry-iii-cloud'
 
   it('the person says one plain sentence; the details live in status and the skill', () => {

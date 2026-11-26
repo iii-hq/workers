@@ -45,6 +45,9 @@ pub struct Config {
     pub run_timeout_s: u64,
     /// Records and run logs, relative to `III_COMPOSE_DIR`.
     pub data_dir: String,
+    /// A check the person starts on the page hands the agent the problems that
+    /// are its to fix, when it ends not ready.
+    pub auto_fix: bool,
 }
 
 impl Default for Config {
@@ -56,6 +59,7 @@ impl Default for Config {
             postgres_image: "pgvector/pgvector:pg17".into(),
             run_timeout_s: 900,
             data_dir: "data/iii-cloud".into(),
+            auto_fix: true,
         }
     }
 }

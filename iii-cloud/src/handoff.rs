@@ -22,6 +22,10 @@ const STALL_SECONDS: u64 = 180;
 const GIVE_UP_SECONDS: u64 = 1800;
 const CURRENT_MAX: usize = 120;
 const QUESTION_MAX: usize = 200;
+/// The failed run's lines in the brief.
+const RUN_LOG_LINES: usize = 40;
+/// "Continue" messages per hand-off before the state is `stalled`.
+const MAX_CONTINUES: u32 = 3;
 
 fn rfc3339(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
@@ -148,7 +152,7 @@ pub async fn worktree(ctx: &Arc<Ctx>, request: HandoffWorktreeRequest) -> Res<Ha
             s.handoffs
                 .iter()
                 .find(|h| match &request.handoff_id {
-                    Some(id) => h.id == *id,
+                    Some(id) => h.is(id),
                     None => {
                         Some(&h.environment_id) == selected_env.as_ref()
                             && !matches!(h.agent.state, AgentPhase::Done | AgentPhase::Stopped)
@@ -360,6 +364,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         manifest,
         candidate: request.candidate == Some(true),
         worktree_note,
+        continues: 0,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -553,7 +558,7 @@ pub async fn progress(
             let resolved = resolve_working_on(s, &sel.env.id, &request.working_on);
             let h = s.handoffs.iter_mut().find(|h| match &request.handoff_id {
                 // The caller's own hand-off, not whichever is first open.
-                Some(id) => h.id == *id,
+                Some(id) => h.is(id),
                 None => {
                     h.environment_id == sel.env.id
                         && !matches!(h.agent.state, AgentPhase::Done | AgentPhase::Stopped)
@@ -658,6 +663,9 @@ struct Local {
     seen_working: bool,
     /// The fast check of this idle stretch has run (reset when the session works again).
     idle_checked: bool,
+    /// When a "continue" went in: until the session works again (or a stall
+    /// passes) the idle stretch is not judged a second time.
+    continued_at: Option<i64>,
 }
 
 enum Poll {
@@ -886,7 +894,11 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     );
     if obs.status == "working" {
         local.idle_checked = false;
+        local.continued_at = None;
     }
+    let continuing = local
+        .continued_at
+        .is_some_and(|at| now_ms() - at < ctx.secs(STALL_SECONDS).as_millis() as i64);
     // An old chat the hand-off was sent into: idle and quiet since before the
     // hand-off means the turn has not begun, not that it is over.
     let fresh = obs
@@ -907,6 +919,9 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     }
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
+    } else if phase == AgentPhase::Done && continuing {
+        // Our "continue" is queued; the turn has not begun yet.
+        phase = AgentPhase::Working;
     } else if phase == AgentPhase::Done {
         // The turn ended, but not because the work is finished.
         if confirm_pending {
@@ -931,9 +946,21 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 )
                 .await;
             }
-            if agent_problems_remain(ctx, &handoff) {
+            let mine = open_problems(ctx, &handoff, Owner::Agent);
+            let theirs = open_problems(ctx, &handoff, Owner::Person);
+            if !mine.is_empty() {
+                if send_continue(ctx, &handoff, &session, &mine, &secrets).await {
+                    local.continued_at = Some(now_ms());
+                    local.idle_checked = false;
+                    phase = AgentPhase::Working;
+                } else {
+                    phase = AgentPhase::Stalled;
+                    question = Some(STOPPED_TEXT.to_string());
+                }
+            } else if !theirs.is_empty() {
+                // Nothing left for the agent: these wait for the person.
                 phase = AgentPhase::WaitingForYou;
-                question = Some(STOPPED_TEXT.to_string());
+                question = Some(problem_lines(&theirs));
             } else if !passed_run_here(ctx, &handoff) {
                 // Done is a ready check and a run here that passed for its commit.
                 phase = AgentPhase::WaitingForYou;
@@ -1114,19 +1141,61 @@ pub fn awaits_confirmation(items: &[Value]) -> bool {
     pending
 }
 
-/// The newest check still has problems that are the agent's to fix.
-fn agent_problems_remain(ctx: &Ctx, handoff: &Handoff) -> bool {
+/// `(code, title)` of the newest check's open problems of `owner`; none once it is ready.
+fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, String)> {
     ctx.store.read(|s| {
         s.check
             .as_ref()
-            .filter(|c| c.environment_id == handoff.environment_id)
-            .is_some_and(|c| {
-                !c.ready
-                    && c.problems
-                        .iter()
-                        .any(|p| p.owner == Owner::Agent && p.severity != Severity::Info)
+            .filter(|c| c.environment_id == handoff.environment_id && !c.ready)
+            .map(|c| {
+                c.problems
+                    .iter()
+                    .filter(|p| p.owner == owner && p.severity != Severity::Info)
+                    .map(|p| (p.code.clone(), p.title.clone()))
+                    .collect()
             })
+            .unwrap_or_default()
     })
+}
+
+/// One `<CODE>: <title>` per line.
+fn problem_lines(problems: &[(String, String)]) -> String {
+    problems
+        .iter()
+        .map(|(code, title)| format!("{code}: {title}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Post the "continue" message in the hand-off's chat, at most `MAX_CONTINUES`
+/// times. False when none went in: the limit is reached, the person stopped
+/// the hand-off, or the chat refused it.
+async fn send_continue(
+    ctx: &Ctx,
+    handoff: &Handoff,
+    session: &str,
+    problems: &[(String, String)],
+    secrets: &[String],
+) -> bool {
+    // Counted before the send: a stop or a restart in between never makes a fourth.
+    let n = ctx.store.update(|s| {
+        let h = s.handoffs.iter_mut().find(|h| h.id == handoff.id)?;
+        if h.agent.state == AgentPhase::Stopped || h.continues >= MAX_CONTINUES {
+            return None;
+        }
+        h.continues += 1;
+        Some(h.continues)
+    });
+    let Some(n) = n.filter(|_| !retired(ctx, handoff)) else {
+        return false;
+    };
+    let text = format!(
+        "{} · continue\n{}\nKeep going until the check is ready or you need the person.",
+        handoff.marker,
+        problem_lines(problems)
+    );
+    let text = crate::run::redact(&text, secrets);
+    deliver(ctx, session, &text, &format!("{}-continue-{n}", handoff.id)).await
 }
 
 /// The newest check of the hand-off's environment has a passed run for its own commit.
@@ -1241,6 +1310,10 @@ fn earlier_try_note(worktree: &std::path::Path, branch: &str) -> Option<String> 
 fn brief_problem(p: &Problem, secrets: &[String]) -> BriefProblem {
     let clean = |t: &str, max: usize| cut(&crate::run::redact(t, secrets), max);
     BriefProblem {
+        id: p.id.clone(),
+        code: p.code.clone(),
+        owner: p.owner,
+        severity: p.severity,
         title: clean(&p.title, 160),
         file: p.file.clone(),
         line: p.line,
@@ -1432,4 +1505,39 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         deploy,
         next_step,
     }
+}
+
+/// `iii-cloud::handoff::brief`: the brief alone, with the failed run's reason
+/// when the newest run of the hand-off's environment failed.
+pub async fn brief_for(ctx: &Arc<Ctx>, request: HandoffBriefRequest) -> Res<HandoffBriefResponse> {
+    let secrets = env_values(ctx);
+    ctx.store
+        .read(|s| {
+            let h = s.handoffs.iter().find(|h| h.is(&request.handoff_id))?;
+            let run = s
+                .check
+                .iter()
+                .chain(s.checks.iter())
+                .filter(|c| c.environment_id == h.environment_id)
+                .find_map(|c| c.run.as_ref())
+                .filter(|r| r.status == RunStatus::Failed);
+            let run_failure = run.and_then(|r| {
+                let e = r.error.as_ref()?;
+                let skip = r.log_tail.len().saturating_sub(RUN_LOG_LINES);
+                Some(RunFailure {
+                    stage: e.stage,
+                    code: e.code.clone(),
+                    message: cut(&crate::run::redact(&e.message, &secrets), 400),
+                    log_tail: r.log_tail[skip..]
+                        .iter()
+                        .map(|l| cut(&crate::run::redact(l, &secrets), 400))
+                        .collect(),
+                })
+            });
+            Some(HandoffBriefResponse {
+                brief: brief(s, h, &secrets),
+                run_failure,
+            })
+        })
+        .ok_or_else(|| CloudError::invalid("no such hand-off"))
 }

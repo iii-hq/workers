@@ -6,6 +6,7 @@ mod support;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use iii_cloud::config::Config;
 use iii_cloud::handoff::{Observed, create, derive_phase, stop};
 use iii_cloud::project::{resolve, use_project};
 use iii_cloud::types::*;
@@ -912,45 +913,275 @@ async fn a_turn_that_ends_on_a_folder_proposal_is_waiting_for_the_person_not_don
     assert_eq!(a.question, None);
 }
 
+/// The messages the worker posted into the chat with `harness::send`.
+fn sent(h: &Harness) -> Vec<String> {
+    h.fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(f, _)| f == "harness::send")
+        .map(|(_, p)| p["message"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// The chat accepts what the worker sends.
+fn accept_sends(h: &Harness) {
+    h.fake.on("harness::send", |_| {
+        Ok(json!({"session_id": "s-ours", "turn_id": "t"}))
+    });
+}
+
+async fn idle_for(w: &World, ms: u64) {
+    *w.status.lock().unwrap() = "idle".into();
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
 #[tokio::test]
-async fn a_turn_that_ends_with_problems_left_is_waiting_for_you_and_checks_once_per_idle_stretch() {
+async fn a_turn_that_ends_with_problems_left_gets_one_continue_per_idle_stretch_then_stalls() {
     let (h, _s, _r, _ws) = setup().await;
+    accept_sends(&h);
     // The repo has no healthcheck: a problem that is the agent's.
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
-    *w.status.lock().unwrap() = "idle".into();
-    let a = until(&h, "waiting for you", |a| {
-        a.state == AgentPhase::WaitingForYou
+    let id8 = &created.id[..8];
+    for round in 1..=3usize {
+        *w.status.lock().unwrap() = "idle".into();
+        for _ in 0..200 {
+            if sent(&h).len() >= round {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let checks = h.ctx.store.read(|s| s.checks.len());
+        // The same idle stretch, however long it lasts: no second message, no second check.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(sent(&h).len(), round, "one continue per idle stretch");
+        assert_eq!(h.ctx.store.read(|s| s.checks.len()), checks);
+        let state = iii_cloud::status::status(&h.ctx, StatusRequest::default())
+            .await
+            .unwrap()
+            .agent
+            .unwrap();
+        assert_eq!(
+            state.state,
+            AgentPhase::Working,
+            "the agent is told to go on"
+        );
+        *w.status.lock().unwrap() = "working".into();
+        *w.last_ms.lock().unwrap() = NOW_FN();
+        until(&h, "working again", |a| a.state == AgentPhase::Working).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let messages = sent(&h);
+    let lines: Vec<&str> = messages[0].lines().collect();
+    assert_eq!(lines[0], format!("iii-cloud hand-off {id8} · continue"));
+    assert_eq!(
+        *lines.last().unwrap(),
+        "Keep going until the check is ready or you need the person."
+    );
+    assert!(
+        lines.len() >= 3 && lines[1].contains(": "),
+        "one `<CODE>: <title>` line per problem: {lines:?}"
+    );
+    // The fourth idle stretch: no more messages, and the state is stalled.
+    idle_for(&w, 0).await;
+    let a = until(&h, "stalled", |a| {
+        a.state == AgentPhase::Stalled && a.question.is_some()
     })
     .await;
     assert_eq!(
         a.question.as_deref(),
         Some("Your agent stopped; open the chat to see what it needs.")
     );
-    let checks_after_first = h.ctx.store.read(|s| s.checks.len());
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(
-        h.ctx.store.read(|s| s.checks.len()),
-        checks_after_first,
-        "one fast check for the idle stretch, however long it lasts"
-    );
-    // Works again, stops again: a new idle stretch, a new check.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(sent(&h).len(), 3, "at most three");
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 3);
+}
+
+#[tokio::test]
+async fn no_continue_while_the_agent_works_waits_on_a_wake_or_asks_or_after_a_stop() {
+    let (h, _s, _r, _ws) = setup().await;
+    accept_sends(&h);
+    h.fake
+        .on("harness::stop", |_| Ok(json!({"stopping": true})));
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    // Still working.
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty(), "the agent is working");
+    // A question is open.
+    *w.question.lock().unwrap() = Some("Which one?".into());
+    idle_for(&w, 0).await;
+    until(&h, "asked", |a| a.state == AgentPhase::WaitingForYou).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty(), "an ask is open");
+    *w.question.lock().unwrap() = None;
+    // A wake is armed.
+    let rows = Arc::new(Mutex::new(vec![wake_row(0, NOW_FN() + 3_600_000)]));
+    let r = rows.clone();
+    h.fake.on("harness::observers::list", move |_| {
+        Ok(json!({"observers": r.lock().unwrap().clone()}))
+    });
     *w.status.lock().unwrap() = "working".into();
-    until(&h, "working again", |a| a.state == AgentPhase::Working).await;
-    *w.status.lock().unwrap() = "idle".into();
-    until(&h, "waiting again", |a| {
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "waiting", |a| a.state == AgentPhase::Waiting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty(), "a wake is armed");
+    // The person stopped it.
+    *rows.lock().unwrap() = vec![];
+    *w.status.lock().unwrap() = "working".into();
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    stop(&h.ctx, HandoffStopRequest { id: created.id })
+        .await
+        .unwrap();
+    idle_for(&w, 400).await;
+    assert!(sent(&h).is_empty(), "the hand-off was stopped");
+}
+
+#[tokio::test]
+async fn only_problems_for_the_person_left_waits_for_you_and_names_them() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    // A name with no value anywhere is the person's; nothing is the agent's.
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "containers:\n  api:\n    worker: package://http\n    environment:\n      NO_SOURCE: ${NO_SOURCE}\ncloud:\n  healthcheck:\n    path: /health\n",
+    )
+    .unwrap();
+    std::fs::write(ws.join("worker-compose.lock"), "").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-m", "a name"]);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    let a = until(&h, "waiting for you", |a| {
         a.state == AgentPhase::WaitingForYou
     })
     .await;
-    for _ in 0..100 {
-        if h.ctx.store.read(|s| s.checks.len()) > checks_after_first {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    let theirs = h.ctx.store.read(|s| {
+        s.check
+            .as_ref()
+            .unwrap()
+            .problems
+            .iter()
+            .filter(|p| p.owner == Owner::Person && p.severity != Severity::Info)
+            .map(|p| format!("{}: {}", p.code, p.title))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    assert!(theirs.starts_with("LOCAL_VARIABLE_UNSET: "), "{theirs}");
+    assert_eq!(a.question.as_deref(), Some(theirs.as_str()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty(), "nothing for the agent to continue on");
+}
+
+#[tokio::test]
+async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the_failed_run() {
+    use iii_cloud::handoff::brief_for;
+    let (h, _s, _r, _ws) = setup().await;
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    let by = |id: &str| HandoffBriefRequest {
+        handoff_id: id.into(),
+    };
+    let short = brief_for(&h.ctx, by(&created.id[..8])).await.unwrap();
+    let full = brief_for(&h.ctx, by(&created.id)).await.unwrap();
+    assert_eq!(short, full);
+    assert_eq!(short.brief.handoff_id, created.id);
+    assert_eq!(short.run_failure, None);
+    let v = serde_json::to_value(&short).unwrap();
+    assert!(v.get("run_failure").is_some_and(Value::is_null));
+    for absent in ["checks", "deploys", "variables", "connection", "agent"] {
+        assert!(v.get(absent).is_none(), "{absent} is not part of the brief");
     }
-    assert_eq!(h.ctx.store.read(|s| s.checks.len()), checks_after_first + 1);
+    assert!(v["next_step"].is_string() && v["manifest"].is_string());
+    assert_eq!(
+        brief_for(&h.ctx, by("nope")).await.unwrap_err().code,
+        "INVALID_REQUEST"
+    );
+    // A failed run: its stage, code, message and the last lines.
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.run = Some(Run {
+            id: "r".into(),
+            check_id: c.id.clone(),
+            commit: "abc".into(),
+            engine: "0.27.0".into(),
+            status: RunStatus::Failed,
+            started_at: "t".into(),
+            finished_at: None,
+            stages: vec![],
+            workers: WorkerCount { ready: 0, total: 1 },
+            routes: RouteCount {
+                count: 0,
+                prefix: None,
+            },
+            healthcheck: None,
+            not_covered: vec![],
+            log_tail: (0..60).map(|i| format!("line {i}")).collect(),
+            error: Some(RunError {
+                stage: StageName::Workers,
+                code: "WORKERS_NOT_READY".into(),
+                message: "api did not connect".into(),
+            }),
+            reused: false,
+        });
+        s.put_check(c);
+    });
+    let failed = brief_for(&h.ctx, by(&created.id[..8])).await.unwrap();
+    let f = failed.run_failure.unwrap();
+    assert_eq!(
+        (f.stage, f.code.as_str(), f.message.as_str()),
+        (
+            StageName::Workers,
+            "WORKERS_NOT_READY",
+            "api did not connect"
+        )
+    );
+    assert_eq!(f.log_tail.len(), 40);
+    assert_eq!(f.log_tail.last().map(String::as_str), Some("line 59"));
+}
+
+#[tokio::test]
+async fn progress_and_check_take_the_short_id_from_the_marker() {
+    let (h, _s, _r, _ws) = setup().await;
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    let out = iii_cloud::handoff::progress(
+        &h.ctx,
+        HandoffProgressRequest {
+            handoff_id: Some(created.id[..8].to_string()),
+            working_on: vec![],
+            note: Some("starting".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.note.as_deref(), Some("starting"));
+}
+
+#[tokio::test]
+async fn auto_fix_is_on_by_default_and_the_status_follows_the_config() {
+    let (h, _s, _r, _ws) = setup().await;
+    let status = iii_cloud::status::status(&h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    assert!(status.auto_fix, "on by default");
+    let cfg = Config {
+        auto_fix: false,
+        ..(**h.ctx.cfg.read().await).clone()
+    };
+    iii_cloud::configuration::apply_config(&h.ctx.cfg, cfg).await;
+    let status = iii_cloud::status::status(&h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    assert!(!status.auto_fix);
 }
 
 fn prob(id: &str, code: &str) -> Problem {

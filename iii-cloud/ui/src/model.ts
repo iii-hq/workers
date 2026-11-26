@@ -554,7 +554,7 @@ export function variableName(p: { title: string; detail: string | null; code: st
 }
 
 /** Where the details live: the person's chat message stays one plain sentence. */
-export const HANDOFF_POINTER = 'Details: iii-cloud::status · skill iii://iii-cloud'
+export const HANDOFF_POINTER = 'Details: iii-cloud::handoff::brief · skill iii://iii-cloud'
 
 /** "1 commit", "3 commits"; `many` for an irregular plural. */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
