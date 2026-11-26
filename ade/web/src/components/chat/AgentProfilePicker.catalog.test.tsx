@@ -14,15 +14,15 @@ const harness = vi.hoisted(() => ({
   handlers: new Map<string, (payload: unknown) => void>(),
   observed: [] as Array<{ source: unknown; target: string }>,
   listCalls: 0,
-  downloads: 0,
-  kitProfile: null as unknown as AgentEntry,
+  downloads: [] as string[],
+  kitProfiles: {} as Record<string, AgentEntry>,
 }))
 
 vi.mock('@/lib/panel-context', () => ({ requestPanelOpen: vi.fn() }))
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
     browserId: 'browser-1',
-    call: async (functionId: string) => {
+    call: async (functionId: string, input?: { kit?: string }) => {
       if (functionId === 'directory::agents::list') {
         harness.listCalls += 1
         if (harness.failures > 0) {
@@ -33,8 +33,12 @@ vi.mock('@/lib/iii-client', () => ({
       }
       if (functionId === 'directory::kits::list') return { kits: [] }
       if (functionId === 'directory::download-kit') {
-        harness.downloads += 1
-        harness.agents = [...harness.agents, harness.kitProfile]
+        const kit = input?.kit ?? ''
+        harness.downloads.push(kit)
+        // The Directory lists profiles by name.
+        harness.agents = [...harness.agents, harness.kitProfiles[kit]].sort(
+          (a, b) => a.name.localeCompare(b.name),
+        )
         for (const handler of harness.handlers.values()) handler({ op: 'kit' })
         return { status: 'applied' }
       }
@@ -71,8 +75,11 @@ beforeEach(() => {
   harness.handlers.clear()
   harness.observed = []
   harness.listCalls = 0
-  harness.downloads = 0
-  harness.kitProfile = profile('deepwork', 'Deepwork')
+  harness.downloads = []
+  harness.kitProfiles = {
+    'iii/deepwork': profile('deepwork', 'Deepwork'),
+    'iii/workflow': profile('workflow', 'Workflow'),
+  }
   resetOnboardingKitsForTest()
 })
 
@@ -100,9 +107,14 @@ async function mount() {
   return onAgentProfileChange
 }
 
-const kitRow = () =>
+const kitRow = (name = 'Deepwork') =>
   document.querySelector<HTMLButtonElement>(
-    '[aria-label="Install the Deepwork agent"], [aria-label="Deepwork agent is installing"]',
+    `[aria-label="Install the ${name} agent"], [aria-label="${name} agent is installing"]`,
+  )
+
+const rows = () =>
+  [...document.querySelectorAll('[aria-label="Agent profiles"] button')].map(
+    (button) => button.getAttribute('aria-label'),
   )
 
 const trigger = () =>
@@ -201,7 +213,7 @@ describe('AgentProfilePicker catalog', () => {
     await flush()
     await flush()
 
-    expect(harness.downloads).toBe(1)
+    expect(harness.downloads).toEqual(['iii/deepwork'])
     expect(kitRow()).toBeNull()
     expect(profileNames()).toContain('Use Deepwork agent profile')
     expect(onAgentProfileChange).toHaveBeenLastCalledWith(
@@ -218,9 +230,36 @@ describe('AgentProfilePicker catalog', () => {
     await mount()
     await act(async () => trigger()?.click())
     expect(kitRow()).toBeNull()
+    expect(kitRow('Workflow')).not.toBeNull()
     expect(profileNames()).toEqual([
       'Use Default agent profile',
       'Use Deepwork agent profile',
     ])
+  })
+
+  it('always offers Workflow too, with its own install', async () => {
+    harness.agents = [profile('default', 'Default'), profile('zeta', 'Zeta')]
+    const onAgentProfileChange = await mount()
+    await act(async () => trigger()?.click())
+    expect(rows()).toEqual([
+      'Install the Deepwork agent',
+      'Use Default agent profile',
+      'Install the Workflow agent',
+      'Use Zeta agent profile',
+    ])
+
+    await act(async () => kitRow('Workflow')?.click())
+    await flush()
+    await flush()
+
+    // The served profile sorts ahead of Zeta, so the hidden row's slot moved.
+    expect(harness.downloads).toEqual(['iii/workflow'])
+    expect(kitRow('Workflow')).toBeNull()
+    expect(kitRow()?.textContent).toContain('Install')
+    expect(profileNames()).toContain('Use Workflow agent profile')
+    expect(onAgentProfileChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'workflow' }),
+      undefined,
+    )
   })
 })
