@@ -677,14 +677,18 @@ export function AutocompactDialog({
                             rowOpens(row) ? () => openRow(row) : undefined
                           }
                         >
+                          {/* Where and Effective wrap inside the dialog's
+                              width (the cells default to one line, and the
+                              frame clips); the limit stays on one line. */}
                           <TableCell>
-                            <span className="flex items-center gap-2 font-medium text-ink">
+                            <span className="flex min-w-32 items-start gap-2 font-medium whitespace-normal text-ink">
                               {row.project ? (
-                                <ProjectDot color={row.project.color} />
+                                <ProjectDot
+                                  color={row.project.color}
+                                  className="mt-1.5"
+                                />
                               ) : null}
-                              <span className="max-w-64 truncate">
-                                {row.where}
-                              </span>
+                              <span data-autocompact-where="">{row.where}</span>
                             </span>
                           </TableCell>
                           <TableCell>
@@ -693,7 +697,10 @@ export function AutocompactDialog({
                             </span>
                           </TableCell>
                           <TableCell>
-                            <span className="text-ink-faint">
+                            <span
+                              data-autocompact-effective=""
+                              className="block min-w-48 whitespace-normal text-ink-faint"
+                            >
                               {row.effective}
                             </span>
                           </TableCell>

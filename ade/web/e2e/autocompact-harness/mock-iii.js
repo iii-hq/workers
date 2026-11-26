@@ -40,7 +40,7 @@ const MODELS = [
   {
     provider: 'anthropic',
     model: 'claude-sonnet-5-5',
-    name: 'Sonnet 5.5',
+    name: 'Claude Sonnet 5.5 (Claude Code)',
     context_window: 1_000_000,
     usable: 916_000,
     last_used_ms: Date.now() - 60_000,
@@ -48,7 +48,7 @@ const MODELS = [
   {
     provider: 'anthropic',
     model: 'claude-opus-5-5',
-    name: 'Opus 5.5',
+    name: 'Claude Opus 5.5 (Claude Code)',
     context_window: 200_000,
     usable: 116_000,
     last_used_ms: Date.now() - 120_000,

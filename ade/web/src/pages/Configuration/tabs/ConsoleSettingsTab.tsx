@@ -494,7 +494,6 @@ export function ConsoleSettingsTab({
                 descriptionsError ??
                 'Agents write a one-line description inside the turn they are running. A conversation whose description you edited keeps yours.'
               }
-              layout="inline"
               control={
                 <span className="flex items-center gap-3 text-sm text-ink">
                   <label
