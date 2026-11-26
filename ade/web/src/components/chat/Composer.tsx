@@ -11,8 +11,10 @@ import {
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -163,12 +165,48 @@ export function composerControlNodes(
   props: ComposerControlProps,
 ): { footer: ReactNode[]; project: ReactNode[] } {
   const nodes = { footer: [] as ReactNode[], project: [] as ReactNode[] }
-  for (const { id, placement, render: Control } of controls) {
+  for (const { id, placement, label, render: Control } of controls) {
     nodes[placement === 'project' ? 'project' : 'footer'].push(
-      <Control key={id} {...props} />,
+      placement === 'project' ? (
+        <Control key={id} {...props} />
+      ) : (
+        <ComposerPickerRow key={id} label={label}>
+          <Control {...props} />
+        </ComposerPickerRow>
+      ),
     )
   }
   return nodes
+}
+
+/**
+ * Where the pickers after the model are rendered: in the toolbar row they
+ * are bare pills; in the "More" popover's list each sits beside its name.
+ */
+const ComposerPickerListContext = createContext(false)
+
+function ComposerPickerRow({
+  label,
+  children,
+}: {
+  label?: string
+  children: ReactNode
+}) {
+  const listed = useContext(ComposerPickerListContext)
+  if (!listed) return <>{children}</>
+  if (!label) {
+    return (
+      <span className="col-span-2 flex min-h-9 min-w-0 items-center">
+        {children}
+      </span>
+    )
+  }
+  return (
+    <>
+      <span className="text-sm text-ink-faint">{label}</span>
+      <span className="flex min-h-9 min-w-0 items-center">{children}</span>
+    </>
+  )
 }
 
 export interface ComposerSubmitPayload {
@@ -999,20 +1037,28 @@ export function Composer({
   const renderExtraPickers = () => (
     <>
       {composerControls}
-      <ComposerActionsSlot layout="wide">{agentPicker}</ComposerActionsSlot>
+      {agentPicker ? (
+        <ComposerPickerRow label="Agent">
+          <ComposerActionsSlot layout="wide">{agentPicker}</ComposerActionsSlot>
+        </ComposerPickerRow>
+      ) : null}
       {showMemoryBank && onMemoryBankChange ? (
-        <BankPicker
-          value={memoryBank ?? null}
-          onChange={onMemoryBankChange}
-          disabled={optionsDisabled}
-        />
+        <ComposerPickerRow label="Memory">
+          <BankPicker
+            value={memoryBank ?? null}
+            onChange={onMemoryBankChange}
+            disabled={optionsDisabled}
+          />
+        </ComposerPickerRow>
       ) : null}
       {showPermissionMode ? (
-        <PermissionModePicker
-          value={permissionMode}
-          onChange={onPermissionModeChange}
-          disabled={optionsDisabled || !!permissionModeLoading}
-        />
+        <ComposerPickerRow label="Permissions">
+          <PermissionModePicker
+            value={permissionMode}
+            onChange={onPermissionModeChange}
+            disabled={optionsDisabled || !!permissionModeLoading}
+          />
+        </ComposerPickerRow>
       ) : null}
     </>
   )
@@ -1351,9 +1397,11 @@ export function Composer({
                     align="start"
                     side="top"
                     sideOffset={8}
-                    className="flex w-64 flex-col items-stretch gap-1 p-2 [&>*]:justify-start"
+                    className="grid w-auto min-w-64 max-w-[22rem] grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-0.5 p-2 pl-3"
                   >
-                    {renderExtraPickers()}
+                    <ComposerPickerListContext.Provider value>
+                      {renderExtraPickers()}
+                    </ComposerPickerListContext.Provider>
                   </PopoverContent>
                 </Popover>
               ) : null}
