@@ -109,3 +109,35 @@ async fn a_restart_fails_the_running_run_and_cleans_up_its_files() {
         "{events:?}"
     );
 }
+
+/// A stage command runs in its own process group, so the worker's death does
+/// not reach it: `recover` kills the group `run.json` names.
+#[tokio::test]
+async fn a_restart_kills_the_process_group_of_the_stage_that_was_running() {
+    use std::os::unix::process::CommandExt;
+    let h = harness("http://cloud.test", Arc::new(Fake::default()));
+    let cfg = h.ctx.config().await;
+    let mut stage = std::process::Command::new("sleep")
+        .arg("300")
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let run_dir = cfg.data_path().join("runs/r2");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(
+        run_dir.join("run.json"),
+        serde_json::json!({"containers": [], "copy": null, "iii_bin": "true", "stage_group": stage.id()}).to_string(),
+    )
+    .unwrap();
+    recover(&h.ctx).await;
+    // Killed by SIGKILL: `wait` returns at once, with no exit code.
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || stage.wait().unwrap()),
+    )
+    .await
+    .expect("the stage was left running")
+    .unwrap();
+    assert!(status.code().is_none());
+    assert!(!run_dir.join("run.json").exists());
+}

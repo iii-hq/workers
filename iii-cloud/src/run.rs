@@ -48,6 +48,13 @@ pub const CALL_WAIT: Duration = Duration::from_secs(240);
 /// Where `iii compose` keeps the run's namespace, under the compose file's folder.
 const COMPOSE_STATE: &str = ".iii/compose/iii-cloud-run";
 
+/// The containers dead in this look and in the one before; `before` becomes this look's.
+pub fn confirm_exited(before: &mut Vec<String>, now: Vec<String>) -> Vec<String> {
+    let confirmed = now.iter().filter(|n| before.contains(n)).cloned().collect();
+    *before = now;
+    confirmed
+}
+
 /// Whether no process has this pid (unix; elsewhere nothing says so).
 fn pid_gone(pid: u64) -> bool {
     #[cfg(unix)]
@@ -393,6 +400,9 @@ struct Exec {
     followers: Arc<Mutex<Vec<String>>>,
     /// Ports this run picked, given back to `Ctx::ports` at the end.
     ports: Vec<u16>,
+    /// The process group of the stage command now running, kept in `run.json`
+    /// so `recover` can stop it after a crash.
+    stage_group: Option<u32>,
 }
 
 /// Start a run for a stored check. One at a time per workspace.
@@ -422,7 +432,13 @@ pub async fn start_with(
         let step = {
             let mut runs = ctx.runs.lock().unwrap();
             match runs.get(&slot) {
-                Some(a) if key.is_some() && a.key == key && a.env_id == sel.env.id => {
+                // A run already told to stop is not attachable: the call waits for the slot.
+                Some(a)
+                    if key.is_some()
+                        && a.key == key
+                        && a.env_id == sel.env.id
+                        && !*a.cancel.borrow() =>
+                {
                     a.followers.lock().unwrap().push(check_id.clone());
                     Err((a.id.clone(), a.done.clone(), false))
                 }
@@ -458,8 +474,25 @@ pub async fn start_with(
         match step {
             Ok(own) => break own,
             // Replaced: wait for its teardown, then take its place.
-            Err((_, mut done, true)) => {
-                let _ = done.wait_for(|d| *d).await;
+            Err((old, mut done, true)) => {
+                let waited = tokio::time::timeout_at(until.into(), done.wait_for(|d| *d)).await;
+                if waited.is_err() {
+                    // The deadline came first: the run as it is, still stopping.
+                    return ctx
+                        .store
+                        .read(|s| {
+                            s.checks
+                                .iter()
+                                .filter_map(|c| c.run.clone())
+                                .find(|r| r.id == old)
+                        })
+                        .ok_or_else(|| {
+                            CloudError::new(
+                                "RUN_TIMEOUT",
+                                "The earlier run is still stopping; check again.",
+                            )
+                        });
+                }
             }
             Err((id, done, false)) => {
                 // What the run has now; from here its publishes reach this check.
@@ -683,6 +716,7 @@ async fn prepare(
         cancel: watch::channel(false).1,
         followers: Arc::new(Mutex::new(vec![])),
         ports: vec![],
+        stage_group: None,
     })
 }
 
@@ -714,6 +748,7 @@ impl Exec {
             containers: self.pg.clone(),
             copy: self.prep.as_ref().map(|p| p.copy.clone()),
             iii_bin: self.iii_bin.clone(),
+            stage_group: self.stage_group,
         };
         if let Ok(bytes) = serde_json::to_vec(&files) {
             let _ = std::fs::write(self.dir.join("run.json"), bytes);
@@ -959,8 +994,11 @@ impl Exec {
             .spawn()
             .map_err(|e| fail("TOOL_MISSING", format!("cannot start sh: {e}")))?;
         let mut group = GroupKill(child.id());
+        // On disk while it runs: after a crash `recover` kills the group.
+        self.stage_group = child.id();
+        self.persist_run();
         let pumps = self.pump_output(&mut child, "run.log");
-        match tokio::time::timeout(limit, child.wait()).await {
+        let result = match tokio::time::timeout(limit, child.wait()).await {
             Ok(Ok(status)) => {
                 group.0 = None;
                 // Its output is in the log before its result counts; a process
@@ -979,7 +1017,10 @@ impl Exec {
                     format!("`{}` did not end in {} s.", cut(cmd, 60), limit.as_secs()),
                 ))
             }
-        }
+        };
+        self.stage_group = None;
+        self.persist_run();
+        result
     }
 
     async fn install(&mut self) -> Result<Done, Fail> {
@@ -1409,6 +1450,7 @@ impl Exec {
         let mut progress = Instant::now();
         let mut stable_since: Option<Instant> = None;
         let mut connected: Vec<String> = vec![];
+        let mut dead_before: Vec<String> = vec![];
         loop {
             if let Some(code) = self.compose_exited() {
                 // `iii compose` stops itself when a container dies before it registers.
@@ -1425,7 +1467,9 @@ impl Exec {
                     &connected,
                 ));
             }
-            let gone = self.exited_containers();
+            // Dead twice in a row: `iii compose` records `restarting` only after it
+            // reaped the child, so one look can catch the gap before it.
+            let gone = confirm_exited(&mut dead_before, self.exited_containers());
             if !gone.is_empty() {
                 return Err(self.workers_fail(
                     format!("{} exited before all workers connected.", gone.join(", ")),
@@ -1445,26 +1489,29 @@ impl Exec {
             // A container's worker registers under the container's name
             // (verified on iii 0.27.0: `api`, `http`), with status `connected`.
             let names = self.container_names();
-            connected = self
+            let listed = self
                 .engine_call("engine::workers::list", &[])
                 .await
-                .and_then(|v| v.get("workers").and_then(Value::as_array).cloned())
-                .map(|ws| {
-                    names
-                        .iter()
-                        .filter(|n| {
-                            ws.iter().any(|w| {
-                                w.get("name").and_then(Value::as_str) == Some(n.as_str())
-                                    && matches!(
-                                        w.get("status").and_then(Value::as_str),
-                                        Some("connected" | "available")
-                                    )
-                            })
-                        })
-                        .cloned()
-                        .collect()
+                .and_then(|v| v.get("workers").and_then(Value::as_array).cloned());
+            // A list that could not be read says nothing: poll again, and leave
+            // the count, the clock and `waiting_on` as they are.
+            let Some(ws) = listed else {
+                tokio::time::sleep(self.ctx.secs(1)).await;
+                continue;
+            };
+            connected = names
+                .iter()
+                .filter(|n| {
+                    ws.iter().any(|w| {
+                        w.get("name").and_then(Value::as_str) == Some(n.as_str())
+                            && matches!(
+                                w.get("status").and_then(Value::as_str),
+                                Some("connected" | "available")
+                            )
+                    })
                 })
-                .unwrap_or_default();
+                .cloned()
+                .collect();
             let ready = connected.len() as u32;
             if ready > self.run.workers.ready {
                 progress = Instant::now();
@@ -1761,7 +1808,10 @@ impl Exec {
             }
         }
         for name in std::mem::take(&mut self.pg) {
-            let _ = tool::run("docker", &["rm", "-f", &name], None, None, "DOCKER_MISSING").await;
+            // A stuck docker daemon must not hold the workspace's slot for ever.
+            let args = ["rm", "-f", name.as_str()];
+            let rm = tool::run("docker", &args, None, None, "DOCKER_MISSING");
+            let _ = tokio::time::timeout(Duration::from_secs(30), rm).await;
         }
         self.give_back_ports();
         if let Some(p) = &self.prep {
@@ -1783,6 +1833,9 @@ struct RunFiles {
     containers: Vec<String>,
     copy: Option<PathBuf>,
     iii_bin: String,
+    /// The process group of a stage command that was running.
+    #[serde(default)]
+    stage_group: Option<u32>,
 }
 
 /// The names of the files in `dir` (empty when it does not exist).
@@ -1968,6 +2021,9 @@ pub async fn recover(ctx: &Arc<Ctx>) {
         else {
             continue;
         };
+        // A stage command the crash left running (its own group, so the worker's
+        // death did not reach it).
+        drop(GroupKill(files.stage_group));
         for name in &files.containers {
             let _ = tool::run("docker", &["rm", "-f", name], None, None, "DOCKER_MISSING").await;
         }
