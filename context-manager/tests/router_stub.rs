@@ -3,7 +3,8 @@
 //! caller's `provider_options` (the conversation's account) are checked on
 //! the wire `context::compact` and an inline `context::assemble` compaction
 //! send; and a usage-limit reply comes back as `failure.kind: "usage_limit"`
-//! with the router's `error_details`.
+//! with the router's `error_details`. Before the stub registers, the engine's
+//! own answer for a missing `router::chat` reads as `unavailable`.
 //!
 //! Needs `iii` on PATH; without it the test prints `[skip]` and passes. The
 //! engine runs on a free loopback port with a throwaway `HOME`, so no
@@ -233,7 +234,6 @@ async fn assemble(deps: &Deps, options: Value) -> Value {
 }
 
 async fn run(url: String) {
-    let (stub_client, stub) = start_stub(&url).await;
     let iii = Arc::new(connect(&url, "context-manager-under-test"));
     let config = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
     let deps = Deps {
@@ -243,6 +243,14 @@ async fn run(url: String) {
         clock: Arc::new(FakeClock::new()),
         config,
     };
+
+    // No router::chat yet: the engine's own `function_not_found` reads as
+    // "no summariser".
+    let out = compact(&deps, json!({})).await;
+    assert_eq!(out["status"], "overflow", "{out}");
+    assert_eq!(out["failure"]["kind"], "unavailable", "{out}");
+
+    let (stub_client, stub) = start_stub(&url).await;
 
     // context::compact: the account rides the router::chat request.
     let out = compact(&deps, json!({ "provider_options": account() })).await;

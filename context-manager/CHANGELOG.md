@@ -50,9 +50,25 @@ published from `main` without a changelog.
   a budget it is checked from `min(usable / 3, 0.8 × compaction_budget)`. On a
   1M window a third is about 305k, so a 160k budget was decided on the
   estimate alone.
-- **Summariser failures keep their cause.** A router reply, a stream `error`
-  frame and a bus error are classified instead of all reading as one failure.
-  A `router/context_overflow` reply is still retried with less history.
+- **Summariser failures keep their cause.** Instead of all reading as one
+  failure, each source is classified by its own fields:
+  - a `router::chat` reply with `ok: false`, by its ErrorShape's `code`,
+    `kind` and `error_details`;
+  - a stream `error` frame, or a `stop` with `stop_reason: "error"`, by the
+    `error_kind` and `error_details` it carries (a later `error` frame wins
+    over the `stop` before it, which has no details);
+  - a bus error, by its `router/…` code, or, when its message is an
+    ErrorShape as one JSON object (`code`, `kind` or `error_kind`, `message`,
+    `error_details`), by that object's fields, so a usage limit survives the
+    bus; a bus timeout is `timeout`;
+  - the pipeline's own deadline (`timeout`) and limits (`input_too_large`).
+
+  A `router/context_overflow` refusal is still retried with less history.
+- **A missing router is only the engine's `function_not_found`.** A remote
+  error with that code (for `router::chat`, and for `router::models::budget`'s
+  fallback to `router::models::get`) means llm-router is absent. A provider
+  error whose text merely says "not found" used to read the same way; it is
+  now the provider's own failure.
 
 ### Compatibility
 

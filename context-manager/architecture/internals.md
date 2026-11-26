@@ -450,10 +450,17 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
 - `summarizer_timeout_ms` (default 320000) is the **outer** budget for the
   whole call and must exceed the router's own stream budget; `READER_DRAIN_MS`
   is a 2s grace for the socket to drain after the call returns.
-- Unroutable detection is string-sniffing the error (`function_not_found` /
-  `not found` / `no function`) → `Unavailable`, which `compact` maps to
-  `status: "overflow"` with `error_kind: "permanent"` logged. This is the
-  defined degraded mode when `llm-router` is absent.
+- Unroutable detection is the engine's remote error code
+  `function_not_found` (as llm-router's `is_function_not_found`; the message
+  text is never consulted) → `Unavailable`, which `compact` maps to
+  `status: "overflow"` with `failure.kind: "unavailable"` and
+  `error_kind: "permanent"` logged. This is the defined degraded mode when
+  `llm-router` is absent. Any other bus error is read as the router's
+  ErrorShape (its `router/…` code, or a JSON ErrorShape in the message) and
+  classified like an `ok: false` reply.
+- `extract_summary` classifies an error `stop` frame by its `error_kind`, but
+  a terminal `error` frame after it wins: only that one carries
+  `error_details`.
 
 `FsLeaseStore::swap` holds the cache `Mutex` across the whole read-modify-write:
 it reads the current claim (replaying the key's file on a cold cache), writes the

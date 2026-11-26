@@ -32,9 +32,12 @@ const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// call response, so this only covers socket latency.
 const READER_DRAIN_MS: u64 = 2_000;
 
+/// The engine reports a function nobody registered as a remote error with
+/// code `function_not_found` (llm-router's `is_function_not_found`, the
+/// harness's dispatch client). The message is the target's text and is never
+/// consulted: a provider error that says "not found" is not a missing router.
 fn is_unroutable(err: &Error) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("function_not_found") || msg.contains("not found") || msg.contains("no function")
+    matches!(err, Error::Remote { code, .. } if code.eq_ignore_ascii_case("function_not_found"))
 }
 
 /// `router::models::budget` — `{ model, effective_max_output_tokens } | null`.
@@ -322,14 +325,14 @@ fn chat_payload(req: &SummarizeRequest, writer_ref: Value) -> Value {
 }
 
 /// A failed `router::chat` call (the bus refused or timed out) as a
-/// summariser error.
+/// summariser error. A remote error is read as the router's ErrorShape and
+/// classified like an `ok: false` reply: its code (the router's pre-stream
+/// `router/…` codes), and, when its message is one JSON object (the harness
+/// reads the same convention), that object's `code`, `kind` or `error_kind`,
+/// `message` and `error_details`, so a usage limit survives the bus.
 fn call_error(error: &Error) -> SummarizeError {
     if is_unroutable(error) {
         return SummarizeError::Unavailable(error.to_string());
-    }
-    let detail = error.to_string();
-    if detail.contains(CONTEXT_OVERFLOW_CODE) {
-        return SummarizeError::ContextOverflow(detail);
     }
     let timed_out = matches!(error, Error::Timeout)
         || matches!(error, Error::Remote { code, .. } if code.to_lowercase().contains("timeout"));
@@ -339,7 +342,45 @@ fn call_error(error: &Error) -> SummarizeError {
             "the summary took longer than its time budget",
         ));
     }
+    let detail = error.to_string();
+    if let Error::Remote { code, message, .. } = error {
+        if let Some(shape) = error_shape_in(message) {
+            let mut shape = shape;
+            if shape.get("code").and_then(Value::as_str).is_none() {
+                shape["code"] = json!(code);
+            }
+            return router_error(Some(&shape));
+        }
+        // A handler that quoted the router's overflow (`router/context_overflow:
+        // …`) keeps the retry with less history.
+        if !detail.contains(CONTEXT_OVERFLOW_CODE) {
+            return router_error(Some(&json!({ "code": code, "message": message })));
+        }
+    }
+    if detail.contains(CONTEXT_OVERFLOW_CODE) {
+        return SummarizeError::ContextOverflow(detail);
+    }
     SummarizeError::Failed(detail.into())
+}
+
+/// An ErrorShape-like object carried as a remote error's message: one JSON
+/// object with at least a `code`, `kind`, `error_kind`, `message` or
+/// `error_details`. `error_kind` (an assistant message's name for it) reads
+/// as `kind`.
+fn error_shape_in(message: &str) -> Option<Value> {
+    let mut shape = serde_json::from_str::<Value>(message)
+        .ok()
+        .filter(Value::is_object)?;
+    let known = ["code", "kind", "error_kind", "message", "error_details"];
+    if !known.iter().any(|field| shape.get(field).is_some()) {
+        return None;
+    }
+    if shape.get("kind").is_none()
+        && let Some(kind) = shape.get("error_kind").cloned()
+    {
+        shape["kind"] = kind;
+    }
+    Some(shape)
 }
 
 /// Router codes that mean no provider can serve the summary.
@@ -390,8 +431,9 @@ fn router_error(error: Option<&Value>) -> SummarizeError {
     SummarizeError::Failed(Failure::new(failure_kind, message).with_details(details))
 }
 
-/// A terminal `error` frame's assistant message as a summariser error,
-/// classified by its `error_kind` and `error_details` like a router reply.
+/// A terminal `error` frame's assistant message, or an error `stop` frame, as
+/// a summariser error, classified by its `error_kind` and `error_details`
+/// like a router reply.
 fn stream_error(error: Option<&Value>) -> SummarizeError {
     let field = |name: &str| error.and_then(|e| e.get(name));
     let kind = field("error_kind").and_then(Value::as_str);
@@ -401,6 +443,11 @@ fn stream_error(error: Option<&Value>) -> SummarizeError {
         .map(str::to_string)
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| text_of_message(error));
+    let text = if text.trim().is_empty() {
+        "unknown provider error".to_string()
+    } else {
+        text
+    };
     let message = format!("summariser stream error: {text}");
     if kind == Some("context_overflow") {
         return SummarizeError::ContextOverflow(message);
@@ -417,10 +464,14 @@ fn stream_error(error: Option<&Value>) -> SummarizeError {
 
 /// Fold a stream of `AssistantMessageEvent` JSON frames into the final
 /// summary text: the `done` event's message wins; accumulated
-/// `text_delta`s are the fallback; a terminal `error` event fails.
+/// `text_delta`s are the fallback; a terminal `error` event fails, and so
+/// does a `stop` with `stop_reason: "error"`. Providers send that `stop`
+/// before the terminal frame, and it has no `error_details`, so a later
+/// `error` frame's cause wins over it.
 fn extract_summary(frames: &[String]) -> Result<String, SummarizeError> {
     let mut deltas = String::new();
     let mut done_text: Option<String> = None;
+    let mut stop_error: Option<SummarizeError> = None;
 
     for frame in frames {
         let Ok(event) = serde_json::from_str::<Value>(frame) else {
@@ -437,18 +488,15 @@ fn extract_summary(frames: &[String]) -> Result<String, SummarizeError> {
             }
             Some("error") => return Err(stream_error(event.get("error"))),
             Some("stop") if event.get("stop_reason").and_then(Value::as_str) == Some("error") => {
-                let detail = event
-                    .get("error_message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown provider error");
-                return Err(SummarizeError::Failed(
-                    format!("summariser stream error: {detail}").into(),
-                ));
+                stop_error.get_or_insert_with(|| stream_error(Some(&event)));
             }
             _ => {}
         }
     }
 
+    if let Some(error) = stop_error {
+        return Err(error);
+    }
     Ok(done_text.filter(|t| !t.is_empty()).unwrap_or(deltas))
 }
 
@@ -679,6 +727,148 @@ mod tests {
         assert_eq!(
             failure_of(call_error(&Error::Handler("boom".into()))).kind,
             FailureKind::Other
+        );
+    }
+
+    fn remote(code: &str, message: &str) -> Error {
+        Error::Remote {
+            code: code.into(),
+            message: message.into(),
+            stacktrace: None,
+        }
+    }
+
+    #[test]
+    fn an_error_shape_in_a_remote_message_is_classified_like_a_reply() {
+        // The router's ErrorShape as the message of a bus error: the usage
+        // limit and its details survive, with the shape's own message.
+        let shape = json!({
+            "code": "router/provider_rate_limited",
+            "kind": "rate_limited",
+            "message": "Provider \"claude-code\" reached the usage limit of its account.",
+            "error_details": { "usage_limit": true, "window": "week", "resets_at_ms": 42 }
+        });
+        let failure = failure_of(call_error(&remote("invocation_failed", &shape.to_string())));
+        assert_eq!(failure.kind, FailureKind::UsageLimit);
+        assert_eq!(
+            failure.message,
+            "Provider \"claude-code\" reached the usage limit of its account."
+        );
+        assert_eq!(
+            failure.error_details,
+            Some(ErrorDetails {
+                usage_limit: true,
+                window: Some(crate::types::UsageWindow::Week),
+                resets_at_ms: Some(42),
+            })
+        );
+
+        // `error_kind` reads as `kind`; the bus code stands in for a missing one.
+        let shape = json!({ "error_kind": "rate_limited", "message": "busy" });
+        let failure = failure_of(call_error(&remote("invocation_failed", &shape.to_string())));
+        assert_eq!(failure.kind, FailureKind::RateLimited);
+        assert_eq!(failure.message, "busy");
+
+        let shape = json!({ "error_kind": "context_overflow", "message": "too long" });
+        assert!(matches!(
+            call_error(&remote("invocation_failed", &shape.to_string())),
+            SummarizeError::ContextOverflow(_)
+        ));
+
+        // A JSON object with none of the shape's fields is a plain message.
+        let failure = failure_of(call_error(&remote("invocation_failed", r#"{"foo":1}"#)));
+        assert_eq!(failure.kind, FailureKind::Other);
+        assert_eq!(failure.message, r#"{"foo":1}"#);
+    }
+
+    #[test]
+    fn a_routers_pre_stream_code_is_classified() {
+        let failure = failure_of(call_error(&remote(
+            "router/no_provider_for_model",
+            "No provider serves model claude-x.",
+        )));
+        assert_eq!(failure.kind, FailureKind::Unavailable);
+        assert_eq!(failure.message, "No provider serves model claude-x.");
+        assert!(matches!(
+            call_error(&remote("router/context_overflow", "too large")),
+            SummarizeError::ContextOverflow(_)
+        ));
+        assert!(matches!(
+            call_error(&remote(
+                "invocation_failed",
+                "router/context_overflow: too large"
+            )),
+            SummarizeError::ContextOverflow(_)
+        ));
+        assert_eq!(
+            failure_of(call_error(&remote("router/invalid_request", "bad"))).kind,
+            FailureKind::Other
+        );
+    }
+
+    #[test]
+    fn only_the_engines_function_not_found_means_no_router() {
+        assert!(is_unroutable(&remote(
+            "function_not_found",
+            "Function not found"
+        )));
+        assert!(is_unroutable(&remote("FUNCTION_NOT_FOUND", "")));
+        // A provider's own "not found" is the provider's failure.
+        for error in [
+            remote("invocation_failed", "model claude-x not found"),
+            remote("router/provider_rejected", "Not Found: no function named x"),
+            Error::Handler("upstream: resource not found".into()),
+            Error::Runtime("no function".into()),
+        ] {
+            assert!(!is_unroutable(&error), "{error}");
+            assert_ne!(
+                failure_of(call_error(&error)).kind,
+                FailureKind::Unavailable,
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_stop_is_classified_and_a_later_error_frame_wins() {
+        let stop = |extra: Value| {
+            let mut stop = json!({ "type": "stop", "stop_reason": "error" });
+            for (key, value) in extra.as_object().unwrap() {
+                stop[key] = value.clone();
+            }
+            frame(stop)
+        };
+
+        let error = extract_summary(&[stop(json!({
+            "error_kind": "rate_limited", "error_message": "busy"
+        }))])
+        .unwrap_err();
+        assert_eq!(failure_of(error).kind, FailureKind::RateLimited);
+
+        let error = extract_summary(&[stop(json!({ "error_kind": "context_overflow" }))]);
+        assert!(matches!(
+            error.unwrap_err(),
+            SummarizeError::ContextOverflow(_)
+        ));
+
+        // The stop has no error_details; the terminal frame after it does.
+        let frames = vec![
+            stop(json!({ "error_kind": "rate_limited", "error_message": "limit" })),
+            frame(json!({ "type": "error", "error": {
+                "error_kind": "rate_limited", "error_message": "limit",
+                "error_details": { "usage_limit": true }
+            }})),
+        ];
+        assert_eq!(
+            failure_of(extract_summary(&frames).unwrap_err()).kind,
+            FailureKind::UsageLimit
+        );
+
+        let failure = failure_of(extract_summary(&[stop(json!({}))]).unwrap_err());
+        assert_eq!(failure.kind, FailureKind::Other);
+        assert!(
+            failure.message.contains("unknown provider error"),
+            "{failure:?}"
         );
     }
 
