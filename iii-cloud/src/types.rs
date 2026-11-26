@@ -466,6 +466,10 @@ pub struct Handoff {
     /// "Continue" messages the worker posted in the chat (at most 3).
     #[serde(default)]
     pub continues: u32,
+    /// When the worker last tried a "continue" (sent or refused): until the
+    /// session works again, or a stall passes, it tries no other.
+    #[serde(default)]
+    pub continue_at_ms: Option<i64>,
 }
 
 impl Handoff {

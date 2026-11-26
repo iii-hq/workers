@@ -715,7 +715,7 @@ function Stage({ host, status: s, scenario, go, narrow, readOnly }: CheckStagePr
     const w = watch.current
     if (!w || !c || c.id === w.base) return
     watch.current = null
-    if (!auto || c.ready || c.handoff_id || agentOn(s) || askedAt(c.id)) return
+    if (!auto || s.auto_fix === false || c.ready || c.handoff_id || agentOn(s) || askedAt(c.id)) return
     if (openProblems(s).some((p) => p.owner === 'agent')) void handOff(host, s, 'ready')
   })
 

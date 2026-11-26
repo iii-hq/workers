@@ -89,11 +89,14 @@ and `Details: iii-cloud::handoff::brief · skill iii://iii-cloud`. Your first
 call is `iii-cloud::handoff::brief {handoff_id}`, never `status`.
 
 The brief holds `kind` (`ready`, `deploy_fix`, `import` or `pull_request`),
-`worktree {path, branch}`, `base` (the environment's branch when the worktree
-was made; earlier tries are not your work), `manifest`, `other_compose_files`,
-`pushes_directly`, `checkout_path`, `problems` (each with `owner`, `fix`,
-`file`, `line`), `run_failure {stage, code, message, log_tail}`,
-`deploy_failure` and `next`.
+`worktree {path, branch}`, `base {branch, sha}` (the environment's branch when
+the worktree was made; earlier tries are not your work), `manifest`,
+`other_compose_files`, `pushes_directly`, `checkout_path`, `agent_problems`
+(yours) and `person_problems` (the person's; each with `id`, `code`, `owner`,
+`severity`, `title`, `detail`, `file`, `line`, `fix`),
+`run_failure {stage, code, message, log_tail}` (null unless your latest run
+failed), `deploy` (the failed deployment's stage, code, hint and log tail) and
+`next_step`.
 
 A message that starts `iii-cloud hand-off <id8> · continue` comes from the
 page, not from the person: your turn ended with agent-owned problems left.
@@ -130,7 +133,7 @@ body. Never change a file of another app.
 5. Per group: `iii-cloud::handoff::progress {handoff_id, working_on: [<problem ids>], note}` first. Fix the whole group, commit, push, then `iii-cloud::check {handoff_id}` once for the group (fast, no run). The cloud plans exactly the pushed commit, so its answer is the truth: never guess a field or commit a "try X" change; read the message and fix what it names.
 6. App code (`SDK_TOO_OLD`, a migration to a new SDK API) and compose work together: start ONE subagent with `harness::spawn` for the app code (profile `cloud-ready`, same worktree, a brief listing the files it owns: `src/**`, `package.json`, the lockfile, `Dockerfile`, and "commit only your files, don't touch compose files"). Tell the person it can take a while. You fix the compose files meanwhile; wake on its finish with `harness::observe`.
 7. Before the first push, `gh pr list --head <fix branch> --state all`. CLOSED or MERGED: make a NEW pull request at the end. OPEN from an earlier try: say so in one line; your push updates it.
-8. When the plan is clean, `iii-cloud::check {handoff_id, run: true}`. It waits for the local run (up to 240 s). The same commit already running: it attaches to that run. An older commit running: it replaces it. `RUN_BUSY` is not something to wait on. A passed run of the same commit is reused (`run.reused`); `force: true` runs again.
+8. When the plan is clean, `iii-cloud::check {handoff_id, run: true}`. It waits for the local run (up to 240 s). The same commit and the same compose file already running: it attaches to that run. Another commit or compose file running: it replaces it. A passed run of the same commit is reused (`run.reused`); `force: true` runs again.
 9. A run that outlives the call: wake on it, never `sleep`. Filter on that run's id and `terminal`, with an expiry near the run's own timeout (`run_timeout_s`, 900 s by default):
 
 ```json
@@ -176,7 +179,6 @@ keep working.
 A call fails with a coded error:
 
 - `NOT_CONNECTED`, `NO_PROJECT`, `NOT_READY`, `PLAN_CHANGED`, `MAIN_MOVED`, `PR_HEAD_CHANGED`, `PR_NOT_MERGEABLE`: the state is old or missing; fix it and call again.
-- `RUN_BUSY`: a run is going. Call `check {run: true}` again: it attaches to the same commit or replaces an older one. Never wait on it.
 - `PERSON_ONLY`: the person changes it on the page.
 - `NOT_SAVED`: a secret went nowhere (an API key without cloud write, or a tracked `.env`). Tell the person to set it in the console.
 - `PUSH_REFUSED`: `check {push: true}` pushes only your fix branch, or GitHub refused. `MERGE_CONFLICT`: the person's commits conflict with the environment's branch, so `use {from: "checkout"}` left the worktree at the environment's head: in the worktree, `git merge <their branch>`, resolve the files the message lists, commit, check again. `MERGE_IN_PROGRESS`: finish the merge (commit). `WORKTREE_PATH_TAKEN`: the fix branch is checked out elsewhere; tell the person.

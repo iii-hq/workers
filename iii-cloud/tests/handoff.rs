@@ -199,6 +199,8 @@ fn install(fake: &Fake, marker: &str, w: &World, ours_created: i64) {
             {"entry_id": "a3", "message": {"role": "assistant", "content": [{"type": "function_call", "id": "c3", "function_id": "shell::exec", "arguments": {"description": "Upgrading the iii-sdk to 0.27 (token hunter2hunter2)", "command": BODY}}], "timestamp": *last2.lock().unwrap()}},
         ], "has_more": true}))
     });
+    // No wake armed unless a test says so.
+    fake.on("harness::observers::list", |_| Ok(json!({"observers": []})));
     let q = w.question.clone();
     fake.on("harness::ask::list", move |_| {
         Ok(match q.lock().unwrap().clone() {
@@ -831,15 +833,10 @@ async fn the_brief_names_the_environments_compose_file_and_the_others() {
         "{}",
         brief.next_step
     );
-    // No manifest on the environment: the root file.
+    // No manifest on the hand-off's environment: the root file.
     h.ctx.store.update(|s| {
-        s.project
-            .as_mut()
-            .unwrap()
-            .environment
-            .as_mut()
-            .unwrap()
-            .manifest = None
+        s.handoffs[0].env.as_mut().unwrap().manifest = None;
+        s.handoffs[0].manifest = None;
     });
     let brief = iii_cloud::status::status(&h.ctx, StatusRequest::default())
         .await
@@ -1042,6 +1039,227 @@ async fn no_continue_while_the_agent_works_waits_on_a_wake_or_asks_or_after_a_st
         .unwrap();
     idle_for(&w, 400).await;
     assert!(sent(&h).is_empty(), "the hand-off was stopped");
+    assert_eq!(
+        h.ctx.store.read(|s| s.handoffs[0].agent.state),
+        AgentPhase::Stopped
+    );
+}
+
+/// Stopped is written before the harness is asked to stop, and put back when it refuses.
+#[tokio::test]
+async fn stop_marks_the_hand_off_stopped_before_the_harness_stops_and_restores_it_on_failure() {
+    let (h, _s, _r, _ws) = setup().await;
+    accept_sends(&h);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    let ctx = h.ctx.clone();
+    h.fake.on("harness::stop", move |_| {
+        let state = ctx.store.read(|s| s.handoffs[0].agent.state);
+        assert_eq!(
+            state,
+            AgentPhase::Stopped,
+            "already stopped when the harness is called"
+        );
+        Err(iii_cloud::error::CloudError::new("BOOM", "no"))
+    });
+    let err = stop(
+        &h.ctx,
+        HandoffStopRequest {
+            id: created.id.clone(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "BOOM");
+    let state = h.ctx.store.read(|s| s.handoffs[0].agent.state);
+    assert_ne!(
+        state,
+        AgentPhase::Stopped,
+        "a refused stop leaves it as it was"
+    );
+    // A stop that is accepted: nothing goes into the chat afterwards.
+    h.fake
+        .on("harness::stop", |_| Ok(json!({"stopping": true})));
+    stop(&h.ctx, HandoffStopRequest { id: created.id })
+        .await
+        .unwrap();
+    idle_for(&w, 400).await;
+    assert!(sent(&h).is_empty());
+}
+
+/// Warnings do not keep a hand-off open: a passed run and no blocking problem is done.
+#[tokio::test]
+async fn a_check_with_only_warnings_and_a_passed_run_ends_done_without_continue_or_waiting() {
+    let (h, server, _r, ws) = setup().await;
+    accept_sends(&h);
+    clean_manifest(&ws);
+    git(&ws, &["push", "origin", "HEAD:main"]);
+    Mock::given(method("GET")).and(path_regex(r"/plan$")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"can_deploy": true, "fingerprint": "fp", "plan": {"settings": {}, "resources": [], "issues": [
+        {"code": "SOME_TIDY_UP", "severity": "warn", "kind": "fix_in_repo", "message": "tidy"},
+        {"code": "EMPTY_DEFAULT_VARIABLE", "severity": "warn", "message": "empty"}
+    ], "deploy_issues": []}}))).with_priority(1).mount(&server).await;
+    seed_passed_run(&h, &ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "done", |a| a.state == AgentPhase::Done).await;
+    let owners: Vec<(Owner, Severity)> = h.ctx.store.read(|s| {
+        s.check
+            .as_ref()
+            .unwrap()
+            .problems
+            .iter()
+            .map(|p| (p.owner, p.severity))
+            .collect()
+    });
+    assert!(
+        owners.contains(&(Owner::Agent, Severity::Warn)),
+        "{owners:?}"
+    );
+    assert!(
+        owners.contains(&(Owner::Person, Severity::Warn)),
+        "{owners:?}"
+    );
+    assert!(sent(&h).is_empty());
+}
+
+/// A refused send costs no continue; the next try waits out the window.
+#[tokio::test]
+async fn a_refused_continue_is_not_counted_and_is_tried_again_after_the_window() {
+    let (h, _s, _r, _ws) = setup().await;
+    h.fake.on("harness::send", |_| {
+        Err(iii_cloud::error::CloudError::new("BOOM", "refused"))
+    });
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    let a = until(&h, "stalled", |a| {
+        a.state == AgentPhase::Stalled && a.question.is_some()
+    })
+    .await;
+    assert_eq!(
+        a.question.as_deref(),
+        Some("Your agent stopped; open the chat to see what it needs.")
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(sent(&h).len(), 1, "one try inside the window");
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 0);
+    // The chat takes it later: the retry goes in and is counted.
+    accept_sends(&h);
+    for _ in 0..200 {
+        if h.ctx.store.read(|s| s.handoffs[0].continues) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
+    // A restart does not forget the window: a fresh follower sends no other.
+    let before = sent(&h).len();
+    iii_cloud::handoff::poll_now(&h.ctx, &created.id).await;
+    assert_eq!(sent(&h).len(), before);
+}
+
+/// The hand-off's own environment decides its continue and its brief, not the page's pick.
+#[tokio::test]
+async fn a_hand_off_of_an_environment_that_is_not_selected_gets_its_continue_and_its_own_brief() {
+    let (h, _s, _r, _ws) = setup().await;
+    accept_sends(&h);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    let own_manifest = brief_of(&h).manifest;
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    // The page moves to another environment.
+    h.ctx.store.update(|s| {
+        s.check = None;
+        s.project.as_mut().unwrap().environment = Some(EnvironmentInfo {
+            id: "other-env".into(),
+            name: "staging".into(),
+            production: false,
+            branch: "staging".into(),
+            manifest: Some("other/worker-compose.yaml".into()),
+            url: None,
+        });
+    });
+    idle_for(&w, 0).await;
+    for _ in 0..200 {
+        if !sent(&h).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        sent(&h).len(),
+        1,
+        "the hand-off's own check has its problems"
+    );
+    let b = iii_cloud::handoff::brief_for(
+        &h.ctx,
+        HandoffBriefRequest {
+            handoff_id: created.id,
+        },
+    )
+    .await
+    .unwrap()
+    .brief;
+    assert_eq!(b.manifest, own_manifest);
+    assert!(
+        !b.next_step.contains("other/worker-compose.yaml"),
+        "{}",
+        b.next_step
+    );
+    assert!(!b.project.unwrap_or_default().contains("staging"));
+}
+
+/// Another hand-off's failed run is not this one's failure.
+#[tokio::test]
+async fn run_failure_is_null_for_a_run_another_hand_off_made() {
+    let (h, _s, _r, _ws) = setup().await;
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.handoff_id = Some("someone-elses".into());
+        c.run = Some(Run {
+            id: "r".into(),
+            check_id: c.id.clone(),
+            commit: "abc".into(),
+            engine: "0.27.0".into(),
+            status: RunStatus::Failed,
+            started_at: "t".into(),
+            finished_at: None,
+            stages: vec![],
+            workers: WorkerCount { ready: 0, total: 1 },
+            routes: RouteCount {
+                count: 0,
+                prefix: None,
+            },
+            healthcheck: None,
+            not_covered: vec![],
+            log_tail: vec![],
+            error: Some(RunError {
+                stage: StageName::Workers,
+                code: "WORKERS_NOT_READY".into(),
+                message: "x".into(),
+            }),
+            reused: false,
+        });
+        s.put_check(c);
+    });
+    let out = iii_cloud::handoff::brief_for(
+        &h.ctx,
+        HandoffBriefRequest {
+            handoff_id: created.id,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.run_failure, None);
 }
 
 #[tokio::test]
@@ -1109,6 +1327,7 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
     // A failed run: its stage, code, message and the last lines.
     h.ctx.store.update(|s| {
         let mut c = s.check.clone().unwrap();
+        c.handoff_id = Some(created.id.clone());
         c.run = Some(Run {
             id: "r".into(),
             check_id: c.id.clone(),
@@ -1150,7 +1369,7 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
 }
 
 #[tokio::test]
-async fn progress_and_check_take_the_short_id_from_the_marker() {
+async fn progress_and_check_take_the_short_id_from_the_marker_and_keep_the_full_one() {
     let (h, _s, _r, _ws) = setup().await;
     let created = create(&h.ctx, ready_req()).await.unwrap();
     let out = iii_cloud::handoff::progress(
@@ -1164,6 +1383,16 @@ async fn progress_and_check_take_the_short_id_from_the_marker() {
     .await
     .unwrap();
     assert_eq!(out.note.as_deref(), Some("starting"));
+    let c = iii_cloud::check::check(
+        &h.ctx,
+        CheckRequest {
+            handoff_id: Some(created.id[..8].to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.handoff_id.as_deref(), Some(created.id.as_str()));
 }
 
 #[tokio::test]
@@ -1750,49 +1979,55 @@ async fn a_turn_that_ended_on_an_armed_wake_waits_for_the_event_not_the_person()
 }
 
 #[tokio::test]
-async fn an_expired_wake_or_a_failing_list_keeps_waiting_for_you() {
-    for list in ["expired", "error"] {
-        let (h, _s, _r, ws) = setup().await;
-        clean_manifest(&ws);
+async fn an_expired_wake_keeps_waiting_for_you() {
+    let (h, _s, _r, ws) = setup().await;
+    clean_manifest(&ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    let row = wake_row(0, NOW_FN() - 1);
+    h.fake.on("harness::observers::list", move |_| {
+        Ok(json!({"observers": [row.clone()]}))
+    });
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    *w.status.lock().unwrap() = "idle".into();
+    let a = until(&h, "waiting for you", |a| {
+        a.state == AgentPhase::WaitingForYou
+    })
+    .await;
+    assert_eq!(
+        (a.question.as_deref(), a.waiting_for.as_deref()),
+        (
+            Some("Your agent stopped before running it here like the cloud."),
+            None
+        )
+    );
+}
+
+/// A read that fails says nothing about the session: no check, no message, no new state.
+#[tokio::test]
+async fn a_failed_read_judges_nothing_in_that_poll() {
+    for failing in [
+        "harness::observers::list",
+        "harness::ask::list",
+        "session::get",
+    ] {
+        let (h, _s, _r, _ws) = setup().await;
+        accept_sends(&h);
         let w = world();
         let created = create(&h.ctx, ready_req()).await.unwrap();
         install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
-        if list == "expired" {
-            let row = wake_row(0, NOW_FN() - 1);
-            h.fake.on("harness::observers::list", move |_| {
-                Ok(json!({"observers": [row.clone()]}))
-            });
-        } else {
-            h.fake.on("harness::observers::list", |_| {
-                Err(iii_cloud::error::CloudError::new(
-                    "BOOM",
-                    "store unreadable",
-                ))
-            });
-        }
         until(&h, "working", |a| a.state == AgentPhase::Working).await;
+        let checks = h.ctx.store.read(|s| s.checks.len());
+        h.fake.on(failing, |_| {
+            Err(iii_cloud::error::CloudError::new("BOOM", "unreadable"))
+        });
         *w.status.lock().unwrap() = "idle".into();
-        let a = until(&h, "waiting for you", |a| {
-            a.state == AgentPhase::WaitingForYou
-        })
-        .await;
-        assert_eq!(
-            (a.question.as_deref(), a.waiting_for.as_deref()),
-            (
-                Some("Your agent stopped before running it here like the cloud."),
-                None
-            ),
-            "{list}"
-        );
-        assert!(
-            h.fake
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(f, _)| f == "harness::observers::list"),
-            "{list}"
-        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(sent(&h).is_empty(), "{failing}");
+        assert_eq!(h.ctx.store.read(|s| s.checks.len()), checks, "{failing}");
+        let state = h.ctx.store.read(|s| s.handoffs[0].agent.state);
+        assert_eq!(state, AgentPhase::Working, "{failing}");
     }
 }
 
