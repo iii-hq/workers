@@ -12,6 +12,7 @@
  * (harness::on-turn-completed).
  */
 
+import { parseSnapshotAutocompact } from '@/lib/autocompact'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
@@ -26,6 +27,7 @@ import {
   startApprovalEventsSubscription,
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
+import { onTurnAutocompact } from './autocompact'
 import { compactionWindow, latestCompactionAnchor } from './compaction-window'
 import {
   getTurnStatus,
@@ -560,11 +562,14 @@ async function realContextUsage(
   const context = status?.context
   if (!context) return null
   const { total, usable, free } = context
-  return typeof total === 'number' &&
-    typeof usable === 'number' &&
-    typeof free === 'number'
-    ? { total, usable, free }
-    : null
+  if (
+    typeof total !== 'number' ||
+    typeof usable !== 'number' ||
+    typeof free !== 'number'
+  )
+    return null
+  const autocompact = parseSnapshotAutocompact(context.autocompact)
+  return { total, usable, free, ...(autocompact ? { autocompact } : {}) }
 }
 
 async function realTurnRest(sessionId: string): Promise<TurnRest | null> {
@@ -1001,6 +1006,7 @@ export const realBackend: ChatBackend = {
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
+  onTurnAutocompact,
   listObservers: realListObservers,
   onObserversChanged: realOnObserversChanged,
   askStates: realAskStates,

@@ -32,6 +32,11 @@
  * read-backs as the source of truth.
  */
 
+import {
+  compactionMarkerText,
+  markedCompaction,
+  parseCompactionFacts,
+} from '@/lib/autocompact'
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
 import { parseMemoryNote } from '@/lib/memory-note'
 import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
@@ -756,17 +761,23 @@ function compactionMarker(
     timestamp?: unknown
   }
   const tokensBefore = typeof d.tokens_before === 'number' ? d.tokens_before : 0
+  // Phase 3 (contract C): the record says what fired it, at what size, by
+  // which rule, and the whole context before and after. `/compact` and an
+  // older record (no `trigger`) read as before (§3.3.5).
+  const facts = markedCompaction(parseCompactionFacts(data))
   return {
     id: entryId,
     role: 'system',
     kind: 'compaction',
-    content:
-      tokensBefore > 0
+    content: facts
+      ? compactionMarkerText(facts)
+      : tokensBefore > 0
         ? `compacted ${tokensBefore.toLocaleString()} tokens`
         : 'conversation compacted',
     tone: 'info',
     summaryText: typeof d.summary === 'string' ? d.summary : undefined,
     tokensBefore,
+    ...(facts ? { compaction: facts } : {}),
     createdAt: typeof d.timestamp === 'number' ? d.timestamp : timestamp,
   }
 }

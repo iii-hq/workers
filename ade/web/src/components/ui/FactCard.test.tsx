@@ -72,3 +72,31 @@ describe('FactCard', () => {
     expect(out).toContain('width:100%')
   })
 })
+
+// chat-projects §3.3.3: a threshold on the meter (auto-compact) is an amber
+// mark over a clipped track; without one the meter is as before.
+describe('FactMeter tick', () => {
+  it('stands an amber mark at the tick, over a track that clips the fill', () => {
+    const out = renderToStaticMarkup(
+      <FactMeter value={30} tick={43.7} label="context" accent="var(--x)" />,
+    )
+    expect(out).toContain('data-slot="fact-meter-tick"')
+    expect(out).toContain('bg-warn')
+    expect(out).toContain('--fact-tick:43.7%')
+    expect(out).toContain('--fact-accent:var(--x)')
+    expect(out).toMatch(
+      /data-slot="fact-meter"[^>]*class="relative h-1 w-full"/,
+    )
+  })
+
+  it('clamps the tick, and draws none without one', () => {
+    expect(
+      renderToStaticMarkup(<FactMeter value={30} tick={140} label="c" />),
+    ).toContain('--fact-tick:100%')
+    const plain = renderToStaticMarkup(
+      <FactMeter value={30} tick={null} label="c" />,
+    )
+    expect(plain).not.toContain('fact-meter-tick')
+    expect(plain).toContain('overflow-hidden rounded-full bg-muted')
+  })
+})

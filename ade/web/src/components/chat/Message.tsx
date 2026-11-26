@@ -275,31 +275,52 @@ function MessageBody({
   }
 }
 
+/**
+ * The compaction marker. A phase-3 record (chat-projects contract C) reads
+ * its sentence, which names a project in its own case: "Auto-compacted at
+ * 160k · 161k → 34k tokens · acme-web rule". An older record keeps the
+ * eyebrow, "Compacted · 1,200 tokens".
+ */
 function CompactionMarker({ message }: { message: SystemMessageType }) {
   const tokens = message.tokensBefore ?? 0
   const summary = message.summaryText ?? ''
+  const facts = message.compaction
   return (
-    <article className="my-2">
+    <article className="my-2" data-compaction-trigger={facts?.trigger}>
       <details className="group">
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
-          <Eyebrow
-            size="lg"
-            className="flex items-center gap-2 group-hover:text-ink transition-colors"
-          >
-            <span>Compacted</span>
-            {tokens > 0 ? (
-              <>
-                <span className="text-ink-ghost">·</span>
-                <span className="tabular-nums">
-                  {tokens.toLocaleString()} tokens
-                </span>
-              </>
-            ) : null}
-            <span className="text-ink-ghost normal-case tracking-normal text-meta">
-              show summary
+          {facts ? (
+            <span className="flex min-w-0 shrink items-baseline gap-2 text-xs text-ink-faint transition-colors group-hover:text-ink">
+              <span
+                data-compaction-marker=""
+                className="min-w-0 text-center tabular-nums"
+              >
+                {message.content}
+              </span>
+              <span className="shrink-0 text-meta text-ink-ghost">
+                show summary
+              </span>
             </span>
-          </Eyebrow>
+          ) : (
+            <Eyebrow
+              size="lg"
+              className="flex items-center gap-2 group-hover:text-ink transition-colors"
+            >
+              <span>Compacted</span>
+              {tokens > 0 ? (
+                <>
+                  <span className="text-ink-ghost">·</span>
+                  <span className="tabular-nums">
+                    {tokens.toLocaleString()} tokens
+                  </span>
+                </>
+              ) : null}
+              <span className="text-ink-ghost normal-case tracking-normal text-meta">
+                show summary
+              </span>
+            </Eyebrow>
+          )}
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (

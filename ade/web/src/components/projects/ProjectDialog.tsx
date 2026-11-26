@@ -10,6 +10,14 @@ import {
   FormDialogTitle,
 } from '@/components/ui/FormDialog'
 import { refreshChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
+import {
+  type AutocompactSetting,
+  formatTokens,
+  parseAutocompactSetting,
+  parseTokens,
+  sameSetting,
+} from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
 import { useClaudeAccounts } from '@/lib/backend/claude-accounts'
 import {
@@ -27,13 +35,24 @@ import {
   tildePath,
   updateProject,
 } from '@/lib/backend/projects'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ProjectAccountSection } from './ProjectAccountSection'
+import {
+  type ProjectAutocompactMode,
+  ProjectAutocompactSection,
+} from './ProjectAutocompactSection'
 import { ProjectDot } from './ProjectDot'
 
-/** A section the dialog can open on (the Projects tab of Claude Code accounts). */
-export type ProjectDialogSection = 'account'
+/**
+ * A section the dialog can open on: the account (the Projects tab of Claude
+ * Code accounts), and auto-compact (the overrides table, phase 3).
+ */
+export type ProjectDialogSection = 'account' | 'autocompact'
+
+/** The size "Compact at" starts at when the project had none (§3.3.2). */
+const AUTOCOMPACT_START = 160_000
 
 export interface ProjectDialogProps {
   open: boolean
@@ -65,12 +84,15 @@ export async function saveProject(input: {
   bringExisting: boolean
   /** The Claude Code account (§4.3.2); left out when the engine has no accounts. */
   account?: ProjectAccount
+  /** Auto-compact (§3.3.2); left out when the engine has no phase 3. */
+  autocompact?: AutocompactSetting
   /** Edit: what changed, so the update stays a patch. */
   changed?: {
     name: boolean
     color: boolean
     folders: boolean
     account?: boolean
+    autocompact?: boolean
   }
 }): Promise<{ project: ChatProject; moved: number }> {
   const result = input.id
@@ -84,6 +106,9 @@ export async function saveProject(input: {
         ...(input.account && input.changed?.account !== false
           ? { account: input.account }
           : {}),
+        ...(input.autocompact && input.changed?.autocompact !== false
+          ? { autocompact: input.autocompact }
+          : {}),
       })
     : await createProject({
         name: input.name,
@@ -91,6 +116,10 @@ export async function saveProject(input: {
         folders: input.folders,
         bring_existing: input.bringExisting,
         ...(input.account ? { account: input.account } : {}),
+        // `inherit` is the harness's default: a new project sends a choice.
+        ...(input.autocompact && input.autocompact.mode !== 'inherit'
+          ? { autocompact: input.autocompact }
+          : {}),
       })
   void refreshChatProjects()
   return result
@@ -108,6 +137,7 @@ interface Errors {
   name?: string
   folders?: string
   account?: string
+  autocompact?: string
   form?: string
 }
 
@@ -135,6 +165,19 @@ export function ProjectDialog({
   const [account, setAccount] = useState<ProjectAccount>({ mode: 'global' })
   const accountRef = useRef<HTMLElement>(null)
   const accountSectionRef = useRef<HTMLDivElement>(null)
+  // §3.3.2: the auto-compact section, on an engine with phase 3 (D168).
+  const realBackend = getDefaultBackend().id === 'real'
+  const caps = useChatCapabilities(realBackend && open)
+  const chatSettings = useChatSettings(realBackend && open)
+  const withAutocompact = caps.autocompact
+  const [autocompactMode, setAutocompactMode] =
+    useState<ProjectAutocompactMode>('inherit')
+  const [autocompactText, setAutocompactText] = useState(
+    formatTokens(AUTOCOMPACT_START),
+  )
+  const autocompactRef = useRef<HTMLInputElement>(null)
+  const autocompactFieldRef = useRef<HTMLInputElement>(null)
+  const autocompactSectionRef = useRef<HTMLDivElement>(null)
   const [name, setName] = useState('')
   const [color, setColor] = useState<ProjectColor>('blue')
   const [folders, setFolders] = useState<string[]>([])
@@ -155,9 +198,25 @@ export function ProjectDialog({
     )
     setBring(true)
     setAccount(parseProjectAccount(project?.account))
+    const autocompact = parseAutocompactSetting(project?.autocompact)
+    setAutocompactMode(autocompact.mode)
+    setAutocompactText(
+      formatTokens(
+        autocompact.mode === 'tokens' ? autocompact.tokens : AUTOCOMPACT_START,
+      ),
+    )
     setErrors({})
     setSaving(false)
   }, [open])
+
+  // Opened on the auto-compact section: bring it into view.
+  useEffect(() => {
+    if (!open || initialSection !== 'autocompact' || !withAutocompact) return
+    const frame = window.requestAnimationFrame(() =>
+      autocompactSectionRef.current?.scrollIntoView?.({ block: 'nearest' }),
+    )
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, initialSection, withAutocompact])
 
   // Opened on the account section: bring it into view.
   useEffect(() => {
@@ -233,6 +292,20 @@ export function ProjectDialog({
       return
     }
     if (found.folders) return
+    let autocompact: AutocompactSetting | undefined
+    if (withAutocompact) {
+      if (autocompactMode === 'tokens') {
+        const parsed = parseTokens(autocompactText)
+        if (!parsed.ok) {
+          setErrors({ autocompact: parsed.error })
+          autocompactFieldRef.current?.focus()
+          return
+        }
+        autocompact = { mode: 'tokens', tokens: parsed.tokens }
+      } else {
+        autocompact = { mode: autocompactMode }
+      }
+    }
     setSaving(true)
     try {
       const trimmed = name.trim()
@@ -243,6 +316,7 @@ export function ProjectDialog({
         folders,
         bringExisting: bring && bringable > 0,
         ...(withAccounts ? { account } : {}),
+        ...(autocompact ? { autocompact } : {}),
         changed: project
           ? {
               name: trimmed !== project.name,
@@ -257,6 +331,14 @@ export function ProjectDialog({
                       JSON.stringify(parseProjectAccount(project.account)),
                   }
                 : {}),
+              ...(autocompact
+                ? {
+                    autocompact: !sameSetting(
+                      autocompact,
+                      parseAutocompactSetting(project.autocompact),
+                    ),
+                  }
+                : {}),
             }
           : undefined,
       })
@@ -266,6 +348,7 @@ export function ProjectDialog({
       const shown = describeProjectError(err, { name, folders: added })
       setErrors({ [shown.field]: shown.message })
       if (shown.field === 'name') nameRef.current?.focus()
+      if (shown.field === 'autocompact') autocompactFieldRef.current?.focus()
     } finally {
       setSaving(false)
     }
@@ -276,7 +359,11 @@ export function ProjectDialog({
       <FormDialogContent
         className="w-[min(32rem,calc(100vw-2rem))] [--dialog-max-width:32rem]"
         initialFocus={
-          initialSection === 'account' && withAccounts ? accountRef : nameRef
+          initialSection === 'account' && withAccounts
+            ? accountRef
+            : initialSection === 'autocompact' && withAutocompact
+              ? autocompactRef
+              : nameRef
         }
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
@@ -453,6 +540,31 @@ export function ProjectDialog({
                 data={accounts}
                 error={errors.account}
                 firstRef={accountRef}
+              />
+            </div>
+          ) : null}
+
+          {withAutocompact ? (
+            <div ref={autocompactSectionRef}>
+              <ProjectAutocompactSection
+                mode={autocompactMode}
+                text={autocompactText}
+                onModeChange={(next) => {
+                  setAutocompactMode(next)
+                  if (errors.autocompact) {
+                    setErrors((c) => ({ ...c, autocompact: undefined }))
+                  }
+                }}
+                onTextChange={(next) => {
+                  setAutocompactText(next)
+                  if (errors.autocompact) {
+                    setErrors((c) => ({ ...c, autocompact: undefined }))
+                  }
+                }}
+                global={chatSettings.autocompact}
+                error={errors.autocompact}
+                choiceRef={autocompactRef}
+                fieldRef={autocompactFieldRef}
               />
             </div>
           ) : null}

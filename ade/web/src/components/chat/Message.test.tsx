@@ -308,3 +308,57 @@ describe('UserMessage with message blocks', () => {
     )
   })
 })
+
+// chat-projects §3.3.5: an auto, inline or limit compaction reads the
+// sentence built from its record; /compact and older records keep the
+// eyebrow they have today.
+describe('CompactionMarker', () => {
+  it('reads the sentence of an auto-compaction', () => {
+    const html = renderToStaticMarkup(
+      <Message
+        message={{
+          id: 'cmp-auto',
+          role: 'system',
+          kind: 'compaction',
+          content: 'Auto-compacted at 160k · 161k → 34k tokens · acme-web rule',
+          summaryText: 'older turns',
+          tokensBefore: 161_000,
+          compaction: {
+            trigger: 'auto',
+            thresholdTokens: 160_000,
+            rule: { scope: 'project', project_name: 'acme-web' },
+            contextBefore: 161_000,
+            contextAfter: 34_000,
+          },
+          createdAt: 0,
+        }}
+      />,
+    )
+    expect(html).toContain('data-compaction-trigger="auto"')
+    expect(html).toContain(
+      'Auto-compacted at 160k · 161k → 34k tokens · acme-web rule',
+    )
+    expect(html).toContain('show summary')
+    expect(html).not.toContain('>Compacted<')
+  })
+
+  it('keeps the eyebrow for /compact and older records', () => {
+    const html = renderToStaticMarkup(
+      <Message
+        message={{
+          id: 'cmp-old',
+          role: 'system',
+          kind: 'compaction',
+          content: 'compacted 1,200 tokens',
+          summaryText: 'older turns',
+          tokensBefore: 1_200,
+          createdAt: 0,
+        }}
+      />,
+    )
+    expect(html).toContain('>Compacted<')
+    expect(html).toContain('1,200 tokens')
+    expect(html).not.toContain('data-compaction-marker')
+    expect(html).not.toContain('data-compaction-trigger')
+  })
+})

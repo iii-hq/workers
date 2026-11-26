@@ -15,12 +15,25 @@ import {
   FormSelectTrigger,
 } from '@/components/ui/FormDialog'
 import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
+import { useSideChatParent } from '@/hooks/use-side-chat-parent'
+import {
+  type AutocompactSetting,
+  autocompactOf,
+  conversationAutocompact,
+  formatTokens,
+  inheritChoiceLabel,
+  parseTokens,
+  sideChatLine,
+} from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
 import {
   CLAUDE_CODE_PROVIDER,
   useClaudeAccounts,
 } from '@/lib/backend/claude-accounts'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
+import { isSideChat } from '@/lib/chat-aside'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import type { AccountResolution } from '@/lib/claude-accounts-words'
 import {
   chatAccountResolution,
@@ -41,9 +54,25 @@ import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ByAgentPill } from './ByAgentPill'
 import { ConversationAccountRow } from './ConversationAccountRow'
+import {
+  type AutocompactChoice,
+  ConversationAutocompactRow,
+} from './ConversationAutocompactRow'
 
-/** A section the dialog can open on (the account chip). */
-export type ConversationDetailsSection = 'account'
+/**
+ * A section the dialog can open on: the account chip's, and the
+ * auto-compact chip's and the settings' overrides table's (phase 3).
+ */
+export type ConversationDetailsSection = 'account' | 'autocompact'
+
+/** The size "Compact at…" starts at when the conversation had none. */
+const AUTOCOMPACT_START = 160_000
+
+function autocompactTextOf(setting: AutocompactSetting): string {
+  return formatTokens(
+    setting.mode === 'tokens' ? setting.tokens : AUTOCOMPACT_START,
+  )
+}
 
 interface ConversationDetailsDialogProps {
   open: boolean
@@ -121,6 +150,8 @@ export function ConversationDetailsDialog({
   const [error, setError] = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   const accountRef = useRef<HTMLButtonElement>(null)
+  const autocompactRef = useRef<HTMLButtonElement>(null)
+  const autocompactFieldRef = useRef<HTMLInputElement>(null)
   const ids = useId()
   // §4.3.5: the account row, for claude-code conversations on an engine
   // with the whole feature (§4.3.6).
@@ -146,6 +177,24 @@ export function ConversationDetailsDialog({
           })
         : null
   const openOnAccount = initialSection === 'account' && showAccount
+  // §3.3.4: the Auto-compact row, on an engine with phase 3 (D168).
+  const caps = useChatCapabilities(realBackend && open)
+  const chatSettings = useChatSettings(realBackend && open)
+  const showAutocompact = caps.autocompact
+  const autocompactLocked = sideChat || isSideChat(conversation)
+  // A side chat follows its conversation: read from the engine when it
+  // isn't loaded here, never from the side chat's frozen copy (D164).
+  const sideChatParent = useSideChatParent({
+    conversation,
+    conversations,
+    enabled: open && showAutocompact && autocompactLocked,
+  })
+  const [autocompactChoice, setAutocompactChoice] =
+    useState<AutocompactChoice>('inherit')
+  const [autocompactText, setAutocompactText] = useState('')
+  const [autocompactError, setAutocompactError] = useState<string | null>(null)
+  const openOnAutocompact =
+    initialSection === 'autocompact' && showAutocompact && !autocompactLocked
   const history = descriptionHistory(conversation.sessionMetadata)
 
   // Every open starts from the live values, with the name selected: most
@@ -156,7 +205,16 @@ export function ConversationDetailsDialog({
     setDraft(detailsDraftOf(conversation))
     setError(null)
     setSaving(false)
+    const own = autocompactOf(conversation)
+    setAutocompactChoice(own.mode)
+    setAutocompactText(autocompactTextOf(own))
+    setAutocompactError(null)
     const frame = requestAnimationFrame(() => {
+      if (openOnAutocompact && autocompactRef.current) {
+        autocompactRef.current.focus()
+        autocompactRef.current.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
       if (openOnAccount && accountRef.current) {
         accountRef.current.focus()
         accountRef.current.scrollIntoView?.({ block: 'nearest' })
@@ -182,12 +240,30 @@ export function ConversationDetailsDialog({
       agentKeepsIt: false,
     }))
 
+  /** The row's setting, or null while its size is not a size. */
+  const autocompactDraft = (): AutocompactSetting | null => {
+    if (autocompactChoice !== 'tokens') return { mode: autocompactChoice }
+    const parsed = parseTokens(autocompactText)
+    if (!parsed.ok) {
+      setAutocompactError(parsed.error)
+      autocompactFieldRef.current?.focus()
+      return null
+    }
+    return { mode: 'tokens', tokens: parsed.tokens }
+  }
+
   const submit = async () => {
     if (!canSave) return
+    let next = draft
+    if (showAutocompact && !autocompactLocked) {
+      const autocompact = autocompactDraft()
+      if (!autocompact) return
+      next = { ...draft, autocompact }
+    }
     setSaving(true)
     setError(null)
     try {
-      await onSave(draft)
+      await onSave(next)
       onOpenChange(false)
     } catch (err) {
       setError(errText(err))
@@ -215,7 +291,13 @@ export function ConversationDetailsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FormDialogContent
         className="w-[min(30rem,calc(100vw-2rem))] [--dialog-max-width:30rem]"
-        initialFocus={openOnAccount ? accountRef : nameRef}
+        initialFocus={
+          openOnAutocompact
+            ? autocompactRef
+            : openOnAccount
+              ? accountRef
+              : nameRef
+        }
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
         // tree, so pointer and key events would bubble to the row.
@@ -414,6 +496,44 @@ export function ConversationDetailsDialog({
               readOnly={locked !== null}
               resolution={resolution}
               triggerRef={accountRef}
+            />
+          ) : null}
+
+          {showAutocompact ? (
+            <ConversationAutocompactRow
+              choice={autocompactChoice}
+              text={autocompactText}
+              onChoiceChange={(next) => {
+                setAutocompactChoice(next)
+                setAutocompactError(null)
+              }}
+              onTextChange={(next) => {
+                setAutocompactText(next)
+                setAutocompactError(null)
+              }}
+              inheritLabel={inheritChoiceLabel({
+                project:
+                  projectList.find(
+                    (project) => project.id === draft.projectId,
+                  ) ?? null,
+                global: chatSettings.autocompact,
+              })}
+              error={autocompactError}
+              lockedText={
+                autocompactLocked
+                  ? sideChatLine(
+                      conversationAutocompact({
+                        conversation,
+                        projects: projectList,
+                        global: chatSettings.autocompact,
+                        conversations,
+                        parent: sideChatParent,
+                      })?.tokens,
+                    )
+                  : null
+              }
+              triggerRef={autocompactRef}
+              fieldRef={autocompactFieldRef}
             />
           ) : null}
 

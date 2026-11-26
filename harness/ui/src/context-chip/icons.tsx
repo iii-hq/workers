@@ -18,6 +18,9 @@ export interface RingGaugeProps {
   stroke?: number
   /** Arc colour; the track is a tint of `currentColor`. */
   color: string
+  /** A threshold, 0–1 from twelve o'clock: a short amber mark across the
+      track, where auto-compact fires (chat-projects §3.3.3). */
+  tick?: number | null
   className?: string
 }
 
@@ -27,12 +30,27 @@ const TRACK: CSSProperties = {
   stroke: 'color-mix(in oklab, currentColor 32%, transparent)',
 }
 
-export function RingGauge({ ratio, size = 16, stroke = 2.5, color, className }: RingGaugeProps) {
+/** The tick's two ends: across the track, from just inside it to the edge. */
+function tickLine(tick: number | null | undefined, centre: number, radius: number, stroke: number) {
+  if (tick == null || !Number.isFinite(tick)) return null
+  const angle = Math.min(1, Math.max(0, tick)) * 2 * Math.PI - Math.PI / 2
+  const inner = Math.max(0, radius - stroke / 2 - 0.75)
+  const round = (n: number) => Math.round(n * 100) / 100
+  return {
+    x1: round(centre + inner * Math.cos(angle)),
+    y1: round(centre + inner * Math.sin(angle)),
+    x2: round(centre + centre * Math.cos(angle)),
+    y2: round(centre + centre * Math.sin(angle)),
+  }
+}
+
+export function RingGauge({ ratio, size = 16, stroke = 2.5, color, tick, className }: RingGaugeProps) {
   const share = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
   const centre = size / 2
   const radius = (size - stroke) / 2
   const circumference = 2 * Math.PI * radius
   const arc = share * circumference
+  const mark = tickLine(tick, centre, radius, stroke)
   const motion: CSSProperties = {
     transition: 'stroke-dasharray var(--motion-duration-panel) var(--motion-ease-standard)',
   }
@@ -67,6 +85,15 @@ export function RingGauge({ ratio, size = 16, stroke = 2.5, color, className }: 
           strokeDasharray={`${arc} ${circumference - arc}`}
           transform={`rotate(-90 ${centre} ${centre})`}
           style={motion}
+        />
+      ) : null}
+      {mark ? (
+        <line
+          data-ring-tick=""
+          {...mark}
+          stroke="var(--color-warn)"
+          strokeWidth={1.5}
+          strokeLinecap="round"
         />
       ) : null}
     </svg>

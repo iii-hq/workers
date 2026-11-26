@@ -13,7 +13,15 @@
  * - The Claude Code account (phase 4, §4.3.5) writes `claude_account`: an
  *   account id pins the conversation, `"global"` follows the global, and the
  *   project's choice removes the key.
+ * - Auto-compact (phase 3, §3.3.4) writes `autocompact`: `{mode: "tokens",
+ *   tokens}` or `{mode: "off"}`; the project's (or the global) choice
+ *   removes the key, which reads as `inherit`.
  */
+import {
+  type AutocompactSetting,
+  autocompactOf,
+  sameSetting,
+} from '@/lib/autocompact'
 import type { Conversation } from '@/types/chat'
 
 export const DESCRIPTION_MAX = 140
@@ -43,6 +51,11 @@ export interface ConversationDetailsDraft {
    * it alone; the row reads `claudeAccountOf` until it is chosen.
    */
   claudeAccount?: string
+  /**
+   * `metadata.autocompact` (phase 3). Absent leaves it alone; `inherit`
+   * removes the key.
+   */
+  autocompact?: AutocompactSetting
 }
 
 /** A conversation's `claude_account` as the select shows it. */
@@ -167,6 +180,13 @@ export function buildDetailsPatch(
     if (draft.claudeAccount === ACCOUNT_DEFAULT)
       patch.unset.push('claude_account')
     else patch.set.claude_account = draft.claudeAccount
+  }
+  if (
+    draft.autocompact !== undefined &&
+    !sameSetting(draft.autocompact, autocompactOf(conversation))
+  ) {
+    if (draft.autocompact.mode === 'inherit') patch.unset.push('autocompact')
+    else patch.set.autocompact = draft.autocompact
   }
   return patch.title !== undefined ||
     patch.description !== undefined ||
