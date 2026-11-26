@@ -7,7 +7,7 @@ webhooks:
   max_body_bytes: 1048576
   max_pending: 10000
   # Longest watch lifetime in days (1..=30). Never above 30: each watch holds a
-  # quick-tunnel lease, and quick-tunnel leases last at most 30 days.
+  # tunnel lease, and tunnel leases last at most 30 days.
   max_watch_days: 30
   # A watch left without any listening observer is stopped (freeing its tunnel
   # lease and, when it was the last one, the repository hook) only after this

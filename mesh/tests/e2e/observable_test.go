@@ -125,7 +125,7 @@ func TestE2EObserversSurviveDisposal(t *testing.T) {
 	if _, err := iii.RegisterFunctionTyped(w, "e2e::target", func(context.Context, json.RawMessage) (bool, error) { ran.Add(1); return true, nil }); err != nil {
 		t.Fatal(err)
 	}
-	// Observed before it exists, with a fixed id, as the hub observes quick-tunnel.
+	// Observed before it exists, with a fixed id, as the hub observes tunnel.
 	if err := meshclient.Observe(f.ctx, w, iii.Source{FunctionID: "e2e::source", Capture: []iii.Capture{iii.CaptureInput}}, "e2e::target", iii.ObserverOptions{ID: "e2e-observer"}, func() { resumed.Add(1) }); err != nil {
 		t.Fatal(err)
 	}

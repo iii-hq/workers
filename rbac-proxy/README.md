@@ -293,7 +293,7 @@ list):
   `sandbox-code-runner`) is a loopback peer.
 - **`tailscale::serve::add` (and Funnel)** publishes a local port to the
   tailnet (or, with Funnel, to the internet).
-- **`quick-tunnel`** publishes a local port through a cloudflared Quick
+- **`tunnel`** publishes a local port through a cloudflared Quick
   Tunnel.
 - **`kubectl port-forward` and service-mesh sidecars** deliver remote
   clients from a local address.

@@ -39,18 +39,19 @@ fn everything_present_is_ready() {
 }
 
 #[test]
-fn missing_quick_tunnel_offers_install_and_blocks_cloudflared() {
+fn missing_tunnel_offers_install_and_blocks_the_tunnel_provider() {
     let checks = evaluate(&Err(TunnelProbe::NotInstalled), &listener_on());
+    assert_eq!(checks[1].id, "tunnel_provider");
     assert_eq!(
         states(&checks),
         [CheckState::Missing, CheckState::Blocked, CheckState::Ok]
     );
     assert!(matches!(
         &checks[0].fix,
-        Some(SetupFix::InstallWorker { worker, .. }) if worker == "quick-tunnel"
+        Some(SetupFix::InstallWorker { worker, .. }) if worker == "tunnel"
     ));
     let message = blockers(&checks).unwrap();
-    assert!(message.contains("quick-tunnel worker"));
+    assert!(message.contains("tunnel worker"));
     assert!(message.contains("github::setup::webhooks-status"));
 }
 
@@ -69,7 +70,7 @@ fn missing_cloudflared_points_at_cloudflare_and_never_installs() {
             url: "https://example.test/install".into()
         })
     );
-    // Falls back to Cloudflare's page when quick-tunnel omits it.
+    // Falls back to Cloudflare's page when tunnel omits it.
     let checks = evaluate(&tunnel_with(json!({"found": false})), &listener_on());
     assert_eq!(
         checks[1].fix,
@@ -89,7 +90,7 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
             port: DEFAULT_LISTENER_PORT
         })
     );
-    // An old quick-tunnel (no prerequisites) and an old http (no
+    // An old tunnel (no prerequisites) and an old http (no
     // configuration-id) cannot be verified: they suggest an update but never
     // block a watch.
     let checks = evaluate(&Ok(json!({"status": "ready"})), &Ok(None));
@@ -98,7 +99,7 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
         [CheckState::Ok, CheckState::Unknown, CheckState::Unknown]
     );
     assert!(
-        matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "quick-tunnel")
+        matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "tunnel")
     );
     assert!(
         matches!(&checks[2].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "http")
@@ -125,7 +126,7 @@ fn opentunnel_provider_replaces_the_cloudflared_row() {
     assert_eq!(checks[1].state, CheckState::Ok);
     assert_eq!(
         checks[1].detail,
-        "quick-tunnel uses OpenTunnel; no cloudflared binary is needed."
+        "tunnel uses OpenTunnel; no cloudflared binary is needed."
     );
     assert_eq!(checks[1].fix, None);
     assert!(blockers(&checks).is_none());
@@ -142,7 +143,7 @@ fn only_the_exact_opentunnel_provider_replaces_the_cloudflared_row() {
         assert_eq!(checks[1].title, "cloudflared binary", "provider {provider}");
         assert_eq!(checks[1].state, CheckState::Unknown, "provider {provider}");
         assert!(
-            matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "quick-tunnel"),
+            matches!(&checks[1].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "tunnel"),
             "provider {provider}"
         );
     }
@@ -169,7 +170,7 @@ fn missing_http_offers_install_while_declared_old_http_offers_update() {
 }
 
 #[test]
-fn a_restarting_quick_tunnel_is_unknown_and_never_blocks() {
+fn a_restarting_tunnel_is_unknown_and_never_blocks() {
     let checks = evaluate(
         &Err(TunnelProbe::NotResponding(
             "declared in compose but not answering".into(),
@@ -195,7 +196,7 @@ fn only_the_structured_function_not_found_code_means_missing() {
     };
     assert!(function_missing(&remote(
         "function_not_found",
-        "Function quick-tunnel::status not found in namespace default."
+        "Function tunnel::status not found in namespace default."
     )));
     // Text that merely mentions it is not the engine's answer.
     assert!(!function_missing(&remote(

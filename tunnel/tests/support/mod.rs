@@ -8,11 +8,11 @@ use std::{
     time::Duration,
 };
 
-use quick_tunnel::{
+use tokio::sync::watch;
+use tunnel::{
     prerequisites::Prerequisites,
     provider::{Provider, Session, Signal, Sink},
 };
-use tokio::sync::watch;
 
 pub struct FakeProvider {
     /// Returned by every `start` while set.

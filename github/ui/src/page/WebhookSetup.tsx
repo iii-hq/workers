@@ -1,7 +1,7 @@
 /**
  * Webhooks view: the PR webhook setup checklist served by
  * `github::setup::webhooks-status`. Each prerequisite turns green only once
- * verified, in order: the quick-tunnel worker, the cloudflared binary it runs,
+ * verified, in order: the tunnel worker, the cloudflared binary it runs,
  * then the http worker's restricted webhook listener. "Enable webhooks"
  * unlocks when all three are green.
  *
@@ -15,7 +15,6 @@
 import {
   Badge,
   Button,
-  Checkbox,
   Dialog,
   DialogClose,
   DialogContent,
@@ -118,66 +117,41 @@ function summarize(status: SetupStatus): string {
     : `${open} of ${total} prerequisites need attention.`
 }
 
-interface QuickTunnelInstallDialogProps {
+interface TunnelInstallDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onInstall: () => void
 }
 
-/** Require the operator to confirm cloudflared before quick-tunnel is added. */
-export function QuickTunnelInstallDialog({
-  open,
-  onOpenChange,
-  onInstall,
-}: QuickTunnelInstallDialogProps) {
-  const [cloudflaredInstalled, setCloudflaredInstalled] = useState(false)
+/** Confirm adding the tunnel worker; OpenTunnel needs nothing else installed. */
+export function TunnelInstallDialog({ open, onOpenChange, onInstall }: TunnelInstallDialogProps) {
   const installStarted = useRef(false)
 
   useEffect(() => {
     if (open) installStarted.current = false
   }, [open])
 
-  const setOpen = (next: boolean) => {
-    if (!next) setCloudflaredInstalled(false)
-    onOpenChange(next)
-  }
-
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-iii-ui="github" className="gh-ui-webhooks__install-dialog">
         <DialogTitle>
           Would you like to add Webhook support so your agents can react to Github events?
         </DialogTitle>
         <DialogDescription className="gh-ui-webhooks__install-description">
-          Clicking install will install the quick-tunnel worker to this project which supports
-          cloudflared. You must first install cloudflared on this computer before proceeding.
+          Clicking install will add the tunnel worker to this project. It publishes a stable
+          public address through OpenTunnel, so nothing else needs to be installed.
         </DialogDescription>
-        <a
-          className="gh-ui-webhooks__install-guide"
-          href={CLOUDFLARED_INSTALL_URL}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Cloudflare installation guide <ExternalLink aria-hidden />
-        </a>
-        <Checkbox
-          className="gh-ui-webhooks__install-check"
-          checked={cloudflaredInstalled}
-          onChange={(event) => setCloudflaredInstalled(event.currentTarget.checked)}
-          label="I have installed cloudflared"
-        />
         <div className="gh-ui-webhooks__install-actions">
           <DialogClose asChild>
             <Button variant="ghost">Cancel</Button>
           </DialogClose>
           <Button
             variant="primary"
-            disabled={!cloudflaredInstalled}
             onClick={() => {
-              if (!cloudflaredInstalled || installStarted.current) return
+              if (installStarted.current) return
               installStarted.current = true
               onInstall()
-              setOpen(false)
+              onOpenChange(false)
             }}
           >
             Install
@@ -276,7 +250,7 @@ export function WebhookSetup({ host }: { host: Host }) {
   )
 
   const installWorker = async (worker: string) => {
-    if (worker === 'quick-tunnel') {
+    if (worker === 'tunnel') {
       setInstallWorkerPrompt(worker)
       return
     }
@@ -460,7 +434,7 @@ export function WebhookSetup({ host }: { host: Host }) {
   return (
     <PageMain className="gh-ui-main gh-ui-webhooks">
       {dialog}
-      <QuickTunnelInstallDialog
+      <TunnelInstallDialog
         open={installWorkerPrompt !== null}
         onOpenChange={(open) => {
           if (!open) setInstallWorkerPrompt(null)

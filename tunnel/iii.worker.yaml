@@ -1,0 +1,26 @@
+iii: v1
+name: tunnel
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+bin: tunnel
+license: Apache-2.0
+description: Manage expiring durable leases on authorized public tunnels (in-process OpenTunnel by default, or cloudflared Quick Tunnel child processes). Replaces quick-tunnel.
+tags: [tunnel, opentunnel, cloudflare, webhooks, leases]
+dependencies:
+  configuration: latest
+config:
+  # `provider` and `proxy_protocol` stay out: a missing `provider` resolves at
+  # boot to opentunnel on a fresh install and to cloudflared on a worker that
+  # already ran on it (see config::provider_for_unnamed).
+  targets:
+    webhooks: http://127.0.0.1:3112
+  cloudflared: cloudflared
+  state_path: data/tunnel/leases.json
+  startup_timeout_ms: 30000
+  max_retries: 3
+  retry_initial_ms: 1000
+  retry_max_ms: 30000
+  max_leases: 1024
+  max_lease_seconds: 2592000

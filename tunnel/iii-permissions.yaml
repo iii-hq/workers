@@ -2,4 +2,4 @@
 # acquire exposes an allowlisted HTTP service publicly; release can disrupt users.
 version: 1
 rules:
-  - quick-tunnel::status
+  - tunnel::status

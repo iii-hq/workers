@@ -283,45 +283,45 @@ hub accepts and ignores them, and nothing removes them.
 ## Expose through a tunnel
 
 Without a front door of your own, the hub can borrow a public address from the
-quick-tunnel worker. On the Mesh page, under **Hub address**, choose
+tunnel worker. On the Mesh page, under **Hub address**, choose
 **Public tunnel** and follow its three steps:
 
-1. **quick-tunnel worker.** If quick-tunnel is not installed, choose
-   **Install quick-tunnel** and confirm. Compose adds the worker; the step
-   updates when quick-tunnel starts and registers its functions. If the hub
-   cannot reach an installed quick-tunnel, the step offers
-   **Restart quick-tunnel**.
-2. **quick-tunnel set up for mesh.** The step lists what quick-tunnel's
+1. **tunnel worker.** If tunnel is not installed, choose
+   **Install tunnel** and confirm. Compose adds the worker; the step
+   updates when tunnel starts and registers its functions. If the hub
+   cannot reach an installed tunnel, the step offers
+   **Restart tunnel**.
+2. **tunnel set up for mesh.** The step lists what tunnel's
    configuration still needs: provider `opentunnel`, a target for the tunnel id
    on the hub's `listen` port, that target in `proxy_protocol`,
    `startup_timeout_ms` of at least 120000 and `max_lease_seconds` of at least
    600 when set (a `${VAR}` template in either is left as written). Choose
-   **Set up quick-tunnel**; the confirmation lists the changes and names
-   quick-tunnel's other targets, such as `webhooks`, whose public URLs change
+   **Set up tunnel**; the confirmation lists the changes and names
+   tunnel's other targets, such as `webhooks`, whose public URLs change
    when the provider does. A worker that only accepts
    `trycloudflare.com` URLs stops receiving traffic until it is updated. After
    you confirm, the page writes only those keys, keeps every other setting,
-   target and `${VAR}` template, and restarts quick-tunnel, which reads its
+   target and `${VAR}` template, and restarts tunnel, which reads its
    configuration only when it starts. The page does not offer this when the
    hub's `listen` is a `${VAR}` template or a host other than `0.0.0.0`, `::`,
    `127.0.0.1` or `localhost`: the tunnel forwards to `127.0.0.1`, so the hub
-   must listen there. Nor does it write over a raw quick-tunnel value, move
+   must listen there. Nor does it write over a raw tunnel value, move
    a target OpenTunnel cannot carry (only `http://` targets with lowercase
    names), add a 33rd target, or share the hub's port with a target that is not
-   in `proxy_protocol`, which quick-tunnel refuses; change those in
-   quick-tunnel's settings.
+   in `proxy_protocol`, which tunnel refuses; change those in
+   tunnel's settings.
 3. **Tunnel.** Save the page. The step shows the tunnel URL once the hub
    reports it `ready`; the first OpenTunnel start can take up to two minutes.
 
 Choosing **Public tunnel** clears the Public URL, so nothing overrides the
 tunnel; **Manual URL** turns the tunnel off. An entry that has both reads as
 **Manual URL**, since the hub then uses the Public URL. The steps follow what
-the hub pushes, the engine's function changes while quick-tunnel installs, and
+the hub pushes, the engine's function changes while tunnel installs, and
 what the page reads when you return to the tab; nothing is polled.
 
 The mesh worker never edits another worker's configuration; the Mesh page
-writes quick-tunnel's configuration only when you choose
-**Set up quick-tunnel**, after confirming. To configure by hand instead, set
+writes tunnel's configuration only when you choose
+**Set up tunnel**, after confirming. To configure by hand instead, set
 the mesh entry:
 
 ```yaml
@@ -331,8 +331,8 @@ tunnel:
   tunnel_id: mesh      # optional, defaults to mesh
 ```
 
-and list the hub's `listen` port as a target in the quick-tunnel
-configuration, then restart quick-tunnel. `targets` replaces quick-tunnel's
+and list the hub's `listen` port as a target in the tunnel
+configuration, then restart tunnel. `targets` replaces tunnel's
 default list, so keep `webhooks` for github:
 
 ```yaml
@@ -348,13 +348,13 @@ The public URL is `public_url` when set, otherwise the tunnel URL once the
 tunnel is `ready`, otherwise empty. While `public_url` is set the hub holds no
 lease and `mesh::status` reports the tunnel as `overridden`. The hub holds a
 10-minute lease, renews it when under 5 minutes remain and releases it on
-shutdown, so quick-tunnel's `max_lease_seconds` must be at least 600. The hub
-follows the tunnel through `quick-tunnel::on-changed` and through the changes
-of its engine's functions, and polls nothing. A quick-tunnel call that times
-out, a release that fails and a lease quick-tunnel dropped are tried again
+shutdown, so tunnel's `max_lease_seconds` must be at least 600. The hub
+follows the tunnel through `tunnel::on-changed` and through the changes
+of its engine's functions, and polls nothing. A tunnel call that times
+out, a release that fails and a lease tunnel dropped are tried again
 after 1 second and then at doubling intervals up to a minute. While
-quick-tunnel is not installed, or has no target for the tunnel id, the hub
-waits for quick-tunnel to start. A failed quick-tunnel call keeps the last URL
+tunnel is not installed, or has no target for the tunnel id, the hub
+waits for tunnel to start. A failed tunnel call keeps the last URL
 while the lease is unexpired.
 `mesh::status` reports `tunnel.state` (`starting`, `ready`,
 `reconnecting`, `failed`, `stopped`, `unavailable` or `overridden`),
@@ -369,11 +369,11 @@ addresses from the tunnel). A tunnel carries no UDP, so STUN still requires `pub
   `https://<route>.<id>.opentunnel.xyz`. Certificate Transparency logs list
   `<id>.opentunnel.xyz` as soon as its certificate is issued, and scanners
   read them, but that name does not answer. `<route>` is a random name kept by
-  quick-tunnel that is in no certificate. DNS resolvers, the relay, everyone
+  tunnel that is in no certificate. DNS resolvers, the relay, everyone
   holding the hub URL, and every local worker or agent allowed to call
-  `mesh::status` or `quick-tunnel::status` still see it, so join codes and
+  `mesh::status` or `tunnel::status` still see it, so join codes and
   tokens remain the only protection.
-- **List the target in `proxy_protocol`.** quick-tunnel then starts every
+- **List the target in `proxy_protocol`.** tunnel then starts every
   tunnel connection with a PROXY protocol v2 header that carries the visitor's
   address, and the join rate limit (10 attempts per 10 minutes) counts each
   visitor separately; an IPv6 visitor is counted by its /64. `mesh::status`
@@ -381,10 +381,10 @@ addresses from the tunnel). A tunnel carries no UDP, so STUN still requires `pub
   visitor reaches the hub as `127.0.0.1` and they share one bucket: anyone who
   sends 10 junk `POST /join` requests every 10 minutes blocks every join
   through the tunnel, join codes and tokens alike. List only the target that
-  points at this hub's `listen` port: quick-tunnel checks that targets sharing
+  points at this hub's `listen` port: tunnel checks that targets sharing
   a port agree, not that the port is the hub's.
-- The hub reads that header only from loopback, and only while quick-tunnel
-  lists the hub's lease with `proxy_protocol: v2`. If quick-tunnel stops
+- The hub reads that header only from loopback, and only while tunnel
+  lists the hub's lease with `proxy_protocol: v2`. If tunnel stops
   answering, the hub stops reading it and tunnel visitors get `400` until it
   answers again. While it is on, any local process that connects to `listen`
   can state a visitor address, and so can any other tool that forwards raw

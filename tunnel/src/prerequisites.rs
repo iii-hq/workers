@@ -1,5 +1,5 @@
 //! Locate the operator-provided `cloudflared` and report it without starting a
-//! tunnel. quick-tunnel never downloads or installs it: the report points the
+//! tunnel. tunnel never downloads or installs it: the report points the
 //! operator at Cloudflare's install page instead.
 
 use schemars::JsonSchema;
@@ -32,13 +32,13 @@ pub struct Prerequisites {
 pub struct CloudflaredCheck {
     /// True when an executable was found and answered `--version`.
     pub found: bool,
-    /// Absolute path quick-tunnel runs.
+    /// Absolute path tunnel runs.
     pub path: Option<String>,
     /// First line of `cloudflared --version`.
     pub version: Option<String>,
     /// Why it is not usable, when `found` is false.
     pub error: Option<String>,
-    /// Where to install it from; quick-tunnel never installs it.
+    /// Where to install it from; tunnel never installs it.
     pub install_url: String,
 }
 
@@ -201,7 +201,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         // An executable outside the trusted list is never picked up by name.
         let dir = tempfile::tempdir().unwrap();
-        let name = "quick-tunnel-shadow-cloudflared-test";
+        let name = "tunnel-shadow-cloudflared-test";
         let exe = dir.path().join(name);
         std::fs::write(&exe, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();

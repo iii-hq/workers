@@ -156,10 +156,7 @@ impl Fixture {
         for (function, target) in [
             ("http::on-request", "github::webhooks::receive"),
             ("queue::on-message", "github::webhooks::process"),
-            (
-                "quick-tunnel::on-changed",
-                "github::webhooks::tunnel-changed",
-            ),
+            ("tunnel::on-changed", "github::webhooks::tunnel-changed"),
             ("cron::on-tick", "github::webhooks::maintain"),
         ] {
             engine.observed(function, target).await;
@@ -268,7 +265,7 @@ impl Fixture {
         )
         .await
     }
-    /// The tunnel is ready at `url`: quick-tunnel::on-changed is called with
+    /// The tunnel is ready at `url`: tunnel::on-changed is called with
     /// the snapshot and iii delivers it (contract: default delivery). Waits
     /// until github::webhooks::tunnel-changed accepted it: its observer
     /// (`capture: [output]`) hands it the snapshot as the envelope's `output`.
@@ -825,10 +822,7 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
         fixture.engine.release_departed();
         for (function, target) in [
             ("http::on-request", "github::webhooks::receive"),
-            (
-                "quick-tunnel::on-changed",
-                "github::webhooks::tunnel-changed",
-            ),
+            ("tunnel::on-changed", "github::webhooks::tunnel-changed"),
             ("cron::on-tick", "github::webhooks::maintain"),
             (ON_EVENT, CALLBACK),
         ] {

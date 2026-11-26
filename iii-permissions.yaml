@@ -427,7 +427,7 @@ rules:
   # trusted engine plumbing, never direct agent calls. Starting/stopping a
   # watch or acquiring/releasing a public tunnel stays approval-gated.
   - '!github::webhooks::*'
-  - '!quick-tunnel::on-config-change'
+  - '!tunnel::on-config-change'
   # openwiki: internal observer targets. cron::refresh-due is the per-wiki
   # cron::on-tick target; on-turn-started/completed observe
   # harness::on-turn-started/completed, and a direct call could forge
@@ -661,7 +661,7 @@ rules:
   # Read-only webhook prerequisite checklist; enable-http-listener and
   # enable-webhooks change configuration and keep needs_approval.
   - github::setup::webhooks-status
-  - quick-tunnel::status
+  - tunnel::status
   - github::issue::list
   - github::issue::view
   - github::repo::view

@@ -3,7 +3,7 @@
 //! Observers of `github::pr::on-event` are the listeners. When the last
 //! observer that matched a watch goes away (its chat was deleted, or it was
 //! disposed), the watch is stopped; cleanup then releases its tunnel lease and deletes the
-//! repository hook once no live watch remains there. The quick-tunnel stops
+//! repository hook once no live watch remains there. The tunnel stops
 //! with its last lease.
 
 use super::types::{Data, EventFilter, Watch, WatchState};

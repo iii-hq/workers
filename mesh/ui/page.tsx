@@ -8,7 +8,7 @@ import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorCode, errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useCopyFlash, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Network, RefreshCw } from 'lucide-react'
-import { quickTunnelEntryId, quickTunnelPlan, type QuickTunnelPlan } from './quick-tunnel'
+import { tunnelWorkerEntryId, tunnelWorkerPlan, type TunnelWorkerPlan } from './tunnel-worker'
 
 // functions: the worker's function ids, sorted; the hub holds them in the namespace named after the machine.
 type ComponentState = { name: string; state: string; functions?: string[] }
@@ -192,21 +192,21 @@ function JoinField({ value, onChange, secretInput: SecretKeyField }: { value: st
 
 // Tunnel states that stay until something changes; any other state is still moving.
 const TUNNEL_RESTING = new Set(['ready', 'overridden', 'unavailable', 'failed'])
-// Longer than quick-tunnel's 10-minute bound on creating an OpenTunnel identity.
+// Longer than tunnel's 10-minute bound on creating an OpenTunnel identity.
 const SETTLE_MS = 12 * 60_000
 type Reach = 'tunnel' | 'manual'
 const REACH_OPTIONS: { value: Reach; label: string; icon: false }[] = [
   { value: 'tunnel', label: 'Public tunnel', icon: false }, { value: 'manual', label: 'Manual URL', icon: false },
 ]
 const REACH_HELP: Record<Reach, string> = {
-  tunnel: 'The quick-tunnel worker gives this hub a public HTTPS address. Complete the steps below.',
+  tunnel: 'The tunnel worker gives this hub a public HTTPS address. Complete the steps below.',
   manual: 'The address of your own HTTPS front door to this hub, such as a reverse proxy.',
 }
-const QUICK_TUNNEL = 'quick-tunnel'
-// The hub's error while it cannot call quick-tunnel (tunnelNotResponding in internal/hub/tunnel.go).
-const QUICK_TUNNEL_DOWN = 'quick-tunnel is not installed or not responding'
+const TUNNEL_WORKER = 'tunnel'
+// The hub's error while it cannot call tunnel (tunnelNotResponding in internal/hub/tunnel.go).
+const TUNNEL_WORKER_DOWN = 'tunnel is not installed or not responding'
 const DEFAULT_LISTEN = '0.0.0.0:49180'
-const STALLED = 'The hub has not reported a tunnel result. Check the mesh and quick-tunnel workers, then refresh.'
+const STALLED = 'The hub has not reported a tunnel result. Check the mesh and tunnel workers, then refresh.'
 // A step's state in words beside its color.
 const STEP_BADGE = { ok: ['ok', 'Done'], missing: ['warn', 'Action needed'], working: ['default', 'In progress'], waiting: ['default', 'Waiting'] } as const
 type Step = { title: string; state: keyof typeof STEP_BADGE; detail: ReactNode; action?: ReactNode }
@@ -218,13 +218,13 @@ function composeOk(action: string, reply: unknown) {
   if (errors.length) throw new Error(`${action} failed: ${errors.join('; ')}`)
 }
 const plural = (names: string[], one: string, many: string) => names.length === 1 ? one : many
-function setupText(plan: QuickTunnelPlan | null) {
+function setupText(plan: TunnelWorkerPlan | null) {
   if (!plan || plan.blocked) return plan?.blocked ?? ''
   // A retry after the settings were written but the restart failed.
-  if (plan.ok) return 'quick-tunnel already has these settings. The Mesh page restarts it so it reads them.'
+  if (plan.ok) return 'tunnel already has these settings. The Mesh page restarts it so it reads them.'
   const { changes, others } = plan
   const moved = others.length ? ` The ${others.join(', ')} ${plural(others, 'target moves', 'targets move')} to OpenTunnel too, so ${plural(others, 'its public URL changes', 'their public URLs change')}. A worker that only accepts trycloudflare.com URLs stops receiving traffic until it is updated.` : ''
-  return `The Mesh page changes quick-tunnel's settings and restarts it: ${changes.join('; ')}.${moved}`
+  return `The Mesh page changes tunnel's settings and restarts it: ${changes.join('; ')}.${moved}`
 }
 
 // The share list of either mode: a switch per local worker, its functions picked under it.
@@ -450,14 +450,14 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // Raw keeps ${VAR} templates intact when the entry is written back.
       host.iii.call<{ value: JsonValue }>('configuration::get', { id: configurationId, raw: true }),
       host.iii.call<{ functions: EngineFunction[] }>('engine::functions::list', { include_internal: true }),
-      // Compose names the entry after its namespace, so it is found by the form quick-tunnel registers.
+      // Compose names the entry after its namespace, so it is found by the form tunnel registers.
       host.iii.call<{ configurations?: { id?: string; metadata?: { ui_form?: string } | null }[] }>('configuration::list', {}).then(async (listed) => {
-        const id = quickTunnelEntryId(listed?.configurations ?? [], configurationId)
+        const id = tunnelWorkerEntryId(listed?.configurations ?? [], configurationId)
         return id ? { id, value: (await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true }))?.value ?? null } : null
       }),
     ])
     const engineFunctions = functions.status === 'fulfilled' ? functions.value.functions ?? [] : []
-    // quick-tunnel creates its entry when it first starts.
+    // tunnel creates its entry when it first starts.
     const tunnelAbsent = tunnelConfig.status === 'fulfilled' ? tunnelConfig.value === null : errorCode(tunnelConfig.reason) === 'NOT_FOUND'
     return {
       client: status.status === 'fulfilled' && status.value?.mode === 'client' ? status.value as ClientStatus : null,
@@ -476,10 +476,10 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
       // shortcut: a worker name or public id ValidateShare refuses as an entry is not listed; list it without a control if such names appear.
       local: engineFunctions.filter((fn) => /^[a-z0-9-]+$/.test(fn.worker_name ?? '') && !NEVER_SHARED.has(fn.worker_name ?? '') && canShareId(fn.function_id)),
       functionsError: functions.status === 'rejected' ? errorMessage(functions.reason) : null,
-      quickTunnelId: tunnelConfig.status === 'fulfilled' ? tunnelConfig.value?.id ?? null : null,
-      quickTunnel: tunnelConfig.status === 'fulfilled' && tunnelConfig.value ? tunnelConfig.value.value : undefined,
-      quickTunnelAbsent: tunnelAbsent,
-      quickTunnelError: tunnelConfig.status === 'rejected' && !tunnelAbsent ? errorMessage(tunnelConfig.reason) : null,
+      tunnelWorkerId: tunnelConfig.status === 'fulfilled' ? tunnelConfig.value?.id ?? null : null,
+      tunnelWorker: tunnelConfig.status === 'fulfilled' && tunnelConfig.value ? tunnelConfig.value.value : undefined,
+      tunnelWorkerAbsent: tunnelAbsent,
+      tunnelWorkerError: tunnelConfig.status === 'rejected' && !tunnelAbsent ? errorMessage(tunnelConfig.reason) : null,
     }
   }, [host, configurationId])
   const { data, loading, error, refresh } = useWorkerLive({
@@ -576,12 +576,12 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const needsRestart = !dirty && data !== undefined && config !== null && saved.mode !== running
   // A tunnel settles seconds to minutes after a save; the hub pushes each step.
   const tunnel = data?.hub?.tunnel
-  // quick-tunnel is missing until it has an entry and the hub can call it.
-  const tunnelWorkerDown = Boolean(data?.quickTunnelAbsent) || (tunnel?.state === 'unavailable' && tunnel.error === QUICK_TUNNEL_DOWN)
-  // The install's operation id once Compose accepts it; the read that finds quick-tunnel clears it.
+  // tunnel is missing until it has an entry and the hub can call it.
+  const tunnelWorkerDown = Boolean(data?.tunnelWorkerAbsent) || (tunnel?.state === 'unavailable' && tunnel.error === TUNNEL_WORKER_DOWN)
+  // The install's operation id once Compose accepts it; the read that finds tunnel clears it.
   const [installing, setInstalling] = useState<string | null>(null)
   useEffect(() => { if (!tunnelWorkerDown) setInstalling(null) }, [tunnelWorkerDown])
-  // quick-tunnel stores its entry before it registers functions, and the hub pushes nothing while its tunnel is off.
+  // tunnel stores its entry before it registers functions, and the hub pushes nothing while its tunnel is off.
   useEffect(() => {
     if (!installing) return
     try {
@@ -613,67 +613,67 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
   const tunnelId = tunnel?.tunnel_id || (typeof configuredId === 'string' && configuredId) || 'mesh'
   const configuredListen = config === null ? undefined : at(config, ['listen'])
   const listen = typeof configuredListen === 'string' ? configuredListen : DEFAULT_LISTEN
-  const plan = data?.quickTunnel !== undefined ? quickTunnelPlan(data.quickTunnel, tunnelId, listen) : null
+  const plan = data?.tunnelWorker !== undefined ? tunnelWorkerPlan(data.tunnelWorker, tunnelId, listen) : null
   const [confirming, setConfirming] = useState<'install' | 'setup' | 'restart' | null>(null)
   const install = async () => {
     try {
-      const operationId = `mesh-install-quick-tunnel-${crypto.randomUUID().slice(0, 8)}`
-      composeOk('Installing quick-tunnel', await host.iii.call('compose::add', { workers: [QUICK_TUNNEL], operation_id: operationId }, { timeoutMs: 60_000 }))
+      const operationId = `mesh-install-tunnel-${crypto.randomUUID().slice(0, 8)}`
+      composeOk('Installing tunnel', await host.iii.call('compose::add', { workers: [TUNNEL_WORKER], operation_id: operationId }, { timeoutMs: 60_000 }))
       setInstalling(operationId)
-      announce('Installing quick-tunnel. The steps update when it starts.')
+      announce('Installing tunnel. The steps update when it starts.')
     } catch (err) { throw failed(err) } finally { refresh() }
   }
-  // quick-tunnel reads its settings only when it starts.
-  const restartQuickTunnel = async () => composeOk('Restarting quick-tunnel', await host.iii.call('compose::restart', { container: QUICK_TUNNEL }, { timeoutMs: 180_000 }))
+  // tunnel reads its settings only when it starts.
+  const restartTunnelWorker = async () => composeOk('Restarting tunnel', await host.iii.call('compose::restart', { container: TUNNEL_WORKER }, { timeoutMs: 180_000 }))
   const restartTunnel = async () => {
     try {
-      await restartQuickTunnel()
-      announce('quick-tunnel restarted.')
+      await restartTunnelWorker()
+      announce('tunnel restarted.')
     } catch (err) { throw failed(err) } finally { refresh() }
   }
   const setUp = async () => {
     try {
-      // Re-read: quick-tunnel's settings may have changed since the page read them.
-      const id = data?.quickTunnelId
-      if (!id) throw new Error('quick-tunnel has no settings entry yet. Refresh, then try again.')
+      // Re-read: tunnel's settings may have changed since the page read them.
+      const id = data?.tunnelWorkerId
+      if (!id) throw new Error('tunnel has no settings entry yet. Refresh, then try again.')
       const current = await host.iii.call<{ value: JsonValue }>('configuration::get', { id, raw: true })
-      const fresh = quickTunnelPlan(current?.value, tunnelId, listen)
+      const fresh = tunnelWorkerPlan(current?.value, tunnelId, listen)
       if (!fresh.next) throw new Error(fresh.blocked)
       // Write only what the confirmation showed: settings changed meanwhile are shown again first.
-      if (!same(fresh.next, plan?.next)) throw new Error('quick-tunnel\'s settings changed since this opened. Review the changes, then confirm again.')
+      if (!same(fresh.next, plan?.next)) throw new Error('tunnel\'s settings changed since this opened. Review the changes, then confirm again.')
       if (!fresh.ok) await host.iii.call('configuration::set', { id, value: fresh.next })
-      await restartQuickTunnel()
-      announce('quick-tunnel is set up for the mesh and restarted.')
+      await restartTunnelWorker()
+      announce('tunnel is set up for the mesh and restarted.')
     } catch (err) { throw failed(err) } finally { refresh() }
   }
   const installed = !tunnelWorkerDown
   const step = (title: string, state: Step['state'], detail: ReactNode, action?: ReactNode): Step => ({ title, state, detail, action })
-  const worker = 'quick-tunnel worker'
-  const setupStep = 'quick-tunnel set up for mesh'
+  const worker = 'tunnel worker'
+  const setupStep = 'tunnel set up for mesh'
   const offer = (kind: 'install' | 'setup' | 'restart', label: string) => <Button size="sm" disabled={busy !== null} onClick={() => setConfirming(kind)}>{label}</Button>
   const steps: Step[] = reach === 'tunnel' ? [
     installed ? step(worker, 'ok', 'Installed.')
-      : installing ? stalled ? step(worker, 'missing', 'quick-tunnel has not started yet. Check its install in Compose, or install it again.', offer('install', 'Install quick-tunnel'))
-        : step(worker, 'working', 'Installing… this list updates when quick-tunnel starts.')
-      : data?.quickTunnelAbsent ? step(worker, 'missing', 'Not installed in this project. It runs the tunnel.', offer('install', 'Install quick-tunnel'))
-      : step(worker, 'missing', 'The hub cannot reach quick-tunnel.', offer('restart', 'Restart quick-tunnel')),
-    // Setting it up needs only its entry, not a running quick-tunnel.
-    data?.quickTunnelAbsent ? step(setupStep, 'waiting', 'Install quick-tunnel first.')
-      : data?.quickTunnelError ? step(setupStep, 'missing', said(`Could not read quick-tunnel's settings: ${data.quickTunnelError}`, 'Refresh to try again.'))
-      : !plan ? step(setupStep, 'working', 'Reading quick-tunnel\'s settings…')
+      : installing ? stalled ? step(worker, 'missing', 'tunnel has not started yet. Check its install in Compose, or install it again.', offer('install', 'Install tunnel'))
+        : step(worker, 'working', 'Installing… this list updates when tunnel starts.')
+      : data?.tunnelWorkerAbsent ? step(worker, 'missing', 'Not installed in this project. It runs the tunnel.', offer('install', 'Install tunnel'))
+      : step(worker, 'missing', 'The hub cannot reach tunnel.', offer('restart', 'Restart tunnel')),
+    // Setting it up needs only its entry, not a running tunnel.
+    data?.tunnelWorkerAbsent ? step(setupStep, 'waiting', 'Install tunnel first.')
+      : data?.tunnelWorkerError ? step(setupStep, 'missing', said(`Could not read tunnel's settings: ${data.tunnelWorkerError}`, 'Refresh to try again.'))
+      : !plan ? step(setupStep, 'working', 'Reading tunnel\'s settings…')
       : plan.blocked ? step(setupStep, 'missing', plan.blocked)
       : plan.ok ? step(setupStep, 'ok', `OpenTunnel carries the target ${tunnelId} to this hub with each visitor's address.`)
       // The row stays short; the confirmation lists each change.
-      : step(setupStep, 'missing', 'quick-tunnel needs a few settings for the mesh.', offer('setup', 'Set up quick-tunnel')),
+      : step(setupStep, 'missing', 'tunnel needs a few settings for the mesh.', offer('setup', 'Set up tunnel')),
     // The hub's own report, once the entry asks for this tunnel.
     !tunnelInUse ? step('Tunnel', 'missing', 'Save to start the tunnel.')
       : stalled && settling ? step('Tunnel', 'missing', STALLED)
       : tunnel?.state === 'ready' && tunnel.url ? step('Tunnel', 'ok', <CopyValue label="Tunnel URL" value={tunnel.url} />)
       // While a step above offers the fix, the hub's error would only repeat it as a hand edit.
       : tunnel?.state === 'unavailable' && (!installed || (plan?.ok === false && !plan.blocked)) ? step('Tunnel', 'waiting', 'Starts once the steps above are done.')
-      // The settings are written but quick-tunnel still runs on the old ones, for example after a failed restart.
-      : tunnel?.state === 'unavailable' && plan?.ok && tunnel.error?.startsWith('quick-tunnel has no target') ? step('Tunnel', 'missing',
-        `quick-tunnel has these settings but still runs without the target ${tunnelId}. Restart it to apply them.`, offer('restart', 'Restart quick-tunnel'))
+      // The settings are written but tunnel still runs on the old ones, for example after a failed restart.
+      : tunnel?.state === 'unavailable' && plan?.ok && tunnel.error?.startsWith('tunnel has no target') ? step('Tunnel', 'missing',
+        `tunnel has these settings but still runs without the target ${tunnelId}. Restart it to apply them.`, offer('restart', 'Restart tunnel'))
       : tunnel?.state === 'unavailable' || tunnel?.state === 'failed' ? step('Tunnel', 'missing',
         `${tunnel.state === 'failed' ? 'The tunnel failed' : 'The tunnel is unavailable'}${tunnel.error ? `: ${tunnel.error}` : '.'}`)
       : !tunnel || tunnel.state === 'starting' || tunnel.state === 'reconnecting' ? step('Tunnel', 'working', 'Starting the tunnel… the first start can take up to two minutes.')
@@ -743,7 +743,7 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
             {reach === 'manual' ? <SettingsField label="Public URL" field="public_url" description="For example https://mesh.example.com."
               renderControl={(props) => <Input {...props} value={basics.public_url} onChange={(next) => edit('public_url', next)} />} /> : null}
           </SettingsList>
-          {/* Announced: the hub and quick-tunnel move these steps along while nobody clicks. */}
+          {/* Announced: the hub and tunnel move these steps along while nobody clicks. */}
           {steps.length ? <SettingsList aria-label="Public tunnel setup" aria-live="polite">
             {steps.map(({ title, state, detail, action }) => <SettingsRow key={title} label={title} description={detail} control={action}
               meta={<Badge variant={STEP_BADGE[state][0]}>{STEP_BADGE[state][1]}</Badge>} />)}
@@ -788,14 +788,14 @@ function MeshPage({ host, configurationId, secretInput, onRequestClose, setDirty
           ? 'The hub already removed this machine. Leaving deletes the saved join here, so this engine can join again with a new join code.'
           : 'This engine stops sharing its workers and loses access to everything shared. The hub drops this machine and the saved join is deleted. It joins again only with a different join code or token, as a new machine.'}
         onConfirm={leave} />
-      <ConfirmDialog open={confirming === 'install'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Install quick-tunnel?"
-        confirmLabel="Install quick-tunnel" busyLabel="Installing…" onConfirm={install}
-        description="Compose adds the quick-tunnel worker to this project and starts it. It runs the tunnel that gives this hub a public address." />
-      <ConfirmDialog open={confirming === 'setup'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Set up quick-tunnel for the mesh?"
-        tone={plan?.others.length ? 'danger' : 'default'} confirmLabel="Set up quick-tunnel" busyLabel="Setting up…" onConfirm={setUp} description={setupText(plan)} />
-      <ConfirmDialog open={confirming === 'restart'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Restart quick-tunnel?"
-        confirmLabel="Restart quick-tunnel" busyLabel="Restarting…" onConfirm={restartTunnel}
-        description="quick-tunnel stops and starts again with its current settings. The tunnels it carries pause for a moment." />
+      <ConfirmDialog open={confirming === 'install'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Install tunnel?"
+        confirmLabel="Install tunnel" busyLabel="Installing…" onConfirm={install}
+        description="Compose adds the tunnel worker to this project and starts it. It runs the tunnel that gives this hub a public address." />
+      <ConfirmDialog open={confirming === 'setup'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Set up tunnel for the mesh?"
+        tone={plan?.others.length ? 'danger' : 'default'} confirmLabel="Set up tunnel" busyLabel="Setting up…" onConfirm={setUp} description={setupText(plan)} />
+      <ConfirmDialog open={confirming === 'restart'} onOpenChange={(open) => { if (!open) setConfirming(null) }} title="Restart tunnel?"
+        confirmLabel="Restart tunnel" busyLabel="Restarting…" onConfirm={restartTunnel}
+        description="tunnel stops and starts again with its current settings. The tunnels it carries pause for a moment." />
     </PageMain>
   </PageShell>
 }

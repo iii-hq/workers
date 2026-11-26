@@ -4,20 +4,21 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use chrono::Utc;
-use quick_tunnel::{
+use support::FakeProvider;
+use tokio::sync::broadcast;
+use tunnel::{
     api::*,
     config::{Config, ProviderKind},
     manager::Manager,
     provider::Signal,
 };
-use support::FakeProvider;
-use tokio::sync::broadcast;
 
 const URL: &str = "https://abc234.opentunnel.xyz";
 
 fn open(max_retries: u32) -> (tempfile::TempDir, Manager, Arc<FakeProvider>) {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
+        provider: ProviderKind::Cloudflared,
         state_path: dir.path().join("leases.json"),
         startup_timeout_ms: 1_000,
         max_retries,

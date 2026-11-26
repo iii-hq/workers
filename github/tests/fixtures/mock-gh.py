@@ -57,6 +57,8 @@ elif '/hooks/42' in path and method == 'DELETE':
     failed = s.get('fail_delete', False)
     if not failed:
         s['hook'] = None
+elif method == 'DELETE' and '/hooks/' in path:
+    failed = s.get('fail_delete', False)
 elif '/pulls/' in path:
     answer = s['pr']
 elif '/check-runs?' in endpoint:

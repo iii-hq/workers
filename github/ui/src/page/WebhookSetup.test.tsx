@@ -4,7 +4,7 @@ import { act, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNod
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type Host } from '@iii-dev/console-ui'
-import { QuickTunnelInstallDialog, WebhookSetup } from './WebhookSetup'
+import { TunnelInstallDialog, WebhookSetup } from './WebhookSetup'
 
 const mocks = vi.hoisted(() => ({ confirm: vi.fn() }))
 
@@ -109,7 +109,7 @@ function mount(onInstall = vi.fn(), onOpenChange = vi.fn()) {
   root = createRoot(container)
   act(() =>
     root!.render(
-      <QuickTunnelInstallDialog open onOpenChange={onOpenChange} onInstall={onInstall} />,
+      <TunnelInstallDialog open onOpenChange={onOpenChange} onInstall={onInstall} />,
     ),
   )
   return { container, onInstall, onOpenChange }
@@ -133,27 +133,21 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('QuickTunnelInstallDialog', () => {
-  it('shows the requested webhook benefit, cloudflared warning, and official guide', () => {
+describe('TunnelInstallDialog', () => {
+  it('shows the webhook benefit and that nothing else needs installing', () => {
     const { container } = mount()
     expect(normalizedText(container)).toContain(
       'Would you like to add Webhook support so your agents can react to Github events?',
     )
     expect(normalizedText(container)).toContain(
-      'Clicking install will install the quick-tunnel worker to this project which supports cloudflared. You must first install cloudflared on this computer before proceeding.',
+      'Clicking install will add the tunnel worker to this project. It publishes a stable public address through OpenTunnel, so nothing else needs to be installed.',
     )
-    expect(container.querySelector('label')?.textContent).toBe('I have installed cloudflared')
-    expect(container.querySelector<HTMLAnchorElement>('a')?.href).toBe(
-      'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
-    )
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull()
   })
 
-  it('keeps Install disabled until cloudflared is confirmed and installs only once', () => {
+  it('installs only once', () => {
     const { container, onInstall } = mount()
     const install = button(container, 'Install')
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    expect(install.disabled).toBe(true)
-    act(() => checkbox.click())
     expect(install.disabled).toBe(false)
     act(() => {
       install.click()
@@ -190,7 +184,7 @@ const updateHttpStatus = {
   ready: false,
   restart_required: false,
   checks: [
-    { id: 'quick_tunnel', title: 'quick-tunnel worker', state: 'ok', detail: 'Installed.' },
+    { id: 'tunnel', title: 'tunnel worker', state: 'ok', detail: 'Installed.' },
     { id: 'cloudflared', title: 'cloudflared binary', state: 'ok', detail: 'Found.' },
     {
       id: 'http_listener',
@@ -212,7 +206,7 @@ const installHttpStatus = {
   ready: false,
   restart_required: false,
   checks: [
-    { id: 'quick_tunnel', title: 'quick-tunnel worker', state: 'ok', detail: 'Installed.' },
+    { id: 'tunnel', title: 'tunnel worker', state: 'ok', detail: 'Installed.' },
     { id: 'cloudflared', title: 'cloudflared binary', state: 'ok', detail: 'Found.' },
     {
       id: 'http_listener',
@@ -228,21 +222,21 @@ const installHttpStatus = {
   ],
 } as const
 
-const installQuickTunnelStatus = {
+const installTunnelStatus = {
   enabled: false,
   active: false,
   ready: false,
   restart_required: false,
   checks: [
     {
-      id: 'quick_tunnel',
-      title: 'quick-tunnel worker',
+      id: 'tunnel',
+      title: 'tunnel worker',
       state: 'missing',
-      detail: 'Install quick-tunnel.',
+      detail: 'Install tunnel.',
       fix: {
         kind: 'install_worker',
-        worker: 'quick-tunnel',
-        command: 'compose::add { worker: "quick-tunnel" }',
+        worker: 'tunnel',
+        command: 'compose::add { worker: "tunnel" }',
       },
     },
     { id: 'cloudflared', title: 'cloudflared binary', state: 'blocked', detail: 'Waiting.' },
@@ -258,11 +252,11 @@ function mountSetup(call: Host['iii']['call']) {
 }
 
 describe('WebhookSetup worker updates', () => {
-  it('installs quick-tunnel with compose::add, then follows and re-checks the operation', async () => {
+  it('installs tunnel with compose::add, then follows and re-checks the operation', async () => {
     const operation = deferred<{ status: string }>()
     const call = vi.fn((functionId: string) => {
       if (functionId === 'github::setup::webhooks-status') {
-        return Promise.resolve(installQuickTunnelStatus)
+        return Promise.resolve(installTunnelStatus)
       }
       if (functionId === 'compose::add') return Promise.resolve({ changed: true })
       if (functionId === 'compose::operation') return operation.promise
@@ -271,18 +265,15 @@ describe('WebhookSetup worker updates', () => {
     const container = mountSetup(call as Host['iii']['call'])
 
     await settle(550)
-    act(() => button(container, 'Install quick-tunnel').click())
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    expect(button(container, 'Install').disabled).toBe(true)
-    act(() => checkbox.click())
+    act(() => button(container, 'Install tunnel').click())
     act(() => button(container, 'Install').click())
     await settle()
 
     expect(call).toHaveBeenCalledWith(
       'compose::add',
       expect.objectContaining({
-        workers: ['quick-tunnel'],
-        operation_id: expect.stringMatching(/^github-install-quick-tunnel-/),
+        workers: ['tunnel'],
+        operation_id: expect.stringMatching(/^github-install-tunnel-/),
       }),
       { timeoutMs: 60_000 },
     )
