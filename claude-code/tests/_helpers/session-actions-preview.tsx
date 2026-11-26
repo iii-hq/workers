@@ -48,6 +48,10 @@ let backgroundFinished = false;
 const currentRow = (row: (typeof rows)[number]) =>
   row === rows[2] && backgroundFinished ? { ...row, alive: false, status: 'done' } : row;
 
+const missingForkDirectory = new URLSearchParams(window.location.search).has(
+  'missing-fork-directory',
+);
+
 // Loopback is usually a secure context. Simulate the crypto surface of plain HTTP LAN.
 if (new URLSearchParams(window.location.search).has('no-random-uuid'))
   Object.defineProperty(crypto, 'randomUUID', { value: undefined });
@@ -149,6 +153,8 @@ const host = {
       }
       if (fn === 'claude::terminal::describe' && p.mode === 'fork') {
         if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
+        if (missingForkDirectory)
+          throw new Error(`the folder ${row.cwd} is not reachable on the terminal host`);
         return {
           claude_session_id: row.id,
           program: 'mock-claude',

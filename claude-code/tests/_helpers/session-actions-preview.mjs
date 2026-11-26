@@ -104,9 +104,12 @@ async function testSessionActions(code) {
   const { default: assert } = await import('node:assert/strict');
   const { test } = await import('node:test');
   const { JSDOM } = require('jsdom');
-  function setup(t, { heartbeat = true, plainHttp = false } = {}) {
+  function setup(t, { heartbeat = true, plainHttp = false, missingForkDirectory = false } = {}) {
+    const url = new URL('http://127.0.0.1/');
+    if (plainHttp) url.searchParams.set('no-random-uuid', '');
+    if (missingForkDirectory) url.searchParams.set('missing-fork-directory', '');
     const { window } = new JSDOM('<div id="root"></div>', {
-      url: plainHttp ? 'http://127.0.0.1/?no-random-uuid' : 'http://127.0.0.1/',
+      url: url.href,
       pretendToBeVisual: true,
       runScripts: 'outside-only',
     });
@@ -340,6 +343,37 @@ async function testSessionActions(code) {
     await click('Toggle access');
     await until(() => document.querySelector(original));
     assert.equal(status().textContent, '');
+  });
+
+  await test('clears an external fork failure on access revocation without affecting console notices', async (t) => {
+    const { click, focus, shortcut, document, until } = setup(t, {
+      heartbeat: false,
+      missingForkDirectory: true,
+    });
+    const original = '[aria-label="Open original: Design review"]';
+    const notice = () => document.querySelector('.claude-sessions-notices [role="alert"]');
+    const failFork = async (name, directory) => {
+      await click(`Fork ${name}`);
+      await focus('Cancel');
+      await click('Create fork');
+      await until(() => notice()?.textContent.includes(`the folder ${directory} is not reachable`));
+    };
+
+    await failFork('Design review', '/fixture/external-only');
+    shortcut('KeyR');
+    await until(() => !document.querySelector(original));
+    assert.equal(notice()?.textContent, undefined);
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+
+    await click('Toggle access');
+    await until(() => document.querySelector(original));
+    assert.equal(notice()?.textContent, undefined);
+
+    await failFork('Console original', '/fixture/workspace');
+    shortcut('KeyR');
+    await until(() => !document.querySelector(original));
+    assert.match(notice()?.textContent ?? '', /the folder \/fixture\/workspace is not reachable/);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
   await test('a late read from the previous selection cannot replace the current reply', async (t) => {

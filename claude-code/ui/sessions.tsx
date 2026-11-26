@@ -62,6 +62,7 @@ interface AgentRow {
 }
 
 type SessionAnnouncement = LiveAnnouncement & { externalId?: string };
+type SessionFailure = { text: string; externalId?: string };
 type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation: number };
 
 interface AgentList {
@@ -178,7 +179,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const [composing, setComposing] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
   const [openingFork, setOpening] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<SessionFailure | null>(null);
   const [announcement, setAnnouncement] = useState<SessionAnnouncement | null>(null);
   const seq = useRef(0);
   // Where focus returns when the composer closes: the Message button that opened it.
@@ -198,6 +199,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const invalidate = () => {
       setVisibility(++generation.current);
       setAnnouncement((current) => (current?.externalId ? null : current));
+      setFailure((current) => (current?.externalId ? null : current));
     };
     const reload = () => {
       configPending.current = false;
@@ -265,12 +267,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     sessions.data?.generation === visibility &&
     !sessions.error;
   const listed = sessions.data?.agents ?? [];
-  const externalAnnouncementId = announcement?.externalId;
-  const liveAnnouncement =
-    !externalAnnouncementId ||
-    (currentVisibility && listed.some((row) => row.id === externalAnnouncementId))
-      ? announcement
-      : null;
+  const noticeVisible = (externalId?: string) =>
+    !externalId || (currentVisibility && listed.some((row) => row.id === externalId));
+  const liveAnnouncement = noticeVisible(announcement?.externalId) ? announcement : null;
+  const liveFailure = noticeVisible(failure?.externalId) ? failure : null;
+  const reportFailure = (row: AgentRow, text: string) => {
+    if (row.external_only && (!currentVisibility || visibility !== generation.current)) return;
+    setFailure({ text, externalId: row.external_only ? row.id : undefined });
+  };
   const announce = (row: AgentRow, text: string) => {
     // An action may finish after the visibility that authorized its row is gone.
     if (row.external_only && (!currentVisibility || visibility !== generation.current)) return;
@@ -343,7 +347,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       setComposing(null);
       announce(row, `Opened a fork of ${name}`);
     } catch (err) {
-      if (stillVisible()) setFailure(errorMessage(err));
+      reportFailure(row, errorMessage(err));
     } finally {
       setOpening(null);
       // After a refusal too: the row was probably out of date.
@@ -368,13 +372,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             { timeoutMs: ACTION_TIMEOUT_MS },
           );
       if (res?.stopped === false) {
-        setFailure(res.reason ?? 'The session was not running.');
+        reportFailure(row, res.reason ?? 'The session was not running.');
         setStopping(null);
       } else {
         announce(row, `Stopped ${nameOf(row)}`);
       }
     } catch (err) {
-      setFailure(errorMessage(err));
+      reportFailure(row, errorMessage(err));
       setStopping(null);
     }
     refresh();
@@ -389,7 +393,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         { timeoutMs: ACTION_TIMEOUT_MS },
       );
       if (res?.started === false) {
-        setFailure(res.reason ?? 'The session is busy; send again when it settles.');
+        reportFailure(row, res.reason ?? 'The session is busy; send again when it settles.');
         return false;
       }
       announce(row, `Message sent to ${nameOf(row)}`);
@@ -398,7 +402,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       refresh();
       return true;
     } catch (err) {
-      setFailure(errorMessage(err));
+      reportFailure(row, errorMessage(err));
       return false;
     }
   };
@@ -442,7 +446,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                 if (opening) return;
                 setFailure(null);
                 if (!row.claude_session_id) {
-                  setFailure('The original conversation is not available yet.');
+                  reportFailure(row, 'The original conversation is not available yet.');
                   return;
                 }
                 followOpener.current = event.currentTarget;
@@ -623,14 +627,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         />
       ) : null}
       <LiveRegion announcement={liveAnnouncement} />
-      {failure || (sessions.error && sessions.data) ? (
+      {liveFailure || (sessions.error && sessions.data) ? (
         <div className="claude-sessions-notices">
-          {failure ? (
+          {liveFailure ? (
             <StatusPanel
               role="alert"
               variant="alert"
               headline="That did not go through"
-              detail={failure}
+              detail={liveFailure.text}
               action={
                 <Button size="sm" variant="ghost" onClick={() => setFailure(null)}>
                   Dismiss
