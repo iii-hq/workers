@@ -4,7 +4,7 @@ Feature: context::count-tokens — estimate token usage for a message set
   Contract (context-manager.md § context::count-tokens): estimate token
   usage for messages, optionally including invocation schemas and a
   system prompt, vs a model. The model selects a tokenizer; v1 always
-  falls back to serialized non-image chars/4 plus 4,096 tokens per image
+  falls back to serialized non-image chars/4 plus 4,096 tokens per image (and 16 bytes a token for encrypted reasoning envelopes)
   and says so in
   `estimator`. Pure and router-free — safe for cost-sensitive callers
   with no llm-router installed.
