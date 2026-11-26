@@ -477,10 +477,14 @@ export function focusFallsWithCall(active: Element | null, figure: Element | nul
 }
 
 /** An object URL for `blob`, revoked when the blob changes or the page unmounts. */
-function useObjectUrl(blob: Blob | null): string | null {
+export function useObjectUrl(blob: Blob | null): string | null {
   const [entry, setEntry] = useState<{ blob: Blob; url: string } | null>(null)
   useEffect(() => {
-    if (!blob) return
+    // Holding the entry past its blob would keep the old result in memory beside the next one.
+    if (!blob) {
+      setEntry(null)
+      return
+    }
     const url = URL.createObjectURL(blob)
     setEntry({ blob, url })
     return () => URL.revokeObjectURL(url)

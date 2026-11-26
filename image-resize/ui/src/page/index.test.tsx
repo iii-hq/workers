@@ -15,7 +15,13 @@ import {
   type State,
   StreamUnavailableError,
 } from '../lib/resize'
-import { focusFallsWithCall, ImageResizePage, ImageResizeView, type ImageResizeViewProps } from './index'
+import {
+  focusFallsWithCall,
+  ImageResizePage,
+  ImageResizeView,
+  type ImageResizeViewProps,
+  useObjectUrl,
+} from './index'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 vi.mock('@iii-dev/console-ui', () => ({
@@ -395,5 +401,27 @@ describe('ImageResizePage', () => {
     Object.defineProperty(huge, 'size', { value: MAX_INPUT_BYTES + 1 })
     await pick(huge)
     expect(document.activeElement).toBe(button('Choose an image'))
+  })
+})
+
+describe('useObjectUrl', () => {
+  it('lets go of a blob once it is gone, so the blob coming back never gets its revoked URL', async () => {
+    let next = 0
+    const revoked = new Set<string>()
+    URL.createObjectURL = vi.fn(() => `blob:${++next}`)
+    URL.revokeObjectURL = vi.fn((url: string) => void revoked.add(url))
+    const seen: (string | null)[] = []
+    function Probe({ blob }: { blob: Blob | null }) {
+      seen.push(useObjectUrl(blob))
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    const blob = new Blob([new Uint8Array([1])])
+
+    for (const shown of [blob, null, blob]) await act(async () => root.render(<Probe blob={shown} />))
+    act(() => root.unmount())
+
+    expect(seen.filter(Boolean)).toEqual(['blob:1', 'blob:2'])
+    expect(revoked).toEqual(new Set(['blob:1', 'blob:2']))
   })
 })
