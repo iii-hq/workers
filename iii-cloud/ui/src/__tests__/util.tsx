@@ -9,7 +9,7 @@ import { afterEach, beforeEach, vi } from 'vitest'
 import { clearAsked } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { type Board, boards } from '../fixtures'
-import { clearStopped } from '../hub'
+import { clearHubStore } from '../hub'
 import type { Status } from '../types'
 import { ui } from './hooks-mock'
 import { fakeHost } from './host'
@@ -23,7 +23,7 @@ export let root: Root
 export function usePage() {
   beforeEach(() => {
     clearAsked()
-    clearStopped()
+    clearHubStore()
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
     ui.narrow = false
     ui.panes = {}

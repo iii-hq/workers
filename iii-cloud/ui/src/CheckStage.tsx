@@ -172,6 +172,15 @@ export function checkPayload(s: Status, manifest = appFile(s).path): Record<stri
   return { run: true, ...(fixBranch(s) ? { push: true } : {}), ...(switches ? { manifest } : {}) }
 }
 
+/**
+ * `check` again: the compose file the person picked with a change that has no newer check yet, else the shown
+ * check's own. (After a refused check the shown one is of the replaced source, so its file is not what to retry.)
+ */
+export function retryPayload(host: Host, s: Status): Record<string, unknown> {
+  const picked = hubOf(host).pickedManifest(s.project?.environment?.id ?? '')
+  return checkPayload(s, picked ?? undefined)
+}
+
 function MarkIcon({ mark, label }: { mark: Mark; label?: string }) {
   const [Icon, word] = MARKS[mark]
   return (
@@ -945,7 +954,9 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
           serving
             ? `${env.name} serves #${serving.number} until the new deployment is live.`
             : feed.data
-              ? `Nothing is live on ${env.name} yet.`
+              ? feed.data.deployments.length
+                ? `${env.name} serves a deployment iii cloud's list does not show; its console names it.`
+                : `Nothing is live on ${env.name} yet.`
               : null,
           typical ? `It takes about ${minutesLabel(typical)}.` : null,
           "Only you can confirm this; your agent can't.",
@@ -973,7 +984,7 @@ export function CheckStage(props: CheckStageProps) {
   const { host, status: s, go, narrow, panel, onChange } = props
   const hubChecking = useChecking(host)
   const now = useNow(1000)
-  const { error, busy, call } = useActions(host)
+  const { error, busy, call, setError } = useActions(host)
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
   const launching = useLaunch()?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
@@ -996,6 +1007,8 @@ export function CheckStage(props: CheckStageProps) {
   // The agent starts by itself when the check this page saw running ends with agent-owned problems, if auto_fix is
   // on, and unless the person stopped it since (until they check again or ask).
   // ponytail: only while the page is open.
+  // A `project::use` that changed the source holds Deploy (and the agent) back until another check exists.
+  const movedFrom = useMovedFrom(host, envId)
   useEffect(() => {
     if (running) {
       watch.current ??= { base: fresh ? null : (c?.id ?? null) }
@@ -1004,19 +1017,24 @@ export function CheckStage(props: CheckStageProps) {
     const w = watch.current
     if (!w || !c || c.id === w.base) return
     watch.current = null
+    // Not for the check of the source the person replaced: its problems are of what they left.
+    if (movedFrom === c.id) return
     if (!auto || c.ready || c.handoff_id || agentOn(s) || askedAt(c.id) || hubOf(host).stopped(envId)) return
     if (openProblems(s).some((x) => x.owner === 'agent')) void handOff(host, s, 'ready')
   })
 
-  // A refusal of the last `check` call (kept by the hub: the page may have come from a card that is gone) shows once,
-  // at the top of the area; and a `project::use` newer than the check holds Deploy until a newer check exists.
+  // A refusal of the last `check` call is the hub's (it outlives the card that asked): this screen keeps no second
+  // copy. Its own errors are those of the other calls (deploy, save, choose), and go when another check arrives.
   const refused = useCheckError(host, envId)
-  const movedFrom = useMovedFrom(host, envId)
   const stale = useLocked(host, s)
+  const checkId = c?.id
+  useEffect(() => {
+    if (checkId) setError(null)
+  }, [checkId, setError])
   const shownError =
     error && !(refused && error.code === refused.code && error.message === refused.message) ? error : null
 
-  const checkAgain = () => void call('check', 'iii-cloud::check', checkPayload(s))
+  const checkAgain = () => void call('check', 'iii-cloud::check', retryPayload(host, s))
   const ask = () => void handOff(host, s, 'ready')
   const canAsk = !!host.chat?.compose && !launching
 
@@ -1169,14 +1187,19 @@ export function CheckStage(props: CheckStageProps) {
       // ponytail: the workspace doesn't record `bring_changes`; its commit's message says it was used.
       const brought = !!c.commits?.some((x) => x.message.startsWith('Uncommitted changes from '))
       const useCheckout = async () => {
-        const used = await call('use', 'iii-cloud::project::use', {
-          path: p?.path,
-          environment_id: envId,
-          mode: ws?.mode,
-          from: 'checkout',
-          ...(ws?.source ? { source: ws.source } : {}),
-          ...(brought ? { bring_changes: true } : {}),
-        })
+        const used = await call(
+          'use',
+          'iii-cloud::project::use',
+          {
+            path: p?.path,
+            environment_id: envId,
+            mode: ws?.mode,
+            from: 'checkout',
+            ...(ws?.source ? { source: ws.source } : {}),
+            ...(brought ? { bring_changes: true } : {}),
+          },
+          { changesSource: true },
+        )
         if (used !== null) checkAgain()
       }
       stops.push({
@@ -1214,7 +1237,8 @@ export function CheckStage(props: CheckStageProps) {
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
-    if (d?.outcome === 'running' && d.check_id !== c.id) {
+    // A deployment going locks Deploy whatever check it came from: its progress is the screen for that state.
+    if (d?.outcome === 'running') {
       stops.push({
         key: 'busy',
         variant: 'info',
@@ -1336,9 +1360,10 @@ export function CheckStage(props: CheckStageProps) {
   let action: ReactNode
   let note: ReactNode = null
   if (ready || runPending) {
-    const off = ready ? (lock ?? prLock) : undefined
+    // The same lock reason as every other control that sends `iii-cloud::deploy` (`deployLock`), plus this action's own.
+    const off = ready ? (lock ?? prLock ?? deployLock) : undefined
     action = ready ? (
-      <PageAction disabled={!!off || staleDeploy || stale || busy === 'deploy'} onClick={startDeploy}>
+      <PageAction disabled={!!off} onClick={startDeploy}>
         {direct
           ? `Deploy ${c ? sha7(c.commit) : ''} to ${env}${production ? '…' : ''}`
           : `Merge to ${pr?.base ?? p?.environment?.branch} and deploy to ${env}${production ? '…' : ''}`}
@@ -1378,7 +1403,9 @@ export function CheckStage(props: CheckStageProps) {
           here: c && fresh ? runPart(s, c, now, running) : skeleton('next', 5),
         }
       : null
-  const pending = c && !running && !ready ? cloudPendingNote(s) : null
+  const pending = c && !running && !ready && !replaced ? cloudPendingNote(s) : null
+  // On a replaced source nothing of the old check offers work: only the source notice and the sign-in stay.
+  const shownStops = replaced ? stops.filter((x) => x.key === 'source' || x.key === 'signin') : stops
   const secretsOnly =
     (needItems.length > 0 || fillable.length > 0) && !decide.length && needItems.every((i) => valueName(i))
   const youNote = running
@@ -1457,7 +1484,7 @@ export function CheckStage(props: CheckStageProps) {
       {panel}
       {pending ? <Notice variant="info" headline="iii cloud's plan is pending" detail={pending} /> : null}
       {shownError ? <ActionError host={host} status={s} error={shownError} checkAgain={checkAgain} go={go} /> : null}
-      {stops.map((x) => (
+      {shownStops.map((x) => (
         <Notice
           key={x.key}
           className="iii-cloud-cs-stop"

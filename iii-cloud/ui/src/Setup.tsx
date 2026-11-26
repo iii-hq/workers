@@ -376,18 +376,25 @@ function Confirm({
       setEnvPick(envId ?? null)
     }
     if (!envId) return
-    const used = await actions.call('use', 'iii-cloud::project::use', {
-      path: project.path,
-      ...(cpId ? { cloud_project_id: cpId } : {}),
-      environment_id: envId,
-      mode,
-      // The copy the agent works in starts with the files changed here that aren't on GitHub.
-      ...(mode === 'worktree' && changed ? { bring_changes: true } : {}),
-    })
+    const used = await actions.call(
+      'use',
+      'iii-cloud::project::use',
+      {
+        path: project.path,
+        ...(cpId ? { cloud_project_id: cpId } : {}),
+        environment_id: envId,
+        mode,
+        // The copy the agent works in starts with the files changed here that aren't on GitHub.
+        ...(mode === 'worktree' && changed ? { bring_changes: true } : {}),
+      },
+      { changesSource: true },
+    )
     if (used === null) return
     // A compose file picked here that isn't the environment's: the check plans that one.
     const picked =
       manifest && manifest !== composeFile(manifestOf(env)) && !creatingProject && !creatingEnv ? { manifest } : {}
+    // ...and a retry after a refusal checks it too.
+    if (picked.manifest) hubOf(host).setPickedManifest(envId, picked.manifest)
     // The Deploy screen follows the check and shows a refusal: the local run can take minutes, so nothing waits here.
     void actions.call('check', 'iii-cloud::check', { run: true, ...picked })
     go({ at: 'deploy', env: envId })

@@ -7,13 +7,14 @@ import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
 import { base, ENV, following, ready, secretRequests } from '../fixtures/base'
-import { hubOf, useActions } from '../hub'
+import { forgetHubMemory, hubOf, useActions } from '../hub'
 import {
   configDir,
   deployOrigin,
   deployState,
   opensToPublic,
   plainMessage,
+  servingId,
   settingWords,
   shortDate,
   whoLine,
@@ -473,21 +474,122 @@ describe('the hub keeps what a page that is gone cannot', () => {
     expect(hub.checkError('e-staging')).toBeNull()
   })
 
-  it('every project::use marks its environment: the check current then is stale, any other is not', async () => {
+  const useCall = (a: Awaited<ReturnType<typeof grab>>, env: string, changes: boolean) =>
+    act(async () => {
+      await a.current.call('use', 'iii-cloud::project::use', { environment_id: env }, { changesSource: changes })
+    })
+
+  it('a project::use that changes the source marks the environment: its check is stale, any other check is not', async () => {
     const h = fakeHost(base, { 'iii-cloud::project::use': {} })
     const hub = hubOf(h.host)
     await act(async () => hub.refresh(false))
     const a = await grab(h.host)
-    await act(async () => void a.current.call('use', 'iii-cloud::project::use', { environment_id: ENV.id }))
+    await useCall(a, ENV.id, true)
     expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
     expect(hub.movedFrom('e-other')).toBeNull()
   })
 
-  it('the stop flag outlives its hub: a reload (a fresh hub) still knows it', () => {
-    hubOf(fakeHost(base).host).markStopped(ENV.id, true)
-    expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(true)
-    hubOf(fakeHost(base).host).markStopped(ENV.id, false)
+  it('a plain re-selection (CloudPage for a route) marks nothing, and never erases a recorded move', async () => {
+    const h = fakeHost(base, { 'iii-cloud::project::use': {} })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    await useCall(a, ENV.id, false)
+    expect(hub.movedFrom(ENV.id)).toBeNull()
+    await useCall(a, ENV.id, true)
+    await useCall(a, ENV.id, false)
+    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
+  })
+
+  it("the move is of that environment's latest check (not the selected one's), under the environment the Project says", async () => {
+    const devCheck = {
+      id: 'chk-dev-1',
+      environment_id: 'e-dev',
+      commit: 'a',
+      checked_at: '',
+      duration_ms: 1,
+      ready: true,
+      problems: 0,
+      handoff_id: null,
+      manifest: null,
+    }
+    // staging is selected (status.check is its check); dev's is in the list. The use returns dev (the payload names none).
+    const status: Status = {
+      ...staging,
+      check: { ...base.check!, id: 'chk-stg', environment_id: 'e-staging' },
+      checks: [devCheck],
+    }
+    const h = fakeHost(status, { 'iii-cloud::project::use': { environment: { id: 'e-dev' } } })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    await act(async () => {
+      await a.current.call('use', 'iii-cloud::project::use', { path: '/p' }, { changesSource: true })
+    })
+    expect(hub.movedFrom('e-dev')).toBe('chk-dev-1')
+    expect(hub.movedFrom('e-staging')).toBeNull()
+  })
+
+  it('the environment a use selected lasts only until the next status, whatever it reports', async () => {
+    const h = fakeHost(base, { 'iii-cloud::project::use': { environment: { id: 'e-x' } } })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    await act(async () => {
+      await a.current.call('use', 'iii-cloud::project::use', { path: '/p' })
+    })
+    await act(async () => hub.refresh(true))
+    expect(hub.selectedEnv()).toBe(ENV.id)
+  })
+
+  it('a newer check ends the move; the move and the stop survive a reload (only storage carries them)', async () => {
+    // A working storage (this test environment's is absent) and a reload that forgets everything but it.
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    })
+    const h = fakeHost(base, { 'iii-cloud::project::use': {} })
+    const hub = hubOf(h.host)
+    hub.subscribe(() => undefined)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    await useCall(a, ENV.id, true)
+    hub.markStopped(ENV.id, true)
+    forgetHubMemory()
+    const fresh = hubOf(fakeHost(base).host)
+    expect(fresh.movedFrom(ENV.id)).toBe(base.check?.id)
+    expect(fresh.stopped(ENV.id)).toBe(true)
+    h.handlers.get('iii::iii-cloud-ui::events::console-test')?.({
+      kind: 'check',
+      id: 'chk-newer',
+      terminal: true,
+      summary: '',
+      record: { ...base.check!, id: 'chk-newer', environment_id: ENV.id },
+    })
+    expect(hub.movedFrom(ENV.id)).toBeNull()
+    fresh.markStopped(ENV.id, false)
+    forgetHubMemory()
     expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
+    expect(store.size).toBe(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('no recorded stop leaves nothing in storage to carry over', () => {
+    forgetHubMemory()
+    expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
+    expect(hubOf(fakeHost(base).host).movedFrom(ENV.id)).toBeNull()
+  })
+
+  it("with iii cloud's list read and no current row, no deployment is named as serving", () => {
+    const row = (id: string, current: boolean) => ({ id, number: 1, current }) as unknown as CloudDeployment
+    // The worker knows a ready deployment (#older); the list (a rollback beyond its first page) has no current row.
+    const known: Status = { ...base, deploys: [{ ...following, outcome: 'ready', environment_id: ENV.id }] }
+    expect(servingId(known, ENV.id, [row('a', false)])).toBeNull()
+    expect(servingId(known, ENV.id, [row('a', true), row('b', false)])).toBe('a')
+    // without the list, the worker's own newest ready deployment stands in
+    expect(servingId(known, ENV.id)).toBe(following.id)
   })
 })
 

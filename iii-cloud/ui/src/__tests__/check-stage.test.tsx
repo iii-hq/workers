@@ -589,14 +589,76 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(handoffs(h)).toHaveLength(1)
   })
 
-  it('the stop survives a reload: a fresh hub still knows the person stopped it', async () => {
-    const env = B('deploy-checking').project?.environment?.id ?? ''
-    const first = await stage(B('deploy-checking'))
-    hubOf(first.host).markStopped(env, true)
-    const fresh = fakeHost(B('deploy-checking'))
-    expect(hubOf(fresh.host).stopped(env)).toBe(true)
-    hubOf(fresh.host).markStopped(env, false)
-    expect(hubOf(first.host).stopped(env)).toBe(false)
+  it('the automatic hand-off does not start on the check of a source the person replaced', async () => {
+    const running = {
+      ...found,
+      id: 'chk-run',
+      run: { ...found.run!, status: 'running' as const },
+      handoff_id: null,
+    }
+    const h = await stage({ ...B('deploy-checking'), check: running }, marker)
+    const env = running.environment_id
+    // Change → use (the source is replaced while the check runs) → the new check is refused → the old one ends.
+    await act(async () => hubOf(h.host).used(env, true))
+    expect(hubOf(h.host).movedFrom(env)).toBe('chk-run')
+    const ended = { ...found, id: 'chk-run', checked_at: new Date(Date.now() + 60_000).toISOString(), handoff_id: null }
+    await fire(h, { kind: 'check', id: 'chk-run', terminal: true, summary: '', record: ended } as ChangeEvent)
+    await flush()
+    expect(handoffs(h)).toHaveLength(0)
+  })
+
+  it("on a replaced source none of the old check's notices offer work, and Check again checks the picked file", async () => {
+    const stopped = B('state-stopped')
+    const h = await stage(stopped, { 'iii-cloud::check': {} })
+    expect(btn('Ask your agent to finish')).toBeTruthy()
+    const env = stopped.check!.environment_id
+    await act(async () => {
+      hubOf(h.host).used(env, true)
+      hubOf(h.host).setPickedManifest(env, 'api/worker-compose.staging.yaml')
+    })
+    expect(btn('Ask your agent to finish')).toBeNull()
+    expect(btn('Bring it into the check')).toBeNull()
+    expect(btn('Read what it tried')).toBeNull()
+    // The retry checks what was picked with the change, not the old check's file.
+    await click(btn('Check again'))
+    expect(lastCall(h.calls)).toMatchObject({
+      id: 'iii-cloud::check',
+      payload: { run: true, manifest: 'api/worker-compose.staging.yaml' },
+    })
+  })
+
+  it('Deploy is off while any deployment of the environment runs, whatever check it came from', async () => {
+    const s = B('deploy-passed')
+    const same = {
+      ...(boards['deploy-review'].status.deploys.at(0) ?? serving5),
+      id: 'dep-same',
+      number: 9,
+      environment_id: s.check!.environment_id,
+      status: 'in_progress' as const,
+      outcome: 'running' as const,
+      finished_at: null,
+      check_id: s.check!.id,
+      created_at: new Date().toISOString(),
+    }
+    await stage({ ...s, deploys: [same, ...s.deploys] })
+    const deploys = [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
+    expect(deploys.length).toBeGreaterThan(0)
+    expect(deploys.every((b) => b.hasAttribute('disabled'))).toBe(true)
+  })
+
+  it('the primary Deploy reads the shared lock: it goes off when the worker stops answering', async () => {
+    const s = B('deploy-passed')
+    let down = false
+    const h = await stage(() => {
+      if (down) throw new Error('x')
+      return s
+    })
+    const primary = () => [...el.querySelectorAll('button')].find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? ''))
+    expect(primary()?.hasAttribute('disabled')).toBe(false)
+    down = true
+    await act(async () => hubOf(h.host).refresh(true))
+    expect(primary()?.hasAttribute('disabled')).toBe(true)
+    expect(text()).toContain('out of date')
   })
 
   it('a source replaced by "Check <tip>" holds Deploy until another check exists, and folds the old check', async () => {
@@ -677,13 +739,28 @@ describe('the review: what a check that is not ready still offers', () => {
       skip: true,
     })
     expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
-    // A required secret (SECRET_MISSING blocks) is in You with no Skip.
-    await stage(B('deploy-problems'))
-    expect(
-      youItems()
-        .flatMap((r) => [...r.querySelectorAll('button')])
-        .some((b) => b.textContent === 'Skip for now'),
-    ).toBe(false)
+    // A required secret (SECRET_MISSING blocks) is in You with no Skip, whatever the values read says of its name
+    // (a real read, first deploy, `need` required or even optional: the old rule offered Skip on the latter).
+    for (const need of ['required', 'optional'] as const) {
+      const first = { ...B('deploy-problems'), deploys: [] }
+      await stage(first, {
+        'iii-cloud::values': {
+          environment_id: first.project?.environment?.id,
+          environment: 'dev',
+          manifest: 'api/worker-compose-prod.yaml',
+          read_from: 'workspace',
+          cloud: 'read',
+          save: 'ok',
+          items: [{ name: 'STRIPE_SECRET_KEY', need, in_cloud: 'unset', suggestions: [] }],
+        },
+      })
+      expect(youItems().length).toBeGreaterThan(0)
+      expect(
+        youItems()
+          .flatMap((r) => [...r.querySelectorAll('button')])
+          .some((b) => b.textContent === 'Skip for now'),
+      ).toBe(false)
+    }
   })
 
   it('a skipped required secret stays in You (iii cloud still needs a value) with Undo; a skipped optional one is undone from Warnings', async () => {

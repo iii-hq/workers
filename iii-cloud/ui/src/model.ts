@@ -340,9 +340,13 @@ export function deployState(d: Stateful, serving: string | null = null): { label
   return { label, tone: o === 'running' ? 'live' : o === 'failed' || o === 'no_route' ? 'alert' : 'ghost' }
 }
 
-/** The id of the deployment serving an environment: iii cloud's `current` one, else the worker's newest ready. */
+/**
+ * The id of the deployment serving an environment: iii cloud's `current` one. With the list read and no current row in
+ * it (a rollback to a deployment beyond its first page) none is named; only without the list does the worker's own
+ * newest ready one stand in.
+ */
 export const servingId = (s: Status, envId: string | undefined, cloud?: CloudDeployment[] | null): string | null =>
-  cloud?.find((d) => d.current)?.id ?? servingDeploy(s, envId)?.id ?? null
+  cloud ? (cloud.find((d) => d.current)?.id ?? null) : (servingDeploy(s, envId)?.id ?? null)
 
 /**
  * The deployment serving an environment, by iii cloud's list, for text that names it ("dev serves #5"). Until the

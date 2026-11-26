@@ -3,13 +3,14 @@
 // the way out of each.
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import { CloudPage } from '../CloudPage'
 import { boards } from '../fixtures'
 import { apiPath } from '../fixtures/base'
 import { DEV, live6, running6, serving5 } from '../fixtures/deploy'
-import { hubOf } from '../hub'
+import { forgetHubMemory, hubOf } from '../hub'
 import type { BranchRef, Status } from '../types'
-import type { Call } from './host'
-import { board, btn, click, cloudAnswers, ctx, el, flush, lastCall, mount, text, type, usePage } from './util'
+import { type Call, fakeHost } from './host'
+import { board, btn, click, cloudAnswers, ctx, el, flush, lastCall, mount, root, text, type, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -342,6 +343,83 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     )
     expect(title()).toBe('Ready to deploy to dev')
     // ...and the check that arrived replaced the kept refusal.
+    expect(text()).not.toContain('Commit something first')
+  })
+
+  const refusedChange = {
+    'iii-cloud::project::use': {},
+    'iii-cloud::check': () => Promise.reject(Object.assign(new Error('x'), { code: 'NO_COMMITS' })),
+  }
+  const stubStorage = () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    })
+  }
+  const deployButtons = () => [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
+
+  it('a reload after a refused Change keeps the replaced source from being deployed: the worker makes the old check current again', async () => {
+    stubStorage()
+    const base = boards['deploy-review'].status
+    const ready = { ...base, check: { ...base.check!, environment_id: DEV.id } }
+    await mount(ready, ctx(route), refusedChange)
+    await click(btn('Change'))
+    await click(btn('Check this instead'))
+    await flush()
+    // The page goes away and comes back (a new hub, the same worker status: the old check is dev's check again).
+    await act(async () => root.render(null))
+    forgetHubMemory()
+    await mount(ready, ctx(route, 2), refusedChange)
+    expect(title()).not.toBe('Ready to deploy to dev')
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
+  it('opening another environment for a route (a plain use) does not lock a ready check', async () => {
+    const base = boards['deploy-review'].status
+    const ready = { ...base, check: { ...base.check!, environment_id: DEV.id } }
+    const h = fakeHost(ready, { 'iii-cloud::project::use': {} })
+    const page = (route: object, id: number) =>
+      act(async () => root.render(<CloudPage host={h.host} panelSide="left" tabId="t" {...ctx(route, id)} />))
+    await page(route, 1)
+    await flush()
+    await page({ at: 'env', env: 'e-prod' }, 2)
+    await flush()
+    await page(route, 3)
+    await flush()
+    expect(hubOf(h.host).movedFrom(DEV.id)).toBeNull()
+    expect(title()).toBe('Ready to deploy to dev')
+  })
+
+  it("after a refused Change, Check again checks the compose file that was picked, not the old check's", async () => {
+    const h = await board('deploy-review', {}, refusedChange)
+    await click(btn('Change'))
+    await click(radio('api/worker-compose.staging.yaml'))
+    await click(btn('Check this instead'))
+    await flush()
+    await click(btn('Check again'))
+    expect(lastCall(h.calls)).toMatchObject({
+      id: 'iii-cloud::check',
+      payload: { run: true, manifest: 'api/worker-compose.staging.yaml' },
+    })
+  })
+
+  it('a refusal shows once and goes when a check arrives: no second copy comes back under the header', async () => {
+    const h = await board('deploy-what', {}, { 'iii-cloud::check': refusedChange['iii-cloud::check'] })
+    await click(btn('Check'))
+    await flush()
+    expect(text().match(/Commit something first/g)).toHaveLength(1)
+    await act(async () =>
+      h.handlers.get('iii::iii-cloud-ui::events::console-test')?.({
+        kind: 'check',
+        id: 'chk-agent',
+        terminal: true,
+        summary: '',
+        record: { ...boards['deploy-review'].status.check!, id: 'chk-agent', environment_id: DEV.id },
+      }),
+    )
     expect(text()).not.toContain('Commit something first')
   })
 

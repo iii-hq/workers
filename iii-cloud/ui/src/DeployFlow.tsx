@@ -26,6 +26,7 @@ import {
   checkPayload,
   deployLockReason,
   GoesSub,
+  retryPayload,
   ScreenHead,
   TypedConfirm,
 } from './CheckStage'
@@ -85,7 +86,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
   const state = envState(status, env)
   const [changing, setChanging] = useState(false)
   const trigger = useRef<HTMLElement | null>(null)
-  const checkAgain = () => void act.call('check', 'iii-cloud::check', checkPayload(status))
+  const checkAgain = () => void act.call('check', 'iii-cloud::check', retryPayload(host, status))
 
   // The deployment the route names, if it is this environment's; a failed one the agent is already fixing goes
   // back to the check, where the agent is.
@@ -271,17 +272,23 @@ function ChangePanel({
       const stopped = await act.call('stop', 'iii-cloud::handoff::stop', { id: status.agent.handoff_id })
       if (stopped === null) return
     }
-    const used = await act.call('use', 'iii-cloud::project::use', {
-      path: p.path,
-      environment_id: envId,
-      mode: p.workspace?.mode ?? 'worktree',
-      // Production goes through a pull request: its check starts from the environment, never the checkout.
-      from: env.production ? 'environment' : 'checkout',
-      ...(chosen?.ref ? { source: chosen.ref.name } : {}),
-      bring_changes: bring && (chosen?.folder ?? true) && !env.production && changed.length > 0,
-    })
+    const used = await act.call(
+      'use',
+      'iii-cloud::project::use',
+      {
+        path: p.path,
+        environment_id: envId,
+        mode: p.workspace?.mode ?? 'worktree',
+        // Production goes through a pull request: its check starts from the environment, never the checkout.
+        from: env.production ? 'environment' : 'checkout',
+        ...(chosen?.ref ? { source: chosen.ref.name } : {}),
+        bring_changes: bring && (chosen?.folder ?? true) && !env.production && changed.length > 0,
+      },
+      { changesSource: true },
+    )
     if (used === null) return
-    // (`useActions` marks every `project::use`: the old check stays stale until another one exists.)
+    // The old check stays stale until another one exists, and a retry after a refusal checks the file picked here.
+    hubOf(host).setPickedManifest(envId, pick)
     onClose()
     void act.call('check', 'iii-cloud::check', checkPayload(status, pick))
     go({ at: 'deploy', env: envId })
@@ -294,7 +301,9 @@ function ChangePanel({
         serving
           ? `${env.name} serves ${sha7(serving.sha)} · deployment #${serving.number}`
           : feed.data
-            ? `Nothing is live on ${env.name} yet`
+            ? feed.data.deployments.length
+              ? `${env.name} serves a deployment iii cloud's list does not show`
+              : `Nothing is live on ${env.name} yet`
             : null
       }
       flush
