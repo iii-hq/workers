@@ -875,6 +875,80 @@ describe('entrySegments', () => {
     })
   })
 
+  // chat-projects §3.3.5 (contract C): the record says what fired it.
+  it.each([
+    [
+      'auto',
+      {
+        trigger: 'auto',
+        threshold_tokens: 160_000,
+        rule: { scope: 'project', project_id: 'p', project_name: 'acme-web' },
+        context_before: 161_000,
+        context_after: 34_000,
+      },
+      'Auto-compacted at 160k · 161k → 34k tokens · acme-web rule',
+    ],
+    [
+      'inline',
+      {
+        trigger: 'inline',
+        threshold_tokens: 160_000,
+        rule: { scope: 'global' },
+        context_before: 183_000,
+        context_after: 31_000,
+      },
+      'Auto-compacted during the turn at 160k · 183k → 31k tokens · global rule',
+    ],
+    [
+      'limit',
+      { trigger: 'limit', context_before: 116_000, context_after: 30_000 },
+      "Compacted at the model's limit · 116k → 30k tokens",
+    ],
+  ])('writes the %s marker from the record', (trigger, fields, text) => {
+    const [marker] = entrySegments({
+      entry_id: `e-${trigger}`,
+      custom: {
+        custom_type: 'compaction',
+        data: {
+          summary: 'older turns',
+          tokens_before: 161_000,
+          source: 'auto',
+          timestamp: 9,
+          ...fields,
+        },
+      },
+    })
+    expect(marker).toMatchObject({
+      role: 'system',
+      kind: 'compaction',
+      content: text,
+      summaryText: 'older turns',
+      compaction: { trigger },
+    })
+  })
+
+  it('keeps /compact and an older record as they read today', () => {
+    for (const data of [
+      {
+        summary: 's',
+        tokens_before: 1200,
+        trigger: 'command',
+        source: 'command',
+      },
+      { summary: 's', tokens_before: 1200 },
+    ]) {
+      const [marker] = entrySegments({
+        entry_id: 'e-c',
+        custom: { custom_type: 'compaction', data },
+      })
+      expect(marker).toMatchObject({
+        kind: 'compaction',
+        content: 'compacted 1,200 tokens',
+      })
+      expect(marker).not.toHaveProperty('compaction')
+    }
+  })
+
   it('maps a called reaction outcome as info, never the failed fallback', () => {
     const [notice] = entrySegments({
       entry_id: 'e-r',

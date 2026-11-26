@@ -1,4 +1,5 @@
 import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
+import type { CompactionFacts } from '@/lib/autocompact'
 import type { MemoryNote } from '@/lib/memory-note'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
@@ -370,6 +371,12 @@ export interface SystemMessage extends BaseMessage {
   provisional?: boolean
   summaryText?: string
   tokensBefore?: number
+  /**
+   * A `compaction` record's phase-3 fields (trigger, threshold, rule, the
+   * context before and after, chat-projects contract C). Absent from older
+   * records, which read as before.
+   */
+  compaction?: CompactionFacts
   /** Present on `kind: 'observer-fired'`. */
   observer?: ObserverFiredData
 }
