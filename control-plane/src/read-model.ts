@@ -391,7 +391,10 @@ export async function fetchControlPlaneRuns(
   )
   const roots = sessions.filter(
     (session) =>
-      !excluded.has(session.session_id) && !session.metadata?.spawned_by && session.kind !== 'e2e',
+      !excluded.has(session.session_id) &&
+      !session.metadata?.spawned_by &&
+      !session.metadata?.parent_session_id &&
+      session.kind !== 'e2e',
   )
   const rows = await Promise.all(
     roots.map(async (session) => {
@@ -442,6 +445,13 @@ export async function fetchControlPlaneRuns(
         }
       }
       await visit(effective.children)
+      // Workflow nodes nest by metadata, not as harness children; ended ones are only named: a run leaves dozens.
+      // `seen` holds the root and every harness descendant, so a spawned orchestrator's nodes count too.
+      const nodes = sessions.filter((node) => {
+        const parent = node.metadata?.parent_session_id
+        return typeof parent === 'string' && seen.has(parent)
+      })
+      await visit(nodes.filter((node) => node.status !== 'done' && node.status !== 'error'))
       const subtasks = linkedTicket(session)
         ? await iii
             .call<{ tickets: ControlPlaneTicket[] }>('kanban::ticket::list', {
@@ -456,7 +466,9 @@ export async function fetchControlPlaneRuns(
         subtasks,
         runningChildren: descendants.filter((child) => child.status === 'running').length,
         childOpenAsks: descendants.reduce((sum, child) => sum + (child.open_asks ?? 0), 0),
-        descendantSessionIds: descendants.map((child) => child.session_id),
+        descendantSessionIds: [
+          ...new Set([...descendants, ...nodes].map((child) => child.session_id)),
+        ],
         lastAssistant: lastAssistant(tail.messages ?? []),
         endsWithQuestion: endsWithQuestion(tail.messages ?? []),
         context_size: context?.total ?? 0,
