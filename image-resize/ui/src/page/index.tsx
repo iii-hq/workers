@@ -51,7 +51,7 @@ const STRATEGIES: SelectOption<Strategy>[] = [
   {
     value: 'crop-to-fit',
     label: 'Crop to fit',
-    description: "Centre-crops to the box's aspect ratio, then shrinks.",
+    description: "Centre-crops to the box's shape, then shrinks.",
   },
 ]
 const FORMATS: SelectOption<Format>[] = [
@@ -196,7 +196,7 @@ export function ImageResizeView({
                   src={urls.result}
                   alt={`Resized: ${name}`}
                   title={name}
-                  description={`${size} · ${formatBytes(blob.size)} · ${blob.type}`}
+                  description={`${formatBytes(blob.size)} · ${blob.type}`}
                 />
               </>
             )}
@@ -271,6 +271,7 @@ export function ImageResizeView({
             variant="secondary"
             size={source ? 'sm' : undefined}
             data-autofocus=""
+            data-settings-narrow-action=""
             onClick={handlers.onChoose}
           >
             {source ? 'Choose another' : 'Choose an image'}
@@ -444,7 +445,7 @@ export function ImageResizeView({
                         src={urls.source}
                         alt={`Original: ${source.file.name}`}
                         title={source.file.name}
-                        description={original.map((item) => item.value).join(' · ')}
+                        description={`${formatBytes(source.file.size)} · ${source.file.type || 'unknown'}`}
                       />
                     </>
                   )}
@@ -452,7 +453,7 @@ export function ImageResizeView({
               )}
               <MetaRow items={original} />
             </div>
-            <div className="imgr-figure" ref={refs.result}>
+            <div className="imgr-figure" ref={refs.result} tabIndex={-1}>
               <Eyebrow as="h2">Resized</Eyebrow>
               {resized}
             </div>
@@ -468,6 +469,11 @@ export function ImageResizeView({
       </div>
     </PageShell>
   )
+}
+
+/** Whether a call would drop `active` to the document: Resize disables, the Resized figure's controls unmount. */
+export function focusFallsWithCall(active: Element | null, figure: Element | null): boolean {
+  return !!active && (!!figure?.contains(active) || (active instanceof HTMLButtonElement && active.type === 'submit'))
 }
 
 /** An object URL for `blob`, revoked when the blob changes or the page unmounts. */
@@ -531,6 +537,7 @@ export function ImageResizePage({ host, onRequestClose, commands }: { host: Host
     setErrors({})
     const call = ++generation.current
     inFlight.current = call
+    if (focusFallsWithCall(document.activeElement, result.current)) result.current?.focus({ preventScroll: true })
     dispatch({ type: 'submit', generation: call })
     announce(`Resizing ${source.file.name}`)
     result.current?.scrollIntoView({ block: 'nearest' })

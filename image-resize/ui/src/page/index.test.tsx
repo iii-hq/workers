@@ -11,7 +11,7 @@ import {
   type State,
   StreamUnavailableError,
 } from '../lib/resize'
-import { ImageResizeView, type ImageResizeViewProps } from './index'
+import { focusFallsWithCall, ImageResizeView, type ImageResizeViewProps } from './index'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Button: ({
@@ -40,7 +40,9 @@ vi.mock('@iii-dev/console-ui', () => ({
       {children}
     </button>
   ),
-  ImageViewer: () => null,
+  ImageViewer: ({ title, description }: { title?: string; description?: string }) => (
+    <figure data-viewer={title}>{description}</figure>
+  ),
   Input: ({ onChange: _onChange, ...props }: { onChange?: unknown } & Omit<ComponentProps<'input'>, 'onChange'>) => (
     <input readOnly {...props} />
   ),
@@ -156,6 +158,7 @@ describe('ImageResizeView', () => {
     const html = render()
     expect(html).toContain('Drop a JPEG, PNG or WebP image here')
     expect(html).toMatch(/<button[^>]*data-variant="secondary"[^>]*data-autofocus=""[^>]*>Choose an image<\/button>/)
+    expect(html).toMatch(/<button[^>]*data-settings-narrow-action=""[^>]*>Choose an image<\/button>/)
     expect(html.match(/data-variant="secondary"/g)).toHaveLength(1)
     expect(html).not.toContain('data-compact')
     expect(html).toContain('No image yet|Images up to 64 MiB can be resized here and compared with the original.')
@@ -173,6 +176,10 @@ describe('ImageResizeView', () => {
     expect(html).toContain('src="blob:source" alt="Original: photo.jpg"')
     expect(html).toContain('1600 × 1200')
     expect(html).toContain('Not resized yet|Set the options and select Resize.')
+    // The viewer prints the picture's own size before the description.
+    expect(html).toContain(`<figure data-viewer="photo.jpg">${formatBytes(1000)} · image/jpeg</figure>`)
+    // Focus lands here when Resize disables or Try again unmounts.
+    expect(html).toMatch(/<div class="imgr-figure" tabindex="-1"><span>Resized<\/span>/)
     expect(html).toContain('1 to 100, for JPEG and WebP.')
     expect(resizeButton(html)).not.toContain('disabled')
   })
@@ -210,6 +217,7 @@ describe('ImageResizeView', () => {
     }
     const html = render({ state, urls: { source: 'blob:source', result: 'blob:result' } })
     expect(html).toContain('src="blob:result" alt="Resized: photo_200x150.webp"')
+    expect(html).toContain(`<figure data-viewer="photo_200x150.webp">${formatBytes(180)} · image/webp</figure>`)
     expect(html).toContain('200 × 150')
     expect(html).toContain('1600 × 1200')
     expect(html).toContain('<div data-tone="ok"><dt>Change</dt><dd>-82%</dd></div>')
@@ -258,5 +266,30 @@ describe('ImageResizeView', () => {
     expect(html).toMatch(/data-row="width">Width<p role="alert">Enter a whole number of pixels, 1 or more.<\/p>/)
     expect(html).toMatch(/data-row="quality">Quality.*<p role="alert">Enter a quality from 1 to 100.<\/p>/)
     expect(html).not.toMatch(/data-row="height">Height<p role="alert">/)
+  })
+})
+
+describe('focusFallsWithCall', () => {
+  it('catches Resize and every control in the Resized figure, the Download link included', () => {
+    // Node has no DOM: a stand-in for the button class the check relies on.
+    class Button {
+      constructor(readonly type: string) {}
+    }
+    vi.stubGlobal('HTMLButtonElement', Button)
+    const resize = new Button('submit')
+    const tryAgain = new Button('button')
+    const download = { tagName: 'A' }
+    const option = { tagName: 'INPUT' }
+    const figure = { contains: (node: unknown) => node === tryAgain || node === download }
+    const falls = (active: object | null) => focusFallsWithCall(active as Element | null, figure as unknown as Element)
+    try {
+      expect(falls(resize)).toBe(true)
+      expect(falls(tryAgain)).toBe(true)
+      expect(falls(download)).toBe(true)
+      expect(falls(option)).toBe(false)
+      expect(falls(null)).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

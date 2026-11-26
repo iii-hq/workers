@@ -135,8 +135,10 @@ export function downloadName(sourceName: string, result: Pick<ResizeResult, 'for
 /** The output size against the input's: the output is always re-encoded and can grow. */
 export function sizeChange(before: number, after: number): { text: string; tone: 'ok' | 'warn' | 'ink' } {
   if (after === before) return { text: 'same size', tone: 'ink' }
-  const percent = Math.round((Math.abs(after - before) / before) * 100)
   const smaller = after < before
+  const rounded = Math.round((Math.abs(after - before) / before) * 100)
+  // An output that exists never shrank by 100%.
+  const percent = smaller ? Math.min(rounded, 99) : rounded
   return { text: `${smaller ? '-' : '+'}${percent < 1 ? '<1' : percent}%`, tone: smaller ? 'ok' : 'warn' }
 }
 

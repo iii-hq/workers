@@ -18,7 +18,7 @@ const STRATEGIES: SelectOption<Strategy>[] = [
   {
     value: 'crop-to-fit',
     label: 'Crop to fit',
-    description: "Centre-crops to the box's aspect ratio, then shrinks.",
+    description: "Centre-crops to the box's shape, then shrinks.",
   },
 ]
 

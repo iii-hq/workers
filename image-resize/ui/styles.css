@@ -37,6 +37,8 @@
    longer the centre of the page. */
 [data-iii-ui="image-resize"] .imgr-drop[data-compact] {
   flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-start;
   gap: 0.5rem;
   padding: 0.5rem 0.5rem 0.5rem 0.75rem;
 }
@@ -51,8 +53,9 @@
   font-size: 0.8125rem;
 }
 
+/* The buttons wrap under the name before it shrinks past reading. */
 [data-iii-ui="image-resize"] .imgr-drop[data-compact] .imgr-drop-label {
-  flex: 1;
+  flex: 1 1 8rem;
 }
 
 [data-iii-ui="image-resize"] .imgr-drop-name {
@@ -97,6 +100,13 @@
   min-width: 0;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/* The result figure holds focus while Resize is disabled; same stroke as the console's focusable regions. */
+[data-iii-ui="image-resize"] .imgr-figure:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 4px;
 }
 
 [data-iii-ui="image-resize"] .imgr-frame {

@@ -184,6 +184,10 @@ describe('sizeChange', () => {
     expect(sizeChange(1000, 1000)).toEqual({ text: 'same size', tone: 'ink' })
     expect(sizeChange(100_000, 100_001)).toEqual({ text: '+<1%', tone: 'warn' })
   })
+
+  it('never reads an image as shrunk by 100%', () => {
+    expect(sizeChange(1_848_667, 4_886)).toEqual({ text: '-99%', tone: 'ok' })
+  })
 })
 
 const file = (name: string, size = 1024) => ({ name, size, type: 'image/png' }) as File
