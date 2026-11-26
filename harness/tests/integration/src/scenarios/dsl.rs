@@ -712,6 +712,9 @@ impl ControlledFunction {
 
 pub(super) struct Request {
     turn_request: bool,
+    /// context-manager's summariser call (`router::chat` from
+    /// `context::compact`), not a turn step: it carries no request id.
+    summary: bool,
     turn_steps: Option<Vec<u64>>,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
@@ -723,6 +726,7 @@ impl Request {
     pub(super) fn new() -> Self {
         Self {
             turn_request: false,
+            summary: false,
             turn_steps: None,
             system_prompt: None,
             messages: None,
@@ -745,6 +749,28 @@ impl Request {
     pub(super) fn turn_request(mut self) -> Self {
         self.turn_request = true;
         self
+    }
+
+    /// context-manager's summariser request (`context::compact`): no request
+    /// id, a system prompt, one user message holding the transcript to
+    /// summarise, no tools and no provider options. The scenario's `verify`
+    /// reads what the transcript held from the router evidence.
+    pub(super) fn summary() -> Self {
+        Self {
+            summary: true,
+            system_prompt: Some(JsonMatcherV1::Regex {
+                pattern: "(?s).+".into(),
+            }),
+            messages: Some(JsonMatcherV1::Subset {
+                expected: json!([{ "role": "user", "content": [{ "type": "text" }] }]),
+                normalize: None,
+            }),
+            tools: Some(JsonMatcherV1::Exact {
+                expected: json!([]),
+                normalize: None,
+            }),
+            ..Self::new()
+        }
     }
 
     pub(super) fn turn_request_step(self, step: u64) -> Self {
@@ -855,34 +881,42 @@ impl Request {
     }
 
     fn compile(self, model: &ModelFixtureV1, ordinal: u64) -> GenerationMatchV1 {
-        assert!(self.turn_request, "request id matcher is required");
+        assert!(
+            self.turn_request || self.summary,
+            "request id matcher is required"
+        );
+        let summary = self.summary;
         GenerationMatchV1 {
             writer_ref: JsonMatcherV1::Subset {
                 expected: json!({ "direction": "write" }),
                 normalize: None,
             },
-            request_id: JsonMatcherV1::Regex {
-                pattern: self.turn_steps.map_or_else(
-                    || {
-                        if ordinal == 1 {
-                            "^t_[0-9a-f]{32}:[0-9]+$".to_string()
-                        } else {
-                            format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
-                        }
-                    },
-                    |steps| {
-                        let suffix = steps
-                            .iter()
-                            .map(u64::to_string)
-                            .collect::<Vec<_>>()
-                            .join("|");
-                        if steps.len() == 1 {
-                            format!("^t_[0-9a-f]{{32}}:{suffix}$")
-                        } else {
-                            format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
-                        }
-                    },
-                ),
+            request_id: if summary {
+                JsonMatcherV1::Absent
+            } else {
+                JsonMatcherV1::Regex {
+                    pattern: self.turn_steps.map_or_else(
+                        || {
+                            if ordinal == 1 {
+                                "^t_[0-9a-f]{32}:[0-9]+$".to_string()
+                            } else {
+                                format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
+                            }
+                        },
+                        |steps| {
+                            let suffix = steps
+                                .iter()
+                                .map(u64::to_string)
+                                .collect::<Vec<_>>()
+                                .join("|");
+                            if steps.len() == 1 {
+                                format!("^t_[0-9a-f]{{32}}:{suffix}$")
+                            } else {
+                                format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
+                            }
+                        },
+                    ),
+                }
             },
             model: exact(json!(model.id)),
             provider: exact(json!(model.provider)),
