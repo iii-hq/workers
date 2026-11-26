@@ -43,11 +43,11 @@ Every `metadata` key is optional:
 | `strategy` | `scale-to-fit` fits the image inside the box; `crop-to-fit` centre-crops it to the box's aspect ratio, then shrinks it to the box | the configured strategy (`scale-to-fit`) |
 | `quality` | 1-100; ignored for `png` | the configured quality (jpeg 85, webp 80) |
 
-Any other key in `metadata` is rejected with `INVALID_ARGS`. The input format
-is detected from the bytes. `output_channel` also carries the result as one
-JSON text frame before the image bytes; byte readers and sinks such as
-`OutputStream.to` never see it. [`example/`](example) is a small app that
-serves thumbnails over HTTP with this call.
+Any other key, in `metadata` or beside it, is rejected with `INVALID_ARGS`.
+The input format is detected from the bytes. `output_channel` also carries the
+result as one JSON text frame before the image bytes; byte readers and sinks
+such as `OutputStream.to` never see it. [`example/`](example) is a small app
+that serves thumbnails over HTTP with this call.
 
 ## Configuration
 

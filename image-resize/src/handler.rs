@@ -24,6 +24,10 @@ pub struct ResizeRequest {
     // and can abort it; a typed field would fail inside the SDK before that.
     #[schemars(with = "Option<ImageMetadata>")]
     pub metadata: Option<Value>,
+    // Rejected in `run` so output_channel is aborted; unskipped, the schema would allow any key.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub rest: serde_json::Map<String, Value>,
 }
 
 /// Every binary frame of the input, up to `cap` bytes in all.
@@ -74,6 +78,12 @@ async fn run(
     permits: Arc<Semaphore>,
     req: &ResizeRequest,
 ) -> Result<ThumbnailMetadata, Error> {
+    // The engine adds `_`-prefixed keys such as `_caller_worker_id`.
+    if let Some(key) = req.rest.keys().find(|k| !k.starts_with('_')) {
+        return Err(invalid(format!(
+            "unknown request key `{key}`; per-call options go in `metadata`"
+        )));
+    }
     let meta = match &req.metadata {
         None | Some(Value::Null) => ImageMetadata::default(),
         Some(value) => ImageMetadata::deserialize(value)

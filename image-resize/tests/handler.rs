@@ -13,7 +13,7 @@ use image::{DynamicImage, ImageFormat, RgbImage};
 use image_resize::config::{ResizeConfig, ResizeStrategy};
 use image_resize::handler::{ResizeRequest, read_image, resize};
 use image_resize::processing::{Format, ThumbnailMetadata};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 
@@ -46,7 +46,12 @@ struct Call {
     output: String,
 }
 
-async fn call_with(input: InputStream, metadata: Option<Value>, permits: Arc<Semaphore>) -> Call {
+async fn call_with(
+    input: InputStream,
+    metadata: Option<Value>,
+    permits: Arc<Semaphore>,
+    rest: Map<String, Value>,
+) -> Call {
     let (writer, mut reader) = tokio::io::duplex(8 << 20);
     let output_channel = OutputStream::to_writer(writer);
     let probe = output_channel.clone();
@@ -54,6 +59,7 @@ async fn call_with(input: InputStream, metadata: Option<Value>, permits: Arc<Sem
         input_channel: input,
         output_channel,
         metadata,
+        rest,
     };
     let result = resize(Arc::new(ResizeConfig::default()), permits, req).await;
     let mut bytes = Vec::new();
@@ -73,6 +79,7 @@ async fn call(input: Vec<u8>, metadata: Option<Value>) -> Call {
         InputStream::from_bytes(input),
         metadata,
         Arc::new(Semaphore::new(1)),
+        Map::new(),
     )
     .await
 }
@@ -153,6 +160,7 @@ async fn large_input_in_64k_frames_resizes() {
         InputStream::from_reader(Cursor::new(input)),
         Some(json!({ "strategy": "crop-to-fit", "target_width": 64, "target_height": 64 })),
         Arc::new(Semaphore::new(1)),
+        Map::new(),
     )
     .await;
     let result = call.result.unwrap();
@@ -203,6 +211,28 @@ async fn bad_metadata_is_invalid_args_and_aborts_output() {
         assert!(
             message.contains("invalid metadata"),
             "{metadata}: {message}"
+        );
+    }
+    // No input bytes: only a check that runs before the input is read can report the metadata.
+    let message = rejected(call(Vec::new(), Some(json!({ "strategy": "crop" }))).await);
+    assert!(message.contains("invalid metadata"), "{message}");
+}
+
+#[tokio::test]
+async fn top_level_options_are_invalid_args() {
+    for (key, value) in [("target_width", json!(64)), ("metdata", json!({}))] {
+        let rest = Map::from_iter([(key.to_string(), value)]);
+        let call = call_with(
+            InputStream::from_bytes(png(400, 400)),
+            None,
+            Arc::new(Semaphore::new(1)),
+            rest,
+        )
+        .await;
+        let message = rejected(call);
+        assert!(
+            message.contains(&format!("unknown request key `{key}`")),
+            "{key}: {message}"
         );
     }
 }
@@ -294,6 +324,7 @@ async fn permits_gate_processing() {
         InputStream::from_bytes(png(20, 20)),
         None,
         permits.clone(),
+        Map::new(),
     ));
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!pending.is_finished(), "processed without a permit");
@@ -317,6 +348,16 @@ async fn payload_with_engine_keys_deserializes() {
     }))
     .unwrap();
     assert_eq!(req.metadata, Some(json!({ "target_width": 64 })));
+    assert_eq!(req.rest.keys().collect::<Vec<_>>(), ["_caller_worker_id"]);
+
+    let call = call_with(
+        InputStream::from_bytes(png(20, 20)),
+        None,
+        Arc::new(Semaphore::new(1)),
+        req.rest,
+    )
+    .await;
+    assert_eq!(call.result.unwrap().width, 20);
 }
 
 #[tokio::test]
