@@ -112,6 +112,9 @@ async function testSessionActions(code) {
     });
     const { document } = window;
     t.after(() => window.close());
+    const interval = window.setInterval.bind(window);
+    window.setInterval = (callback, delay, ...args) =>
+      interval(callback, Math.min(delay, 50), ...args);
     window.eval(code);
     const until = (read) =>
       new Promise((resolve, reject) => {
@@ -159,6 +162,23 @@ async function testSessionActions(code) {
     await text('No assistant reply yet.');
     assert.equal(document.querySelector('[role="log"]').textContent, 'No assistant reply yet.');
     assert.match(document.querySelector('main').textContent, /Terminals created:\s*0$/);
+  });
+
+  await test('does not publish an abandoned delivery when another branch has a reply', async (t) => {
+    const { follow, shortcut, text, document } = setup(t);
+    await follow();
+    shortcut('KeyN');
+    await text('Current branch answer');
+    assert.equal(document.querySelector('[role="log"]').textContent, 'Current branch answer');
+  });
+
+  await test('recovers both replies written before observer admission', async (t) => {
+    const { click, follow, shortcut, text, document } = setup(t);
+    await click('Delay reply observer admission');
+    await follow();
+    shortcut('KeyA');
+    await text('Review update 3:');
+    assert.match(document.querySelector('[role="log"]').textContent, /Review update 2:/);
   });
 
   await test('renders every rapid active-branch delivery in order without duplicates', async (t) => {

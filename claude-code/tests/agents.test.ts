@@ -1,6 +1,12 @@
+import { appendFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
 import type { SessionRecord } from '../src/types.js';
+import {
+  record as transcriptRecord,
+  recordId,
+  withSyntheticHost,
+} from './_helpers/external-replies-host.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 
 // The runs this worker holds, without driving a real one.
@@ -478,6 +484,69 @@ describe('claude::agents::stop', () => {
       stopped: false,
       reason: 'claude stop failed: exit 1: no such session',
     });
+  });
+});
+
+describe('claude::agents::follow-snapshot', () => {
+  const function_id = 'claude::agents::follow-snapshot';
+
+  it('reads an ordered burst and excludes a branch abandoned since the first view', async () => {
+    await withSyntheticHost(async ({ client, claude_session_id, file }) => {
+      const append = (...records: ReturnType<typeof transcriptRecord>[]) =>
+        appendFile(file, records.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      const snapshot = (cursor?: string) =>
+        client.call({
+          function_id,
+          payload: { claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          replies: Array<{ id: string; text: string }>;
+          last_reply: { id: string; text: string } | null;
+        }>;
+      await append(transcriptRecord(2, 1, 'assistant', 'initial latest'));
+      const initial = await snapshot();
+      expect(initial).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(2), text: 'initial latest' },
+      });
+      const burst = Array.from({ length: 21 }, (_, i) => ({
+        id: recordId(i + 3),
+        text: 'Reply ' + (i + 1),
+      }));
+      await append(
+        ...burst.map(({ text }, i) => transcriptRecord(i + 3, i + 2, 'assistant', text)),
+      );
+      const updated = await snapshot(initial.cursor);
+      expect(updated.replies).toEqual(burst);
+      expect(updated.last_reply).toEqual(burst.at(-1));
+      expect((await snapshot(updated.cursor)).replies).toEqual([]);
+      await append(transcriptRecord(24, 1, 'user', 'switch branch'));
+      expect(await snapshot(initial.cursor)).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(snapshot('bad-' + initial.cursor)).rejects.toThrow('invalid follow cursor');
+    });
+  });
+
+  it('does not read transcript data after a lookup loses its live visibility epoch', async () => {
+    let epoch: number | null = 1;
+    const id = '7e64247f-5095-4a53-9b54-2d8d61b20356';
+    const fake = host(
+      () => {
+        epoch = null;
+        return ok([interactive(id, 'idle')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const snapshot = fake.registered.get(function_id);
+    if (!snapshot) throw new Error('follow snapshot was not registered');
+    await expect(snapshot({ claude_session_id: id })).rejects.toThrow('reply access disabled');
+    expect(
+      fake.calls
+        .filter((call) => call.function_id === 'shell::exec')
+        .map((call) => call.payload.command),
+    ).toEqual(["'/opt/claude bin/claude' agents --json --all"]);
   });
 });
 

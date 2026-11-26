@@ -45,6 +45,10 @@ const reply = () => ({
 });
 type Reply = ReturnType<typeof reply>;
 let lastReply: Reply | null = reply();
+let offset = 1;
+let activeReplies = [{ offset, reply: lastReply }];
+let delayAdmission = false;
+let afterLookup: (() => void) | undefined;
 let holdNextLookup: Promise<void> | undefined;
 const host = {
   iii: {
@@ -58,8 +62,17 @@ const host = {
       target: string,
     ) {
       const w = { source: typeof source === 'string' ? { function_id: source } : source, target };
-      watches.add(w);
-      return () => watches.delete(w);
+      let removed = false;
+      const admit = () => {
+        if (!removed) watches.add(w);
+      };
+      if (delayAdmission && w.source.function_id === 'claude::agents::on-reply')
+        afterLookup = admit;
+      else admit();
+      return () => {
+        removed = true;
+        watches.delete(w);
+      };
     },
     addConnectionStateListener: () => () => {},
     async call(
@@ -69,18 +82,29 @@ const host = {
         claude_session_id?: string;
         mode?: string;
         reopen_held_resume?: boolean;
+        cursor?: string;
       },
     ) {
       if (fn === 'claude::agents::list') return { agents: allowed ? rows : [rows[1]] };
       const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
       if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
         throw new Error('Session unavailable');
-      if (fn === 'claude::agents::get') {
+      if (fn === 'claude::agents::get' || fn === 'claude::agents::follow-snapshot') {
         const hold = holdNextLookup;
         holdNextLookup = undefined;
         if (hold) await hold;
         if (!allowed) throw new Error('Session unavailable');
-        return { ...row, last_reply: lastReply };
+        return {
+          ...row,
+          last_reply: lastReply,
+          cursor: String(offset),
+          replies:
+            p.cursor === undefined
+              ? []
+              : activeReplies
+                  .filter((entry) => entry.offset > Number(p.cursor))
+                  .map((entry) => entry.reply),
+        };
       }
       if (fn === 'claude::terminal::describe') {
         if (p.mode === 'original' && row.pty_session_id)
@@ -180,23 +204,27 @@ function Preview() {
     if (allowed) {
       sequence++;
       lastReply = reply();
+      activeReplies.push({ offset: ++offset, reply: lastReply });
       emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: lastReply });
     }
   };
-  const scenario = (mode: 'stale' | 'burst') => {
+  const scenario = (mode: 'stale' | 'sibling' | 'burst') => {
     // Hold the first post-delivery read until all deliveries (or the branch
     // switch) have happened. No dependence on network speed or a timer.
     let release = () => {};
     holdNextLookup = new Promise<void>((resolve) => {
       release = resolve;
     });
-    if (mode === 'stale') {
+    if (mode !== 'burst') {
       lastReply = { id: 'abandoned-reply', text: 'Abandoned branch answer' };
       emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: lastReply });
-      lastReply = null;
+      offset++;
+      lastReply = mode === 'stale' ? null : { id: 'sibling-base', text: 'Current branch answer' };
+      activeReplies = lastReply ? [{ offset: 1, reply: lastReply }] : [];
     } else {
       for (let i = 1; i <= 21; i++) {
         lastReply = { id: `burst-${i}`, text: `Burst reply ${i}` };
+        activeReplies.push({ offset: ++offset, reply: lastReply });
         const event = { claude_session_id: rows[0].id, reply: lastReply };
         emit('claude::agents::on-reply', event);
         if (i === 1) emit('claude::agents::on-reply', event);
@@ -209,6 +237,12 @@ function Preview() {
     if (!e.altKey || e.repeat) return;
     if (e.code === 'KeyU') deliver();
     if (e.code === 'KeyS') scenario('stale');
+    if (e.code === 'KeyN') scenario('sibling');
+    if (e.code === 'KeyA') {
+      deliver();
+      deliver();
+      afterLookup?.();
+    }
     if (e.code === 'KeyB') scenario('burst');
   };
   return (
@@ -259,6 +293,14 @@ function Preview() {
               }}
             >
               Expire detached finished PTY
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                delayAdmission = true;
+              }}
+            >
+              Delay reply observer admission
             </button>
             <span>
               While following: Alt+S switches to an empty branch; Alt+B delivers 21 replies.

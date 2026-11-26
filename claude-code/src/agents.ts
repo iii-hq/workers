@@ -6,10 +6,12 @@
  * read as untrusted.
  */
 
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
+import { readTranscript, Reply } from './terminal/external-transcript.js';
 import { exec, quote } from './terminal/host.js';
 import type { Prepared } from './terminal/workspace.js';
 import { TURN_SCOPE } from './turns.js';
@@ -494,5 +496,82 @@ export function registerAgents(
     return { row, env: host.env };
   };
 
+  const followKey = randomBytes(32);
+  const followArgs = z.strictObject({
+    claude_session_id: z.guid(),
+    cursor: z.string().max(256).optional(),
+  });
+  const sign = (id: string, epoch: number, cursor: string) =>
+    createHmac('sha256', followKey)
+      .update(JSON.stringify([id, epoch, cursor]))
+      .digest();
+  iii.registerFunction(
+    'claude::agents::follow-snapshot',
+    async (payload: unknown) => {
+      const epoch = visibilityEpoch();
+      const guard = () => {
+        if (epoch === null || epoch !== visibilityEpoch()) throw new Error('reply access disabled');
+        return epoch;
+      };
+      async function authorized<T>(read: () => Promise<T>) {
+        guard();
+        try {
+          return await read();
+        } finally {
+          guard();
+        }
+      }
+      const generation = guard();
+      const { claude_session_id: id, cursor } = followArgs.parse(payload);
+      let boundary: string | undefined;
+      if (cursor !== undefined) {
+        const parsed = /^([0-9]+:[0-9]+:[0-9]+:[a-f0-9]{64})[.]([a-f0-9]{64})$/.exec(cursor);
+        if (
+          !parsed ||
+          !timingSafeEqual(Buffer.from(parsed[2], 'hex'), sign(id, generation, parsed[1]))
+        )
+          throw new Error('invalid follow cursor');
+        boundary = parsed[1];
+      }
+      const { row, env } = await authorized(() => replyRow(id));
+      const since = boundary
+        ? await authorized(() => readTranscript(iii, env, id, 'since', boundary))
+        : undefined;
+      // A sibling may still have an older reply. Only combine results from
+      // the same snapshot; another event or heartbeat can retry a moving file.
+      const latest = since?.replies.length
+        ? since
+        : await authorized(() => readTranscript(iii, env, id, 'last'));
+      guard();
+      if (since && since.cursor !== latest.cursor) return { retry: true };
+      return {
+        claude_session_id: id,
+        name: row.name ?? null,
+        status: row.status,
+        last_reply: latest.replies.at(-1) ?? null,
+        replies: since?.replies ?? [],
+        cursor: [latest.cursor, sign(id, generation, latest.cursor).toString('hex')].join('.'),
+      };
+    },
+    {
+      description: 'Read the active replies since a viewer baseline, or the current latest reply.',
+      observable: false,
+      metadata: { trace_hidden: true },
+      request_format: jsonSchema(followArgs),
+      response_format: jsonSchema(
+        z.union([
+          z.object({ retry: z.literal(true) }),
+          z.object({
+            claude_session_id: z.guid(),
+            name: z.string().nullable(),
+            status: z.string(),
+            last_reply: Reply.nullable(),
+            replies: z.array(Reply),
+            cursor: z.string(),
+          }),
+        ]),
+      ),
+    },
+  );
   return { resolveOpen, heldElsewhere, replyRow };
 }

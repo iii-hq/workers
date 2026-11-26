@@ -25,7 +25,6 @@ export const STATUS: Record<
   unknown: { word: 'Unknown', tone: 'ghost' },
 };
 
-const RECENT_REPLIES = 20;
 type Reply = { id: string; text: string };
 type ReplyDelivery = { claude_session_id: string; reply: Reply };
 type Snapshot = {
@@ -33,10 +32,10 @@ type Snapshot = {
   name: string | null;
   status: Status;
   last_reply: Reply | null;
+  replies: Reply[];
+  cursor: string;
 };
-type View =
-  | { state: 'loading' | 'unavailable' }
-  | { state: 'ready'; data: Snapshot; recent: Reply[] };
+type View = { state: 'loading' | 'unavailable' } | { state: 'ready'; data: Snapshot };
 
 function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
   const [view, setView] = useState<View>({ state: 'loading' });
@@ -48,13 +47,10 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
     let active = true;
     let reading = false;
     let again = false;
-    let recent = new Map<string, Reply>();
-    const pending = new Map<string, Reply>();
+    let cursor: string | undefined;
     const cleanup: (() => void)[] = [];
     const stop = () => {
       active = false;
-      recent.clear();
-      pending.clear();
       for (const off of cleanup.splice(0).reverse()) off();
     };
     const unavailable = () => {
@@ -72,24 +68,28 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
       try {
         do {
           again = false;
-          const data = await iii.call<Snapshot>(
-            'claude::agents::get',
-            { claude_session_id: id },
+          const data = await iii.call<Snapshot | { retry: true }>(
+            'claude::agents::follow-snapshot',
+            { claude_session_id: id, ...(cursor ? { cursor } : {}) },
             { timeoutMs: 30000 },
           );
+          if ('retry' in data) continue;
           if (data.claude_session_id !== id) throw new Error('Session changed');
           if (active && !again) {
-            if (data.last_reply === null) {
-              // The active branch has no assistant text. Even a valid reply
-              // delivery can have come from a branch abandoned since the poll.
-              recent.clear();
-            } else if (pending.size) {
-              // Trim only previously displayed history, never an unpublished
-              // burst. The observer can deliver many replies in one poll.
-              recent = new Map([...Array.from(recent).slice(-RECENT_REPLIES), ...pending]);
-            }
-            pending.clear();
-            setView({ state: 'ready', data, recent: Array.from(recent.values()) });
+            const unchanged = cursor === data.cursor;
+            setView((previous) => ({
+              state: 'ready',
+              data: {
+                ...data,
+                replies:
+                  unchanged && previous.state === 'ready' ? previous.data.replies : data.replies,
+              },
+            }));
+            cursor = data.cursor;
+          } else {
+            // Keep the very first boundary; later coalesced reads must not
+            // consume a batch that has not actually been shown.
+            cursor ??= data.cursor;
           }
         } while (active && again);
       } catch {
@@ -105,12 +105,8 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
           // Custom deliveries carry captured output; ADE may also project it.
           const event = delivery && 'output' in delivery ? delivery.output : delivery;
           if (!active || event?.claude_session_id !== id) return;
-          const reply = event.reply;
-          if (typeof reply?.id !== 'string' || !reply.id || typeof reply.text !== 'string') return;
-          if (recent.has(reply.id) || pending.has(reply.id)) return;
-          // Keep the source's order, but publish only after a lookup started
-          // after delivery confirms this viewer still has access.
-          pending.set(reply.id, reply);
+          // Deliveries are wakeups, not authoritative text: the active
+          // branch may already have changed on the terminal host.
           void read();
         }),
       );
@@ -127,8 +123,8 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
           if (state !== 'connected') unavailable();
         }),
       );
-      // The host doesn't surface asynchronous observer admission or gaps. Bound
-      // stale state even if no event arrives; only this open dialog does a read.
+      // The cursor-based heartbeat also catches replies written before the
+      // asynchronous observer baseline completed, or missed by a delivery.
       const timer = window.setInterval(() => void read(), 30000);
       cleanup.push(() => window.clearInterval(timer));
       void read();
@@ -153,10 +149,8 @@ function Follow({ iii, id }: { iii: ExtensionIii; id: string }) {
       />
     );
   if (view.state !== 'ready') return <p role="status">Checking reply access…</p>;
-  const { data, recent } = view;
-  const last = data.last_reply;
-  const replies =
-    last && !recent.some((reply) => reply.id === last.id) ? [...recent, last] : recent;
+  const { data } = view;
+  const replies = data.replies.length ? data.replies : data.last_reply ? [data.last_reply] : [];
   return (
     <div className="claude-follow-content">
       <p className="claude-follow-state">
