@@ -139,6 +139,38 @@ fn tree_inventory(store: &Path, refs: &BTreeMap<String, String>) -> BTreeMap<Str
         .collect()
 }
 
+fn retain_symbolic_targets(store: &Path, retained: &mut BTreeSet<String>) {
+    let mut targets = BTreeMap::new();
+    for entry in std::fs::read_dir(store.join("repos")).unwrap() {
+        let repo = entry.unwrap().path();
+        let key = repo.file_name().unwrap().to_str().unwrap();
+        for line in git(
+            &repo,
+            &["for-each-ref", "--format=%(refname) %(symref)"],
+            None,
+        )
+        .lines()
+        {
+            let Some((name, resolved_target)) = line.split_once(' ') else {
+                continue;
+            };
+            if !resolved_target.is_empty() {
+                // %(symref) resolves a chain; keep its intermediate refs too.
+                let target = git(&repo, &["symbolic-ref", "--no-recurse", name], None);
+                targets.insert(format!("{key}/{name}"), format!("{key}/{target}"));
+            }
+        }
+    }
+    let mut pending: Vec<_> = retained.iter().cloned().collect();
+    while let Some(name) = pending.pop() {
+        if let Some(target) = targets.get(&name)
+            && retained.insert(target.clone())
+        {
+            pending.push(target.clone());
+        }
+    }
+}
+
 fn safe(value: &str) -> String {
     value
         .chars()
@@ -226,11 +258,34 @@ async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
         seed(&store, &run.join("missing-workspace"), "deleted", true);
         seed(&store, &run.join("missing-workspace"), "live", true);
         seed(&store, &run.join("orphan-workspace"), "orphan", false);
+        let foreign = seed(&store, &run.join("foreign-workspace"), "foreign", false);
+        let target = "refs/turns/foreign/turn/before";
+        let tree = git(&foreign, &["rev-parse", target], None);
+        git(&foreign, &["update-ref", "refs/keep/manual", &tree], None);
+        git(&foreign, &["symbolic-ref", "refs/keep/alias", target], None);
+        git(
+            &foreign,
+            &["symbolic-ref", "refs/turns/stale", "refs/keep/manual"],
+            None,
+        );
         BTreeSet::from(["live".to_owned()])
     };
     let before_records = records(&store);
     let before_refs = refs(&store);
-    let wanted = wanted_refs(&before_records, &live);
+    let mut wanted = wanted_refs(&before_records, &live);
+    wanted.extend(
+        before_refs
+            .keys()
+            .filter(|reference| {
+                !reference
+                    .split_once('/')
+                    .unwrap()
+                    .1
+                    .starts_with("refs/turns/")
+            })
+            .cloned(),
+    );
+    retain_symbolic_targets(&store, &mut wanted);
     let expected_records: BTreeMap<_, _> = before_records
         .iter()
         .filter(|(_, bytes)| {
@@ -379,8 +434,17 @@ async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
         actual_repos.len()
     );
     if external_copy.is_none() {
-        let repo = store.join("repos").join(actual_repos.first().unwrap());
-        let tree = expected_refs.values().next().unwrap();
+        let (reference, tree) = expected_refs
+            .iter()
+            .find(|(name, _)| name.ends_with("/refs/turns/live/turn/before"))
+            .unwrap();
+        let repo_key = reference.split_once('/').unwrap().0;
+        let repo = store.join("repos").join(repo_key);
+        let foreign_refs: BTreeMap<_, _> = expected_refs
+            .iter()
+            .filter(|(name, _)| !name.starts_with(&format!("{repo_key}/")))
+            .map(|(name, oid)| (name.clone(), oid.clone()))
+            .collect();
         assert_eq!(
             git(&repo, &["show", &format!("{tree}:file.txt")], None),
             "live"
@@ -397,7 +461,10 @@ async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
             .unwrap();
         wait_for(|| !repo.exists()).await;
         assert!(records(&store).is_empty());
-        eprintln!("session deletion event reclaimed the final shared repository");
+        assert_eq!(refs(&store), foreign_refs);
+        eprintln!(
+            "session deletion event reclaimed the shared repository and preserved foreign refs"
+        );
     }
     ide.kill().await.unwrap();
     ide.wait().await.unwrap();

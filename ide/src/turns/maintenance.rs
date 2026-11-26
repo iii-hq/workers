@@ -14,6 +14,7 @@ use super::*;
 
 const DELETED_FN_ID: &str = "shell::turns::on-session-deleted";
 const INTERVAL: Duration = Duration::from_secs(300);
+const MAX_LOOKUP_FAILURES: usize = 3;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SessionDeleted {
@@ -21,7 +22,7 @@ struct SessionDeleted {
 }
 
 #[derive(Debug, Default, Serialize)]
-struct Summary {
+pub(super) struct Summary {
     removed_sessions: usize,
     removed_refs: usize,
     removed_repos: usize,
@@ -31,7 +32,14 @@ struct Summary {
 struct StoredSession {
     path: PathBuf,
     bytes: Vec<u8>,
-    record: SessionRecord,
+    record: RetainedSession,
+}
+
+/// Cleanup requires a complete record, unlike the tolerant interactive reader.
+#[derive(Deserialize)]
+struct RetainedSession {
+    session_id: String,
+    turns: Vec<TurnRecord>,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -57,6 +65,7 @@ async fn entries(path: &Path) -> io::Result<Vec<tokio::fs::DirEntry>> {
     while let Some(entry) = dir.next_entry().await? {
         result.push(entry);
     }
+    result.sort_by_key(tokio::fs::DirEntry::file_name);
     Ok(result)
 }
 
@@ -73,7 +82,7 @@ async fn sessions(store: &Path) -> io::Result<Vec<StoredSession>> {
         let bytes = tokio::fs::read(&path).await?;
         // Unlike an interactive load, a corrupt record must abort cleanup:
         // treating it as an empty session would discard its snapshots.
-        let record: SessionRecord = serde_json::from_slice(&bytes).map_err(invalid_json)?;
+        let record: RetainedSession = serde_json::from_slice(&bytes).map_err(invalid_json)?;
         if record.session_id.is_empty()
             || path.file_stem().and_then(|s| s.to_str())
                 != Some(session_file_stem(&record.session_id).as_str())
@@ -146,42 +155,86 @@ async fn private_repo(repo: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) async fn drop_turn_refs(
-    repos: &Path,
-    root: &str,
-    session: &str,
-    turn: &str,
+async fn reconcile_repo(
+    repo: &Path,
+    expected: Option<&BTreeSet<String>>,
+    summary: &mut Summary,
 ) -> io::Result<()> {
-    let repo = repos.join(repo_key(root));
-    if !tokio::fs::try_exists(&repo).await? {
-        return Ok(());
+    private_repo(repo).await?;
+    let listing = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname) %(symref)",
+        ],
+    )
+    .await?;
+    let mut refs = BTreeMap::new();
+    let mut retained = expected.cloned().unwrap_or_default();
+    for line in listing.lines() {
+        let mut fields = line.splitn(3, ' ');
+        let (Some(name), Some(oid), Some(symref)) = (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(invalid("invalid snapshot ref listing"));
+        };
+        let target = if symref.is_empty() {
+            None
+        } else {
+            // %(symref) resolves the whole chain. Preserve intermediate refs.
+            Some(
+                git(repo, &["symbolic-ref", "--no-recurse", name])
+                    .await?
+                    .trim()
+                    .to_owned(),
+            )
+        };
+        refs.insert(name, (oid, target));
+        if !name.starts_with("refs/turns/") {
+            retained.insert(name.to_owned());
+        }
     }
-    private_repo(&repo).await?;
-    for side in [Side::Before, Side::After] {
-        git(
-            &repo,
-            &[
-                "update-ref",
-                "-d",
-                &ref_name(&session_file_stem(session), turn, side),
-            ],
-        )
-        .await?;
+    let mut pending: Vec<_> = retained.iter().cloned().collect();
+    while let Some(name) = pending.pop() {
+        if let Some((_, Some(target))) = refs.get(name.as_str())
+            && retained.insert(target.clone())
+        {
+            pending.push(target.clone());
+        }
+    }
+    for (name, (oid, _)) in refs {
+        if !retained.contains(name) {
+            git(repo, &["update-ref", "--no-deref", "-d", name, oid]).await?;
+            summary.removed_refs += 1;
+        }
+    }
+    if retained.is_empty() {
+        // The record scan and all writers share snapshot_gate. No retained
+        // snapshot or foreign ref needs these packs and abandoned indexes.
+        tokio::fs::remove_dir_all(repo).await?;
+        summary.removed_repos += 1;
     }
     Ok(())
 }
 
 impl TurnLog {
-    async fn reconcile_snapshots<F, Fut>(&self, exists: F) -> io::Result<Summary>
+    pub(super) async fn reconcile_snapshots<F, Fut>(&self, exists: F) -> io::Result<Summary>
     where
         F: Fn(String) -> Fut,
         Fut: Future<Output = Result<bool, Error>>,
     {
         let mut summary = Summary::default();
         let mut missing = BTreeMap::new();
+        let mut stored = sessions(&self.store.dir).await?;
+        if let Some(last) = self.maintenance_cursor.lock().await.take() {
+            let start = stored.partition_point(|session| session.path <= last);
+            stored.rotate_left(start);
+        }
+        let mut last = None;
+        let mut failures = 0;
         // Dependency calls are outside the write guard so an unavailable
         // session worker never stalls active turns. Recheck bytes under it.
-        for session in sessions(&self.store.dir).await? {
+        for session in stored {
+            last = Some(session.path.clone());
             match exists(session.record.session_id.clone()).await {
                 Ok(false) => {
                     missing.insert(session.path, session.bytes);
@@ -189,10 +242,16 @@ impl TurnLog {
                 Ok(true) => {}
                 Err(_) => {
                     summary.authority_unavailable = true;
-                    break;
+                    failures += 1;
+                    // An outage costs at most three failed calls per pass.
+                    // The cursor prevents persistent errors starving later IDs.
+                    if failures == MAX_LOOKUP_FAILURES {
+                        break;
+                    }
                 }
             }
         }
+        *self.maintenance_cursor.lock().await = last;
         let _guard = self.snapshot_gate.write().await;
         let current = sessions(&self.store.dir).await?;
         let mut expected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -218,6 +277,7 @@ impl TurnLog {
                 }
             }
         }
+        let mut first_error = None;
         for entry in entries(&self.repos_dir()).await? {
             let key = entry.file_name();
             let Some(key) = key
@@ -227,34 +287,13 @@ impl TurnLog {
                 continue;
             };
             let repo = entry.path();
-            private_repo(&repo).await?;
-            let refs = git(
-                &repo,
-                &["for-each-ref", "--format=%(refname) %(objectname)"],
-            )
-            .await?;
-            let mut foreign = false;
-            for line in refs.lines() {
-                let Some((name, oid)) = line.split_once(' ') else {
-                    return Err(invalid("invalid snapshot ref listing"));
-                };
-                if !name.starts_with("refs/turns/") {
-                    foreign = true;
-                } else if !expected
-                    .get(key)
-                    .is_some_and(|wanted| wanted.contains(name))
-                {
-                    git(&repo, &["update-ref", "-d", name, oid]).await?;
-                    summary.removed_refs += 1;
-                }
+            if let Err(error) = reconcile_repo(&repo, expected.get(key), &mut summary).await {
+                tracing::warn!(repo = key, %error, "turn snapshots: repository cleanup deferred");
+                first_error.get_or_insert(error);
             }
-            if !foreign && expected.get(key).is_none_or(BTreeSet::is_empty) {
-                // The record scan and all writers share snapshot_gate. The
-                // repository has no retained snapshots, so packs and abandoned
-                // indexes can go together without a costly repack.
-                tokio::fs::remove_dir_all(&repo).await?;
-                summary.removed_repos += 1;
-            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(summary)
     }
@@ -333,6 +372,247 @@ pub(super) fn register(iii: &IIIClient, log: Arc<TurnLog>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod review_regressions {
+        use super::*;
+
+        #[tokio::test]
+        async fn authority_outage_is_bounded_and_retries_visit_every_session() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let count = MAX_LOOKUP_FAILURES * 2 + 1;
+            for i in 0..count {
+                log.on_turn_started(&format!("session-{i}"), "turn")
+                    .await
+                    .unwrap();
+            }
+            let visited = std::sync::Mutex::new(Vec::new());
+            for _ in 0..3 {
+                let before = visited.lock().unwrap().len();
+                let result = log
+                    .reconcile_snapshots(|sid| {
+                        visited.lock().unwrap().push(sid);
+                        async { Err(Error::Timeout) }
+                    })
+                    .await
+                    .unwrap();
+                assert!(result.authority_unavailable);
+                assert!(visited.lock().unwrap().len() - before <= MAX_LOOKUP_FAILURES);
+                assert_eq!(sessions(&log.store.dir).await.unwrap().len(), count);
+            }
+            assert_eq!(
+                visited
+                    .into_inner()
+                    .unwrap()
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                count
+            );
+            log.reconcile_snapshots(|_| async { Ok(false) })
+                .await
+                .unwrap();
+            assert!(sessions(&log.store.dir).await.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn failed_session_lookup_does_not_hide_later_deleted_sessions() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (a, _) = snapshot(&log, &dir.path().join("a"), "a").await;
+            let (z, _) = snapshot(&log, &dir.path().join("z"), "z").await;
+            let first = sessions(&log.store.dir).await.unwrap()[0]
+                .record
+                .session_id
+                .clone();
+            let (kept, orphan) = if first == "a" { (a, z) } else { (z, a) };
+            let result = log
+                .reconcile_snapshots(|sid| {
+                    let fails = sid == first;
+                    async move {
+                        if fails {
+                            Err(Error::Timeout)
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            assert!(result.authority_unavailable);
+            assert_eq!(result.removed_sessions, 1);
+            assert!(kept.exists());
+            assert!(!orphan.exists());
+            assert!(log.store.session_path(&first).exists());
+        }
+
+        #[tokio::test]
+        async fn malformed_repository_does_not_block_other_orphans() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (a, _) = snapshot(&log, &dir.path().join("a"), "a").await;
+            let (z, _) = snapshot(&log, &dir.path().join("z"), "z").await;
+            let bad = entries(&log.repos_dir()).await.unwrap()[0].path();
+            let orphan = if bad == a { z } else { a };
+            tokio::fs::remove_file(bad.join("HEAD")).await.unwrap();
+            assert!(
+                log.reconcile_snapshots(|_| async { Ok(false) })
+                    .await
+                    .is_err()
+            );
+            assert!(bad.exists());
+            assert!(!orphan.exists());
+        }
+
+        #[tokio::test]
+        async fn missing_turns_field_preserves_snapshot_history() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (repo, tree) = snapshot(&log, &dir.path().join("workspace"), "live").await;
+            tokio::fs::write(log.store.session_path("live"), br#"{"session_id":"live"}"#)
+                .await
+                .unwrap();
+            assert!(
+                log.reconcile_snapshots(|_| async { Ok(true) })
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                git(&repo, &["rev-parse", "refs/turns/live/turn/before"])
+                    .await
+                    .unwrap()
+                    .trim(),
+                tree
+            );
+        }
+
+        #[tokio::test]
+        async fn explicit_empty_turns_allows_reclaiming_unreferenced_snapshots() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (repo, _) = snapshot(&log, &dir.path().join("workspace"), "live").await;
+            tokio::fs::write(
+                log.store.session_path("live"),
+                br#"{"session_id":"live","turns":[]}"#,
+            )
+            .await
+            .unwrap();
+            let result = log
+                .reconcile_snapshots(|_| async { Ok(true) })
+                .await
+                .unwrap();
+            assert_eq!(result.removed_repos, 1);
+            assert!(!repo.exists());
+            assert!(log.store.session_path("live").exists());
+        }
+
+        #[tokio::test]
+        async fn failed_ref_deletion_does_not_block_other_repositories_or_retries() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (a, _) = snapshot(&log, &dir.path().join("a"), "a").await;
+            let (z, _) = snapshot(&log, &dir.path().join("z"), "z").await;
+            let bad = entries(&log.repos_dir()).await.unwrap()[0].path();
+            let orphan = if bad == a { z } else { a };
+            let reference = git(&bad, &["for-each-ref", "--format=%(refname)"])
+                .await
+                .unwrap();
+            let lock = bad.join(format!("{}.lock", reference.trim()));
+            tokio::fs::write(&lock, b"locked").await.unwrap();
+            assert!(
+                log.reconcile_snapshots(|_| async { Ok(false) })
+                    .await
+                    .is_err()
+            );
+            assert!(bad.exists());
+            assert!(!orphan.exists());
+            tokio::fs::remove_file(lock).await.unwrap();
+            assert_eq!(
+                log.reconcile_snapshots(|_| async { Ok(true) })
+                    .await
+                    .unwrap()
+                    .removed_repos,
+                1
+            );
+            assert!(!bad.exists());
+        }
+
+        #[tokio::test]
+        async fn foreign_symbolic_ref_preserves_its_entire_target_chain() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (repo, tree) = snapshot(&log, &dir.path().join("workspace"), "deleted").await;
+            let target = "refs/turns/deleted/turn/before";
+            git(&repo, &["symbolic-ref", "refs/turns/alias", target])
+                .await
+                .unwrap();
+            git(
+                &repo,
+                &["symbolic-ref", "refs/keep/manual", "refs/turns/alias"],
+            )
+            .await
+            .unwrap();
+            git(&repo, &["update-ref", "refs/turns/unneeded", &tree])
+                .await
+                .unwrap();
+            let result = log
+                .reconcile_snapshots(|_| async { Ok(false) })
+                .await
+                .unwrap();
+            assert_eq!(result.removed_refs, 1);
+            assert_eq!(
+                git(&repo, &["rev-parse", "refs/keep/manual"])
+                    .await
+                    .unwrap()
+                    .trim(),
+                tree
+            );
+            assert_eq!(
+                git(&repo, &["symbolic-ref", "--no-recurse", "refs/keep/manual"])
+                    .await
+                    .unwrap()
+                    .trim(),
+                "refs/turns/alias"
+            );
+        }
+
+        #[tokio::test]
+        async fn stale_symbolic_turn_ref_does_not_delete_foreign_target() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (repo, tree) = snapshot(&log, &dir.path().join("workspace"), "deleted").await;
+            git(&repo, &["update-ref", "refs/keep/manual", &tree])
+                .await
+                .unwrap();
+            git(
+                &repo,
+                &[
+                    "symbolic-ref",
+                    "refs/turns/deleted/turn/before",
+                    "refs/keep/manual",
+                ],
+            )
+            .await
+            .unwrap();
+            log.reconcile_snapshots(|_| async { Ok(false) })
+                .await
+                .unwrap();
+            assert_eq!(
+                git(&repo, &["rev-parse", "refs/keep/manual"])
+                    .await
+                    .unwrap()
+                    .trim(),
+                tree
+            );
+            assert_eq!(
+                git(&repo, &["for-each-ref", "--format=%(refname)"])
+                    .await
+                    .unwrap()
+                    .trim(),
+                "refs/keep/manual"
+            );
+        }
+    }
 
     async fn snapshot(log: &TurnLog, root: &Path, session: &str) -> (PathBuf, String) {
         tokio::fs::create_dir_all(root).await.unwrap();

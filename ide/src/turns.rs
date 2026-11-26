@@ -955,6 +955,8 @@ pub struct TurnLog {
     store: TurnStore,
     /// Reconciliation must not see a ref between its creation and record write.
     snapshot_gate: tokio::sync::RwLock<()>,
+    /// Resume authority checks after a bounded batch of lookup failures.
+    maintenance_cursor: Mutex<Option<PathBuf>>,
     pending: Mutex<HashMap<PendingKey, ReadImage>>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Sub-agent session → the (session, turn) that spawned it, learned
@@ -1003,6 +1005,7 @@ impl TurnLog {
         Self {
             store,
             snapshot_gate: tokio::sync::RwLock::new(()),
+            maintenance_cursor: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             parents: std::sync::Mutex::new(HashMap::new()),
@@ -1355,38 +1358,14 @@ impl TurnLog {
         F: FnOnce(&mut SessionRecord),
     {
         let mut record = self.store.load(session_id).await?;
-        let pinned: Vec<(String, TurnSnapshot)> = record
-            .turns
-            .iter()
-            .filter_map(|turn| Some((turn.turn_id.clone(), turn.snapshot.clone()?)))
-            .collect();
         apply(&mut record);
         enforce_budgets(&mut record);
         self.store.store(&record).await?;
         if let Some(feed) = self.changes.get() {
             feed.notify(session_id);
         }
-        // A dropped turn or a root change releases its old repository's refs.
-        let dropped: Vec<(String, TurnSnapshot)> = pinned
-            .into_iter()
-            .filter(|(turn_id, snapshot)| {
-                !record.turns.iter().any(|turn| {
-                    &turn.turn_id == turn_id
-                        && turn
-                            .snapshot
-                            .as_ref()
-                            .is_some_and(|s| s.root == snapshot.root)
-                })
-            })
-            .collect();
-        for (turn_id, snapshot) in dropped {
-            if let Err(error) =
-                maintenance::drop_turn_refs(&self.repos_dir(), &snapshot.root, session_id, &turn_id)
-                    .await
-            {
-                tracing::warn!(%error, "turn snapshots: refs not released; maintenance will retry");
-            }
-        }
+        // Maintenance releases obsolete refs from these durable records.
+        // Git cleanup must not extend the session lock or delay a turn hook.
         Ok(())
     }
 
@@ -2784,14 +2763,17 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // The old implementation spawns cleanup, so also give that task time.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Updating a session commits the record without running Git cleanup.
         assert!(
             git_in(&repo, &["for-each-ref", "refs/turns"])
                 .await
                 .unwrap()
-                .is_empty()
+                .contains("/old/")
         );
+        log.reconcile_snapshots(|_| async { Ok(true) })
+            .await
+            .unwrap();
+        assert!(!repo.exists());
     }
 
     #[tokio::test]
@@ -2814,12 +2796,10 @@ mod tests {
             .path();
         log.on_post_turn(turn_hook("session", "turn", new.to_str().unwrap()))
             .await;
-        assert!(
-            git_in(&old_repo, &["for-each-ref", "refs/turns"])
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        log.reconcile_snapshots(|_| async { Ok(true) })
+            .await
+            .unwrap();
+        assert!(!old_repo.exists());
         let record = log.load("session").await.unwrap();
         let snapshot = record.turns[0].snapshot.as_ref().unwrap();
         assert_eq!(snapshot.root, new.canonicalize().unwrap().to_string_lossy());

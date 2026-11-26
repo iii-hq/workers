@@ -408,8 +408,16 @@ turn references, and removes a repository when it has no retained snapshots or
 other refs. Session records are removed only when `session::get` confirms the
 session is absent. A missing workspace alone does not discard its history.
 Unavailable session lookups preserve history and are retried; corrupt local
-records defer reconciliation. The worker logs the number of records, refs and
-repositories removed.
+records defer reconciliation, including records that omit the `turns` field.
+Lookup failures are limited to three per pass, and subsequent passes resume
+after the last checked session. A failed repository is left for retry while
+other repositories are processed. Foreign refs and their symbolic target chains
+are preserved.
+
+Pruning a turn or changing its root commits the updated record immediately;
+background maintenance releases the obsolete refs without adding Git cleanup
+to the session update. The worker logs the number of records, refs and
+repositories removed, and reports repository failures separately.
 
 `turns.max_blob_bytes` limits the separate pre-image blob store under `objects/`.
 It is not a quota for the Git repositories under `repos/`: valid snapshots remain
