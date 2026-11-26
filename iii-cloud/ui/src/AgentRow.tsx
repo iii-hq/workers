@@ -20,6 +20,64 @@ const TONE: Record<AgentState, RowTone> = {
   stopped: 'edge',
 }
 
+/** Stop, which asks first: the agent's commits so far stay where they are. */
+function StopButton({
+  host,
+  agent,
+  branch,
+  label,
+  variant,
+}: {
+  host: Host
+  agent: AgentRun
+  branch?: string | null
+  label: string
+  variant: 'ghost' | 'secondary'
+}) {
+  const { busy, error, call } = useActions(host)
+  const [confirm, setConfirm] = useState(false)
+  return (
+    <>
+      <Button size="sm" variant={variant} disabled={busy === 'stop'} onClick={() => setConfirm(true)}>
+        {label}
+      </Button>
+      {error ? <ErrorPanel error={error} /> : null}
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={setConfirm}
+        title="Stop your agent?"
+        description={
+          branch ? `Its commits so far stay on ${branch}.` : 'Its commits so far stay in its copy of your code.'
+        }
+        confirmLabel="Stop the agent"
+        cancelLabel="Cancel"
+        tone="danger"
+        onConfirm={async () => {
+          await call('stop', 'iii-cloud::handoff::stop', { id: agent.handoff_id })
+          setConfirm(false)
+        }}
+      />
+    </>
+  )
+}
+
+/** "Open chat" and a visible "Stop": the end of the Your agent card's header. */
+export function AgentControls({ host, agent, branch }: { host: Host; agent: AgentRun; branch?: string | null }) {
+  const open = agent.session_id && canOpenChat(host) ? () => openChatFor(host, agent.session_id as string) : null
+  return (
+    <span className="iii-cloud-agent-acts">
+      {open ? (
+        <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={open}>
+          Open chat
+        </button>
+      ) : null}
+      {ACTIVE.includes(agent.state) ? (
+        <StopButton host={host} agent={agent} branch={branch} label="Stop" variant="secondary" />
+      ) : null}
+    </span>
+  )
+}
+
 /** The agent's hand-off, alive: state, elapsed, what it is doing now, when it last did something. */
 export function AgentRow({
   host,
@@ -35,8 +93,6 @@ export function AgentRow({
   branch?: string | null
 }) {
   const now = useNow(1000)
-  const { busy, error, call } = useActions(host)
-  const [confirm, setConfirm] = useState(false)
   const started = Date.parse(agent.started_at)
   const last = agent.last_activity_at ? Date.parse(agent.last_activity_at) : null
   const idle = last ? now - last : 0
@@ -65,9 +121,7 @@ export function AgentRow({
     .join(' · ')
   // Quiet on purpose: the chat is secondary while it works, and stopping is a ghost that asks first.
   const stop = active ? (
-    <Button size="sm" variant="ghost" disabled={busy === 'stop'} onClick={() => setConfirm(true)}>
-      Stop the agent
-    </Button>
+    <StopButton host={host} agent={agent} branch={branch} label="Stop the agent" variant="ghost" />
   ) : null
   const chatButton = (name: string, primary: boolean) =>
     openChat ? (
@@ -136,22 +190,6 @@ export function AgentRow({
           {acts}
         </>
       )}
-      {error ? <ErrorPanel error={error} /> : null}
-      <ConfirmDialog
-        open={confirm}
-        onOpenChange={setConfirm}
-        title="Stop your agent?"
-        description={
-          branch ? `Its commits so far stay on ${branch}.` : 'Its commits so far stay in its copy of your code.'
-        }
-        confirmLabel="Stop the agent"
-        cancelLabel="Cancel"
-        tone="danger"
-        onConfirm={async () => {
-          await call('stop', 'iii-cloud::handoff::stop', { id: agent.handoff_id })
-          setConfirm(false)
-        }}
-      />
     </div>
   )
 }

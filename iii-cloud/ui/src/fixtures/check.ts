@@ -618,7 +618,7 @@ export const rcSecretSkipped: Status = {
   },
 }
 
-const deploy = { at: 'deploy', env: DEV.id, step: 'check' } as const
+const deploy = { at: 'deploy', env: DEV.id } as const
 
 /** O1: dev's console serves the web container to the team; the app file opens it to the public. */
 const WEB_CONSOLE = { serve: 'container', container: 'web', port: 3000, access: 'team' }
@@ -717,6 +717,8 @@ export type CheckBoardId =
   | 'deploy-fixing'
   | 'setup-fixing'
   | 'deploy-passed'
+  | 'deploy-decision'
+  | 'deploy-open-problem'
   | 'state-docker'
   | 'state-stalled'
   | 'state-stopped'
@@ -746,6 +748,42 @@ export const boards: Record<CheckBoardId, Board> = {
     context: { at: 'setup' },
   },
   'deploy-passed': { status: passedNow, context: deploy },
+  // Check2: the secret waits for the person, a console setting differs from the compose file, the agent fixes the rest.
+  'deploy-decision': {
+    status: {
+      ...fixingNow,
+      check: { ...overridden(rerun, [webOverride]), problems: [rights, stripe] },
+      secrets: [stripeAsk],
+    },
+    context: deploy,
+  },
+  // A problem only the person can solve, with the check's own words: what, why and the fix.
+  'deploy-open-problem': {
+    status: {
+      ...dev,
+      check: {
+        ...found,
+        problems: [
+          rights,
+          {
+            ...problem(
+              'credential',
+              'cloud_plan',
+              'LITERAL_CREDENTIAL',
+              'person',
+              'A credential is written in your compose file',
+              'The key is committed with the file, so anyone who reads the repository can read it.',
+            ),
+            file: 'api/worker-compose-prod.yaml',
+            line: 41,
+            fix: 'Move the key to a secret and have the file read that secret.',
+          },
+        ],
+      },
+      checks: [summaryOf(found, 2)],
+    },
+    context: deploy,
+  },
   'state-docker': {
     status: {
       ...dev,

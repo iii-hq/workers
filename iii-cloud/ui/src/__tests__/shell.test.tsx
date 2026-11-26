@@ -195,8 +195,9 @@ describe('Manage', () => {
     await click(btn('Deploy to production'))
     expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
     expect(path()).toBe('Projects / registry · production / Deploy')
-    expect(rail('Deploy steps')).toEqual(['current', 'todo', 'todo', 'todo'])
-    expect(text()).toContain('What goes to production?')
+    // One screen, no step rail: the header says the next thing to do.
+    expect(rail('Deploy steps')).toEqual([])
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('2 things need you · 2 for your agent to fix')
   })
 
   it('Add a project opens the confirmation in add mode, at the folder; Cancel comes back to Start', async () => {
@@ -229,7 +230,7 @@ describe('DeployPill: the way back to a deploy going on', () => {
   it('the click goes to its follow page, where it is no longer shown', async () => {
     await board('manage-overview-deploying')
     await click(pills()[0])
-    expect(steps('Deploy steps')).toContain('Live')
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toMatch(/^Deploying \w{7} to \w+$/)
     expect(pills()).toEqual([])
   })
 

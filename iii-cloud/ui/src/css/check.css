@@ -1,36 +1,29 @@
-/* CheckStage (U2): the check before deploy. Every rule starts with [data-iii-ui='iii-cloud']. */
+/* Check and deploy: the lists, the check's two parts, what the deploy does, the Change panel. Every rule starts
+   with [data-iii-ui='iii-cloud']. */
 [data-iii-ui='iii-cloud'] .iii-cloud-cs {
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-width: 0;
-  max-width: 860px;
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-sub {
   margin: 0;
   font-size: 13px;
+  line-height: 1.5;
   color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-parts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
-  gap: 12px;
-  min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-total {
-  font-weight: 500;
-  color: var(--color-ink);
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-foot {
   margin: 0;
-  padding: 4px 14px 12px;
   font-size: 12px;
   line-height: 18px;
   color: var(--color-ink-faint);
 }
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-foot {
+  padding: 4px 14px 12px;
+}
 
-/* A row: mark, what, where it was found, its state; then the detail and the log under the words. */
+/* A row of a part: mark, what, its state; then the detail and the log under the words. */
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-rows {
   margin: 0;
   padding: 4px 0;
@@ -38,19 +31,14 @@
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 10px;
   row-gap: 6px;
-  min-height: 36px;
-  box-sizing: border-box;
-  padding: 6px 12px;
-  font-size: 13px;
-}
-/* The parts sit in panels narrower than 720 px: touch-height rows, as on a narrow pane. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-parts .iii-cloud-cs-row,
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row {
   min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 14px;
+  font-size: 13px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-row[data-mark='work'] .iii-cloud-cs-label {
   font-weight: 500;
@@ -61,24 +49,26 @@
   align-items: baseline;
   gap: 6px;
   min-width: 0;
+  font-weight: 500;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-part,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-label {
+  font-weight: 400;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-state {
   font-size: 12px;
+  font-weight: 400;
   color: var(--color-ink-faint);
   white-space: nowrap;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-state {
   text-align: right;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-detail,
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-log {
-  grid-column: 2 / -1;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-detail {
   font-size: 12px;
   line-height: 18px;
   color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-detail,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-log {
+  grid-column: 2 / -1;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-log {
   min-width: 0;
@@ -133,133 +123,124 @@
   height: 16px;
 }
 
-/* "You can leave this page" and the auto-agent checkbox, one surface step down. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-leave {
+/* The check: the plan and the local run side by side, one under the other in a narrow pane. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-parts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part {
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part h3 {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border-radius: var(--radius-xl);
-  background: var(--color-surface);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 14px 0;
   font-size: 13px;
-  color: var(--color-ink-faint);
+  font-weight: 600;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-leave .iii-cloud-grow {
-  min-width: 240px;
+
+/* You: one item each, the action in the item. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-needs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-leave label {
-  color: var(--color-ink);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-you {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 12px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-you-item {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist {
-  margin: 0;
-  padding: 4px 0;
-  list-style: none;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist li {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 0 12px;
+  padding: 12px 14px;
   font-size: 13px;
+  line-height: 20px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist li .iii-cloud-mono {
-  font-size: 12px;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need + .iii-cloud-cs-need,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need + .iii-cloud-cs-filled,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-agentnote + .iii-cloud-cs-rows {
+  border-top: 1px solid var(--color-edge);
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist li[data-now] {
-  font-weight: 500;
-}
-
-/* A narrow pane: rows are touch height and the part and state go under the words. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-hist li {
-  min-height: 44px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row {
-  grid-template-columns: 16px minmax(0, 1fr);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-part,
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state {
-  grid-column: 2;
-  text-align: left;
-  white-space: normal;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-part:empty,
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state:empty {
-  display: none;
-}
-
-/* CHECKSTAGE-PLAN D1: a section is a collapsible card; its header (chevron, title, count, note) is the trigger. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-panel {
-  min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-head {
-  display: flex;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  min-height: 40px;
-  box-sizing: border-box;
-  padding: 0 14px;
-  background: var(--color-surface);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-head:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-chev {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
   color: var(--color-ink-faint);
-  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
 }
-[data-iii-ui='iii-cloud'] [aria-expanded='true'] > .iii-cloud-cs-chev {
-  transform: rotate(90deg);
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-err {
+  font-size: 12px;
+  color: var(--color-alert);
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-title {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-loc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-filled {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-filled > span:not(.iii-cloud-mark) {
+  flex: 1;
   min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-count {
-  justify-content: center;
-  min-width: 24px;
+
+/* A decision: the two ways on, side by side; the recommended one has the ink frame. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt[data-best] {
+  box-shadow: inset 0 0 0 1px var(--color-ink);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt b {
   font-weight: 500;
 }
-/* On the grey header the count needs a step darker than its chip. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-panel > .iii-cloud-cs-head .iii-cloud-cs-count {
-  background: var(--color-edge);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-note {
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-wnote {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt span {
   font-size: 12px;
-  font-weight: 400;
+  line-height: 18px;
   color: var(--color-ink-faint);
 }
 
-/* One problem (or one group): its mark, then what it is, where, why; where it ran on the right. */
+/* Your agent: the note, then a line each. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-agentnote {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-item {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -271,45 +252,17 @@
   font-size: 13px;
   line-height: 20px;
 }
-/* The title, and where it ran at the right of its first line. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-tline {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item .iii-cloud-cs-label {
-  font-weight: 500;
-}
-/* Optional names with no value: said neutral, faint. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item[data-optional] .iii-cloud-cs-label {
-  font-weight: 400;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item .iii-cloud-cs-label .iii-cloud-cs-at {
-  font-size: 12px;
-  font-weight: 400;
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-item > .iii-cloud-mark {
   margin-top: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-item[data-mark='wait'] .iii-cloud-cs-label {
+  font-weight: 400;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item .iii-cloud-cs-detail,
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item .iii-cloud-cs-log {
-  grid-column: auto;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-loc {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--color-ink-faint);
-  overflow-wrap: anywhere;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-acts-row {
   display: flex;
@@ -318,98 +271,162 @@
   gap: 8px;
   padding-top: 2px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each-toggle {
-  gap: 4px;
-  font-size: 12px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each-toggle[aria-expanded='true'] > .iii-cloud-cs-chev {
-  transform: rotate(180deg);
-}
 
-/* A group: the chips wrap under its title; "Show each" lists one line per item. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-gstate {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+/* Details: one closed fold; its three lists. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-panel {
   min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-chips .iii-cloud-mono {
-  font-size: 12px;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-chips [data-fixed] {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-chev {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
   color: var(--color-ink-faint);
-  text-decoration: line-through;
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each {
+[data-iii-ui='iii-cloud'] [aria-expanded='true'] > .iii-cloud-cs-chev {
+  transform: rotate(90deg);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-group h3 {
+  margin: 0;
+  padding: 10px 14px 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-line {
+  display: block;
+}
+
+/* The deployment that failed: the cause in a sentence, the explanation, the log lines. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause {
   display: flex;
   flex-direction: column;
-  margin: 0;
-  padding: 4px 10px;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  list-style: none;
+  gap: 8px;
+  min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each li {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Change: the branch, the files, the compose file, then the buttons. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-change {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-fieldset legend {
+  margin-bottom: 6px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-changefoot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  column-gap: 6px;
-  min-width: 0;
-  min-height: 28px;
-  font-size: 12px;
-  line-height: 20px;
-  overflow-wrap: anywhere;
+  gap: 8px 12px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each-name {
-  font-weight: 500;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-typed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each li .iii-cloud-mono {
-  font-size: 12px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each li .iii-cloud-cs-detail {
-  flex-basis: 100%;
-}
-/* A line's own Skip (or Undo), at its right. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-each-act {
-  margin-left: auto;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-dialogfoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }
 
-/* D9: a phone keeps the sections full width and the rows touch height; where it ran keeps its column. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-item {
-  min-height: 44px;
+/* A phone: one column; the primary action sits in a bar at the bottom of the pane. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 12px 0 4px;
+  background: var(--color-panel);
 }
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > button {
+  width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-barnote {
+  font-size: 12px;
+  text-align: center;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-opts,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-item,
 [data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-head {
   min-height: 44px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-at {
-  font-family: var(--font-mono);
-  color: var(--color-ink-faint);
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row {
+  grid-template-columns: 16px minmax(0, 1fr);
 }
-/* O1: a console override's two lines, console then file. */
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-diff {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state {
+  grid-column: 2;
+  text-align: left;
+  white-space: normal;
 }
-/* A phone puts a panel's actions under its words (past the icon), never beside them in a squeezed column. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state:empty {
+  display: none;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop {
   flex-wrap: wrap;
   row-gap: 10px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > div:not(:has(> .iii-cloud-row)) {
-  flex: 1 1 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > :has(> .iii-cloud-row) {
-  flex-basis: 100%;
-  margin-left: 30px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-item[data-faint] .iii-cloud-cs-label {
-  font-weight: 400;
-  color: var(--color-ink-faint);
 }
