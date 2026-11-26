@@ -48,8 +48,7 @@ the worker logs a warning, and they will be removed in the next version. Any
 other key, in `metadata` or beside it, is rejected with `INVALID_ARGS`.
 The input format is detected from the bytes. `output_channel` also carries the
 result as one JSON text frame before the image bytes; byte readers and sinks
-such as `OutputStream.to` never see it. [`example/`](example) is a small app
-that serves thumbnails over HTTP with this call.
+such as `OutputStream.to` never see it.
 
 ## Configuration
 
@@ -82,7 +81,9 @@ containers:
 
 On a bare engine the built-in defaults are stored on first boot in the engine
 project's `./config/<id>.yaml`; edit that file, use the Console's global
-Settings modal, or call `configuration::set`. `--config <file>` seeds the
+Settings modal, or call `configuration::set`. The worker ships the modal's
+form for this entry: the box, strategy and quality are fields, and an empty
+field falls back to the built-in default. `--config <file>` seeds the
 entry once, only while nothing is stored; a file that cannot be read or is
 invalid is ignored with a warning.
 
@@ -93,6 +94,15 @@ unknown key, a 0 side, quality outside 1-100) is rejected: on a live change
 the previous configuration stays in use, and at start the worker does not
 start. A change moves the default output of every caller that relies on the
 defaults.
+
+## Console page
+
+The worker ships a page in the ADE: open `Image resize` from the command
+palette, pick an image, resize it, compare it with the original and download
+it. The page calls `image_resize::resize` with streams, so it takes images up
+to 64 MiB. It needs an ADE that relays stream sockets
+(`/ws/ws/channels/{id}`); with an older ADE the streams never open, and the
+page shows an error that tells you to update the ade worker.
 
 ## Limits and behaviour
 
