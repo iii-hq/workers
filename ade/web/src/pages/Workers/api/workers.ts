@@ -10,7 +10,7 @@ import { getIiiClient } from '@/lib/iii-client'
 export const WORKERS_RPC = {
   engineList: 'engine::workers::list',
   engineInfo: 'engine::workers::info',
-  composeStatus: 'compose::status',
+  composeStatus: 'ade::compose::status',
 } as const
 
 export const composeContainerSchema = z.object({
@@ -47,12 +47,14 @@ export async function fetchEngineWorkerInfo(
   return parsed.success ? parsed.data : null
 }
 
-export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
+export async function fetchComposeStatus(
+  file?: string,
+): Promise<ComposeStatus | null> {
   const client = await getIiiClient()
   try {
     const raw = await client.call<unknown>(
       WORKERS_RPC.composeStatus,
-      {},
+      file ? { file } : {},
       { timeoutMs: 10_000 },
     )
     const parsed = composeStatusSchema.safeParse(raw)
@@ -97,13 +99,15 @@ export async function mapWithConcurrency<T, R>(
   return results
 }
 
-export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
+export async function fetchRawWorkersSnapshot(
+  file?: string,
+): Promise<RawWorkersSnapshot> {
   // The compose read is enrichment: an engine without a compose daemon must
   // not blank the whole page - the connected fleet from
   // engine::workers::list still renders.
   const [engineList, compose] = await Promise.all([
     fetchEngineWorkersList(),
-    fetchComposeStatus(),
+    fetchComposeStatus(file),
   ])
 
   const connected = engineList.workers.filter(

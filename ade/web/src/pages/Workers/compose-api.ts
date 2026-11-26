@@ -183,10 +183,12 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
      */
     async snapshot(): Promise<Snapshot> {
       const [status, list, project, engine] = await Promise.all([
-        call<Status>('compose::status', withFile(), 10_000).catch(() => null),
+        call<Status>('ade::compose::status', withFile(), 10_000).catch(
+          () => null,
+        ),
         call<ProjectList>('compose::list', {}, 10_000).catch(() => null),
         call<Project>('ade::compose::project', withFile()).catch(() => null),
-        fetchRawWorkersSnapshot().catch(() => null),
+        fetchRawWorkersSnapshot(file()).catch(() => null),
       ])
       if (!status && !engine)
         throw new Error('Neither the compose daemon nor the engine answered')
