@@ -205,6 +205,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const off: (() => void)[] = [];
     let connected = true;
     let watched: string | null = null;
+    let lastConfirmed: string | null = null;
     let checking = false;
     let probe = 0;
     const invalidate = () => {
@@ -212,11 +213,16 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       setAnnouncement((current) => (current?.externalId ? null : current));
       setFailure((current) => (current?.externalId ? null : current));
     };
-    const reload = () => {
-      configPending.current = false;
-      refresh();
-    };
     const acceptWatch = (token: string | null) => {
+      if (token) {
+        // The old worker epoch may still answer while it receives the config event.
+        // A new confirmed epoch can settle the change even if the completion was missed.
+        if (configPending.current && token === lastConfirmed) token = null;
+        else {
+          configPending.current = false;
+          lastConfirmed = token;
+        }
+      }
       if (watched === token) return;
       watched = token;
       invalidate();
@@ -270,13 +276,15 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       off.push(
         iii.on(handler, () => {
           configPending.current = true;
+          probe++;
+          checking = false;
           invalidate();
         }),
       );
       off.push(
         iii.on(settled, () => {
           invalidate();
-          reload();
+          refresh();
           void checkWatch();
         }),
       );
@@ -290,7 +298,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             checking = false;
             acceptWatch(null);
           } else {
-            reload();
+            refresh();
             void checkWatch();
           }
         }),
@@ -488,12 +496,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const status = STATUS[row.status];
     const isStopping = stopping === row.id;
     // A message to the same transcript would put a second writer on it.
-    // A previous launch key can suppress Message but cannot reopen the original.
-    const inTerminal =
-      row.id === onScreen ||
-      row.id === opening ||
-      (!!row.claude_session_id &&
-        terminal.currentKey?.startsWith(`original:${row.claude_session_id}:`));
+    const inTerminal = row.id === onScreen || row.id === opening;
     const canMessage =
       row.kind === 'headless' && !row.alive && row.status !== 'unknown' && !inTerminal;
     // A background session is stoppable where the list gives it a short id.
@@ -699,7 +702,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           configId={configId}
           // The gated reply snapshot can still find originals that finish and leave the rail.
           available={currentVisibility}
-          opener={followOpener}
+          opener={{
+            get current() {
+              return followOpener.current?.isConnected
+                ? followOpener.current
+                : refreshButton.current;
+            },
+          }}
           onClose={() => setFollow(null)}
         />
       ) : null}

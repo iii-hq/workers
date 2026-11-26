@@ -210,7 +210,15 @@ export function SessionDetail({
         if (!open) onClose();
       }}
     >
-      <DialogContent showCloseButton={false} initialFocus={close} finalFocus={opener}>
+      <DialogContent
+        showCloseButton={false}
+        initialFocus={close}
+        finalFocus={opener}
+        onKeyDown={(event) => {
+          // The portalled dialog also bubbles through the narrow Sessions drawer.
+          if (event.key === 'Escape') event.stopPropagation();
+        }}
+      >
         <DialogTitle>Follow original</DialogTitle>
         <DialogDescription>
           Read only. ADE can’t verify that terminal input and output stay with this conversation.

@@ -412,6 +412,42 @@ async function testSessionActions(code) {
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
+  await test('restores external inventory from a new worker snapshot without a completion event', async (t) => {
+    const { click, document, shortcut, text, until } = setup(t);
+    const original = '[aria-label="Open original: Design review"]';
+    await text('/fixture/external-only');
+    shortcut('KeyR');
+    await until(() => !document.querySelector(original));
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.body.textContent, /Console original/);
+
+    // Only the worker snapshot changes; no config or inventory event is delivered.
+    shortcut('KeyW');
+    await until(() => document.querySelector(original));
+    await click('Open original: Design review');
+    await text('The layout review is ready.');
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+  });
+
+  await test('Escape returns focus to Refresh sessions if access removes the opener', async (t) => {
+    const { document, focus, follow, shortcut, text, until } = setup(t, { heartbeat: false });
+    await follow();
+    await focus('Close');
+    shortcut('KeyR');
+    await text('Replies unavailable');
+    assert.equal(document.querySelector('[aria-label="Open original: Design review"]'), null);
+    document.activeElement.dispatchEvent(
+      new document.defaultView.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => !document.querySelector('[role="dialog"]'));
+    await focus('Refresh sessions');
+    assert.equal(document.documentElement.dataset.replyWatches, '0');
+  });
+
   await test('clears an external fork failure on access revocation without affecting console notices', async (t) => {
     const { click, focus, shortcut, document, until } = setup(t, {
       heartbeat: false,
