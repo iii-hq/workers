@@ -14,7 +14,7 @@ export default function setup(host: Host) {
     id: 'image-resize',
     title: 'Image resize',
     configurationId: 'image-resize',
-    render: (props) => <ImageResizePage {...props} />,
+    render: (props) => <ImageResizePage host={host} {...props} />,
   })
 
   host.commands?.register('image-resize', [

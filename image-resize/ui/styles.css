@@ -1,5 +1,7 @@
 /* Every rule is scoped under [data-iii-ui="image-resize"]: injected CSS is
-   unlayered, so one unscoped selector beats the console's layered styles. */
+   unlayered, so one unscoped selector beats the console's layered styles.
+   These rules only arrange the page and size the images; kit controls keep
+   their own look. */
 
 [data-iii-ui="image-resize"] .imgr {
   display: flex;
@@ -12,4 +14,108 @@
   padding: 1.5rem;
   max-width: 64rem;
   margin: 0 auto;
+}
+
+/* The drop target is a surface step, never a dashed outline. */
+[data-iii-ui="image-resize"] .imgr-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2.25rem 1.5rem;
+  border-radius: 6px;
+  background: var(--color-surface);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui="image-resize"] .imgr-drop[data-dragging] {
+  background: var(--color-surface-hover);
+}
+
+/* With an image the target shrinks to one bar: still a drop target, no
+   longer the centre of the page. */
+[data-iii-ui="image-resize"] .imgr-drop[data-compact] {
+  flex-direction: row;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-drop-label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-drop[data-compact] .imgr-drop-label {
+  flex: 1;
+}
+
+[data-iii-ui="image-resize"] .imgr-drop-name {
+  overflow: hidden;
+  color: var(--color-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="image-resize"] .imgr-drop-size {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="image-resize"] .imgr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-action {
+  align-self: flex-start;
+}
+
+/* Side by side when both fit, stacked otherwise; min() keeps a pane under
+   16rem from scrolling sideways. */
+[data-iii-ui="image-resize"] .imgr-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
+  gap: 1.25rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-figure {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-frame {
+  display: flex;
+  min-height: 12rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+[data-iii-ui="image-resize"] .imgr-open {
+  max-width: 100%;
+}
+
+/* Only maximums, so an image smaller than the frame keeps its own size:
+   a small result is never upscaled on screen. */
+[data-iii-ui="image-resize"] .imgr-image {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+}
+
+[data-iii-ui="image-resize"] .imgr-skeleton {
+  display: block;
+  width: 100%;
+  height: 12rem;
 }
