@@ -62,6 +62,7 @@ describe('chat capabilities (spec §0.2)', () => {
       tmuxAccounts: false,
       tmuxCredential: false,
       claudeAccounts: false,
+      autocompact: false,
     })
   })
 
@@ -88,6 +89,7 @@ describe('chat capabilities (spec §0.2)', () => {
       tmuxAccounts: false,
       tmuxCredential: false,
       claudeAccounts: false,
+      autocompact: false,
     })
   })
 
@@ -129,6 +131,29 @@ describe('chat capabilities (spec §0.2)', () => {
       patchMeta: true,
     })
     expect(getChatCapabilities().claudeAccounts).toBe(true)
+  })
+
+  it('turns auto-compact on with harness::autocompact::models, read with internal functions (D168)', async () => {
+    expect(CAPABILITY_FUNCTIONS.autocompact).toBe(
+      'harness::autocompact::models',
+    )
+    const without = capabilitiesFromCatalog({
+      functions: [
+        { function_id: 'harness::chat-settings::get' },
+        { function_id: 'harness::autocompact::log' },
+      ],
+    })
+    expect(without.autocompact).toBe(false)
+    // Internal (agents denied): only a read with `include_internal` sees it.
+    mocks.call.mockReset()
+    mocks.call.mockImplementation((_id: string, payload: object) => {
+      const list = engineList(payload)
+      if ((payload as { include_internal?: boolean }).include_internal) {
+        list.functions.push({ function_id: 'harness::autocompact::models' })
+      }
+      return Promise.resolve(list)
+    })
+    expect((await refreshChatCapabilities()).autocompact).toBe(true)
   })
 
   it('is off until read, and a test can pin an answer', () => {

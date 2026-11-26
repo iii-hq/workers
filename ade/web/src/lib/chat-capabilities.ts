@@ -16,6 +16,7 @@
  * | `harnessRetry`   | `harness::retry`            | today's Claude Code screens (phase 4)         |
  * | `tmuxAccounts`   | `tmux::accounts::list`      | "Install tmux" (with `harnessRetry`)          |
  * | `tmuxCredential` | `tmux::accounts::credential`| "Update tmux" (with the two above)            |
+ * | `autocompact`    | `harness::autocompact::models` | no Auto-compact setting, section, row, tick or chip (phase 3, D168) |
  *
  * `claudeAccounts` is phase 4's whole feature (spec §4.3.6, D144): the engine
  * has `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`
@@ -55,6 +56,11 @@ export interface ChatCapabilities {
   tmuxCredential: boolean
   /** Accounts in the Chat: `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`. */
   claudeAccounts: boolean
+  /**
+   * `harness::autocompact::models`: phase 3's harness (D168). Without it,
+   * today's screens: no settings page, section, row, tick or chip.
+   */
+  autocompact: boolean
 }
 
 /** The flags that are one function each; `claudeAccounts` is three of them. */
@@ -74,6 +80,7 @@ export const CAPABILITY_FUNCTIONS = {
   harnessRetry: 'harness::retry',
   tmuxAccounts: 'tmux::accounts::list',
   tmuxCredential: 'tmux::accounts::credential',
+  autocompact: 'harness::autocompact::models',
 } as const satisfies Record<FunctionCapability, string>
 
 export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
@@ -89,6 +96,7 @@ export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
   tmuxAccounts: false,
   tmuxCredential: false,
   claudeAccounts: false,
+  autocompact: false,
 }
 
 const WATCH_FN = 'ade::chat-capabilities-watch'
@@ -145,6 +153,7 @@ export function capabilitiesFromCatalog(response: unknown): ChatCapabilities {
       ids.has(CAPABILITY_FUNCTIONS.harnessRetry) &&
       ids.has(CAPABILITY_FUNCTIONS.tmuxCredential) &&
       ids.has(CAPABILITY_FUNCTIONS.patchMeta),
+    autocompact: ids.has(CAPABILITY_FUNCTIONS.autocompact),
   }
 }
 
