@@ -12,7 +12,7 @@ iii call compose::add worker=whatsapp
 
 Compose resolves the declared `database`, `configuration`, `http`, and `tunnel` dependencies, updates `worker-compose.yaml`, and starts the project. Dependency installation does not create the dedicated WhatsApp database or configure a Meta account. Configure storage before the worker's first successful start, as described under [Configuration](#configuration).
 
-Release binaries support Linux and macOS on x64 and arm64. Windows is not supported. Cloudflared is needed only when you start a development webhook tunnel with tunnel's default `cloudflared` provider; its `opentunnel` provider needs no binary. Linked phones do not need a tunnel.
+Release binaries support Linux and macOS on x64 and arm64. Windows is not supported. A development webhook tunnel needs no extra binary with tunnel's default `opentunnel` provider; cloudflared is needed only when tunnel is set to `provider: cloudflared`. Linked phones do not need a tunnel.
 
 ## Quickstart
 

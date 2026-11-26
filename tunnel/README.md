@@ -138,8 +138,8 @@ O parser faz primeiro `serde_json` para registros tipados. Somente uma mensagem 
 
 Fontes:
 - [SDK Rust](https://iii.dev/docs/reference/sdk-rust.md)
-- [tunnel.go 2025.11.1](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/cmd/cloudflared/tunnel/tunnel.go)
-- [tunnel.go master consultado](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/tunnel/tunnel.go)
+- [quick_tunnel.go 2025.11.1](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/cmd/cloudflared/tunnel/quick_tunnel.go)
+- [quick_tunnel.go master consultado](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/tunnel/quick_tunnel.go)
 - [flags.go: output=json](https://raw.githubusercontent.com/cloudflare/cloudflared/master/cmd/cloudflared/flags/flags.go)
 - [logger/create.go: stderr JSON](https://raw.githubusercontent.com/cloudflare/cloudflared/master/logger/create.go)
 - [connection/observer.go: registro efetivo](https://raw.githubusercontent.com/cloudflare/cloudflared/2025.11.1/connection/observer.go)

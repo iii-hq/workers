@@ -191,8 +191,8 @@ Enable the `messages` field and subscribe the app to the WABA. Starting a
 tunnel does not register or change the callback in Meta.
 
 The `tunnel` worker must run in the WhatsApp worker's namespace, with
-`cloudflared` installed when tunnel uses its default provider (none is
-needed with `provider: opentunnel`) and its `webhooks` target pointing to the
+`cloudflared` installed only when tunnel uses `provider: cloudflared` (the
+default `opentunnel` provider needs no binary) and its `webhooks` target pointing to the
 HTTP worker's restricted webhook listener (normally `http://127.0.0.1:3112`).
 Only routes
 explicitly marked `public_webhook` are exposed there. The worker observes

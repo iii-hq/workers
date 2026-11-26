@@ -78,6 +78,17 @@ async fn main() -> Result<()> {
     result
 }
 
+/// The value stored when no configuration exists yet. It leaves `provider` out,
+/// so boot resolution keeps cloudflared for an install that already ran on it
+/// (see `config::fill_missing_provider`) instead of storing OpenTunnel for all.
+fn seeded_default() -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(Config::default())?;
+    if let Some(map) = value.as_object_mut() {
+        map.remove("provider");
+    }
+    Ok(value)
+}
+
 /// Parses a raw configuration: adopts the `quick-tunnel` data directory on
 /// the first boot, then chooses the provider when the configuration names none.
 fn parse_config(mut raw: serde_json::Value) -> Result<Config> {
@@ -107,7 +118,9 @@ async fn run(
     iii: Arc<iii_sdk::IIIClient>,
 ) -> Result<()> {
     let config = if *local_config {
-        seed.unwrap_or_default()
+        // Without a seed, an empty configuration still adopts quick-tunnel data
+        // and resolves the provider from the state on disk.
+        seed.map_or_else(|| parse_config(json!({})), Ok)?
     } else {
         let spec = iii_config_client::EntrySpec {
             id: config::config_id(),
@@ -115,7 +128,7 @@ async fn run(
             name: "Tunnel",
             description: "Tunnel provider, authorized origins and lifecycle limits (restart to apply)",
             schema: serde_json::to_value(schemars::schema_for!(Config))?,
-            default_value: serde_json::to_value(Config::default())?,
+            default_value: seeded_default()?,
         };
         // `configuration::ensure` seeds the candidate only when nothing is
         // stored yet and preserves an operator/Compose value atomically; on an
