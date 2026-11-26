@@ -84,5 +84,28 @@ class ProfileContractTests(unittest.TestCase):
                                           "is a criterion of its card", "decides nothing"])
 
 
+    def test_worker_and_verifier_load_a_named_skill(self):
+        call = ['directory::skills::get {"id":"<id>"}']
+        self.assertHasAll((KIT / "agents/workflow-worker.md").read_text(), call)
+        self.assertHasAll(self.verifier, call)
+        self.assertNotIn("directory::skills::get", self.dl)
+
+    def test_a_lost_pointer_write_reads_the_owner_and_the_resume_guard_fails_closed(self):
+        self.assertHasAll(self.profile, [
+            "for `batch` or `baseline`, once you have written an `active` of this run, "
+            "`state::get` of `active`",
+            "Otherwise send it once more with `expected` = the reply's `current`.",
+            "A refused or failed read is no answer and blocks the same way",
+            "only a `null` result (no such session) or another status lets the resume go on"])
+        self.assertEqual(self.profile.count("a refused or failed read is neither"), 0)
+
+    def test_land_reads_missing_checks_as_green_only_without_ci_history(self):
+        self.assertHasAll(self.profile, ["--json statusCheckRollup", "CI: no checks reported, PR open"])
+        self.assertEqual(self.profile.count("(the repository runs none: green)"), 0)
+
+    def test_listener_sweep_spares_a_server_with_a_terminal(self):
+        self.assertHasAll(self.verifier, [
+            "/proc/$p/stat | cut -d' ' -f5)\" = 0 ] && kill $p", "done; true`"])
+
 if __name__ == "__main__":
     unittest.main()

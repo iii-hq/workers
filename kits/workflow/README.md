@@ -146,7 +146,7 @@ Watch the run on the board, or open the run ticket's waves with `workflow::statu
 ## Questions and the board
 
 - Every question is a card with one recommended option. With the board on, it names the ticket it blocks: it shows on that ticket with a `needs you` mark and in the control plane's question box, and the session is linked to the run ticket.
-- A card waits three days, then tells the agent nobody answered and stays open: a late answer still counts. A run that cannot go on without it ends `blocked`.
+- A card waits three days, then tells the agent nobody answered and stays open: a late answer still counts. A run that cannot go on without it ends `blocked`. The one exception is the Run health card (see Limits), which takes its default after 30 minutes.
 - An answer typed in the chat closes the card.
 - A ticket blocked on a question only you can answer is asked on one card while the run goes on. Your answer puts the ticket back in To do.
 - Choices the agent made alone are also written to the board's decision log (kanban 0.2.7).
