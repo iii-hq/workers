@@ -71,11 +71,14 @@ over-budget request.
 
 Before token accounting, `context::assemble` normalizes images in its cloned
 model-facing view. A known catalog model receives placeholders unless it
-explicitly declares vision support. For a known vision model, tool images age
-after the next assistant response and user images age when a later user turn
-begins after a response. Inline limits and unresolved models keep images. Live
-images cost a fixed 4,096-token heuristic budget; base64 bytes are never counted
-as text. The caller's transcript is unchanged.
+explicitly declares vision support. For a known vision model, tool images the
+model has seen stay; once 16 are live the 8 oldest are replaced by a marker in
+one request, and again every 8. The window is smaller when the usable budget is
+under about 262k tokens; under about 33k it is 0 and every tool image is
+replaced once the model has seen it, as before. User images still age when a
+later user turn begins after a response. Inline limits and unresolved models
+keep images. Live images cost a fixed 4,096-token heuristic budget; base64 bytes
+are never counted as text. The caller's transcript is unchanged.
 
 Before pruning or compaction runs, assemble unconditionally caps any message-level
 or inline function result over `max_result_tokens` (default 20000; 0 disables the

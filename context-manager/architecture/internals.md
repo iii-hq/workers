@@ -105,9 +105,15 @@ Load-bearing details:
    capped. Prune runs only once the request is over `usable`: it rewrites
    results an earlier request already sent, which costs the provider's prompt
    cache from that result on. Before accounting, a known catalog model receives image placeholders
-   unless it explicitly declares vision support; a known vision model ages tool
-   images after the next assistant response and user images when a later user
-   turn follows a response. Inline limits and unresolved models keep images.
+   unless it explicitly declares vision support. A known vision model keeps the
+   tool images it has seen until 16 are live, then replaces the 8 oldest with a
+   marker in one request, and again every 8; the window shrinks below about
+   262k usable tokens and is 0 below about 33k, where every seen tool image is
+   replaced. From about 65k usable tokens (window 2 or more) media
+   normalization therefore rewrites a sent tool result once per window images
+   instead of on every image step; at window 1 (about 33k-65k) it still
+   rewrites one on every image step, one step later. User images age when a later user turn
+   follows a response. Inline limits and unresolved models keep images.
    Live images cost the fixed 4,096-token heuristic budget, never their base64
    payload length. Compaction and emergency
    reduction are both gated on *still being over budget*; compaction is
