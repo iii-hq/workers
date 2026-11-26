@@ -9,8 +9,9 @@ use storage::config::{WorkerConfig, redact_url};
 use storage::configuration;
 use storage::events::dispatcher::EngineDispatcher;
 use storage::handlers::{
-    AppState, buckets, delete_object, get_object, head_object, list_buckets, list_objects,
-    multipart, parse_request, presign_post, presign_url, put_object, schema_of, test_bucket,
+    AppState, buckets, copy_object, delete_object, get_object, head_object, list_buckets,
+    list_objects, multipart, parse_request, presign_post, presign_url, put_object, schema_of,
+    test_bucket,
 };
 use tokio::sync::RwLock;
 
@@ -300,6 +301,20 @@ async fn main() -> Result<()> {
             })
             .description(
                 "Fetch object metadata (size, ETag, content-type, last-modified) without downloading the body.",
+            ),
+        );
+    }
+
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::copyObject",
+            RegisterFunction::new_async(move |req: copy_object::CopyReq| {
+                let st = st.clone();
+                async move { copy_object::handle(&st, req).await.map_err(Error::from) }
+            })
+            .description(
+                "Copy an object to another key or configured bucket. The provider copies it itself when both buckets share an endpoint and credentials (S3, R2, local); otherwise it goes through the worker, up to 64 MiB.",
             ),
         );
     }
