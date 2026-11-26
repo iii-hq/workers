@@ -483,12 +483,20 @@ pub fn default_not_covered() -> Vec<String> {
     ]
 }
 
-/// Remote branch tips contain the commit: GitHub has it (as of the last fetch).
+/// Remote branch tips contain the commit: GitHub has it. Only the environment
+/// branch is fetched by `fetch_remote`, so a commit on no tracking ref gets one
+/// `git fetch origin` (every branch) before it counts as not pushed.
 pub async fn pushed(ws: &std::path::Path, sha: &str) -> bool {
-    git(ws, &["branch", "-r", "--contains", sha])
-        .await
-        .map(|o| !o.trim().is_empty())
-        .unwrap_or(false)
+    let on_remote = || async {
+        git(ws, &["branch", "-r", "--contains", sha])
+            .await
+            .is_ok_and(|o| !o.trim().is_empty())
+    };
+    if on_remote().await {
+        return true;
+    }
+    let _ = tool::run("git", &["fetch", "origin"], Some(ws), None, "TOOL_MISSING").await;
+    on_remote().await
 }
 
 /// The check's one GitHub round trip: the environment branch's tip into its
@@ -507,14 +515,11 @@ pub async fn fetch_remote(ws: &std::path::Path, branch: &str, commit: &str) -> b
     ])
     .await
     .is_ok_and(|o| o.ok());
-    let branch_fetch = run(vec!["fetch".into(), "origin".into(), spec]);
-    if here {
-        return branch_fetch.await.is_ok_and(|o| o.ok());
+    // One after the other: two git processes on a repository can fail on its lock.
+    let fetched = run(vec!["fetch".into(), "origin".into(), spec]).await;
+    if !here {
+        let _ = run(vec!["fetch".into(), "origin".into(), commit.into()]).await;
     }
-    let (fetched, _) = tokio::join!(
-        branch_fetch,
-        run(vec!["fetch".into(), "origin".into(), commit.into()])
-    );
     fetched.is_ok_and(|o| o.ok())
 }
 
@@ -1183,7 +1188,9 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     if request.run.unwrap_or(false) {
         // The run reads the saved plan's runtimes and this check's problems as it
         // starts, so it starts here, once both are stored, and not before.
+        let deadline = Instant::now() + crate::run::CALL_WAIT;
         let key = run_key(
+            &ctx.config().await.postgres_image,
             &sel.workspace,
             manifest.as_ref(),
             iii_version.as_deref(),
@@ -1217,7 +1224,16 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 })
             });
         } else {
-            let run = crate::run::start_with(ctx, check.id.clone(), sel.clone()).await?;
+            // One deadline for the whole call (attach wait and the loop below), under
+            // the harness's 300 s dispatch timeout. A dirty workspace never attaches.
+            let run = crate::run::start_with(
+                ctx,
+                check.id.clone(),
+                sel.clone(),
+                key.clone().filter(|_| !dirty),
+                deadline,
+            )
+            .await?;
             if let Some(key) = key {
                 ctx.store.update(|s| {
                     s.run_keys.insert(run.id.clone(), key);
@@ -1230,8 +1246,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 });
             }
         }
-        // The call waits for the run at most 240 s, under the harness's 300 s dispatch timeout.
-        let deadline = Instant::now() + Duration::from_secs(240);
+        // Back as soon as the run ended or says it waits on a worker (still running).
         loop {
             let current = ctx.store.read(|s| s.find_check(&check.id).cloned());
             if let Some(c) = current {
@@ -1239,7 +1254,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 if check
                     .run
                     .as_ref()
-                    .is_none_or(|r| r.status != RunStatus::Running)
+                    .is_none_or(|r| r.status != RunStatus::Running || r.waiting_on.is_some())
                     || Instant::now() >= deadline
                 {
                     break;
@@ -1256,7 +1271,14 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
 /// names and values the run reads (the worktree `.env`, the env files it fills
 /// from, the names skipped). Values are only hashed, never kept. None without a
 /// readable compose file.
-async fn run_key(
+///
+/// It also holds the local Postgres image. It does not cover the versions of
+/// the tools the run calls (node, pnpm, docker), the files git ignores, or the
+/// network (a package that changed upstream): a run made from the same key can
+/// differ. `force: true` on the request runs again.
+#[allow(clippy::too_many_arguments)] // each argument is one part of the key
+pub async fn run_key(
+    postgres_image: &str,
     ws: &std::path::Path,
     manifest: Option<&Manifest>,
     engine: Option<&str>,
@@ -1289,6 +1311,7 @@ async fn run_key(
         engine.unwrap_or("unknown"),
         env_id,
         &settings,
+        postgres_image,
     ] {
         part(text.as_bytes());
     }

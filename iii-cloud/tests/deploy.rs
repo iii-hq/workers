@@ -95,6 +95,7 @@ fn passed_run(commit: &str) -> Run {
         log_tail: vec![],
         error: None,
         reused: false,
+        waiting_on: None,
     }
 }
 

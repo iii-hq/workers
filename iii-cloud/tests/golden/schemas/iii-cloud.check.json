@@ -486,6 +486,18 @@
           "status": {
             "$ref": "#/definitions/RunStatus"
           },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WaitingOn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The workers stage has gone a minute with no new worker: who it waits for. The run is still `running`; null otherwise."
+          },
           "workers": {
             "$ref": "#/definitions/WorkerCount"
           }
@@ -597,6 +609,26 @@
           "skipped"
         ],
         "type": "string"
+      },
+      "WaitingOn": {
+        "properties": {
+          "containers": {
+            "description": "The containers that have not connected.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "since": {
+            "description": "When the wait was noticed (RFC 3339).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "containers",
+          "since"
+        ],
+        "type": "object"
       },
       "WorkerCount": {
         "properties": {

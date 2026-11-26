@@ -1533,3 +1533,33 @@ async fn a_bring_that_fails_half_way_leaves_the_worktree_as_it_was() {
     assert_eq!(files, vec!["README.md", "a.txt", "z.txt"]);
     assert_eq!(git(&ws, &["status", "--porcelain"]), "");
 }
+
+/// A commit pushed to another branch, from another clone, is pushed: the check
+/// fetches only the environment branch, so `pushed` looks once more at every branch.
+#[tokio::test]
+async fn a_commit_on_another_branch_pushed_from_another_clone_is_pushed() {
+    let r = repo();
+    let other = r.root.path().join("other-clone");
+    git(
+        r.root.path(),
+        &["clone", r.origin.to_str().unwrap(), other.to_str().unwrap()],
+    );
+    git(&other, &["checkout", "-b", "feature"]);
+    git(&other, &["commit", "--allow-empty", "-m", "elsewhere"]);
+    git(&other, &["push", "origin", "feature"]);
+    let sha = git(&other, &["rev-parse", "HEAD"]);
+    // The checkout has the commit (fetched by id, as the check does) and no ref for it.
+    git(&r.checkout, &["fetch", "origin", &sha]);
+    assert!(
+        git(&r.checkout, &["branch", "-r", "--contains", &sha]).is_empty(),
+        "no tracking ref has it yet"
+    );
+    assert!(pushed(&r.checkout, &sha).await);
+    // And one that is on no branch of the remote is still not pushed.
+    git(
+        &r.checkout,
+        &["commit", "--allow-empty", "-m", "local only"],
+    );
+    let local = git(&r.checkout, &["rev-parse", "HEAD"]);
+    assert!(!pushed(&r.checkout, &local).await);
+}

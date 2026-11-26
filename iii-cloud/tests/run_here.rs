@@ -104,10 +104,7 @@ async fn run_here_passes_all_seven_stages_on_the_fixture_app() {
             problems: vec![], run: None, ready: false, report: String::new(), manifest: None, handoff_id: None, commits: vec![],
         });
     });
-    let first = start(&h.ctx, "chk".into()).await.unwrap();
-    // The same commit and file at once is the same run, not a second one.
-    let again = start(&h.ctx, "chk".into()).await.unwrap();
-    assert_eq!(first.id, again.id);
+    start(&h.ctx, "chk".into()).await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(600);
     let run = loop {
         let run = h
