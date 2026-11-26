@@ -4,9 +4,10 @@
 //! (`ade/web/e2e/set-description.spec.ts`): the model's only generation
 //! answers in text and, in the same message, calls `harness::set-description`
 //! (no `title`, so the session keeps the name the test opens it by). The turn
-//! loop writes the description through `session::patch-meta` and ends the
-//! turn without another model request (one scripted generation: a second
-//! `router::chat` would fail the turn). The Console then shows the
+//! loop writes the description through `session::patch-meta`; since the
+//! description opened the turn, the model is asked once more and ends it with
+//! no text (two scripted generations: a third `router::chat` would fail the
+//! turn). The Console then shows the
 //! description in the chat header and the sidebar row, and no call card.
 
 use serde_json::json;
@@ -55,10 +56,23 @@ pub(super) fn scenario() -> ScenarioFixture {
                 6,
             )),
     )
+    .generation(
+        // The description opened the turn, so the model is asked once more and
+        // ends the turn with no further text (the result's `next` note).
+        Generation::new(2)
+            .expect(
+                Request::new()
+                    .turn_request_step(1)
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_subset([Message::user(MESSAGE)])
+                    .tools_subset([]),
+            )
+            .respond(Response::text("", 4, 1)),
+    )
     .verify(|run| {
         anyhow::ensure!(
-            run.generations_consumed == 1,
-            "expected exactly one router call, got {}",
+            run.generations_consumed == 2,
+            "expected two router calls (the description opened the turn), got {}",
             run.generations_consumed
         );
         let results = run.function_results(SET_DESCRIPTION);
@@ -86,11 +100,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scripts_one_generation_with_reply_text_and_a_description() {
+    fn scripts_a_reply_with_a_description_then_an_empty_end() {
         let fixture = scenario();
         fixture.validate().unwrap();
         assert_eq!(fixture.driver, ScenarioDriver::Playground);
-        assert_eq!(fixture.script.generations.len(), 1);
+        assert_eq!(fixture.script.generations.len(), 2);
         let script = serde_json::to_string(&fixture.script.generations[0]).unwrap();
         assert!(script.contains(SET_DESCRIPTION), "{script}");
         assert!(script.contains(DESCRIPTION), "{script}");

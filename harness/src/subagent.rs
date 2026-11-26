@@ -1264,6 +1264,7 @@ mod tests {
             transient_resumes: 0,
             ask_step: None,
             ask_seen_step: None,
+            opening_reply: None,
             created_at: 1,
             updated_at: 1,
         }
