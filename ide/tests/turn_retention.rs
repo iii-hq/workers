@@ -27,15 +27,17 @@ fn git(repo: &Path, args: &[&str], input: Option<&str>) -> String {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    if let Some(input) = input {
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
-    }
-    let out = child.wait_with_output().unwrap();
+    let out = std::thread::scope(|scope| {
+        let writer = input.map(|input| {
+            let mut stdin = child.stdin.take().unwrap();
+            scope.spawn(move || stdin.write_all(input.as_bytes()))
+        });
+        let output = child.wait_with_output();
+        if let Some(writer) = writer {
+            writer.join().unwrap().unwrap();
+        }
+        output.unwrap()
+    });
     assert!(
         out.status.success(),
         "{}",
@@ -100,7 +102,11 @@ fn refs(store: &Path) -> BTreeMap<String, String> {
         let repo = entry.unwrap().path();
         for line in git(
             &repo,
-            &["for-each-ref", "--format=%(refname) %(objectname)"],
+            &[
+                "for-each-ref",
+                "--include-root-refs",
+                "--format=%(refname) %(objectname)",
+            ],
             None,
         )
         .lines()
@@ -110,6 +116,16 @@ fn refs(store: &Path) -> BTreeMap<String, String> {
                 format!("{}/{name}", repo.file_name().unwrap().to_str().unwrap()),
                 oid.to_owned(),
             );
+        }
+        for name in ["FETCH_HEAD", "MERGE_HEAD"] {
+            if let Ok(contents) = std::fs::read_to_string(repo.join(name))
+                && !contents.trim().is_empty()
+            {
+                result.insert(
+                    format!("{}/{name}", repo.file_name().unwrap().to_str().unwrap()),
+                    git(&repo, &["rev-parse", "--verify", name], None),
+                );
+            }
         }
     }
     result
@@ -146,7 +162,11 @@ fn retain_symbolic_targets(store: &Path, retained: &mut BTreeSet<String>) {
         let key = repo.file_name().unwrap().to_str().unwrap();
         for line in git(
             &repo,
-            &["for-each-ref", "--format=%(refname) %(symref)"],
+            &[
+                "for-each-ref",
+                "--include-root-refs",
+                "--format=%(refname) %(symref)",
+            ],
             None,
         )
         .lines()
@@ -182,6 +202,20 @@ fn safe(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[test]
+fn batch_inventory_drains_output_while_writing_more_than_a_pipe_buffer() {
+    let directory = tempfile::tempdir().unwrap();
+    let repo = directory.path();
+    git(repo, &["init", "--bare"], None);
+    let oid = git(repo, &["hash-object", "-w", "--stdin"], Some("data"));
+    for count in [1, 32_768] {
+        let input = format!("{oid}\n").repeat(count);
+        let output = git(repo, &["cat-file", "--batch-check"], Some(&input));
+        assert_eq!(output.lines().count(), count);
+        assert!(output.lines().all(|line| line == format!("{oid} blob 4")));
+    }
 }
 
 fn wanted_refs(records: &BTreeMap<String, Vec<u8>>, live: &BTreeSet<String>) -> BTreeSet<String> {
@@ -268,6 +302,13 @@ async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
             &["symbolic-ref", "refs/turns/stale", "refs/keep/manual"],
             None,
         );
+        let detached = seed(&store, &run.join("detached-head"), "detached", false);
+        let tree = git(
+            &detached,
+            &["rev-parse", "refs/turns/detached/turn/before"],
+            None,
+        );
+        std::fs::write(detached.join("HEAD"), format!("{tree}\n")).unwrap();
         BTreeSet::from(["live".to_owned()])
     };
     let before_records = records(&store);

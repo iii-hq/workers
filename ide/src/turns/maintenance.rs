@@ -193,6 +193,33 @@ async fn reconcile_repo(
             retained.insert(name.to_owned());
         }
     }
+    // Root refs and multi-value pseudorefs (FETCH_HEAD/MERGE_HEAD) are not
+    // covered by the refs/ listing. Read their file format without requiring
+    // a newer Git's --include-root-refs option, which also omits pseudorefs.
+    for entry in entries(repo).await? {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|name| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+        }) else {
+            continue;
+        };
+        if !entry.file_type().await?.is_file() {
+            return Err(invalid("snapshot root ref is not a regular file"));
+        }
+        let contents = tokio::fs::read_to_string(entry.path()).await?;
+        if let Some(target) = contents.trim().strip_prefix("ref: ") {
+            // A freshly initialized bare repo always has an unborn HEAD.
+            if name == "HEAD" && !refs.contains_key(target) {
+                continue;
+            }
+            retained.insert(name.to_owned());
+            retained.insert(target.to_owned());
+        } else if contents.split_whitespace().next().is_some_and(|oid| {
+            matches!(oid.len(), 40 | 64) && oid.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            retained.insert(name.to_owned());
+        }
+    }
     let mut pending: Vec<_> = retained.iter().cloned().collect();
     while let Some(name) = pending.pop() {
         if let Some((_, Some(target))) = refs.get(name.as_str())
@@ -375,6 +402,70 @@ mod tests {
 
     mod review_regressions {
         use super::*;
+
+        #[tokio::test]
+        async fn root_refs_preserve_otherwise_orphaned_repositories() {
+            for name in [
+                "HEAD",
+                "ORIG_HEAD",
+                "FETCH_HEAD",
+                "MERGE_HEAD",
+                "AUTO_MERGE",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let log = log(dir.path());
+                let (repo, tree) = snapshot(&log, &dir.path().join("workspace"), "deleted").await;
+                tokio::fs::write(repo.join(name), format!("{tree}\n"))
+                    .await
+                    .unwrap();
+                log.reconcile_snapshots(|_| async { Ok(false) })
+                    .await
+                    .unwrap();
+                assert!(repo.exists(), "repository pinned by {name} was removed");
+                assert_eq!(
+                    git(&repo, &["show", &format!("{tree}:file.txt")])
+                        .await
+                        .unwrap()
+                        .trim(),
+                    "deleted"
+                );
+                assert!(
+                    git(&repo, &["for-each-ref", "refs/turns"])
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn symbolic_head_preserves_its_turn_ref_chain() {
+            let dir = tempfile::tempdir().unwrap();
+            let log = log(dir.path());
+            let (repo, tree) = snapshot(&log, &dir.path().join("workspace"), "deleted").await;
+            git(
+                &repo,
+                &[
+                    "symbolic-ref",
+                    "refs/turns/alias",
+                    "refs/turns/deleted/turn/before",
+                ],
+            )
+            .await
+            .unwrap();
+            git(&repo, &["symbolic-ref", "HEAD", "refs/turns/alias"])
+                .await
+                .unwrap();
+            let result = log
+                .reconcile_snapshots(|_| async { Ok(false) })
+                .await
+                .unwrap();
+            assert_eq!(result.removed_refs, 0);
+            assert_eq!(
+                git(&repo, &["rev-parse", "HEAD"]).await.unwrap().trim(),
+                tree
+            );
+        }
 
         #[tokio::test]
         async fn authority_outage_is_bounded_and_retries_visit_every_session() {

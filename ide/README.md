@@ -412,7 +412,8 @@ records defer reconciliation, including records that omit the `turns` field.
 Lookup failures are limited to three per pass, and subsequent passes resume
 after the last checked session. A failed repository is left for retry while
 other repositories are processed. Foreign refs and their symbolic target chains
-are preserved.
+are preserved, including root refs such as a detached `HEAD` and `ORIG_HEAD`.
+An unborn `HEAD` does not prevent orphan repository cleanup.
 
 Pruning a turn or changing its root commits the updated record immediately;
 background maintenance releases the obsolete refs without adding Git cleanup
