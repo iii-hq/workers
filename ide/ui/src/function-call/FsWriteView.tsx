@@ -78,7 +78,7 @@ function BatchWrite({ req, resp }: BatchWriteProps) {
   return (
     <div className="shui-card">
       <MetaRow items={items(kv('files', resp.files.length), targetItem(req.target))} />
-      <Table density="compact">
+      <Table density="compact" inset>
         <TableHeader>
           <TableRow>
             <TableHead>path</TableHead>
