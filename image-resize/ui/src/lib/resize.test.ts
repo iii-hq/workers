@@ -109,12 +109,21 @@ describe('resizeStream', () => {
     expect(unhandled).not.toHaveBeenCalled()
   })
 
-  it('passes a call error through when the output was never aborted', async () => {
+  it('passes a call error through when the SDK took the output and never aborted it', async () => {
     const failure = new Error('Invocation timeout after 60000ms')
-    const { iii } = fakeIii(async () => {
+    const { iii } = fakeIii(async (_id, payload) => {
+      payload.output_channel.getWriter()
       throw failure
     })
     await expect(resizeStream(iii, image(), {})).rejects.toBe(failure)
+  })
+
+  it('rejects with StreamUnavailableError when the host SDK never took the output', async () => {
+    // An SDK without stream values sends the File and the sink as `{}`, so the worker fails on the payload.
+    const { iii } = fakeIii(async () => {
+      throw { code: 'INVALID_ARGS', message: 'invalid type: map, expected a channel reference' }
+    })
+    await expect(resizeStream(iii, image(), {})).rejects.toBeInstanceOf(StreamUnavailableError)
   })
 })
 

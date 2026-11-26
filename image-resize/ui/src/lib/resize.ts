@@ -39,7 +39,7 @@ export interface Options {
 
 export type FieldErrors = Partial<Record<'width' | 'height' | 'quality', string>>
 
-/** The image stream did not open or was cut off, and the call never answered. */
+/** The image stream did not open or was cut off, or the host's SDK never took the streams. */
 export class StreamUnavailableError extends Error {}
 
 /**
@@ -86,6 +86,10 @@ export async function resizeStream(
   try {
     const result = await Promise.race([call, unavailable])
     return { result, blob: new Blob(chunks, { type: `image/${result.format}` }) }
+  } catch (error) {
+    // An SDK that takes no stream values (ADEs up to v1.10.19 bundle 0.26) sends the File and the sink as
+    // `{}` and never locks the sink; the worker's error then only names the payload it could not read.
+    throw output.locked ? error : new StreamUnavailableError()
   } finally {
     clearTimeout(timer)
   }
