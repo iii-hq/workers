@@ -721,6 +721,11 @@ async fn generate_step(
         crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
     }
     drain?;
+    // A user message this step reads is this step's to answer: the opening
+    // reply is no longer the turn's answer.
+    if record.opening_reply.is_some() && has_user_after_watermark(&session, &record).await? {
+        record.opening_reply = None;
+    }
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     // The reason is the live phase detail UIs render while the shimmer shows;
@@ -2132,6 +2137,15 @@ async fn finish_step(
             submit_call.is_some(),
             false,
         );
+    if describes_opening {
+        record.opening_reply = Some(ContentBlock::join_text(&outcome.message.content));
+    } else if crate::description::did_other_work(
+        dispatch_calls
+            .iter()
+            .map(|call| Some(call.function_id.as_str())),
+    ) {
+        record.opening_reply = None;
+    }
 
     if !dispatch_calls.is_empty() {
         crate::session_status::write_phase(deps, &record, "running tools").await;
@@ -3252,8 +3266,8 @@ async fn finalize_with_contract(
     message: &AssistantMessage,
 ) -> Result<TurnStepResult, HarnessError> {
     let mut text = ContentBlock::join_text(&message.content);
-    if text.trim().is_empty()
-        && let Some(opening) = opening_reply(session, record).await
+    if let Some(opening) = record.opening_reply.take()
+        && text.trim().is_empty()
     {
         text = opening;
     }
@@ -3277,33 +3291,6 @@ async fn finalize_with_contract(
             retry_or_giveup(deps, session, record, &msg, json!(text)).await
         }
     }
-}
-
-/// The reply a description opened the turn with, when the step after it ends
-/// with no text and the turn made no other call: [`description::GO_ON_NOTE`]
-/// asked for that empty end when the reply was already the answer, so the
-/// turn's result is that reply (a sub-agent's parent reads it).
-async fn opening_reply(session: &SessionClient, record: &TurnRecord) -> Option<String> {
-    let described = record
-        .calls
-        .values()
-        .any(|call| call.function_id.as_deref() == Some(crate::description::SET_DESCRIPTION_ID));
-    let worked = crate::description::did_other_work(
-        record
-            .calls
-            .values()
-            .map(|call| call.function_id.as_deref()),
-    );
-    if !described || worked || record.step == 0 {
-        return None;
-    }
-    let entry_id = ids::assistant_entry_id(&record.turn_id, record.step - 1);
-    session
-        .message_text(&record.session_id, &entry_id)
-        .await
-        .ok()
-        .flatten()
-        .filter(|text| !text.trim().is_empty())
 }
 
 /// Nudge a validation retry (bounded by `max_validation_retries`); after the

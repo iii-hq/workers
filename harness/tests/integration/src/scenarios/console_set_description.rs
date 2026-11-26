@@ -62,7 +62,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(2)
             .expect(
                 Request::new()
-                    .turn_request_step(2)
+                    .turn_request_step(1)
                     .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_subset([Message::user(MESSAGE)])
                     .tools_subset([]),

@@ -2677,6 +2677,10 @@ async fn run_on_misleading_engine<T, F: std::future::Future<Output = T>>(
                 "state::list_keys" if data["scope"] == "harness_turn" => json!({"keys": ["s"]}),
                 "state::list_keys" => json!({"keys": []}),
                 "session::get" => json!({"meta": {"session_id": "s", "metadata": {}}}),
+                // The stored entries come after the base user message.
+                "session::messages" if data["after_entry_id"] == "e_user" => {
+                    json!({ "messages": stored.clone() })
+                }
                 "session::messages" if !data["after_entry_id"].is_null() => {
                     json!({"messages": []})
                 }
@@ -2855,6 +2859,7 @@ async fn a_description_beside_the_reply_at_the_turns_start_asks_the_model_again(
         turn["calls"]["call_describe"]["function_id"], "harness::set-description",
         "the next step must not count the description as other work: {turn}"
     );
+    assert_eq!(turn["opening_reply"], "Fixed the login form.", "{turn}");
 }
 
 fn empty_reply() -> Value {
@@ -2864,9 +2869,25 @@ fn empty_reply() -> Value {
         "content": []})
 }
 
-/// After an opening description, an empty end keeps the opening reply as the
-/// turn's result: the note asked for that empty end when the reply was the
-/// answer (the fake engine serves the earlier message as "done").
+/// Step 1 of a turn whose record holds `opening_reply`, the reply of an
+/// opening description step, and that has read up to the base user message.
+async fn step_one_after_opening(deps: Deps) -> Result<TurnStepResult, HarnessError> {
+    let cfg = deps.cfg().await;
+    let mut record = crate::state::get_turn(&deps.iii, "s", cfg.session_timeout_ms)
+        .await
+        .unwrap()
+        .unwrap();
+    record.opening_reply = Some("Paris is the capital of France.".into());
+    record.watermark_entry_id = Some("e_user".into());
+    crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms)
+        .await
+        .unwrap();
+    step_one(deps).await
+}
+
+/// After an opening description, an empty end completes the turn with the
+/// opening reply: the note asked for that empty end when the reply was the
+/// answer, and a sub-agent's parent reads the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_end_after_an_opening_description_keeps_the_opening_reply() {
     let (result, _, turn) = run_on_fake_engine(
@@ -2875,21 +2896,18 @@ async fn an_empty_end_after_an_opening_description_keeps_the_opening_reply() {
         json!([]),
         Some(empty_reply()),
         json!({}),
-        step_one,
+        step_one_after_opening,
     )
     .await;
     assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
-    assert_eq!(turn["result"], "done", "{turn}");
+    assert_eq!(turn["result"], "Paris is the capital of France.", "{turn}");
 }
 
-/// After other work an empty end is the turn's own (empty) result: an
-/// announcement is never taken for the answer.
+/// With no opening reply held, an empty end is the turn's own (empty) result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_empty_end_after_other_work_keeps_its_empty_result() {
+async fn an_empty_end_without_an_opening_reply_keeps_its_empty_result() {
     let (result, _, turn) = run_on_fake_engine(
-        json!({"call_describe": {"state": "done", "function_id": "harness::set-description",
-            "entry_id": "e_t1_call_describe"},
-            "call_read": {"state": "done", "function_id": "shell::exec"}}),
+        json!({"call_read": {"state": "done", "function_id": "shell::exec"}}),
         json!([]),
         Some(empty_reply()),
         json!({}),
@@ -2898,6 +2916,25 @@ async fn an_empty_end_after_other_work_keeps_its_empty_result() {
     .await;
     assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
     assert_eq!(turn["result"], "", "{turn}");
+}
+
+/// A user message the step reads is answered by that step: the opening reply
+/// is dropped, so an empty answer stays empty instead of repeating it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_user_message_drops_the_opening_reply() {
+    let (result, _, turn) = run_on_fake_engine(
+        json!({"call_describe": {"state": "done", "function_id": "harness::set-description",
+            "entry_id": "e_t1_call_describe"}}),
+        json!([{"entry_id": "e_user_b", "message": {"role": "user", "timestamp": 3,
+            "content": [{"type": "text", "text": "And Spain?"}]}}]),
+        Some(empty_reply()),
+        json!({}),
+        step_one_after_opening,
+    )
+    .await;
+    assert_eq!(result.unwrap().status, TurnStatus::Completed, "{turn}");
+    assert_eq!(turn["result"], "", "{turn}");
+    assert!(turn["opening_reply"].is_null(), "{turn}");
 }
 
 /// The same call with no reply text continues like any tool step.
