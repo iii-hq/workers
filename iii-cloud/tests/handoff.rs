@@ -2651,33 +2651,329 @@ async fn a_failed_run_with_a_clean_plan_gets_a_continue_that_names_the_failure()
     assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
 }
 
-/// A fast check that fails leaves the older one in place: nothing is judged from it.
+/// The worktree on another branch is the agent's mistake: it is told, and it is counted.
 #[tokio::test]
-async fn a_failed_idle_check_judges_nothing_and_is_tried_again() {
+async fn a_worktree_on_another_branch_is_a_continue_and_then_stalls_with_the_reason() {
     let (h, _s, _r, ws) = setup().await;
     accept_sends(&h);
     let w = world();
     let created = create(&h.ctx, ready_req()).await.unwrap();
     install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
-    // The worktree is on another branch: the hand-off's check refuses (WRONG_WORKTREE).
-    let branch = h.ctx.store.read(|s| s.handoffs[0].branch.clone());
     git(&ws, &["checkout", "-q", "-b", "elsewhere"]);
-    idle_for(&w, 500).await;
-    assert!(sent(&h).is_empty());
-    assert_eq!(
-        h.ctx.store.read(|s| s.handoffs[0].agent.state),
-        AgentPhase::Working
-    );
-    // Back on its branch the next poll checks and continues.
-    git(&ws, &["checkout", "-q", &branch]);
+    idle_for(&w, 0).await;
     for _ in 0..200 {
         if !sent(&h).is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(sent(&h).len(), 1);
+    let messages = sent(&h);
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].contains("WRONG_WORKTREE: This hand-off works on")
+            && messages[0].contains("the worktree is on elsewhere"),
+        "{}",
+        messages[0]
+    );
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
+    // Continues used up: it stalls and says why.
+    h.ctx.store.update(|s| {
+        s.handoffs[0].continues = 3;
+        s.handoffs[0].continue_at_ms = None;
+    });
+    let a = until(&h, "stalled with the reason", |a| {
+        a.state == AgentPhase::Stalled
+            && a.question
+                .as_deref()
+                .is_some_and(|q| q.contains("the worktree is on elsewhere"))
+    })
+    .await;
+    assert_eq!(a.state, AgentPhase::Stalled);
+}
+
+/// Any other failure of the fast check is tried again, and stalls after three in a row.
+#[tokio::test]
+async fn a_fast_check_that_keeps_failing_stalls_with_its_message_and_one_success_resets() {
+    let (h, _s, _r, _ws) = setup().await;
+    accept_sends(&h);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    // No project and no stored environment: the check cannot say where to work (NO_PROJECT).
+    let saved = h
+        .ctx
+        .store
+        .read(|s| (s.project.clone(), s.handoffs[0].clone()));
+    h.ctx.store.update(|s| {
+        s.project = None;
+        s.handoffs[0].env = None;
+        s.handoffs[0].workspace_path = String::new();
+    });
+    idle_for(&w, 0).await;
+    // (`status.agent` needs a selected project, so the record is read directly.)
+    for _ in 0..200 {
+        if h.ctx.store.read(|s| s.handoffs[0].agent.state) == AgentPhase::Stalled {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let a = h.ctx.store.read(|s| s.handoffs[0].agent.clone());
+    assert_eq!(a.state, AgentPhase::Stalled);
+    assert!(a.question.is_some_and(|q| !q.is_empty()));
+    assert!(h.ctx.store.read(|s| s.handoffs[0].check_failures) >= 3);
+    assert!(sent(&h).is_empty());
+    // The world comes back: a check works, the count is reset.
+    h.ctx.store.update(|s| {
+        s.project = saved.0.clone();
+        s.handoffs[0].env = saved.1.env.clone();
+        s.handoffs[0].workspace_path = saved.1.workspace_path.clone();
+    });
+    for _ in 0..200 {
+        if h.ctx.store.read(|s| s.handoffs[0].check_failures) == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].check_failures), 0);
+}
+
+fn run_with(code: &'static str, mutate: impl Fn(&mut Run)) -> impl Fn(&mut Run) {
+    move |r| {
+        r.error.as_mut().unwrap().code = code.into();
+        mutate(r);
+    }
+}
+
+/// A hand-off whose agent's own check holds `run` (the plan is clean), idle at its turn end.
+async fn idle_with_run(
+    mutate: impl Fn(&mut Run),
+) -> (Harness, World, HandoffResponse, (MockServer, Repo)) {
+    let (h, server, repo, ws) = setup().await;
+    accept_sends(&h);
+    clean_manifest(&ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
+        c.ready = false;
+        let mut run = failed_run("agent-check", &head);
+        mutate(&mut run);
+        c.run = Some(run);
+    });
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    (h, w, created, (server, repo))
+}
+
+async fn first_sent(h: &Harness) -> Option<String> {
+    for _ in 0..80 {
+        if let Some(m) = sent(h).first() {
+            return Some(m.clone());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    None
+}
+
+#[test]
+fn every_run_code_has_an_owner() {
+    use iii_cloud::handoff::{RunOwner, run_code_owner};
+    for code in [
+        "INSTALL_FAILED",
+        "BUILD_FAILED",
+        "RELEASE_FAILED",
+        "COMPOSE_FAILED",
+        "WORKERS_NOT_READY",
+        "NO_ROUTE",
+        "ROUTE_OUTSIDE_HTTP_GROUP",
+        "ROUTE_OUTSIDE_PREFIX",
+        "HEALTHCHECK_FAILED",
+    ] {
+        assert_eq!(run_code_owner(code), RunOwner::Agent, "{code}");
+    }
+    for code in [
+        "DOCKER_MISSING",
+        "PORT_IN_USE",
+        "TOOL_MISSING",
+        "LOCAL_ENGINE_VERSION",
+    ] {
+        assert_eq!(run_code_owner(code), RunOwner::Person, "{code}");
+    }
+    for code in [
+        "WORKER_RESTARTED",
+        "RUN_PANIC",
+        "RUN_REPLACED",
+        "RUN_TIMEOUT",
+        "GIT_FAILED",
+        "SOMETHING_NEW",
+    ] {
+        assert_eq!(run_code_owner(code), RunOwner::Interrupted, "{code}");
+    }
+}
+
+/// Docker not running is the person's: no continue, it waits for them, and the brief says so.
+#[tokio::test]
+async fn a_run_that_failed_on_the_persons_machine_waits_for_the_person_and_shows_in_the_brief() {
+    let (h, _w, created, _keep) = idle_with_run(run_with("DOCKER_MISSING", |r| {
+        r.error.as_mut().unwrap().message = "Docker is not running".into()
+    }))
+    .await;
+    let a = until(&h, "waiting for you", |a| {
+        a.state == AgentPhase::WaitingForYou
+    })
+    .await;
+    assert!(
+        a.question
+            .as_deref()
+            .is_some_and(|q| q.starts_with("DOCKER_MISSING: Docker is not running")),
+        "{:?}",
+        a.question
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty());
+    let b = iii_cloud::handoff::brief_for(
+        &h.ctx,
+        HandoffBriefRequest {
+            handoff_id: created.id,
+        },
+    )
+    .await
+    .unwrap()
+    .brief;
+    assert!(
+        b.person_problems
+            .iter()
+            .any(|p| p.code == "DOCKER_MISSING" && p.owner == Owner::Person),
+        "{:?}",
+        b.person_problems
+    );
+}
+
+/// A run cut short is nobody's fault: the continue says to run it again.
+#[tokio::test]
+async fn an_interrupted_run_gets_a_continue_that_says_to_run_it_again() {
+    let (h, _w, _created, _keep) = idle_with_run(run_with("RUN_TIMEOUT", |_| {})).await;
+    let m = first_sent(&h).await.expect("a continue");
+    assert!(
+        m.contains("RUN_TIMEOUT: the local run was interrupted; run `check {run: true}` again"),
+        "{m}"
+    );
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
+}
+
+/// A run still going judges nothing; one that waits on containers is the agent's cue.
+#[tokio::test]
+async fn a_run_still_going_is_not_a_stop_and_one_that_waits_names_what_it_waits_on() {
+    let (h, _w, _c, _keep) = idle_with_run(|r| {
+        r.status = RunStatus::Running;
+        r.error = None;
+        r.waiting_on = None;
+    })
+    .await;
+    let a = until(&h, "the run is going", |a| {
+        a.current.as_deref() == Some("the local run is going")
+    })
+    .await;
+    assert_eq!(a.state, AgentPhase::Working);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty());
+    drop(h);
+    let (h, _w, _c, _keep) = idle_with_run(|r| {
+        r.status = RunStatus::Running;
+        r.error = None;
+        r.waiting_on = Some(WaitingOn {
+            containers: vec!["api".into()],
+            since: "t".into(),
+        });
+    })
+    .await;
+    let m = first_sent(&h).await.expect("a continue");
+    assert!(
+        m.contains("waits for api to connect") && m.contains("read the run's log"),
+        "{m}"
+    );
+}
+
+/// After the agent commits a fix, the earlier commit's failure is not the brief's.
+#[tokio::test]
+async fn run_failure_is_of_the_newest_commit_only() {
+    let (h, _s, _r, _ws) = setup().await;
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.run = Some(failed_run(&c.id, "abc"));
+        s.put_check(c);
+    });
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.id = "after-the-fix".into();
+        c.commit = "def".into();
+        c.run = None;
+        c.handoff_id = Some(created.id.clone());
+        s.put_check(c);
+    });
+    let out = iii_cloud::handoff::brief_for(
+        &h.ctx,
+        HandoffBriefRequest {
+            handoff_id: created.id,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.run_failure, None);
+}
+
+/// Twenty newer checks of other environments do not drop the agent's own.
+#[tokio::test]
+async fn the_agents_own_checks_survive_the_history_cap_while_the_hand_off_goes_on() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    clean_manifest(&ws);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
+    // The store's own rule: 25 newer checks of another environment.
+    h.ctx.store.update(|s| {
+        for i in 0..25 {
+            let mut c = s.checks.iter().find(|c| c.id == "chk").unwrap().clone();
+            c.id = format!("other-{i}");
+            c.environment_id = "other-env".into();
+            c.commit = format!("other-commit-{i}");
+            s.put_check_for(c, false);
+        }
+        assert!(s.checks.iter().any(|c| c.id == "agent-check"));
+    });
+    // A stopped hand-off's checks are not kept by that rule.
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.state = AgentPhase::Stopped;
+        let mut c = s.checks.iter().find(|c| c.id == "chk").unwrap().clone();
+        c.id = "one-more".into();
+        c.environment_id = "other-env".into();
+        c.commit = "one-more-commit".into();
+        s.put_check_for(c, false);
+        assert!(!s.checks.iter().any(|c| c.id == "agent-check"));
+        s.handoffs[0].agent.state = AgentPhase::Starting;
+    });
+    // Put it back (the stopped pass dropped it), then the whole flow ends Done.
+    seed_passed_run(&h, &ws);
+    h.ctx.store.update(|s| {
+        for i in 0..25 {
+            let mut c = s.checks.iter().find(|c| c.id == "chk").unwrap().clone();
+            c.id = format!("again-{i}");
+            c.environment_id = "other-env".into();
+            c.commit = format!("again-commit-{i}");
+            s.put_check_for(c, false);
+        }
+    });
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "done", |a| a.state == AgentPhase::Done).await;
 }
 
 /// What the page shows after a restart is what it showed before.

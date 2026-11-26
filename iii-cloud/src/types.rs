@@ -473,6 +473,9 @@ pub struct Handoff {
     /// The chat refused the last "continue" (so the state after a restart is the same).
     #[serde(default)]
     pub continue_refused: bool,
+    /// Fast checks that failed in a row (reset by one that worked).
+    #[serde(default)]
+    pub check_failures: u32,
 }
 
 impl Handoff {

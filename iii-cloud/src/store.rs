@@ -101,6 +101,22 @@ const MAX_CHECKS: usize = 20;
 const MAX_DEPLOYS: usize = 20;
 const MAX_RECENT_PROJECTS: usize = 8;
 
+/// Not stopped, and not a finished one that has been quiet for 30 minutes (retired).
+fn handoff_going(h: &Handoff) -> bool {
+    if h.agent.state == AgentPhase::Stopped {
+        return false;
+    }
+    let quiet = h
+        .agent
+        .last_activity_at
+        .as_deref()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(h.asked_at_ms);
+    h.agent.state != AgentPhase::Done
+        || chrono::Utc::now().timestamp_millis() - quiet <= 30 * 60 * 1000
+}
+
 impl State {
     pub fn find_check(&self, id: &str) -> Option<&Check> {
         self.check
@@ -125,6 +141,10 @@ impl State {
                 || s.handoffs
                     .iter()
                     .any(|h| h.check_id.as_deref() == Some(c.id.as_str()))
+                // The checks of a hand-off that is still going: its agent's passed run is among them.
+                || s.handoffs.iter().any(|h| {
+                    c.handoff_id.as_deref() == Some(h.id.as_str()) && handoff_going(h)
+                })
                 || s.pr.as_ref().is_some_and(|p| p.head_sha == c.commit)
                 || s.deploys.iter().any(|d| d.commit.sha == c.commit)
         };

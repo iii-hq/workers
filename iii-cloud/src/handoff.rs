@@ -26,6 +26,8 @@ const QUESTION_MAX: usize = 200;
 const RUN_LOG_LINES: usize = 40;
 /// "Continue" messages per hand-off before the state is `stalled`.
 const MAX_CONTINUES: u32 = 3;
+/// Failed fast checks in a row (other than the agent's own mistake) before it stalls.
+const MAX_CHECK_FAILURES: u32 = 3;
 
 fn rfc3339(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
@@ -367,6 +369,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         continues: 0,
         continue_at_ms: None,
         continue_refused: false,
+        check_failures: 0,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -975,6 +978,9 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             question = Some(CONFIRM_TEXT.to_string());
         } else if matches!(handoff.kind, HandoffKind::Ready | HandoffKind::DeployFix) {
             // One fast check per idle stretch: does the agent still have problems to fix?
+            // The agent's own mistake (the worktree on another branch) is its to fix;
+            // another failure is retried, and after three in a row the hand-off stalls.
+            let mut forced: Option<(String, String)> = None;
             if !local.idle_checked {
                 local.idle_checked = true;
                 ctx.store.update(|s| {
@@ -982,40 +988,93 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                         h.checked = true;
                     }
                 });
-                if crate::check::check(
+                let checked = crate::check::check(
                     ctx,
                     CheckRequest {
                         handoff_id: Some(id.to_string()),
                         ..Default::default()
                     },
                 )
-                .await
-                .is_err()
-                {
-                    // The older check says nothing about now: judge nothing, check again next time.
-                    local.idle_checked = false;
-                    return Poll::Continue;
+                .await;
+                match checked {
+                    Ok(_) => {
+                        if handoff.check_failures > 0 {
+                            ctx.store.update(|s| {
+                                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                                    h.check_failures = 0;
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        // Judge nothing from an older check; try again next poll.
+                        local.idle_checked = false;
+                        if e.code == "WRONG_WORKTREE" {
+                            forced = Some((e.code, e.message));
+                        } else {
+                            let failures = ctx.store.update(|s| {
+                                let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
+                                h.check_failures += 1;
+                                Some(h.check_failures)
+                            });
+                            if failures.is_some_and(|n| n >= MAX_CHECK_FAILURES) {
+                                let message = crate::run::redact(&e.message, &secrets);
+                                let stalled = ctx.store.update(|s| {
+                                    let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
+                                    if h.agent.state == AgentPhase::Stopped {
+                                        return None;
+                                    }
+                                    h.agent.state = AgentPhase::Stalled;
+                                    h.agent.question = Some(message);
+                                    Some(h.agent.clone())
+                                });
+                                if let Some(a) = stalled
+                                    && a != handoff.agent
+                                {
+                                    emit(ctx, &a);
+                                }
+                            }
+                            return Poll::Continue;
+                        }
+                    }
                 }
             }
-            let mut mine = open_problems(ctx, &handoff, Owner::Agent);
-            let theirs = open_problems(ctx, &handoff, Owner::Person);
-            // A failed local run of this commit is the agent's work too.
-            if mine.is_empty()
+            let mut mine: Vec<(String, String)> = forced.iter().cloned().collect();
+            let mut theirs = Vec::new();
+            if forced.is_none() {
+                mine = open_problems(ctx, &handoff, Owner::Agent);
+                theirs = open_problems(ctx, &handoff, Owner::Person);
+            }
+            // The hand-off's own local run, when the plan has nothing left to say.
+            let mut run_going = false;
+            if forced.is_none()
+                && mine.is_empty()
                 && theirs.is_empty()
                 && !passed_run_here(ctx, &handoff)
-                && let Some(failure) = run_failure_line(ctx, &handoff)
             {
-                mine.push(failure);
+                match run_judgment(ctx, &handoff) {
+                    Some(RunJudgment::Agent(line)) => mine.push(line),
+                    Some(RunJudgment::Person(line)) => theirs.push(line),
+                    Some(RunJudgment::Going) => run_going = true,
+                    None => {}
+                }
             }
-            if !mine.is_empty() {
+            if run_going {
+                // Nothing to judge until it ends.
+                phase = AgentPhase::Working;
+                current = Some("the local run is going".to_string());
+            } else if !mine.is_empty() {
                 let sent = send_continue(ctx, &handoff, &session, &mine, &secrets).await;
                 // The window opens; when it passes the stretch is judged again.
-                local.idle_checked = sent == Continue::Spent;
+                local.idle_checked = local.idle_checked || sent == Continue::Spent;
                 if sent == Continue::Sent {
                     phase = AgentPhase::Working;
                 } else {
                     phase = AgentPhase::Stalled;
-                    question = Some(STOPPED_TEXT.to_string());
+                    question = Some(match &forced {
+                        Some((_, message)) if sent == Continue::Spent => message.clone(),
+                        _ => STOPPED_TEXT.to_string(),
+                    });
                 }
             } else if !theirs.is_empty() {
                 // Nothing left for the agent: these wait for the person.
@@ -1310,33 +1369,92 @@ fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
     })
 }
 
-/// The hand-off's newest run, when it failed on the newest check's commit:
-/// `(code, "<message> (stage <stage>)")`. A run that is still going (`waiting_on`
-/// set) is not a failure: the agent's own call returned with it, and that case
-/// keeps its "stopped before running it" text.
-fn run_failure_line(ctx: &Ctx, handoff: &Handoff) -> Option<(String, String)> {
+/// Who a failed local run's code belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOwner {
+    /// The agent fixes it in the worktree.
+    Agent,
+    /// The person's machine: Docker, a port, a tool, the iii binary.
+    Person,
+    /// Nobody's fault: the run was cut short; run it again.
+    Interrupted,
+}
+
+/// The one place that sorts a run's error code (`src/run.rs`): the turn-end
+/// judgment and the brief both read it. An unknown code is an interruption.
+pub fn run_code_owner(code: &str) -> RunOwner {
+    match code {
+        "INSTALL_FAILED" | "BUILD_FAILED" | "RELEASE_FAILED" | "COMPOSE_FAILED"
+        | "WORKERS_NOT_READY" | "NO_ROUTE" | "HEALTHCHECK_FAILED" => RunOwner::Agent,
+        c if c.starts_with("ROUTE_OUTSIDE_") => RunOwner::Agent,
+        "DOCKER_MISSING" | "PORT_IN_USE" | "TOOL_MISSING" | "LOCAL_ENGINE_VERSION" => {
+            RunOwner::Person
+        }
+        _ => RunOwner::Interrupted,
+    }
+}
+
+/// The hand-off's newest run: of its own checks, on the newest check's commit.
+fn own_run<'a>(s: &'a crate::store::State, h: &'a Handoff) -> Option<&'a Run> {
+    let latest = own_checks(s, h).next()?;
+    own_checks(s, h)
+        .filter(|c| c.commit == latest.commit)
+        .find_map(|c| c.run.as_ref())
+}
+
+/// A failed run as `(code, "<message> (stage <stage>)")`.
+fn run_failure_of(run: &Run) -> (String, String) {
+    let stage = run
+        .error
+        .as_ref()
+        .and_then(|e| serde_json::to_value(e.stage).ok())
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let (code, message) = match &run.error {
+        Some(e) => (e.code.clone(), e.message.clone()),
+        None => ("RUN_FAILED".into(), "the local run failed".into()),
+    };
+    match stage {
+        Some(st) => (code, format!("{message} (stage {st})")),
+        None => (code, message),
+    }
+}
+
+enum RunJudgment {
+    /// The continue's line.
+    Agent((String, String)),
+    /// What the person must do.
+    Person((String, String)),
+    /// Running, and not waiting on anything: nothing to judge yet.
+    Going,
+}
+
+fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
     ctx.store.read(|s| {
-        let latest = own_checks(s, handoff).next()?;
-        let run = own_checks(s, handoff)
-            .filter(|c| c.commit == latest.commit)
-            .find_map(|c| c.run.as_ref())
-            .filter(|r| r.status == RunStatus::Failed)?;
-        let stage = run
-            .error
-            .as_ref()
-            .and_then(|e| serde_json::to_value(e.stage).ok())
-            .and_then(|v| v.as_str().map(str::to_owned));
-        let (code, message) = match &run.error {
-            Some(e) => (e.code.clone(), e.message.clone()),
-            None => ("RUN_FAILED".into(), "the local run failed".into()),
-        };
-        Some((
-            code,
-            match stage {
-                Some(st) => format!("{message} (stage {st})"),
-                None => message,
-            },
-        ))
+        let run = own_run(s, h)?;
+        match run.status {
+            RunStatus::Passed => None,
+            RunStatus::Running => Some(match &run.waiting_on {
+                None => RunJudgment::Going,
+                Some(w) => RunJudgment::Agent((
+                    "RUN_WAITING".into(),
+                    format!(
+                        "the local run waits for {} to connect; read the run's log, fix it and check again",
+                        w.containers.join(", ")
+                    ),
+                )),
+            }),
+            RunStatus::Failed => {
+                let (code, line) = run_failure_of(run);
+                Some(match run_code_owner(&code) {
+                    RunOwner::Agent => RunJudgment::Agent((code, line)),
+                    RunOwner::Person => RunJudgment::Person((code, line)),
+                    RunOwner::Interrupted => RunJudgment::Agent((
+                        code,
+                        "the local run was interrupted; run `check {run: true}` again".into(),
+                    )),
+                })
+            }
+        }
     })
 }
 
@@ -1617,7 +1735,27 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         check_id: check.map(|c| c.id.clone()),
         commit: check.map(|c| c.commit.clone()),
         agent_problems: problems(Owner::Agent),
-        person_problems: problems(Owner::Person),
+        person_problems: {
+            let mut list = problems(Owner::Person);
+            // A failed run that only the person can settle (Docker, a port) is theirs too.
+            if let Some(run) = own_run(s, h).filter(|r| r.status == RunStatus::Failed) {
+                let (code, line) = run_failure_of(run);
+                if run_code_owner(&code) == RunOwner::Person {
+                    list.push(BriefProblem {
+                        id: format!("run:{}", run.id),
+                        code,
+                        owner: Owner::Person,
+                        severity: Severity::Block,
+                        title: cut(&crate::run::redact(&line, secrets), 160),
+                        file: None,
+                        line: None,
+                        detail: None,
+                        fix: None,
+                    });
+                }
+            }
+            list
+        },
         deploy,
         next_step,
     }
@@ -1630,17 +1768,8 @@ pub async fn brief_for(ctx: &Arc<Ctx>, request: HandoffBriefRequest) -> Res<Hand
     ctx.store
         .read(|s| {
             let h = s.handoffs.iter().find(|h| h.is(&request.handoff_id))?;
-            let run = s
-                .check
-                .iter()
-                .chain(s.checks.iter())
-                // Only this hand-off's own checks: another's run is not its failure.
-                .filter(|c| {
-                    c.handoff_id.as_deref() == Some(h.id.as_str())
-                        || h.check_id.as_deref() == Some(c.id.as_str())
-                })
-                .find_map(|c| c.run.as_ref())
-                .filter(|r| r.status == RunStatus::Failed);
+            // Only this hand-off's own run, on its newest commit.
+            let run = own_run(s, h).filter(|r| r.status == RunStatus::Failed);
             let run_failure = run.and_then(|r| {
                 let e = r.error.as_ref()?;
                 let skip = r.log_tail.len().saturating_sub(RUN_LOG_LINES);
