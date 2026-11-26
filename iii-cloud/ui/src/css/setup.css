@@ -1,89 +1,25 @@
-/* Setup (U3): the setup steps' own layout. Every rule starts with [data-iii-ui='iii-cloud']. */
+/* First time: sign in, then the four rows of the confirmation. Every rule starts with [data-iii-ui='iii-cloud']. */
 [data-iii-ui='iii-cloud'] .iii-cloud-setup {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   width: 100%;
-  max-width: 720px;
+  max-width: 800px;
   min-width: 0;
   margin: 0 auto;
-  padding: 36px 40px 48px;
+  padding: 48px 40px;
 }
-/* The board widths (640 to 860 of content) plus the padding. */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='target'] {
-  max-width: 760px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='ship'] {
-  max-width: 800px;
-  gap: 16px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='check'] {
-  max-width: 916px;
-  padding: 24px 28px;
-}
-/* The Values list is a table of four columns: the board uses the whole main area. */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='values'] {
-  max-width: 1120px;
-  gap: 14px;
-  padding: 24px 28px 0;
+/* The sign-in is one narrow column, as the board. */
+[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='signin'] {
+  max-width: 600px;
+  padding-top: 72px;
 }
 @container iii-cloud (max-width: 640px) {
   [data-iii-ui='iii-cloud'] .iii-cloud-setup,
-  [data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='check'] {
+  [data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='signin'] {
     padding: 16px;
   }
-  [data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='values'] {
-    padding: 16px 16px 0;
-  }
-  [data-iii-ui='iii-cloud'] .iii-cloud-moments {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  [data-iii-ui='iii-cloud'] .iii-cloud-setup-fact {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
-  }
-}
-
-/* A phone's rail in one line, under the path bar. */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dots {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  min-height: 44px;
-  box-sizing: border-box;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--color-edge);
-  font-size: 12px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dotrow {
-  display: inline-flex;
-  gap: 4px;
-  margin-right: 4px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dotrow > span {
-  width: 8px;
-  height: 8px;
-  box-sizing: border-box;
-  border-radius: var(--radius-full);
-  background: var(--color-edge);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dotrow > [data-state='done'] {
-  background: var(--color-ink);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dotrow > [data-state='current'] {
-  border: 2px solid var(--color-ink);
-  background: transparent;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-where {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  white-space: nowrap;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-dotname {
-  font-size: 13px;
-  font-weight: 500;
 }
 
 /* Headings and copy */
@@ -92,19 +28,9 @@
   flex-direction: column;
   gap: 6px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-headrow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 16px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-headrow > .iii-cloud-setup-head {
-  flex: 1;
-  min-width: 0;
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-setup-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 600;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-setup-lead {
@@ -113,41 +39,16 @@
   line-height: 1.55;
   color: var(--color-ink-faint);
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-text {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-label,
-[data-iii-ui='iii-cloud'] .iii-cloud-moment {
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-label {
   font-size: 13px;
   font-weight: 500;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-skel {
+  display: block;
+  height: 160px;
 }
 
-/* Step 1: where the person steps in, and the sign-in panel */
-[data-iii-ui='iii-cloud'] .iii-cloud-moments {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-moments li {
-  display: flex;
-  gap: 10px;
-  padding: 12px;
-  border-radius: var(--radius-lg);
-  background: var(--color-panel-raised);
-  box-shadow: 0 0 0 1px var(--color-edge);
-  font-size: 12px;
-}
+/* The sign-in: the code in a card, the wait, then the note and the API key */
 [data-iii-ui='iii-cloud'] .iii-cloud-signin {
   display: flex;
   flex-direction: column;
@@ -155,27 +56,31 @@
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-device {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 16px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-device-text {
-  display: flex;
-  flex: 1;
   flex-direction: column;
-  gap: 4px;
-  min-width: 200px;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
   font-size: 13px;
 }
+[data-iii-ui='iii-cloud'] .iii-cloud-device .iii-cloud-code {
+  background: transparent;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-device .iii-cloud-code-value {
+  font-size: 28px;
   letter-spacing: 0.12em;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-device-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-signin-key {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid var(--color-edge);
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-signin-form {
   display: flex;
@@ -184,159 +89,49 @@
   max-width: 420px;
 }
 
-/* Facts and review rows: label, value, an action at the end */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-rows {
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-fact {
-  display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  padding: 12px 14px;
-  font-size: 13px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-fact + .iii-cloud-setup-fact {
-  border-top: 1px solid var(--color-edge);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-key {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-val {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-end {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-skel {
-  display: block;
-  height: 160px;
-}
-
-/* Step 2: the note on where the agent works */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-note {
-  display: flex;
-  gap: 12px;
-  padding: 12px 14px;
+/* The confirmation: one card of rows; an open row is drawn in place of its row */
+[data-iii-ui='iii-cloud'] .iii-cloud-detailcard {
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  font-size: 13px;
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+  overflow: hidden;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-note > svg {
-  flex-shrink: 0;
-  margin-top: 1px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-note .iii-cloud-setup-val {
-  gap: 8px;
-}
-
-/* Step 3: the project and environment choices */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-choices {
-  padding: 4px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-fact .iii-cloud-setup-choices {
-  padding: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-others {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 10px 10px;
+[data-iii-ui='iii-cloud'] .iii-cloud-detailcard > * + * {
   border-top: 1px solid var(--color-edge);
 }
-
-/* Step 5: deploying */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-stages {
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-open {
   display: flex;
   flex-direction: column;
-  margin: 0;
-  padding: 4px 0;
-  list-style: none;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-stages li {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 14px;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
   font-size: 13px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-stages li[data-live] {
-  background: var(--color-surface);
-  font-weight: 500;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-time {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-ink-faint);
-  text-align: right;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-log {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 4px 14px 14px;
-}
-
-/* Step 6: live */
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-done {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 9999px;
-  background: var(--color-ok-muted);
-  color: var(--color-ok);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-url {
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-openhead {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--color-edge);
-  font-size: 14px;
-  overflow-wrap: anywhere;
+  justify-content: space-between;
+  gap: 4px 16px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-checks {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 4px 0;
-  list-style: none;
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-choices {
+  padding: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-checks li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 0 14px;
-  font-size: 13px;
+
+/* The copy source's choices: framed cards, an ink border when chosen */
+[data-iii-ui='iii-cloud'] .iii-cloud-ne-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-skelrow {
-  display: block;
-  flex: 1;
-  height: 16px;
+[data-iii-ui='iii-cloud'] .iii-cloud-form.iii-cloud-ne-form {
+  gap: 16px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-setup-after {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  font-size: 13px;
-  line-height: 1.5;
+[data-iii-ui='iii-cloud'] .iii-cloud-choice {
+  min-height: 44px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-choice[aria-checked='true'] {
+  border-color: var(--color-ink);
+  background: var(--color-panel);
 }

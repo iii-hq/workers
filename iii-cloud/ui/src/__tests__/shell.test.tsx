@@ -7,7 +7,7 @@ import { apiPath, base, ENV, earlierReady, signedOut } from '../fixtures/base'
 import { cloudDeploy } from '../fixtures/manage'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
-import { board, btn, click, cloudAnswers, ctx, el, flush, mount, root, row, text, type, ui, usePage } from './util'
+import { board, btn, click, cloudAnswers, ctx, el, flush, mount, root, row, text, ui, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -30,26 +30,6 @@ const side = () => el.querySelector('aside[aria-label="registry"]')
 /** The environment the sidebar marks as the page. */
 const current = () => side()?.querySelector('[aria-current=page]')?.textContent
 const uses = (h: ReturnType<typeof fakeHost>) => h.calls.filter((c) => c.id === 'iii-cloud::project::use')
-
-describe('the step rail', () => {
-  it('the step shown is aria-current; done steps go back, the step the status is at too; steps ahead are off', async () => {
-    await board('setup-target')
-    expect(rail('Setup steps')).toEqual(['done', 'done', 'current', 'todo', 'todo', 'todo', 'todo'])
-    expect(el.querySelector('aside [aria-current=step]')?.textContent).toContain('Where it runs')
-    expect(text()).toContain('Where should it run?')
-    await click(row('Start and sign in'))
-    expect(text()).toContain('Signed in')
-    expect(text()).not.toContain('Where should it run?')
-    expect(rail('Setup steps')).toEqual(['current', 'done', 'reached', 'todo', 'todo', 'todo', 'todo'])
-    expect(el.querySelector('aside [aria-current=step]')?.textContent).toContain('Start and sign in')
-    // A step ahead is a plain row: legible, and a click on it goes nowhere.
-    const ahead = row('4')
-    await click(ahead)
-    expect(text()).toContain('Signed in')
-    await click(row('3'))
-    expect(text()).toContain('Where should it run?')
-  })
-})
 
 describe('Manage', () => {
   it("opens on Start; Open goes to the project's environment: the sidebar lists the environments, one is the page", async () => {
@@ -217,12 +197,12 @@ describe('Manage', () => {
     expect(text()).toContain('What goes to production?')
   })
 
-  it('Add a project… opens setup at the folder in add mode; Cancel comes back to Start', async () => {
+  it('Add a project opens the confirmation in add mode, at the folder; Cancel comes back to Start', async () => {
     const h = await mount(live, ctx({ at: 'start' }))
-    await click(btn('Add a project…'))
-    expect(el.querySelector('aside[aria-label="Setup steps"]')).not.toBeNull()
+    await click(btn('Add a project'))
+    expect(el.querySelector('aside[aria-label="Setup steps"]')).toBeNull()
     expect(path()).toBe('Projects / Add a project')
-    expect(text()).toContain('Which code goes to the cloud?')
+    expect(text()).toContain('Pick the folder of your project.')
     await click(btn('Cancel'))
     expect(path()).toBe('Projects')
     expect(uses(h)).toEqual([])
@@ -289,19 +269,6 @@ describe('DeployPill: the way back to a deploy going on', () => {
     expect(path()).toBe('Projects / registry · dev')
   })
 
-  it('the setup rail: step 6 says "deploying #6" and shows that deploy', async () => {
-    await board('setup-check-deploying')
-    const ship = [...el.querySelectorAll('aside[aria-label="Setup steps"] [role=row]')].find((r) =>
-      r.textContent?.includes('Review and deploy'),
-    )
-    expect(ship?.textContent).toContain('Review and deploydeploying #6')
-    await click(ship ?? null)
-    // route.ts derivedStep: a deploy going on puts setup at step 6, which shows it as it goes.
-    expect(steps('Setup steps')).toContain('Review and deploy')
-    expect(el.querySelector('h2.iii-cloud-setup-title')?.textContent).toMatch(/^Deploying \w{7} to dev$/)
-    expect(btn('Cancel the deploy')).toBeTruthy()
-  })
-
   it('the Manage sidebar: the env deploying has a live dot and "deploying #6"', async () => {
     await board('manage-overview-deploying')
     const env = row('devdeploying #6')
@@ -310,19 +277,19 @@ describe('DeployPill: the way back to a deploy going on', () => {
 })
 
 describe('Start: the project in use with a deploy going on', () => {
-  it('"deploying #6 to production · N min"; Follow deploy (primary) goes to it, Open is a ghost beside it', async () => {
+  it('the row says Deploying and what runs; its one action is Open, to the environment', async () => {
     await board('start-deploying')
-    expect(text()).toMatch(/registryIn usedeploying #6 to production · \d+ min/)
-    expect(btn('Follow deploy')?.getAttribute('data-variant')).toBe('primary')
-    expect(btn('Open')?.getAttribute('data-variant')).toBe('ghost')
-    await click(btn('Follow deploy'))
-    expect(el.querySelector('aside[aria-label="Deploy steps"] [aria-current=step]')?.textContent).toContain('Live')
+    expect(text()).toMatch(/registryDeployingproduction · deployment #6 is running · \d+ min so far/)
+    expect(btn('Follow deploy')).toBeNull()
+    expect(btn('Open')?.getAttribute('data-variant')).toBe('secondary')
+    await click(btn('Open'))
+    expect(path()).toBe('Projects / registry · production')
   })
 
-  it('a phone: the row says Follow', async () => {
+  it('a phone: the row ends with the Deploying pill', async () => {
     ui.narrow = true
     await board('start-deploying')
-    expect(el.querySelector('.iii-cloud-start-word')?.textContent).toBe('Follow')
+    expect(el.querySelector('.iii-cloud-start-word')?.textContent).toBe('Deploying')
   })
 })
 
@@ -421,20 +388,11 @@ describe("every project's deploys going on (running_deploys)", () => {
     expect(pills().map((p) => p.textContent)).toEqual([expect.stringMatching(/^Deploying #6 to dev · \d+ min$/)])
   })
 
-  it('Start: every row with a deploy going on says it and follows it; another project switches first', async () => {
+  it('Start: every row with a deploy going on says it; Open on another project takes it up first', async () => {
     const h = await board('start-moving')
-    expect(text()).toMatch(/registryIn usedeploying #6 to production · \d+ min/)
-    expect(text()).toMatch(/billing.*deploying #8 to dev · \d+ min/)
-    const follows = [...el.querySelectorAll('button')].filter((b) => b.textContent === 'Follow deploy')
-    expect(follows).toHaveLength(2)
-    const trailing = follows[1].parentElement
-    expect(
-      [...(trailing?.querySelectorAll('button') ?? [])].map((b) => [b.textContent, b.getAttribute('data-variant')]),
-    ).toEqual([
-      ['Switch', 'ghost'],
-      ['Follow deploy', 'primary'],
-    ])
-    await click(follows[1])
+    expect(text()).toMatch(/registryDeployingproduction · deployment #6 is running · \d+ min so far/)
+    expect(text()).toMatch(/billingDeployingdev · deployment #8 is running · \d+ min so far/)
+    await click(el.querySelector('button[aria-label^="Open billing"]'))
     await confirmLeave()
     await flush()
     expect(uses(h)).toEqual([

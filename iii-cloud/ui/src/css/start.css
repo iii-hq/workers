@@ -3,27 +3,7 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-start {
   align-items: center;
 }
-/* The account: a label and its value, as the board's key/value rows. */
-[data-iii-ui='iii-cloud'] .iii-cloud-start-kv {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 12px;
-  font-size: 13px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-start-key {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-start-val {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-/* The panel header's add actions: 28 px. */
-[data-iii-ui='iii-cloud'] .iii-cloud-start-headbtn {
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-}
+/* The API key's line: what it reaches, and the way to sign in with the browser. */
 [data-iii-ui='iii-cloud'] .iii-cloud-start-account {
   display: flex;
   flex-wrap: wrap;
@@ -60,7 +40,7 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-start-word {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   font-size: 14px;
   font-weight: 500;
   color: var(--color-ink);
@@ -78,8 +58,4 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-start-adds > * {
   width: 100%;
   min-height: 48px;
-}
-/* The phone's second add action: a plain button, its word in ink as on the board. */
-[data-iii-ui='iii-cloud'] .iii-cloud-start-ink {
-  color: var(--color-ink);
 }

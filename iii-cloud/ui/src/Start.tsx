@@ -1,28 +1,28 @@
-// Start (§3 of the navigation plan): the projects on this machine, the account, and the one way to switch
-// (a row's Switch) and to add (the two add actions). Every read is a GET through `iii-cloud::api`.
+// Projects: the projects on this machine, one "Open" for each, and the one way to add. Every read is a GET
+// through `iii-cloud::api`. The pill is the state of the project's environment.
 
 import type { Host } from '@iii-dev/console-ui'
-import {
-  Button,
-  Chip,
-  EmptyState,
-  List,
-  ListItem,
-  PageMain,
-  Panel,
-  PanelBody,
-  PanelHeader,
-  Skeleton,
-} from '@iii-dev/console-ui'
+import { Button, EmptyState, List, ListItem, PageMain, Skeleton } from '@iii-dev/console-ui'
 import { ChevronRight, Cloud } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { useCloud } from './api'
 import { ConnectView } from './ConnectView'
-import { type DeploymentList, liveOf, StateChip } from './EnvOverview'
 import { useActions, useLocked } from './hub'
-import { ago, minutesLabel, needsAction, plural, sha7, shortDate, tilde } from './model'
 import {
-  Dot,
+  ago,
+  liveOf,
+  minutesLabel,
+  needsAction,
+  plainDetail,
+  plainMessage,
+  plural,
+  sha7,
+  shortDate,
+  type Tone,
+  tilde,
+  whatWaits,
+} from './model'
+import {
   ErrorPanel,
   Fresh,
   LinkButton,
@@ -30,13 +30,15 @@ import {
   moving,
   Notice,
   PathBar,
+  SectionCard,
   Spinner,
   StaleNotice,
-  useFollow,
+  StatePill,
   useNow,
+  useSwitch,
 } from './parts'
 import { type AreaProps, pathOf, type Route, type RouteAt } from './route'
-import type { Status } from './types'
+import type { DeploymentList, Status } from './types'
 
 /** One project on this machine: a folder and a cloud project, and how the worker takes it up again. */
 export type Place = {
@@ -120,34 +122,36 @@ export function placesOf(s: Status): Place[] {
   return out
 }
 
-/** Something was live once: a ready deploy here, or the cloud project says it deployed. */
-function everLive(s: Status): boolean {
-  const p = s.project
-  const cp = p?.cloud_projects?.find((c) => c.id === p.cloud_project?.id)
-  return s.deploys.some((d) => d.outcome === 'ready') || !!cp?.last_deployment_at
-}
-
 type CloudEnv = { id: string; name: string; production: boolean; status?: string }
 type Deletions = {
   deletions: { kind: string; project?: { id: string } | null; restorable: boolean; restorable_until: string | null }[]
 }
 
-/** "dev · serves 9c04e7f · deploy #6 · 2h ago · 3 environments", from the env's first page of deployments. */
-function liveLine(env: string, list: DeploymentList['deployments'], count: number | null): string {
+/** What the environment serves or is doing, from its first page of deployments: "dev · serves 9c04e7f · deployment #6 · 2h ago". */
+function liveLine(env: string, list: DeploymentList['deployments']): string {
   const newest = list[0]
   const current = list.find((d) => d.current)
   const fresh = newest && newest !== current ? newest : null
   const what =
     fresh && (fresh.status === 'queued' || fresh.status === 'in_progress')
-      ? `deploying #${fresh.number}`
+      ? `deployment #${fresh.number} is running`
       : fresh?.status === 'needs_action'
-        ? `deploy #${fresh.number} needs your action`
+        ? `deployment #${fresh.number} needs your action`
         : fresh?.status === 'failed'
-          ? `deploy #${fresh.number} failed ${ago(fresh.finished_at ?? fresh.created_at)}`
+          ? `deployment #${fresh.number} failed ${ago(fresh.finished_at ?? fresh.created_at)}${current ? ` · still serves #${current.number}` : ''}`
           : current
-            ? `serves ${sha7(current.commit.sha)} · deploy #${current.number} · ${ago(current.finished_at ?? current.created_at)}`
-            : 'nothing live yet'
-  return [env, what, count === null ? null : plural(count, 'environment')].filter(Boolean).join(' · ')
+            ? `serves ${sha7(current.commit.sha)} · deployment #${current.number} · ${ago(current.finished_at ?? current.created_at)}`
+            : 'not deployed yet'
+  return [env, what].join(' · ')
+}
+
+/** The environment's state as the pill says it: the shared words, with "Needs you" and "Not deployed yet". */
+function pillOf(live: ReturnType<typeof liveOf>): { label: string; tone: Tone } | null {
+  if (!live) return null
+  if (live.label === 'Nothing live yet') return { label: 'Not deployed yet', tone: 'ghost' }
+  if (live.label === 'Last deployment failed') return { label: 'Failed', tone: 'alert' }
+  if (live.label === 'Needs your action') return { label: 'Needs you', tone: 'warn' }
+  return { label: live.label, tone: live.tone }
 }
 
 type RowProps = {
@@ -155,17 +159,15 @@ type RowProps = {
   status: Status
   place: Place
   narrow: boolean
-  /** Not signed in: no reads, no live state, and no Switch. */
+  /** Not signed in: no reads, no live state, and nothing to open that is not in use. */
   offline: boolean
   locked: boolean
   switching: string | null
   go: (r: Route) => void
-  switchTo: ReturnType<typeof useFollow>['switchTo']
-  /** A deploy going on: its follow page (another project's switches first). */
-  follow: ReturnType<typeof useFollow>['follow']
+  open: (key: string, name: string, payload: Record<string, unknown>, envName?: string | null) => void
 }
 
-function PlaceRow({ host, status, place, narrow, offline, locked, switching, go, switchTo, follow }: RowProps) {
+function PlaceRow({ host, status, place, narrow, offline, locked, switching, go, open }: RowProps) {
   const key = status.connection.api_key
   const p = status.project
   const team = key ? key.team_id : place.teamId
@@ -192,11 +194,8 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   const deletions = useCloud<Deletions>(host, status, null, gone && team ? `/teams/${team}/deletions` : null)
   const list = deploys.data?.deployments
   const live = liveOf(list)
-  const setUp = place.current && !!p?.workspace && (everLive(status) || !!list?.some((d) => d.current))
-  // The project in use, before its deployments say whether it went live: neither Open nor Continue setup yet.
-  const pending = place.current && !setUp && !!p?.workspace && deploys.loading && !list
   const readError = envs.error && !gone ? envs.error : deploys.error
-  // A deploy going on from this folder (any of its environments): the row says so and follows it.
+  // A deploy going on from this folder (any of its environments): the row says so.
   const now = useNow(15_000)
   const going = moving(status).find(
     (m) =>
@@ -204,7 +203,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       (place.current ? !m.other : m.path === place.path && (!place.cp || m.cloudProject === place.cp)),
   )
   const run = going?.deploy
-  const toRun = () => going && follow(going, place.key)
+  const waits = place.current ? whatWaits(status) : []
 
   let line1: ReactNode
   if (gone) {
@@ -214,60 +213,62 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
         ? `restorable until ${shortDate(rec.restorable_until)}`
         : 'deleted in iii cloud'
   } else if (going && run) {
-    line1 = `deploying #${run.number}${going.env ? ` to ${going.env}` : ''} · ${minutesLabel(now - Date.parse(run.created_at))}`
+    line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far`
   } else if (offline) line1 = "Sign in to see what's live"
-  else if (!team) line1 = "Switch to see what's live"
+  // Only the folder and the names are known: say what exists, and how to see the rest.
+  else if (!team) line1 = place.envName ? `${place.envName} · open it to see what's live` : "Open it to see what's live"
   else if (readError) line1 = `Can't read iii cloud: ${readError.message}`
-  else if (env && list) line1 = liveLine(env.name, list, key ? null : (listed?.length ?? null))
-  else if (listed && !env) line1 = place.current ? 'no environment chosen yet' : 'no environment yet'
+  else if (env && list) {
+    line1 = liveLine(env.name, list)
+    if (waits.length) line1 = `${line1} · ${waits.join(', ')}`
+  } else if (listed && !env) line1 = 'no environment yet'
   else line1 = <Skeleton className="iii-cloud-skeleton-row" />
 
-  // The folder, how the worker works in it (not on a phone), the team: the repository is in the name or the folder.
   const teamWord = place.teamName ? ` · team ${place.teamName}` : ''
   const line2 = narrow ? (
     `${tilde(place.path)}${teamWord}`
   ) : (
     <>
       <Mono>{tilde(place.path)}</Mono>
-      {` · ${place.mode === 'checkout' ? 'edits this folder' : 'separate copy'}${teamWord}`}
+      {teamWord}
     </>
   )
   const name = key ? place.repository : place.name
-  // The project in use says so beside its name; what it serves is its first line.
-  const chip = gone ? (
-    <Chip>Deleted</Chip>
-  ) : place.current ? (
-    <Chip>
-      <Dot tone="ghost" />
-      In use
-    </Chip>
-  ) : live && !offline ? (
-    <StateChip live={live} />
-  ) : null
+  const state = gone
+    ? { label: 'Deleted', tone: 'ghost' as const }
+    : run
+      ? { label: 'Deploying', tone: 'live' as const }
+      : waits.length
+        ? { label: 'Needs you', tone: 'warn' as const }
+        : offline
+          ? null
+          : pillOf(live)
+  const pill = state ? <StatePill state={state} /> : null
   const mine = switching === place.key
   const listedEnv = listed?.some((e) => e.id === place.env) ? place.env : null
-  const doSwitch = () =>
-    switchTo(
-      place.key,
-      name,
-      {
-        path: place.path,
-        ...(place.cp ? { cloud_project_id: place.cp } : {}),
-        ...(listedEnv ? { environment_id: listedEnv } : {}),
-        mode: place.mode,
-      },
-      place.envName,
-    )
-  const open = () => go(setUp ? { at: 'env', env: '' } : { at: 'setup' })
+  const doOpen = () =>
+    place.current
+      ? go(p?.workspace ? { at: 'env', env: '' } : { at: 'setup' })
+      : open(
+          place.key,
+          name,
+          {
+            path: place.path,
+            ...(place.cp ? { cloud_project_id: place.cp } : {}),
+            ...(listedEnv ? { environment_id: listedEnv } : {}),
+            mode: place.mode,
+          },
+          place.envName,
+        )
   const cloud = `${status.connection.cloud_url.replace(/\/$/, '')}/${status.connection.teams.find((t) => t.id === team)?.slug ?? ''}`
-  // Until iii cloud lists the row's environments, Switch can't tell which one to ask for.
+  // Until iii cloud lists the row's environments, Open can't tell which one to ask for.
   const reading = !place.current && envs.loading && !envs.data && !envs.error
-  const off = !!switching || offline || locked || reading
+  const off = !!switching || (!place.current && (offline || locked || reading))
 
   const label = (
     <span className="iii-cloud-row iii-cloud-start-name">
       {name}
-      {chip}
+      {narrow ? null : pill}
     </span>
   )
   const description = (
@@ -276,114 +277,63 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       <span className="iii-cloud-faint">{line2}</span>
     </span>
   )
-  const leading = <Dot tone={gone || offline ? 'ghost' : run ? 'live' : (live?.tone ?? 'ghost')} />
 
   if (narrow && !gone) {
-    // On a phone the row is the action: its word and a chevron say which.
-    const word = run ? 'Follow' : place.current ? (setUp ? 'Open' : 'Continue') : mine ? 'Switching…' : 'Switch'
+    // On a phone the whole row opens the project; the pill says its state.
     return (
       <ListItem
         className="iii-cloud-start-row"
-        aria-label={
-          run
-            ? `Follow deploy #${run.number} of ${name}`
-            : place.current
-              ? `${word} ${name}`
-              : `Switch the worker to ${name} in ${tilde(place.path)}`
-        }
+        aria-label={`Open ${name} in ${tilde(place.path)}`}
         aria-busy={reading || mine || undefined}
-        disabled={run ? !!switching || locked : place.current ? pending || (setUp && offline) : off}
+        disabled={off}
         label={label}
         description={description}
         trailing={
           <span className="iii-cloud-start-word">
-            {word}
+            {pill}
             <ChevronRight aria-hidden />
           </span>
         }
-        onClick={run ? toRun : place.current ? open : doSwitch}
+        onClick={doOpen}
       />
     )
   }
-  const trailing = gone ? (
-    <LinkButton href={cloud}>Open in iii cloud</LinkButton>
-  ) : run ? (
-    // Follow the deploy first; the row's usual action (Open, Continue setup, Switch) stays, quiet, beside it.
-    <span className="iii-cloud-row">
-      {place.current ? (
-        <Button size="sm" variant="ghost" disabled={!!switching} onClick={open}>
-          {setUp ? 'Open' : 'Continue setup'}
-        </Button>
-      ) : (
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label={`Switch the worker to ${name} in ${tilde(place.path)}`}
-          disabled={off}
-          onClick={doSwitch}
-        >
-          Switch
-        </Button>
-      )}
-      <Button
-        size="sm"
-        variant="primary"
-        aria-busy={mine || undefined}
-        disabled={!!switching || (!place.current && locked)}
-        onClick={toRun}
-      >
-        {mine ? <Spinner /> : null}
-        Follow deploy
-      </Button>
-    </span>
-  ) : place.current ? (
-    pending ? null : setUp ? (
-      <Button size="sm" variant="secondary" disabled={!!switching || offline} onClick={open}>
-        Open
-      </Button>
-    ) : (
-      <Button size="sm" variant="primary" disabled={!!switching} onClick={open}>
-        Continue setup
-      </Button>
-    )
-  ) : (
-    <Button
-      size="sm"
-      variant="secondary"
-      aria-label={`Switch the worker to ${name} in ${tilde(place.path)}`}
-      aria-busy={reading || mine || undefined}
-      disabled={off}
-      onClick={doSwitch}
-    >
-      {mine ? (
-        <>
-          <Spinner />
-          Switching…
-        </>
-      ) : reading ? (
-        <>
-          <Spinner />
-          Switch
-        </>
-      ) : (
-        'Switch'
-      )}
-    </Button>
-  )
   return (
     <ListItem
       as="div"
       className="iii-cloud-start-row"
-      leading={narrow ? undefined : leading}
       label={label}
       description={description}
-      trailing={trailing}
+      trailing={
+        gone ? (
+          <LinkButton href={cloud}>Open in iii cloud</LinkButton>
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-label={`Open ${name} in ${tilde(place.path)}`}
+            aria-busy={reading || mine || undefined}
+            disabled={off}
+            onClick={doOpen}
+          >
+            {mine || reading ? <Spinner /> : null}
+            Open
+          </Button>
+        )
+      }
     />
   )
 }
 
-/** The account in one row: who is signed in and on which teams; else the way to sign in. */
-function Account({ host, status, narrow }: { host: Host; status: Status; narrow: boolean }) {
+/** Who is signed in, and on which teams: the path bar's words. */
+function whoIs(s: Status): string {
+  const c = s.connection
+  const who = c.user?.email ?? c.user?.name ?? 'you'
+  return `${who}${c.teams.length ? ` · ${c.teams.length === 1 ? 'team' : 'teams'} ${c.teams.map((t) => t.name).join(', ')}` : ''}`
+}
+
+/** What is not in order with the account: a sign-in under way, signed out, expired, or an API key (one environment only). */
+function Account({ host, status }: { host: Host; status: Status }) {
   const { busy, error, call } = useActions(host)
   const c = status.connection
   const signIn = (label: string, variant: 'primary' | 'secondary') => (
@@ -404,69 +354,46 @@ function Account({ host, status, narrow }: { host: Host; status: Status; narrow:
         <Notice
           variant="warn"
           headline={expired ? 'Your sign-in to iii cloud expired' : 'Not signed in to iii cloud'}
-          detail="Sign in to see what each project serves and to switch between them."
+          detail="Sign in to see what each project serves and to open them."
           action={expired ? signIn('Sign in again', 'primary') : signIn('Sign in with your browser', 'primary')}
         />
         {error ? <ErrorPanel error={error} /> : null}
       </>
     )
   }
-  const who = c.user?.email ?? c.user?.name ?? 'you'
-  const teamsWord = c.teams.length === 1 ? 'team' : 'teams'
-  const role = (r: string) => r.charAt(0).toUpperCase() + r.slice(1)
-  if (narrow) {
-    // A phone: one line, the team names only.
-    return (
-      <>
-        <div className="iii-cloud-start-account">
-          <span className="iii-cloud-grow">
-            {c.api_key
-              ? `API key ${c.api_key.secret} · reaches one environment`
-              : `Signed in as ${who}${c.teams.length ? ` · ${teamsWord} ${c.teams.map((t) => t.name).join(', ')}` : ''}`}
-          </span>
-          {c.api_key ? signIn('Sign in with your browser', 'secondary') : null}
-        </div>
-        {error ? <ErrorPanel error={error} /> : null}
-      </>
-    )
-  }
+  if (!c.api_key) return error ? <ErrorPanel error={error} /> : null
   return (
-    <Panel aria-label="Account">
-      <PanelHeader className="iii-cloud-panel-head">Account</PanelHeader>
-      <PanelBody className="iii-cloud-panel-body">
-        <div className="iii-cloud-start-kv">
-          <span className="iii-cloud-start-key">{c.api_key ? 'API key' : 'Signed in'}</span>
-          <span className="iii-cloud-start-val">
-            {c.api_key
-              ? `${c.api_key.secret} · reaches one environment`
-              : `${who}${c.teams.length ? ` · ${teamsWord} ${c.teams.map((t) => `${t.name} (${role(t.role)})`).join(', ')}` : ''}`}
-          </span>
-          {c.api_key ? signIn('Sign in with your browser', 'secondary') : null}
-        </div>
-        {error ? <ErrorPanel error={error} /> : null}
-      </PanelBody>
-    </Panel>
+    <>
+      <div className="iii-cloud-start-account">
+        <span className="iii-cloud-grow">{`API key ${c.api_key.secret} · reaches one environment`}</span>
+        {signIn('Sign in with your browser', 'secondary')}
+      </div>
+      {error ? <ErrorPanel error={error} /> : null}
+    </>
   )
 }
 
 const FOOTNOTE =
-  'Switching moves this worker to that folder and environment: checks, deploys and this page follow it. A running check, a deploy and your agent keep going; switch back to see them.'
+  "Opening a project doesn't stop the others. A check, a deploy and your agent keep going, and the project's row says what they are doing."
 const FOOTNOTE_PHONE =
-  'Switching moves this worker to that folder and environment. A running check, a deploy and your agent keep going.'
+  'The whole row opens the project. A check, a deploy and your agent keep going on this machine, and the row says what they are doing.'
 
-/** The projects on this machine (Start): desktop one column, phone one row per project. */
+/** The projects on this machine: desktop one column, phone one row per project. */
 export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt<'start'>>) {
   const locked = useLocked(host, status)
-  const { switching, error, switchTo, follow, dialog } = useFollow(host, status, go)
+  const { switching, error, switchTo, dialog } = useSwitch(host, status, go)
+  const [tried, setTried] = useState('')
   const places = placesOf(status)
   const key = status.connection.api_key
   const offline = status.connection.status !== 'connected'
-  // Adding keeps the project in use until Continue; with none in use, it is the first setup.
-  const using = !!status.project?.workspace
-  const addFolder: Route = using ? { at: 'setup', step: 'confirm', adding: true } : { at: 'setup', step: 'confirm' }
-  const addCloud: Route = using
-    ? { at: 'setup', step: 'confirm', adding: true, newProject: true }
-    : { at: 'setup', step: 'confirm', newProject: true }
+  // Adding keeps the project in use until the button of the confirmation; with none in use, it is the first time.
+  const addRoute: Route = status.project?.workspace
+    ? { at: 'setup', step: 'confirm', adding: true }
+    : { at: 'setup', step: 'confirm' }
+  const open: RowProps['open'] = (k, name, payload, envName) => {
+    setTried(name)
+    switchTo(k, name, payload, envName)
+  }
   const rows = places.map((p) => (
     <PlaceRow
       key={p.key}
@@ -478,21 +405,18 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
       locked={locked}
       switching={switching}
       go={go}
-      switchTo={switchTo}
-      follow={follow}
+      open={open}
     />
   ))
-  const list = places.length ? (
+  const list = (
     <List aria-label="Projects on this machine" className={narrow ? 'iii-cloud-phonelist' : undefined}>
       {rows}
     </List>
-  ) : (
-    <EmptyState
-      icon={Cloud}
-      title="No projects on this machine yet"
-      description="Add the folder of a project: the worker reads it and checks it before the first deploy."
-      action={key ? undefined : { label: 'Add a project', onClick: () => go(addFolder) }}
-    />
+  )
+  const add = (size: 'sm' | 'lg', variant: 'primary' | 'secondary') => (
+    <Button size={size} variant={variant} onClick={() => go(addRoute)}>
+      Add a project
+    </Button>
   )
   return (
     <PageMain className="iii-cloud-main">
@@ -504,62 +428,44 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
         go={go}
         narrow={narrow}
         rule
-        end={<Fresh host={host} status={status} />}
+        end={
+          <>
+            {narrow || offline ? null : <span className="iii-cloud-desc">{whoIs(status)}</span>}
+            <Fresh host={host} status={status} narrow={narrow} />
+          </>
+        }
       >
         {narrow ? null : <span className="iii-cloud-desc">on this machine</span>}
       </PathBar>
       <div className="iii-cloud-body iii-cloud-scroll iii-cloud-start">
         <StaleNotice host={host} status={status} />
-        <Account host={host} status={status} narrow={narrow} />
-        {error ? <ErrorPanel error={error} /> : null}
-        {narrow ? (
-          <>
-            {places.length ? (
-              <Panel>
-                <PanelHeader className="iii-cloud-panel-head">On this machine</PanelHeader>
-                {list}
-              </Panel>
-            ) : (
-              list
-            )}
-            {key || !places.length ? null : (
-              <div className="iii-cloud-start-adds">
-                <Button variant="secondary" size="lg" onClick={() => go(addFolder)}>
-                  Add a project
-                </Button>
-                <Button variant="ghost" size="lg" className="iii-cloud-start-ink" onClick={() => go(addCloud)}>
-                  New project in iii cloud
-                </Button>
-              </div>
-            )}
-          </>
+        <Account host={host} status={status} />
+        {error ? (
+          <Notice
+            variant="alert"
+            headline={`Couldn't open ${tried || 'the project'}`}
+            detail={[plainMessage(error), plainDetail(error)].filter(Boolean).join(' ')}
+          />
+        ) : null}
+        {narrow && !offline && !key ? <p className="iii-cloud-desc">{`Signed in as ${whoIs(status)}`}</p> : null}
+        {places.length ? (
+          narrow ? (
+            <>
+              {list}
+              {key ? null : <div className="iii-cloud-start-adds">{add('lg', 'secondary')}</div>}
+            </>
+          ) : (
+            <SectionCard title={plural(places.length, 'project')} end={key ? undefined : add('sm', 'primary')} flush>
+              {list}
+            </SectionCard>
+          )
         ) : (
-          <Panel aria-label="Projects on this machine">
-            <PanelHeader className="iii-cloud-panel-head">
-              <span>Projects on this machine</span>
-              {key ? null : (
-                <span className="iii-cloud-panel-end">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="iii-cloud-start-headbtn"
-                    onClick={() => go(addCloud)}
-                  >
-                    New project in iii cloud…
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="iii-cloud-start-headbtn"
-                    onClick={() => go(addFolder)}
-                  >
-                    Add a project…
-                  </Button>
-                </span>
-              )}
-            </PanelHeader>
-            {places.length ? list : <PanelBody>{list}</PanelBody>}
-          </Panel>
+          <EmptyState
+            icon={Cloud}
+            title="No projects on this machine yet"
+            description="Add the folder of a project. The page reads it and checks it before the first deploy."
+            action={key ? undefined : { label: 'Add a project', onClick: () => go(addRoute) }}
+          />
         )}
         {places.length > 1 ? <p className="iii-cloud-desc">{narrow ? FOOTNOTE_PHONE : FOOTNOTE}</p> : null}
       </div>

@@ -17,7 +17,7 @@ import type { RecentProject, Status } from '../types'
 
 const main = base
 const signin = boards['setup-signin'].status
-const target = boards['setup-target'].status
+const target = boards['setup-existing'].status
 
 describe('routeFromContext', () => {
   it('maps every old context; overview and the palette open the default', () => {

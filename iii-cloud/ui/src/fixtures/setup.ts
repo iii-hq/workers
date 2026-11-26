@@ -1,29 +1,15 @@
-// Setup boards (U3): setup-signin, setup-code, setup-target, setup-ship, setup-deploying, setup-live.
-// One story: registry is set up for `dev`, a direct environment (it follows `develop`, not `main`).
+// First-time boards: setup-signin (the code), setup-new (a repository iii cloud has not imported: a new project)
+// and setup-existing (the repository's project with two environments). Nothing past the confirmation lives
+// here: values, the check and the deploy are the Deploy place's boards.
 
-import type { CloudProjectChoice, Deploy, Project, Status } from '../types'
-import {
-  agentStatus,
-  apiPath,
-  type Board,
-  base,
-  COMMIT,
-  DEPLOY_BASE,
-  ENV,
-  failedDeploy,
-  following,
-  project,
-  ready,
-  T,
-  TEAM,
-  waiting,
-} from './base'
+import type { CloudProjectChoice, Project } from '../types'
+import { apiPath, type Board, base, COMMIT, ENV, project, TEAM, waiting } from './base'
 
 export const DEV = { id: 'e-dev', name: 'dev', production: false, branch: 'develop' }
 export const FILE = 'api/worker-compose-prod.yaml'
 
-/** Onb2: a repository iii cloud has not imported yet; it lists the two compose files of GitHub's `main`. */
-const notImported: Project = {
+/** A repository iii cloud has not imported yet; it lists the two compose files of GitHub's `main`. */
+export const notImported: Project = {
   ...project(false),
   cloud_project: null,
   environment: null,
@@ -70,8 +56,8 @@ export const registry: CloudProjectChoice = {
   ],
 }
 
-/** Onb3: the repository's project, two environments, and three projects of other repositories. */
-const chosen: Project = {
+/** The repository's project, two environments, and three projects of other repositories. */
+export const chosen: Project = {
   ...project(false),
   default_branch: 'main',
   cloud_projects: [registry],
@@ -83,146 +69,32 @@ const chosen: Project = {
   ],
 }
 
-/** Onb6 on: `dev` is selected and its check passed after the agent's two commits. */
-const devProject: Project = {
-  ...project(true),
-  default_branch: 'main',
-  cloud_projects: [registry],
-  environments: [ENV, DEV],
-  environment: { ...DEV, manifest: FILE, url: 'https://registry-dev.iii.cloud' },
-}
+/** The compose files of the worktree: the environment's, another that can be picked, one iii cloud cannot take. */
+export const files = [
+  { path: FILE, choosable: true, suggested_environment: null, issue: null, workers: 11, has_cloud_block: true },
+  { path: 'api/worker-compose.staging.yaml', choosable: true, suggested_environment: null, issue: null, workers: 11 },
+  { path: 'api/workers-compose.yaml', choosable: false, suggested_environment: null, issue: 'NOT_WORKER_COMPOSE' },
+]
 
-const passed = {
-  ...ready,
-  environment_id: DEV.id,
-  commits: [
-    { sha: COMMIT, message: 'Pin every worker version' },
-    { sha: 'b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9', message: 'Route web traffic through the http package' },
-  ],
-  plan: { ...ready.plan, summary: { workers: 9, groups: ['web', 'jobs', 'storage'] } },
-}
-
-const variable = (name: string, type: 'secret' | 'variable' | 'builtin', status: 'set' | 'empty_default') => ({
-  name,
-  type,
-  status,
-  required_by: [],
-})
-
-export const shipStatus: Status = {
-  ...base,
-  project: devProject,
-  check: passed,
-  variables: [
-    variable('DATABASE_URL', 'builtin', 'set'),
-    variable('SESSION_SECRET', 'secret', 'set'),
-    variable('OPENAI_API_KEY', 'secret', 'set'),
-    variable('SENTRY_DSN', 'variable', 'set'),
-    variable('SUPABASE_URL', 'variable', 'empty_default'),
-  ],
-  // The agent's hand-off: its problems are gone from the passed check.
-  handoff_brief: agentStatus.handoff_brief ? { ...agentStatus.handoff_brief, pushes_directly: true } : null,
-}
-
-export const deploying: Deploy = {
-  ...following,
-  id: 'dep-5',
-  number: 5,
-  environment_id: DEV.id,
-  commit: { sha: COMMIT, message: 'Pin every worker version' },
-  pr: null,
-  log_tail: [],
-}
-
-const shipped: Deploy = {
-  ...DEPLOY_BASE,
-  id: 'dep-5',
-  number: 5,
-  environment_id: DEV.id,
-  commit: { sha: COMMIT, message: 'Pin every worker version' },
-  status: 'ready',
-  outcome: 'ready',
-  pr: null,
-  created_at: T(12),
-  finished_at: T(6),
-}
-
-const failedAt = (n: number, min: number): Deploy => ({
-  ...failedDeploy,
-  id: `dep-${n}`,
-  number: n,
-  environment_id: DEV.id,
-  created_at: T(min),
-  finished_at: T(min - 5),
-})
-
-const summary = (id: string, min: number, isReady: boolean) => ({
-  id,
-  environment_id: DEV.id,
-  commit: COMMIT,
-  checked_at: T(min),
-  duration_ms: 2100,
-  ready: isReady,
-  problems: isReady ? 0 : 6,
-  handoff_id: isReady ? null : 'ho-1',
-  manifest: null,
-})
-
-export type SetupBoard =
-  | 'setup-signin'
-  | 'setup-code'
-  | 'setup-target'
-  | 'setup-ship'
-  | 'setup-deploying'
-  | 'setup-live'
+export type SetupBoard = 'setup-signin' | 'setup-new' | 'setup-existing'
 
 export const boards: Record<SetupBoard, Board> = {
   'setup-signin': { status: { ...base, connection: waiting, project: null, check: null }, context: { at: 'setup' } },
-  'setup-code': { status: { ...base, project: notImported, check: null }, context: { at: 'setup', step: 'confirm' } },
-  'setup-target': {
-    status: { ...base, project: chosen, check: null },
-    context: { at: 'setup' },
+  'setup-new': { status: { ...base, project: notImported, check: null }, context: { at: 'setup', step: 'confirm' } },
+  'setup-existing': {
+    status: { ...base, project: chosen, check: null, compose_files: files },
+    context: { at: 'setup', step: 'confirm' },
     cloud: {
-      [apiPath('/deployments')]: { deployments: [] },
-      [apiPath('/deployments', DEV.id)]: { deployments: [{ id: 'cd-3', number: 3, status: 'failed', current: false }] },
-    },
-  },
-  'setup-ship': { status: shipStatus, context: { at: 'setup' } },
-  'setup-deploying': {
-    status: { ...shipStatus, deploys: [deploying] },
-    context: { at: 'setup' },
-    cloud: {
-      // Newest first, the way iii cloud answers.
-      [`${apiPath('/logs', DEV.id)}?deployment_id=dep-5&source=release`]: {
-        lines: [
-          { message: '7 migrations applied' },
-          { message: 'applying migration 0007_vector_search.sql' },
-          { message: 'applying migration 0006_collections.sql' },
+      [apiPath('/deployments', DEV.id)]: {
+        deployments: [
+          {
+            id: 'cd-6',
+            number: 6,
+            status: 'ready',
+            current: true,
+            commit: { sha: '9c04e7f1a2b3c4d5e6f708192a3b4c5d6e7f8091' },
+          },
         ],
-      },
-    },
-  },
-  'setup-live': {
-    status: {
-      ...shipStatus,
-      deploys: [shipped, failedAt(4, 40), failedAt(3, 60)],
-      checks: [summary('chk-ready', 14, true), summary('chk-first', 86, false)],
-    },
-    // Live once: without a route the page would open on the project's home.
-    context: { at: 'setup' },
-    cloud: {
-      [apiPath('/health', DEV.id)]: {
-        status: 'healthy',
-        checked_at: T(0),
-        engine: 'ready',
-        workers: Array.from({ length: 9 }, (_, i) => ({
-          group: 'web',
-          worker: `w${i}`,
-          ready: true,
-          restarts: 0,
-          crashloop: false,
-        })),
-        events: [],
       },
     },
   },
