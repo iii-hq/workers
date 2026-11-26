@@ -1,160 +1,46 @@
 import type { Host } from '@iii-dev/console-ui'
-import {
-  Button,
-  Chip,
-  ConfirmDialog,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  Input,
-  Panel,
-  PanelBody,
-  PanelHeader,
-  Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TableViewport,
-} from '@iii-dev/console-ui'
-import { Check } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
-import { type Cloud, cloudWrite, useCloud, useDeployments } from './api'
+import { Button, Panel, Skeleton } from '@iii-dev/console-ui'
+import { useCloud } from './api'
 import { clock } from './asked'
-import { useLocked } from './hub'
-import { composeFile, deployOrigin, plural, servingDeploy, sha7, sizeOf, type Tone, when } from './model'
-import { Dot, ErrorPanel, Facts, Mono, Notice, SectionCard as Section, StatePill } from './parts'
+import { failedLine } from './FailureCard'
+import { useActions, useLocked } from './hub'
+import {
+  defaultBranch,
+  deployOrigin,
+  deployRows,
+  fixBranch,
+  isDirectEnv,
+  isFailedDeploy,
+  minutesLabel,
+  needsAction,
+  openProblems,
+  plural,
+  problemTitle,
+  roleOf,
+  servingDeploy,
+  sha7,
+  type Tone,
+  when,
+  withAppFile,
+} from './model'
+import { Dot, ErrorPanel, Mono, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
 import type { CloudDeployment, DeploymentList, Members, Status, WorkerError } from './types'
 
-// ---- iii cloud's answers the Manage pages read (cloud-v1.yaml), only the fields they use ----
-
+// The deployment types, the one-source functions and the Feeds context live in the foundation; re-exported
+// so the pages keep importing them from here.
 export { Feeds, useDeployments } from './api'
 export { deployState, type Live, liveOf, when } from './model'
-// The deployment types, the one-source functions and the Feeds context moved to the foundation; re-exported
-// so the Manage pages keep importing them from here.
 export type { CloudDeployment, DeploymentList, Members } from './types'
+
+/** The shared pieces (parts.tsx) under the names the pages already use. */
+export const StateChip = ({ live }: { live: { label: string; tone: Tone } }) => <StatePill state={live} />
+export { Section }
+
 export type Health = {
   status: 'healthy' | 'degraded' | 'down' | 'stopped'
   checked_at: string
   workers: { worker: string; ready: boolean }[]
-}
-type Group = {
-  name: string
-  current_workers?: string[] | null
-  size: string
-  effective_size?: string | null
-  replicas: { current: number }
-  operation?: { state: 'queued' | 'applying' | 'ready' | 'failed'; requested_size: string } | null
-  waiting_for_machine?: boolean
-  pending?: boolean
-}
-export type Machines = { status: 'running' | 'stopped'; groups: Group[] }
-type Domain = {
-  id: string
-  hostname: string
-  status: 'pending_dns' | 'verifying' | 'active' | 'failed'
-  verification: { type: string; name: string; value: string }
-}
-
-// ---- shared with Manage.tsx (and any env tab) ----
-
-/** The shared pieces (parts.tsx) under the names the Manage pages already use. */
-export const StateChip = ({ live }: { live: { label: string; tone: Tone } }) => <StatePill state={live} />
-export { Section }
-
-const sameCommit = (a: string, b: string) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
-
-/**
- * The selected environment's check passed on a commit it doesn't serve, and nothing is deploying:
- * the person reviews and deploys it. `home` words it for the project's home.
- */
-export function WaitingPanel({
-  status,
-  envId,
-  feed,
-  go,
-  locked,
-  home,
-}: {
-  status: Status
-  envId: string
-  feed: Cloud<DeploymentList>
-  go: (r: Route) => void
-  locked: boolean
-  home?: boolean
-}) {
-  const c = status.check
-  const env = status.project?.environments.find((e) => e.id === envId)
-  if (!c?.ready || !env || c.environment_id !== envId || (feed.loading && !feed.data)) return null
-  const list = feed.data?.deployments ?? []
-  const running =
-    list.some((d) => d.status === 'queued' || d.status === 'in_progress') ||
-    status.deploys.some((d) => d.environment_id === envId && d.outcome === 'running')
-  const live = (list.find((d) => d.current)?.commit.sha ?? servingDeploy(status, envId)?.commit.sha) || null
-  if (running || (live && sameCommit(live, c.commit))) return null
-  const commits = c.commits ?? []
-  const top = commits.find((x) => sameCommit(x.sha, c.commit)) ?? commits[0]
-  const here = c.run?.status === 'passed' ? ' on iii cloud and here' : ''
-  const at = clock(c.checked_at)
-  const subject = top ? (
-    <>
-      <Mono>{sha7(top.sha)}</Mono> "{top.message}"
-    </>
-  ) : (
-    <Mono>{sha7(c.commit)}</Mono>
-  )
-  const detail = home ? (
-    <>
-      {commits.length ? (
-        <>
-          It has {plural(commits.length, 'commit')} {env.name} doesn't serve, {subject}.{' '}
-        </>
-      ) : null}
-      The check passed{here} at {at}.
-    </>
-  ) : (
-    <>
-      {subject} · checked{here} at {at} ·{' '}
-      {live ? (
-        <>
-          {env.name} still serves <Mono>{sha7(live)}</Mono>.
-        </>
-      ) : (
-        `nothing is live on ${env.name} yet.`
-      )}
-    </>
-  )
-  return (
-    <Notice
-      variant="warn"
-      headline={
-        home
-          ? `Waiting for you: ${env.name} can get ${sha7(c.commit)}`
-          : `Waiting for you: ${commits.length ? plural(commits.length, 'commit') : sha7(c.commit)} passed the check`
-      }
-      detail={detail}
-      action={
-        <Button variant="primary" disabled={locked} onClick={() => go({ at: 'deploy', env: envId })}>
-          Review and deploy
-        </Button>
-      }
-    />
-  )
-}
-
-/** "11 workers in 3 groups": the workers the serving deployment runs, resource workers counted once. */
-export function workerCount(m: Machines | null): { workers: number; groups: number } | null {
-  const serving = m?.groups.filter((g) => g.current_workers) ?? []
-  const workers = new Set(serving.flatMap((g) => g.current_workers ?? [])).size
-  return workers ? { workers, groups: serving.length } : null
 }
 
 /** "11 of 11 workers up", or that it is stopped, with the dot it gets. */
@@ -167,360 +53,360 @@ export function healthOf(h: Health, envName: string): { text: string; tone: Tone
   }
 }
 
-// ---- Mng6: the Overview tab ----
+// ---- the next-action card ----
 
-/** What a group is doing; how much memory it uses and since when it runs are not in iii cloud's answer. */
-function groupState(g: Group, stopped: boolean): string {
-  if (stopped) return 'stopped'
-  if (g.pending) return 'starts with the next deploy'
-  if (g.waiting_for_machine) return 'waiting for a machine'
-  const op = g.operation
-  if (op?.state === 'queued' || op?.state === 'applying') return `resizing to ${sizeOf(op.requested_size)}`
-  if (op?.state === 'failed') return 'resize failed'
-  return 'running'
+/** What the card at the top of an environment says, one at a time. */
+export type NextState =
+  | 'held'
+  | 'running'
+  | 'you'
+  | 'agent'
+  | 'passed'
+  | 'failed'
+  | 'pull-request'
+  | 'deploy'
+  | 'empty'
+  | 'current'
+
+export type NextButton =
+  /** Starts the check, then goes to the Deploy place. */
+  | { label: string; kind: 'check' }
+  | { label: string; kind: 'go'; to: Route }
+  | { label: string; kind: 'link'; href: string }
+
+export type Next = {
+  state: NextState
+  /** A strong outline: the card waits for the person. A plain one: they can leave. */
+  wait: boolean
+  /** The button is the primary one (the card waits, or something failed). */
+  primary: boolean
+  title: string
+  detail: string
+  action?: NextButton
 }
 
-const DOMAIN_STATE: Record<Domain['status'], string> = {
-  pending_dns: 'waiting for its TXT record',
-  verifying: 'verifying',
-  active: 'active',
-  failed: 'failed',
-}
+const sameCommit = (a: string, b: string) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
-/** One POST to iii cloud as the person, with the cloud's answer (a 403 names the role) as a plain error. */
-function useWrite(host: Host, status: Status, envId: string) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<WorkerError | null>(null)
-  /** `{body}` once iii cloud took it (a 202 has no body), null when it refused. */
-  const run = async <T,>(path: string, body?: unknown): Promise<{ body: T } | null> => {
-    setBusy(true)
-    setError(null)
-    try {
-      return { body: await cloudWrite<T>(host, status, envId, 'POST', path, body) }
-    } catch (err) {
-      const e = err as { code?: string; message?: string; status?: number }
-      setError({ code: e.code ?? 'ERROR', message: e.message ?? '', status: e.status })
-      return null
-    } finally {
-      setBusy(false)
+/**
+ * The one thing to do next in the selected environment `envId`, the first that holds, in this order:
+ *  1. held: a deployment iii cloud holds for the person's approval
+ *  2. running: a deployment is going
+ *  3. you: the latest check has problems only the person can solve
+ *  4. agent: the agent is working, or the check is running, and nothing needs the person
+ *  5. passed: a check passed on a commit the environment does not serve (not one whose deployment just failed)
+ *  6. failed: the newest deployment failed (unless the folder has moved past that commit: then 9)
+ *  7. pull-request: nothing is live, the environment deploys from a pull request, and one is open
+ *  8. deploy: the folder has commits or uncommitted files the environment does not serve
+ *  9. empty / current: nothing is live yet, or it serves everything in the folder
+ * `live` is what serves the environment (iii cloud's current deployment, else the worker's newest ready one).
+ */
+export function nextAction(
+  s: Status,
+  envId: string,
+  opts: {
+    live?: { id: string; sha: string } | null
+    cloud?: CloudDeployment[] | null
+    members?: Members | null
+    now?: number
+  } = {},
+): Next {
+  const now = opts.now ?? Date.now()
+  const p = s.project
+  const env = p?.environments.find((e) => e.id === envId)
+  const name = env?.name ?? 'this environment'
+  const mine = s.deploys.filter((d) => d.environment_id === envId)
+  const live = opts.live ?? null
+  const liveNumber = live
+    ? (mine.find((d) => d.id === live.id)?.number ?? opts.cloud?.find((d) => d.id === live.id)?.number)
+    : null
+  const serves = liveNumber ? `${name} serves #${liveNumber}` : null
+
+  const held = mine.find(needsAction)
+  if (held) {
+    return {
+      state: 'held',
+      wait: true,
+      primary: true,
+      title: `Deployment #${held.number} needs your action`,
+      detail: `iii cloud holds it until you approve what it would change.${serves ? ` ${serves} until then.` : ''}`,
+      action: { label: 'Review it', kind: 'go', to: { at: 'deploy', env: envId, deploy: held.id } },
     }
   }
-  return { busy, error, setError, run }
-}
-
-type Ask = { kind: 'restart'; group: string } | { kind: 'stop' } | null
-
-/** An environment's Overview tab (Mng6): what it serves, its health, machines and address. */
-export function EnvOverview({ host, status, go, envId }: EnvTabProps) {
-  const p = status.project
-  const env = p?.environment?.id === envId ? p.environment : null
-  const name = env?.name ?? ''
-  const feed = useDeployments(host, status, envId)
-  const current = feed.data?.deployments.find((d) => d.current) ?? null
-  const other = !!current?.triggered_by.user_id && current.triggered_by.user_id !== status.connection.user?.id
-  const members = useCloud<Members>(host, status, null, other ? '/members' : null)
-  const health = useCloud<Health>(host, status, envId, current ? '/health' : null)
-  const machines = useCloud<Machines>(host, status, envId, '/machines')
-  const domains = useCloud<{ domains: Domain[] }>(host, status, envId, '/domains')
-  const locked = useLocked(host, status)
-  const write = useWrite(host, status, envId)
-  const [ask, setAsk] = useState<Ask>(null)
-  const [done, setDone] = useState<string | null>(null)
-  if (!env) return null
-  // The deployments list opens on the deployment that serves; the secrets page is its own route.
-  const tab = (t: 'deploys' | 'settings') =>
-    go(t === 'settings' ? { at: 'secrets', env: envId } : { at: 'env', env: envId, deploy: current?.id })
-  const origin = current ? deployOrigin(status, current, current, members.data) : null
-  const count = workerCount(machines.data)
-  const stopped = machines.data?.status === 'stopped'
-  const groups = machines.data?.groups ?? []
-  const h = health.data ? healthOf(health.data, name) : null
-
-  const confirm = async () => {
-    if (!ask) return
-    const out =
-      ask.kind === 'restart'
-        ? await write.run(`/machines/groups/${encodeURIComponent(ask.group)}/restart`)
-        : await write.run('/machines/stop')
-    setAsk(null)
-    if (out === null) return
-    setDone(ask.kind === 'restart' ? `${ask.group} is restarting` : `${name} is stopping`)
-    machines.refetch()
-    health.refetch()
+  const running = mine.find((d) => d.outcome === 'running')
+  if (running) {
+    const stage = deployRows(running).find((r) => r.tone === 'live')
+    return {
+      state: 'running',
+      wait: false,
+      primary: false,
+      title: `Deployment #${running.number} is deploying`,
+      detail: `${stage ? `${stage.label}${stage.detail ? `: ${stage.detail}` : ''} · ` : ''}${minutesLabel(now - Date.parse(running.created_at))} so far.${serves ? ` ${serves} until it's live.` : ''}`,
+      action: { label: 'Follow', kind: 'go', to: { at: 'deploy', env: envId, deploy: running.id } },
+    }
   }
 
-  return (
-    <>
-      <WaitingPanel status={status} envId={envId} feed={feed} go={go} locked={locked} />
-      <div className="iii-cloud-mng-grid">
-        <Section title="Serving">
-          {feed.error ? (
-            <ErrorPanel error={feed.error} />
-          ) : !feed.data ? (
-            <Skeleton className="iii-cloud-skeleton-row" />
-          ) : current ? (
-            <>
-              <Facts
-                rows={[
-                  [
-                    'Commit',
-                    <>
-                      <Mono>{sha7(current.commit.sha)}</Mono> {current.commit.message ?? ''}
-                    </>,
-                  ],
-                  [
-                    'Deployment',
-                    `#${current.number} · live since ${when(current.finished_at ?? current.created_at)} · ${origin?.origin}`,
-                  ],
-                  [
-                    'Compose file',
-                    <>
-                      <Mono>{composeFile(env.manifest)}</Mono>
-                      {count ? ` · ${plural(count.workers, 'worker')} in ${plural(count.groups, 'group')}` : ''} ·{' '}
-                      <button type="button" className="iii-cloud-linkbtn" onClick={() => tab('settings')}>
-                        Change…
-                      </button>
-                    </>,
-                  ],
-                  ['Checked', origin?.checked ? 'before the deployment' : 'not checked first'],
-                ]}
-              />
-              <span>
-                <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => tab('deploys')}>
-                  All deployments
-                </button>
-              </span>
-            </>
-          ) : (
-            <p className="iii-cloud-desc">Nothing is live on {name} yet. Deploy from this machine to start it.</p>
-          )}
-        </Section>
-        <Section title="Health">
-          {!current ? (
-            <p className="iii-cloud-desc">Nothing runs on {name} yet.</p>
-          ) : health.error ? (
-            <ErrorPanel error={health.error} />
-          ) : h && health.data ? (
-            <div className="iii-cloud-health">
-              <span className="iii-cloud-dottext">
-                {h.tone === 'ok' ? <Check aria-hidden /> : <Dot tone={h.tone} />}
-                iii cloud: {h.text}
-              </span>
-              <span className="iii-cloud-desc">checked {clock(health.data.checked_at)}</span>
-            </div>
-          ) : (
-            <Skeleton className="iii-cloud-skeleton-row" />
-          )}
-        </Section>
-        <Section title="Machines" flush>
-          {machines.error ? (
-            <PanelBody className="iii-cloud-panel-body">
-              <ErrorPanel error={machines.error} />
-            </PanelBody>
-          ) : !machines.data ? (
-            <PanelBody className="iii-cloud-panel-body">
-              <Skeleton className="iii-cloud-skeleton-row" />
-            </PanelBody>
-          ) : (
-            <TableViewport>
-              <Table inset className="iii-cloud-table">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Group</TableHead>
-                    <TableHead>Machines</TableHead>
-                    <TableHead>State</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {groups.map((g) => (
-                    <TableRow key={g.name}>
-                      <TableCell>
-                        <Mono>{g.name}</Mono>
-                      </TableCell>
-                      <TableCell>
-                        {g.replicas.current} × {sizeOf(g.effective_size ?? g.size)}
-                      </TableCell>
-                      <TableCell>{groupState(g, stopped)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableViewport>
-          )}
-          <PanelBody className="iii-cloud-panel-body">
-            {write.error ? <ErrorPanel error={write.error} /> : null}
-            {done ? (
-              <Notice
-                variant="success"
-                headline={done}
-                detail="iii cloud replaces the machines; it takes a minute."
-                action={
-                  <Button variant="secondary" size="sm" onClick={() => setDone(null)}>
-                    Dismiss
-                  </Button>
-                }
-              />
-            ) : null}
-            <div className="iii-cloud-row">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="secondary" size="sm" disabled={locked || stopped || write.busy || !groups.length}>
-                    Restart a group…
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {groups.map((g) => (
-                    <DropdownMenuItem key={g.name} onSelect={() => setAsk({ kind: 'restart', group: g.name })}>
-                      {g.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={locked || stopped || write.busy || !machines.data}
-                onClick={() => setAsk({ kind: 'stop' })}
-              >
-                Stop {name}
-              </Button>
-            </div>
-          </PanelBody>
-        </Section>
-        <Address host={host} status={status} envId={envId} domains={domains} locked={locked} />
-      </div>
-      <ConfirmDialog
-        open={ask !== null}
-        onOpenChange={(open) => {
-          if (!open) setAsk(null)
-        }}
-        title={ask?.kind === 'restart' ? `Restart ${ask.group} on ${name}?` : `Stop ${name}?`}
-        description={
-          ask?.kind === 'restart'
-            ? `iii cloud replaces ${ask.group}'s machines. Its workers start again and read their variables again.`
-            : `Every group and the engine stop, so ${name} answers nothing until it is started again. Its resources and data stay.`
-        }
-        confirmLabel={ask?.kind === 'restart' ? `Restart ${ask.group}` : `Stop ${name}`}
-        tone={ask?.kind === 'stop' ? 'danger' : 'default'}
-        onConfirm={confirm}
-      />
-    </>
-  )
+  const c = s.check?.environment_id === envId ? s.check : null
+  const branch = p?.checkout.branch ?? null
+  const person = c && !c.ready ? openProblems(s).filter((x) => x.owner === 'person') : []
+  const a = s.agent && ['starting', 'working'].includes(s.agent.state) ? s.agent : null
+  const fixing = a?.working_on?.length ?? 0
+  if (person.length) {
+    const n = person.length
+    const first = problemTitle(person[0])
+    return {
+      state: 'you',
+      wait: true,
+      primary: true,
+      title: `${plural(n, 'thing')} ${n === 1 ? 'needs' : 'need'} you before ${name} can get ${branch ?? 'your changes'}`,
+      detail: `${first}${n > 1 ? ` and ${n - 1} more` : ''}.${a && fixing ? ` Your agent is fixing ${plural(fixing, 'problem')} meanwhile.` : ''}`,
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+  if (a || c?.run?.status === 'running') {
+    return {
+      state: 'agent',
+      wait: false,
+      primary: false,
+      title: a
+        ? fixing
+          ? `Your agent is fixing ${plural(fixing, 'problem')} for ${name}`
+          : `Your agent is working on ${name}`
+        : `A check of ${name} is running`,
+      detail: a
+        ? `Working ${minutesLabel(now - Date.parse(a.started_at))} in a separate copy. The check runs again when it commits.`
+        : 'It runs on this machine. Open it to follow.',
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+
+  const newest = mine[0]
+  const failed = newest && isFailedDeploy(newest) ? newest : null
+  if (c?.ready && !(live && sameCommit(live.sha, c.commit)) && !(failed && sameCommit(failed.commit.sha, c.commit))) {
+    const commits = c.commits?.length ?? 0
+    const made = c.plan.confirmations.resources.length
+    const facts = [commits ? plural(commits, 'commit') : null, made ? `${plural(made, 'new resource')}` : null]
+    return {
+      state: 'passed',
+      wait: true,
+      primary: true,
+      title: `${sha7(c.commit)} passed the check at ${clock(c.checked_at)}`,
+      detail: `${facts.filter(Boolean).join(', ')}${facts.some(Boolean) ? '. ' : ''}It waits for you.`,
+      action: { label: 'Review and deploy', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+
+  const files = p?.checkout.changed_files.length ?? 0
+  const notServed = p?.checkout.not_served ?? []
+  const folderMoved =
+    files > 0 || (notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha)))
+  if (failed && !folderMoved) {
+    const cloud = opts.cloud?.find((d) => d.id === failed.id)
+    return {
+      state: 'failed',
+      wait: false,
+      primary: true,
+      title: failedLine(failed),
+      detail: `${cap(deployOrigin(s, failed, cloud, opts.members).line)}.${liveNumber ? ` ${name} still serves #${liveNumber}.` : ` Nothing was live on ${name}.`}`,
+      action: { label: 'See what failed', kind: 'go', to: { at: 'env', env: envId, deploy: failed.id } },
+    }
+  }
+
+  if (!live && env && !isDirectEnv(s, env) && s.pr?.state === 'OPEN') {
+    const role = roleOf(s)
+    const merges = role && /^(owner|admin)$/i.test(role)
+    return {
+      state: 'pull-request',
+      wait: false,
+      primary: false,
+      title: `Nothing is live on ${name} yet`,
+      detail: `It deploys when pull request #${s.pr.number} into ${s.pr.base} is merged.${merges ? " You're allowed to merge it." : role ? ` An Owner or Admin merges it; you're ${/^[aeiou]/i.test(role) ? 'an' : 'a'} ${role}.` : ''}`,
+      action: { label: `Open pull request #${s.pr.number}`, kind: 'link', href: s.pr.url },
+    }
+  }
+
+  if (files > 0 || notServed.length > 0) {
+    const top = notServed[0]
+    const rest = files ? `plus ${plural(files, 'uncommitted file')}` : 'nothing uncommitted in your folder'
+    return {
+      state: 'deploy',
+      wait: true,
+      primary: true,
+      title: notServed.length
+        ? `${plural(notServed.length, 'commit')} on ${branch ?? 'your branch'} ${notServed.length === 1 ? "isn't" : "aren't"} on ${name}`
+        : `${plural(files, 'uncommitted file')} in your folder ${files === 1 ? "isn't" : "aren't"} on ${name}`,
+      detail: top ? `${sha7(top.sha)} ${top.message.split('\n')[0]} · ${rest}` : 'Commit them, or deploy as they are.',
+      action: { label: `Deploy to ${name}`, kind: 'check' },
+    }
+  }
+
+  if (!live) {
+    return {
+      state: 'empty',
+      wait: false,
+      primary: false,
+      title: `Nothing is live on ${name} yet`,
+      detail:
+        env && !isDirectEnv(s, env)
+          ? 'It deploys when a pull request into main is merged.'
+          : 'Deploy from this machine to start it.',
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+  return {
+    state: 'current',
+    wait: false,
+    primary: false,
+    title: `${name} serves everything in your folder`,
+    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}, nothing uncommitted.`,
+  }
 }
 
-function Address({
+/** The next-action card: the title, one sentence, and one action or none. */
+export function NextCard({
   host,
   status,
   envId,
-  domains,
-  locked,
+  next,
+  go,
 }: {
   host: Host
   status: Status
   envId: string
-  domains: Cloud<{ domains: Domain[] }>
-  locked: boolean
+  next: Next
+  go: (r: Route) => void
 }) {
-  const env = status.project?.environment
-  const write = useWrite(host, status, envId)
-  const [open, setOpen] = useState(false)
-  const [hostname, setHostname] = useState('')
-  const [added, setAdded] = useState<Domain | null>(null)
-  const list = domains.data?.domains ?? []
-  const close = () => {
-    setOpen(false)
-    setHostname('')
-    setAdded(null)
-    write.setError(null)
+  const { call } = useActions(host)
+  const locked = useLocked(host, status)
+  const act = next.action
+  const press = () => {
+    if (act?.kind === 'go') return go(act.to)
+    if (act?.kind !== 'check') return
+    // The check runs on; the Deploy place shows it from the hub's `checking` count.
+    void call(
+      'check',
+      'iii-cloud::check',
+      withAppFile(status, { run: true, fix: true, ...(fixBranch(status) ? { push: true } : {}) }),
+    )
+    go({ at: 'deploy', env: envId })
   }
-  const add = async () => {
-    const out = await write.run<Domain>('/domains', { hostname: hostname.trim() })
-    if (!out) return
-    setAdded(out.body)
-    domains.refetch()
-  }
+  const variant = next.primary ? 'primary' : 'secondary'
   return (
-    <Section title="Address">
-      <Facts
-        rows={[
-          ['Default', env?.url ? <Mono>{env.url.replace(/^https?:\/\//, '')}</Mono> : 'none yet'],
-          [
-            'Your domains',
-            domains.error ? (
-              <ErrorPanel error={domains.error} />
-            ) : !domains.data ? (
-              <Skeleton className="iii-cloud-skeleton-row" />
-            ) : list.length ? (
-              <ul className="iii-cloud-plain">
-                {list.map((d) => (
-                  <li key={d.id}>
-                    <Mono>{d.hostname}</Mono> · {DOMAIN_STATE[d.status]}
-                    {d.status === 'pending_dns' ? (
-                      <>
-                        {' '}
-                        · TXT <Mono>{d.verification.name}</Mono> <Mono>{d.verification.value}</Mono>
-                      </>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              'none'
-            ),
-          ],
-        ]}
-      />
-      <span>
-        <Button variant="secondary" size="sm" disabled={locked} onClick={() => setOpen(true)}>
-          Add a domain
+    <section
+      className="iii-cloud-next"
+      aria-label="Next"
+      data-state={next.state}
+      data-wait={next.wait ? '' : undefined}
+      data-failed={next.state === 'failed' ? '' : undefined}
+    >
+      <div className="iii-cloud-next-text">
+        <span className="iii-cloud-desc">Next</span>
+        <h3 className="iii-cloud-next-title">{next.title}</h3>
+        <p className="iii-cloud-desc">{next.detail}</p>
+      </div>
+      {act?.kind === 'link' ? (
+        <Button variant={variant} asChild>
+          <a href={act.href} target="_blank" rel="noreferrer">
+            {act.label}
+          </a>
         </Button>
-      </span>
-      <Dialog open={open} onOpenChange={(o) => (o ? setOpen(true) : close())}>
-        <DialogContent>
-          <DialogTitle>Add a domain to {env?.name}</DialogTitle>
-          <DialogDescription>
-            iii cloud checks a TXT record you add at your DNS provider, then gets a certificate for it.
-          </DialogDescription>
-          {added ? (
-            <div className="iii-cloud-form">
-              <p className="iii-cloud-desc">Add this TXT record for {added.hostname}, then iii cloud verifies it:</p>
-              <Facts
-                rows={[
-                  ['Name', <Mono>{added.verification.name}</Mono>],
-                  ['Value', <Mono>{added.verification.value}</Mono>],
-                ]}
-              />
-              <div className="iii-cloud-dlg-foot">
-                <Button variant="primary" onClick={close}>
-                  Done
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <form
-              className="iii-cloud-form"
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (hostname.trim()) void add()
-              }}
-            >
-              <label htmlFor="iii-cloud-domain" className="iii-cloud-lbl">
-                Domain
-              </label>
-              <Input id="iii-cloud-domain" value={hostname} onChange={setHostname} placeholder="api.example.com" />
-              {write.error ? <ErrorPanel error={write.error} /> : null}
-              <div className="iii-cloud-dlg-foot">
-                <Button variant="secondary" onClick={close}>
-                  Cancel
-                </Button>
-                <Button variant="primary" type="submit" disabled={!hostname.trim() || write.busy}>
-                  Add domain
-                </Button>
-              </div>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
-    </Section>
+      ) : act ? (
+        <Button
+          variant={variant}
+          disabled={locked && (act.kind === 'check' || next.state === 'passed' || next.state === 'held')}
+          onClick={press}
+        >
+          {act.label}
+        </Button>
+      ) : null}
+    </section>
+  )
+}
+
+// ---- Live now ----
+
+/** What serves the environment: iii cloud's current deployment, else the worker's newest ready one. */
+export function servingOf(s: Status, envId: string, cloud: CloudDeployment[] | null | undefined) {
+  const c = cloud?.find((d) => d.current)
+  if (c)
+    return {
+      id: c.id,
+      number: c.number,
+      sha: c.commit.sha,
+      message: c.commit.message ?? null,
+      since: c.finished_at ?? c.created_at,
+    }
+  const l = servingDeploy(s, envId)
+  return l
+    ? { id: l.id, number: l.number, sha: l.commit.sha, message: l.commit.message, since: l.finished_at ?? l.created_at }
+    : null
+}
+
+/** Live now: one card of three cells: what serves, its health, and how a deployment starts. */
+export function LiveNow({
+  host,
+  status,
+  envId,
+  feed,
+}: Pick<EnvTabProps, 'host' | 'status' | 'envId'> & {
+  feed: { data: DeploymentList | null; error: WorkerError | null }
+}) {
+  const p = status.project
+  const env = p?.environments.find((e) => e.id === envId)
+  const serving = servingOf(status, envId, feed.data?.deployments)
+  const health = useCloud<Health>(host, status, envId, serving ? '/health' : null)
+  if (!env) return null
+  const h = health.data ? healthOf(health.data, env.name) : null
+  const direct = isDirectEnv(status, env)
+  return (
+    <Panel className="iii-cloud-panel iii-cloud-live" role="region" aria-label="Live now">
+      <div className="iii-cloud-cell">
+        <span className="iii-cloud-cell-label">Serving</span>
+        {feed.error ? (
+          <ErrorPanel error={feed.error} />
+        ) : !feed.data && !serving ? (
+          <Skeleton className="iii-cloud-skeleton-row" />
+        ) : serving ? (
+          <>
+            <span className="iii-cloud-cell-value">
+              <Mono>{sha7(serving.sha)}</Mono> {serving.message?.split('\n')[0] ?? ''}
+            </span>
+            <span className="iii-cloud-desc">
+              deployment #{serving.number}, since {when(serving.since)}
+            </span>
+          </>
+        ) : (
+          <span className="iii-cloud-cell-value">Nothing is live yet</span>
+        )}
+      </div>
+      <div className="iii-cloud-cell">
+        <span className="iii-cloud-cell-label">Health</span>
+        {!serving ? (
+          <span className="iii-cloud-cell-value">Nothing runs on {env.name} yet</span>
+        ) : health.error ? (
+          <span className="iii-cloud-cell-value">iii cloud did not answer</span>
+        ) : h && health.data ? (
+          <>
+            <span className="iii-cloud-cell-value">
+              <Dot tone={h.tone} /> {h.text}
+            </span>
+            <span className="iii-cloud-desc">checked {clock(health.data.checked_at)}</span>
+          </>
+        ) : (
+          <Skeleton className="iii-cloud-skeleton-row" />
+        )}
+      </div>
+      <div className="iii-cloud-cell">
+        <span className="iii-cloud-cell-label">Deploys from</span>
+        <span className="iii-cloud-cell-value">
+          {direct ? 'this machine, after the check' : 'when its pull request is merged'}
+        </span>
+        <span className="iii-cloud-desc">
+          {direct
+            ? `a push to ${env.name}'s branch deploys without it`
+            : `into ${status.pr?.base ?? defaultBranch(status) ?? 'its base branch'}`}
+        </span>
+      </div>
+    </Panel>
   )
 }

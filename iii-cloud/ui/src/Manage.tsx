@@ -1,24 +1,13 @@
 import type { Host } from '@iii-dev/console-ui'
-import {
-  Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  EmptyState,
-  IconButton,
-  PageMain,
-  Skeleton,
-} from '@iii-dev/console-ui'
-import { Ellipsis } from 'lucide-react'
+import { Button, EmptyState, PageMain, Skeleton } from '@iii-dev/console-ui'
 import { useCloud } from './api'
-import { EnvDeploys } from './EnvDeploys'
-import { EnvOverview, liveOf, StateChip, useDeployments } from './EnvOverview'
+import { DeploymentRecord, Deployments, useMembers } from './EnvDeploys'
+import { LiveNow, liveOf, NextCard, nextAction, StateChip, servingOf, useDeployments } from './EnvOverview'
 import { EnvSettings } from './EnvSettings'
 import { useActions, useLocked, useStale } from './hub'
-import { projectUrl, shortDate, signInRequired } from './model'
-import { ErrorPanel, Fresh, Notice, PageAction, PathBar, StaleNotice, useSwitch } from './parts'
-import { type AreaProps, envState, pathOf, type RouteAt } from './route'
+import { deployState, projectUrl, servingId, shortDate, signInRequired } from './model'
+import { ErrorPanel, Fresh, Notice, PathBar, StaleNotice, useSwitch } from './parts'
+import { type AreaProps, envState, pathOf, type Route, type RouteAt } from './route'
 import { useEnvTabs } from './Sidebar'
 import type { Status, WorkerError } from './types'
 
@@ -47,7 +36,7 @@ export function ManageArea(props: ManageProps) {
         key="signin"
         variant="alert"
         headline="Sign in to iii cloud again"
-        detail="iii cloud no longer accepts your sign-in. Until you sign in, what it serves may be out of date and nothing here can deploy."
+        detail="iii cloud no longer accepts your sign-in. Until you sign in, what it serves may be out of date and nothing can deploy."
         action={
           <Button
             variant="primary"
@@ -97,7 +86,7 @@ function Deleted({ host, status, problem }: { host: Host; status: Status; proble
     <Notice
       variant="alert"
       headline={`${name} was deleted in iii cloud`}
-      detail={`${until}Nothing here can deploy to it.`}
+      detail={`${until}Nothing can deploy to it.`}
       action={
         <Button asChild variant="secondary" size="sm">
           <a href={url} target="_blank" rel="noreferrer">
@@ -171,40 +160,65 @@ function ElsewhereEnv({ host, status, route, go }: ManageProps) {
   )
 }
 
-/**
- * One environment: what is live, its deployments (`deploy` opens one's record) and, for now, today's content of
- * the old Overview; or its secrets and variables. The areas of the redesign replace the content, not this frame.
- */
+/** An environment: what to do next, what is live, its deployments, and the way to its secrets and variables. */
+function EnvHome({ host, status, envId, go }: { host: Host; status: Status; envId: string; go: (r: Route) => void }) {
+  const feed = useDeployments(host, status, envId)
+  const cloud = feed.data
+  const members = useMembers(host, status, cloud)
+  const live = servingOf(status, envId, cloud?.deployments)
+  const next = nextAction(status, envId, { live, cloud: cloud?.deployments, members })
+  const url = projectUrl(status)
+  return (
+    <>
+      <NextCard host={host} status={status} envId={envId} next={next} go={go} />
+      <LiveNow host={host} status={status} envId={envId} feed={feed} />
+      <Deployments host={host} status={status} envId={envId} cloud={cloud} go={go} />
+      <p className="iii-cloud-desc iii-cloud-envfoot">
+        <button type="button" className="iii-cloud-linkbtn" onClick={() => go({ at: 'secrets', env: envId })}>
+          Secrets and variables
+        </button>
+        {url ? (
+          <span>
+            Machines, domains, rollback and a new environment are in{' '}
+            <a className="iii-cloud-link" href={url} target="_blank" rel="noreferrer">
+              iii cloud's console
+            </a>
+            .
+          </span>
+        ) : null}
+      </p>
+    </>
+  )
+}
+
+/** One environment (its sidebar and tabs are the shell's, CloudPage), a deployment's record, or its secrets and variables. */
 function EnvPage(props: ManageProps) {
   const { host, status, route, go, narrow } = props
   const project = status.project
   const state = envState(status, route.env)
   const env = project?.environments.find((e) => e.id === route.env)
-  const locked = useLocked(host, status)
   const feed = useDeployments(host, status, route.env)
   const tabs = useEnvTabs()
   if (state === 'unknown' || !project || !env) return <ElsewhereEnv {...props} />
   const selected = state === 'selected'
+  const home = route.at === 'env' && !route.deploy
   const live = liveOf(feed.data?.deployments)
-  const url = selected ? project.environment?.url?.replace(/^https?:\/\//, '') : null
+  const record =
+    route.at === 'env' ? status.deploys.find((d) => d.id === route.deploy && d.environment_id === route.env) : undefined
+  const url = selected ? project.environment?.url : null
   const gone = selected ? status.problems?.find((p) => p.code === 'ENVIRONMENT_DELETED') : undefined
-  const deploy = () => go({ at: 'deploy', env: route.env })
-  const consoleUrl = projectUrl(status)
-  const tabProps = { ...props, envId: route.env }
   const body = !selected ? (
     <Skeleton className="iii-cloud-skeleton" />
   ) : gone ? (
     <Deleted host={host} status={status} problem={gone} />
   ) : route.at === 'secrets' ? (
-    <EnvSettings {...tabProps} />
+    <EnvSettings {...props} envId={route.env} />
   ) : route.deploy ? (
-    <EnvDeploys {...tabProps} />
+    <DeploymentRecord host={host} status={status} envId={route.env} deployId={route.deploy} narrow={narrow} go={go} />
   ) : (
-    <>
-      <EnvOverview {...tabProps} />
-      <EnvDeploys {...tabProps} />
-    </>
+    <EnvHome host={host} status={status} envId={route.env} go={go} />
   )
+  const chip = record ? deployState(record, servingId(status, route.env, feed.data?.deployments)) : home ? live : null
   return (
     <>
       <PathBar
@@ -215,52 +229,21 @@ function EnvPage(props: ManageProps) {
         go={go}
         narrow={narrow}
         rule={!tabs}
-        end={
-          <>
-            <Fresh host={host} status={status} narrow={narrow} />
-            {route.at !== 'env' ? null : narrow ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <IconButton label="More actions" variant="ghost">
-                    <Ellipsis />
-                  </IconButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled={locked} onSelect={deploy}>
-                    Deploy to {env.name}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <PageAction disabled={locked} onClick={deploy}>
-                Deploy to {env.name}
-              </PageAction>
-            )}
-          </>
-        }
+        end={<Fresh host={host} status={status} narrow={narrow} />}
       >
-        {live ? <StateChip live={live} /> : null}
-        {url && !narrow ? <span className="iii-cloud-mono iii-cloud-url">{url}</span> : null}
-      </PathBar>
-      {tabs}
-      <div className="iii-cloud-body iii-cloud-mng iii-cloud-scroll">
-        {body}
-        {route.at === 'env' && selected && !gone ? (
-          <p className="iii-cloud-desc">
-            <button type="button" className="iii-cloud-linkbtn" onClick={() => go({ at: 'secrets', env: route.env })}>
-              Secrets and variables
-            </button>
-            {consoleUrl ? (
-              <>
-                {' · Machines, domains, rollback and a new environment are in '}
-                <a href={consoleUrl} target="_blank" rel="noreferrer">
-                  iii cloud's console
-                </a>
-                .
-              </>
-            ) : null}
-          </p>
+        {chip ? <StateChip live={chip} /> : null}
+        {url && home && !narrow ? (
+          <a className="iii-cloud-mono iii-cloud-url iii-cloud-link" href={url} target="_blank" rel="noreferrer">
+            {url.replace(/^https?:\/\//, '')}
+          </a>
         ) : null}
+      </PathBar>
+      {home ? tabs : null}
+      <div
+        className="iii-cloud-body iii-cloud-mng iii-cloud-scroll"
+        data-page={route.at === 'secrets' ? 'secrets' : route.deploy ? 'record' : 'env'}
+      >
+        {body}
       </div>
     </>
   )

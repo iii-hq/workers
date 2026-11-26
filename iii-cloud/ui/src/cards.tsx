@@ -104,7 +104,7 @@ function checkView(c: Check, env: string): CardView {
   if (!c.ready) {
     lines.push({
       tone: c.here.problems ? 'alert' : 'ok',
-      text: `Checks here: ${c.here.problems} ${c.here.problems === 1 ? 'problem' : 'problems'}`,
+      text: `Checks on this machine: ${c.here.problems} ${c.here.problems === 1 ? 'problem' : 'problems'}`,
     })
     if (decide) lines.push({ tone: 'warn', text: `${decide} need your decision` })
   } else if (c.run) {
@@ -125,7 +125,7 @@ function checkView(c: Check, env: string): CardView {
     lines,
     action: c.ready
       ? c.run
-        ? { label: 'See the run', open: { at: 'deploy', env: c.environment_id } }
+        ? { label: 'See the local run', open: { at: 'deploy', env: c.environment_id } }
         : undefined
       : { label: 'Open the check', open: { at: 'deploy', env: c.environment_id } },
   }
@@ -163,7 +163,7 @@ function secretView(r: SecretRequest, env: string): CardView {
     ],
     action:
       r.state === 'waiting'
-        ? { label: 'Open secrets and variables', open: { at: 'secrets', env: r.environment_id } }
+        ? { label: 'Secrets and variables', open: { at: 'secrets', env: r.environment_id } }
         : undefined,
   }
 }
@@ -203,7 +203,11 @@ function deployView(d: Deploy, fn: string, env: string): CardView {
             ? { tone: 'danger', label: 'Failed' }
             : { tone: 'neutral', label: d.outcome },
     lines,
-    action: { label: 'Open deployment', open: { at: 'env', env: d.environment_id, deploy: d.id } },
+    // A deployment going is followed in the Deploy place; any other has its record on the environment's page.
+    action:
+      d.outcome === 'running'
+        ? { label: 'Follow', open: { at: 'deploy', env: d.environment_id, deploy: d.id } }
+        : { label: 'Open the deployment', open: { at: 'env', env: d.environment_id, deploy: d.id } },
   }
 }
 

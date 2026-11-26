@@ -1,33 +1,24 @@
-/* Settings tab (U8): Mng3 and the change-file dialog (Mng11). Every rule starts with [data-iii-ui='iii-cloud']. */
+/* Secrets and variables (the secrets page), and ConfigImport's dialog. Every rule starts with [data-iii-ui='iii-cloud']. */
 [data-iii-ui='iii-cloud'] .iii-cloud-set {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-set-col {
+/* The title and what the file reads on the left, Paste a .env and Add on the right. */
+[data-iii-ui='iii-cloud'] .iii-cloud-set-head {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-set-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 14px 16px;
   font-size: 12px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-set-ask {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-set-value {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-set-form {
   padding: 12px;
@@ -36,6 +27,17 @@
   display: block;
   height: 120px;
 }
+[data-iii-ui='iii-cloud'] .iii-cloud-set-note {
+  max-width: 720px;
+  line-height: 1.6;
+}
+/* The kind word with its menu. */
+[data-iii-ui='iii-cloud'] .iii-cloud-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* ConfigImport's dialog (the check opens it): which compose file, and what is copied. */
 [data-iii-ui='iii-cloud'] .iii-cloud-cf {
   display: flex;
   flex-direction: column;

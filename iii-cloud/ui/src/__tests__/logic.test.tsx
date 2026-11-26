@@ -317,7 +317,7 @@ describe('board 11: chat cards', () => {
     expect(text()).toContain('registry/production')
     expect(text()).toContain('commit 3c4d2e0')
     expect(text()).toContain("iii cloud's plan: 3 to fix, at least")
-    expect(text()).toContain('Checks here: 4 problems')
+    expect(text()).toContain('Checks on this machine: 4 problems')
     expect(text()).toContain('2 need your decision')
     const check = (c: { environment_id: string }) => ({ at: 'deploy', env: c.environment_id })
     await click(btn('Open the check'))
@@ -325,7 +325,7 @@ describe('board 11: chat cards', () => {
     await show(renderer.tryRenderDisplay(env(wrap(cardRecords.checkReady), 'iii-cloud::check')))
     expect(text()).toContain("iii cloud's plan is clean")
     expect(text()).toContain('Local run: 3 of 3 workers, 14 routes, healthcheck 200')
-    await click(btn('See the run'))
+    await click(btn('See the local run'))
     expect(h.open).toHaveBeenLastCalledWith({ pageId: 'iii-cloud', context: check(cardRecords.checkReady) })
   })
 
@@ -355,7 +355,7 @@ describe('board 11: chat cards', () => {
     await show(renderer.tryRender(env(wrap(cardRecords.secret), 'iii-cloud::secret')))
     expect(text()).toContain('SESSION_SECRET')
     expect(text()).toContain('type it on the iii cloud page; the value never comes back to this chat')
-    await click(btn('Open secrets and variables'))
+    await click(btn('Secrets and variables'))
     expect(h.open).toHaveBeenCalledWith({
       pageId: 'iii-cloud',
       context: { at: 'secrets', env: cardRecords.secret.environment_id },
@@ -369,10 +369,16 @@ describe('board 11: chat cards', () => {
     expect(text()).toContain('Deploying')
     expect(text()).toContain('Workers: 2 of 3 ready')
     expect(text()).toMatch(/Release command · 22(\.0)?s/)
+    // A deployment going is followed in the Deploy place.
+    await click(btn('Follow'))
+    expect(h.open).toHaveBeenCalledWith({
+      pageId: 'iii-cloud',
+      context: { at: 'deploy', env: cardRecords.watch.environment_id, deploy: cardRecords.watch.id },
+    })
     await show(renderer.tryRender(env(wrap(cardRecords.failed), 'iii-cloud::deploy')))
     expect(text()).toContain('Failed')
     expect(text()).toContain('Workers: registry ran out of memory')
-    await click(btn('Open deployment'))
+    await click(btn('Open the deployment'))
     expect(h.open).toHaveBeenCalledWith({
       pageId: 'iii-cloud',
       context: { at: 'env', env: cardRecords.failed.environment_id, deploy: cardRecords.failed.id },

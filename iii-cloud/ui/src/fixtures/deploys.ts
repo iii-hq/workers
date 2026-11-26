@@ -1,6 +1,5 @@
-// Deploys tab boards (U7): manage-deploys-failed (Mng2; Mng10 at 390 wide as manage-deploys-phone) and
-// manage-rollback (Mng7). dev deploys its own branch; #6 serves, #5 served before it, #2 failed while
-// nothing was live yet.
+// A deployment's record: manage-deploys-failed (Env3; Phone-Failed at 390 wide as manage-deploys-phone).
+// dev deploys its own branch; #6 serves, #5 served before it, #2 failed while nothing was live yet.
 
 import type { Deploy, Status } from '../types'
 import { apiPath, type Board, base, DEPLOY_BASE, ENV, project, st, T } from './base'
@@ -115,32 +114,8 @@ export const devList = {
 
 const devStatus: Status = { ...base, project: devProject, check: null, deploys: devDeploys }
 
-/** `GET /logs` for #2's workers, newest first as iii cloud answers. */
-const workerLog = {
-  lines: [
-    'code ROUTE_OUTSIDE_HTTP_GROUP',
-    'first unserved route: DELETE /orgs/:handle/invites/:id',
-    'group app has no http package: routes are not served',
-    'registered 41 routes in group app',
-    'worker http (from your code: ./workers/http) started in group app',
-  ].map((message, i) => ({
-    time: T(773 - i / 60),
-    source: 'worker',
-    deployment_id: 'dep-2',
-    group: 'app',
-    worker: 'http',
-    level: i < 3 ? 'error' : 'info',
-    message,
-    trace_id: null,
-    span_id: null,
-  })),
-  next_cursor: null,
-}
-
 const failedCloud = {
   [apiPath('/deployments', DEV.id)]: devList,
-  [apiPath('/logs?deployment_id=dep-2&source=worker', DEV.id)]: workerLog,
-  [apiPath('/logs?deployment_id=dep-2&source=release', DEV.id)]: { lines: [], next_cursor: null },
 }
 
 const manageDeploysFailed: Board = {
@@ -149,25 +124,8 @@ const manageDeploysFailed: Board = {
   cloud: failedCloud,
 }
 
-const manageRollback: Board = {
-  status: devStatus,
-  context: { at: 'env', env: DEV.id, deploy: 'dep-5' },
-  dialog: true,
-  cloud: {
-    [apiPath('/deployments', DEV.id)]: devList,
-    [apiPath('/deployments/dep-5/rollback', DEV.id)]: {
-      target: { id: 'dep-5', number: 5, commit: 'd738d2f' },
-      returns: ['code', 'worker images', 'config version 4', 'the workers of each machine group'],
-      stays: ['data', 'secrets', 'resources created later', 'group sizes and replicas', "the environment's settings"],
-      side_effects: ['Migrations run by #6 are not reverted: 0008_trgm.sql stays.'],
-      queue: 'Nothing is queued.',
-    },
-  },
-}
-
 // Keyed by literal ids so `board('manage-rollback')` type-checks.
 export const boards = {
   'manage-deploys-failed': manageDeploysFailed,
   'manage-deploys-phone': { ...manageDeploysFailed, width: 390 },
-  'manage-rollback': manageRollback,
 }

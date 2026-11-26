@@ -46,48 +46,6 @@ export const devDeploys = [
   cloudDeploy(2, '86c49e1a2b3c4d5e6f708192a3b4c5d6e7f80912', 'Ready the registry', 'failed', 90, null),
 ]
 
-export const machines = {
-  status: 'running',
-  current_deployment_id: 'dep-6',
-  engine: { status: 'ready', version: '0.27.0', restarted_at: null },
-  groups: [
-    {
-      name: 'app',
-      workers: [],
-      current_workers: ['registry', 'billing', 'search', 'postgres'],
-      size: '0.5x',
-      replicas: { min: 1, max: 1, current: 1 },
-      scale: null,
-      fixed_reason: null,
-      pending: false,
-      operation: null,
-    },
-    {
-      name: 'http',
-      workers: [],
-      current_workers: ['http', 'storage', 'postgres'],
-      size: '0.25x',
-      replicas: { min: 1, max: 1, current: 1 },
-      scale: null,
-      fixed_reason: null,
-      pending: false,
-      operation: null,
-    },
-    {
-      name: 'jobs',
-      workers: [],
-      current_workers: ['cron', 'mailer', 'indexer', 'thumbs', 'webhooks', 'postgres'],
-      size: '0.5x',
-      replicas: { min: 1, max: 1, current: 1 },
-      scale: null,
-      fixed_reason: null,
-      pending: false,
-      operation: { generation: 'g1', state: 'applying', requested_size: '1x', applied_size: null },
-    },
-  ],
-  limits: { groups: 10, replicas_per_group: 1 },
-}
-
 const workers = [
   'registry',
   'billing',
@@ -160,7 +118,6 @@ export const home: Status = {
 export const homeCloud: Record<string, unknown> = {
   [apiPath('/deployments')]: { deployments: [], next_cursor: null },
   [apiPath('/deployments', DEV.id)]: { deployments: devDeploys, next_cursor: null },
-  [apiPath('/machines', DEV.id)]: machines,
   [apiPath('/health', DEV.id)]: health,
   [`/teams/${TEAM.id}/members`]: members,
 }

@@ -1,10 +1,11 @@
 import type { Host } from '@iii-dev/console-ui'
-import { Button, CollapsibleCard, CollapsibleCardContent, CollapsibleCardTrigger } from '@iii-dev/console-ui'
-import { ExternalLink } from 'lucide-react'
+import { Button } from '@iii-dev/console-ui'
 import { type ReactNode, useEffect, useRef } from 'react'
 import { useLaunch } from './asked'
 import { handOff, openAgentChat } from './handoff'
-import { activeSameKind, cloudStageLabel, failedStage, failureWords, sendLabel } from './model'
+import { activeSameKind, deployRows, failedStage, failureWords, sendLabel, servingDeploy } from './model'
+import { Mono, SectionCard } from './parts'
+import type { Route } from './route'
 import type { Deploy, Status } from './types'
 
 /** The failure in one plain sentence: the worker's title, else the stage and what happened there. */
@@ -13,12 +14,32 @@ export function failureTitle(d: Deploy): string {
   return `The deploy failed at ${failedStage(d)}${d.error ? `: ${failureWords(d.error)}` : ''}`
 }
 
-/** The failing stage's last lines, as the worker kept them, and what to call them. */
-export function failureTail(d: Deploy): { label: string; lines: string[] } {
-  const f = d.failure
-  return f
-    ? { label: `Last lines of ${cloudStageLabel(f.stage)}`, lines: f.log_tail }
-    : { label: 'Last log lines', lines: d.log_tail }
+/** "Deployment #7 failed: <cause>": the failure's line where the deployment is named first. */
+export function failedLine(d: Deploy): string {
+  if (d.failure?.title) return `Deployment #${d.number} failed: ${d.failure.title}`
+  return `Deployment #${d.number} failed at ${failedStage(d)}${d.error ? `: ${failureWords(d.error)}` : ''}`
+}
+
+/** The failing stage's last lines, as the worker kept them. */
+export function failureTail(d: Deploy): string[] {
+  return d.failure ? d.failure.log_tail : d.log_tail
+}
+
+/** "Validation ✓ · Build ✓ · Workers × · Routes and healthcheck not run": where the deployment stopped. */
+export function stageLine(d: Deploy): string {
+  return deployRows(d)
+    .map(
+      (r) =>
+        `${r.label}${r.tone === 'ok' ? ' ✓' : r.tone === 'alert' ? ' ×' : r.tone === 'live' ? ' running' : ' not run'}`,
+    )
+    .join(' · ')
+}
+
+/** "Workers, stage 5 of 6": the stage a failed deployment stopped at, for the narrow record. */
+export function stoppedAt(d: Deploy): string {
+  const rows = deployRows(d)
+  const at = rows.findIndex((r) => r.tone === 'alert')
+  return at < 0 ? failedStage(d) : `${rows[at].label}, stage ${at + 1} of ${rows.length}`
 }
 
 /** Log lines in the shared pre, scrolled to the end, where the error is. */
@@ -37,89 +58,93 @@ export function LogLines({ lines }: { lines: string[] }) {
 }
 
 /**
- * A failed deploy in words (Mng2, Mng10): the plain title, what happened, the fix, and whether anyone saw it.
- * `log` shows the failing stage's last lines (folded open on a phone); the Deploys tab turns it off on a
- * wide pane, where its log panel has them. `meta` goes right under the title.
+ * A failed deployment's record: the cause as the title with "Fix with your agent", `children` (the facts, the
+ * record's three cells) under it, then "Where it stopped" with the stage line, the explanation and the last
+ * log lines. "Fix with your agent" hands the failure to the agent, then goes to the Deploy place (`go`).
+ * On a narrow pane the action is a bar at the bottom.
  */
 export function FailureCard({
   host,
   status,
   deploy,
-  serving = false,
+  servingNumber,
   narrow = false,
-  log = true,
-  meta,
+  go,
+  children,
 }: {
   host: Host
   status: Status
   deploy: Deploy
-  /** An earlier release keeps serving. */
-  serving?: boolean
+  /** The number of the deployment that still serves; undefined: the worker's newest ready one. */
+  servingNumber?: number | null
   narrow?: boolean
-  log?: boolean
-  meta?: ReactNode
+  go?: (r: Route) => void
+  children?: ReactNode
 }) {
   const f = deploy.failure
   const launching = useLaunch()?.kind === 'launching'
   const working = activeSameKind(status, 'deploy_fix')
   const hint = f ? f.hint : deploy.error?.hint
-  const env = status.project?.environment?.name ?? 'the environment'
-  const tail = failureTail(deploy)
-  const size = narrow ? 'lg' : 'md'
-  const lines = tail.lines.length ? <LogLines lines={tail.lines} /> : null
+  const env = status.project?.environments.find((e) => e.id === deploy.environment_id)?.name ?? 'the environment'
+  const serving =
+    servingNumber === undefined ? (servingDeploy(status, deploy.environment_id)?.number ?? null) : servingNumber
+  const lines = failureTail(deploy)
+  const act = working ? (
+    <Button variant="secondary" onClick={() => openAgentChat(host, status)}>
+      Open your agent's chat
+    </Button>
+  ) : (
+    <Button
+      variant="primary"
+      disabled={launching || !host.chat?.compose}
+      onClick={() => {
+        void handOff(host, status, 'deploy_fix', deploy).then((ok) => {
+          if (ok) go?.({ at: 'deploy', env: deploy.environment_id, deploy: deploy.id })
+        })
+      }}
+    >
+      {sendLabel(status, 'deploy_fix', 'Fix with your agent')}
+    </Button>
+  )
+  const why =
+    'Your agent gets these log lines and works in a separate copy. Its fix goes through the check, and you confirm the deploy.'
   return (
     <div className="iii-cloud-failure">
-      <h2 className="iii-cloud-h">{failureTitle(deploy)}</h2>
-      {meta}
-      {f?.silent ? <p className="iii-cloud-desc">The command exited without printing an error.</p> : null}
-      {hint ? <p className="iii-cloud-desc">{hint}</p> : null}
-      {f?.release_command ? (
-        <p className="iii-cloud-desc">
-          Release command: <span className="iii-cloud-mono">{f.release_command}</span>
-        </p>
-      ) : null}
-      <div className="iii-cloud-row">
-        {working ? (
-          <Button variant="secondary" size={size} onClick={() => openAgentChat(host, status)}>
-            Open your agent's chat
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            size={size}
-            disabled={launching || !host.chat?.compose}
-            onClick={() => handOff(host, status, 'deploy_fix', deploy)}
-          >
-            {sendLabel(status, 'deploy_fix', 'Fix with your agent')}
-          </Button>
-        )}
-        <Button variant="secondary" size={size} asChild>
-          <a href={deploy.console_url} target="_blank" rel="noreferrer">
-            Open full logs
-            <ExternalLink />
-          </a>
-        </Button>
-        <span className="iii-cloud-desc">
-          {narrow
-            ? 'Your agent works on your computer; you can follow it from here.'
-            : 'Your agent gets the log lines below; its fix goes through Check before deploy.'}
-        </span>
+      <div className="iii-cloud-rec-head">
+        <div className="iii-cloud-rec-title">
+          <h2 className="iii-cloud-h">{failureTitle(deploy)}</h2>
+          <p className="iii-cloud-desc">
+            {serving
+              ? `${env} still serves #${serving}. Nothing changed for your users.`
+              : `Nothing was live on ${env} then, so nobody saw an error.`}
+          </p>
+        </div>
+        {narrow ? null : act}
       </div>
-      <p className="iii-cloud-text">
-        {serving ? 'The previous release keeps serving.' : `Nothing was live on ${env} then, so nobody saw an error.`}
-      </p>
-      {log && lines ? (
-        narrow ? (
-          <CollapsibleCard defaultOpen>
-            <CollapsibleCardTrigger className="iii-cloud-fold">Last lines of the log</CollapsibleCardTrigger>
-            <CollapsibleCardContent className="iii-cloud-fold-body">{lines}</CollapsibleCardContent>
-          </CollapsibleCard>
-        ) : (
-          <div className="iii-cloud-logbox">
-            <span className="iii-cloud-psmall">{tail.label}</span>
-            {lines}
-          </div>
-        )
+      {children}
+      <SectionCard title="Where it stopped" note={stageLine(deploy)} flush>
+        <div className="iii-cloud-stopped">
+          {f?.silent ? <p className="iii-cloud-text">The command exited without printing an error.</p> : null}
+          {hint ? <p className="iii-cloud-text">{hint}</p> : null}
+          {f?.release_command ? (
+            <p className="iii-cloud-text">
+              Release command: <Mono>{f.release_command}</Mono>
+            </p>
+          ) : null}
+          {lines.length ? <LogLines lines={lines} /> : null}
+        </div>
+        <div className="iii-cloud-stopped-foot">
+          {narrow ? null : <span className="iii-cloud-desc">{why}</span>}
+          <a className="iii-cloud-link iii-cloud-small" href={deploy.console_url} target="_blank" rel="noreferrer">
+            Full log in iii cloud
+          </a>
+        </div>
+      </SectionCard>
+      {narrow ? (
+        <div className="iii-cloud-recbar">
+          {act}
+          <span className="iii-cloud-desc">{why}</span>
+        </div>
       ) : null}
     </div>
   )

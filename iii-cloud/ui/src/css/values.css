@@ -313,9 +313,6 @@
   padding: 0;
   border-top: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-val[data-mode='settings'] .iii-cloud-val-foot {
-  background: var(--color-panel);
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-val-sum {
   flex: 1 1 240px;
   min-width: 0;

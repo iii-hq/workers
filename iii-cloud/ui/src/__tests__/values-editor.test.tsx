@@ -405,7 +405,7 @@ describe('the step', () => {
     expect(rowOf('SESSION_SECRET')?.textContent).toContain('needed to run here')
     // Keeping iii cloud's value would leave the run here without it: the field waits for one.
     expect(input('SESSION_SECRET')).toBeTruthy()
-    expect(rowOf('GH_ORG')?.textContent).toContain('the run here takes it from api/.env.test')
+    expect(rowOf('GH_ORG')?.textContent).toContain('the local run takes it from api/.env.test')
     expect(rowOf('GH_ORG')?.textContent).not.toContain('needed to run here')
   })
 
@@ -455,7 +455,7 @@ describe('the step', () => {
       'iii-cloud::values::save': { environment_id: RC_PROD.id, results: [] },
     })
     const show = (s: Status) =>
-      act(async () => root.render(<ValuesEditor host={h.host} status={s} mode="settings" narrow={false} />))
+      act(async () => root.render(<ValuesEditor host={h.host} status={s} mode="dialog" narrow={false} />))
     await show(test)
     await flush()
     await type(input('SESSION_SECRET'), 'test-only')
@@ -472,12 +472,7 @@ describe('the step', () => {
   })
 
   it("an answer for another environment than the selected one is dropped: test's names never show under production", async () => {
-    await editor(
-      rcValues,
-      {},
-      { mode: 'settings' },
-      selecting({ environment_id: RC_PROD.id, environment: 'production' }),
-    )
+    await editor(rcValues, {}, { mode: 'dialog' }, selecting({ environment_id: RC_PROD.id, environment: 'production' }))
     expect(names()).toEqual([])
   })
 

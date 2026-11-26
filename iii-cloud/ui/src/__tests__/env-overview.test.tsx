@@ -1,11 +1,14 @@
-// An environment's Overview (U6, Mng6): Serving, Health, Machines, Address, and the writes behind confirms.
+// An environment's page (Env1, Env2): the next-action card, one state at a time and in a fixed order; Live now;
+// and what is no longer on this page (machines, domains, restart, stop).
 import { describe, expect, it, vi } from 'vitest'
 import { clock } from '../asked'
-import { boards } from '../fixtures'
-import { apiPath, problems, T, TEAM } from '../fixtures/base'
-import { ANA, cloudDeploy, DEV, devDeploys, home, LIVE_SHA, NEW_SHA } from '../fixtures/manage'
-import type { Status } from '../types'
-import { board, btn, byText, click, cloudAnswers, ctx, el, flush, mount, text, type, usePage } from './util'
+import { type Next, nextAction } from '../EnvOverview'
+import { agent, apiPath, base, check, DEPLOY_BASE, ENV, pr, problems, ready, T } from '../fixtures/base'
+import { DEV, devDeploys } from '../fixtures/deploys'
+import { NEW_SHA } from '../fixtures/manage'
+import { envPageStatus } from '../fixtures/overview'
+import type { Deploy, Status } from '../types'
+import { board, btn, click, cloudAnswers, ctx, el, flush, mount, text, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -15,141 +18,322 @@ usePage()
 const settle = async () => {
   for (let i = 0; i < 5; i++) await flush()
 }
-const panel = (title: string) => el.querySelector(`section[aria-label="${title}"]`)
-const overview = boards['manage-overview']
-const writes = (h: Awaited<ReturnType<typeof mount>>) => h.calls.filter((c) => c.id === 'iii-cloud::api::write')
-const open = async (status: Status = overview.status, cloud: Record<string, unknown> = {}, answers = {}) => {
-  const h = await mount(status, ctx(overview.context), {
-    ...cloudAnswers({ ...overview.cloud, ...cloud }),
-    ...answers,
-  })
-  await settle()
-  return h
+const path = () => el.querySelector('[role=toolbar] nav')?.textContent
+const card = () => el.querySelector('section[aria-label=Next]')
+
+// ---- the pure function ----
+
+const LIVE = devDeploys[0]
+const live = { id: LIVE.id, sha: LIVE.commit.sha }
+type Folder = NonNullable<Status['project']>['checkout']
+/** dev as the Env1 board has it (one commit to deploy), with `over` on the status and `folder` on the checkout. */
+const dev = (over: Partial<Status> = {}, folder: Partial<Folder> = {}): Status => ({
+  ...envPageStatus,
+  ...over,
+  project: { ...envPageStatus.project!, checkout: { ...envPageStatus.project!.checkout, ...folder } },
+})
+const clean = { not_served: [], changed_files: [] }
+const next = (s: Status, over: Parameters<typeof nextAction>[2] = {}): Next =>
+  nextAction(s, DEV.id, { live, now: Date.now(), ...over })
+const deploy = (n: number, over: Partial<Deploy> = {}): Deploy => ({
+  ...DEPLOY_BASE,
+  id: `dep-${n}`,
+  number: n,
+  environment_id: DEV.id,
+  commit: { sha: String(n).repeat(40).slice(0, 40), message: 'Add slow-query stats' },
+  type: 'push',
+  pr: null,
+  approved_by_worker: false,
+  checked_ready: false,
+  created_at: T(3),
+  ...over,
+})
+const failed7 = deploy(7, {
+  status: 'failed',
+  outcome: 'failed',
+  finished_at: T(1),
+  failure: {
+    code: 'MIGRATION_RIGHTS',
+    stage: 'config_secrets',
+    worker: null,
+    title: "a migration needs rights iii cloud doesn't give",
+    hint: null,
+    log_tail: [],
+  },
+})
+const running7 = deploy(7, {
+  stages: [{ name: 'workers', status: 'in_progress', detail: '2 of 3 ready', started_at: T(1), finished_at: null }],
+})
+const held7 = deploy(7, { status: 'needs_action' })
+const passed = { ...ready, environment_id: DEV.id, commit: NEW_SHA, checked_at: T(2) }
+const needsYou = {
+  ...check(false, false),
+  environment_id: DEV.id,
+  problems: problems.filter((p) => p.owner === 'person'),
+}
+const agentOnly = {
+  ...check(false, false),
+  environment_id: DEV.id,
+  problems: problems.filter((p) => p.owner === 'agent').slice(0, 2),
 }
 
-describe('Overview (Mng6)', () => {
-  it('Serving, Health, Machines and Address from iii cloud; the old journey is gone', async () => {
-    await board('manage-overview')
-    await settle()
-    const serving = panel('Serving')?.textContent ?? ''
-    expect(serving).toContain(`Commit${LIVE_SHA.slice(0, 7)} Search: rank by stars`)
-    expect(serving).toContain(`Deployment#6 · live since ${clock(T(5))} · you, from this machine`)
-    expect(serving).toContain('Compose fileapi/worker-compose-prod.yaml · 11 workers in 3 groups · Change…')
-    expect(serving).toContain('Checkedbefore the deployment')
-    expect(panel('Health')?.textContent).toBe(`Healthiii cloud: 11 of 11 workers upchecked ${clock(T(1))}`)
-    const machines = [...(panel('Machines')?.querySelectorAll('tbody tr') ?? [])].map((r) => r.textContent)
-    expect(machines).toEqual(['app1 × 1 GiBrunning', 'http1 × 500 MiBrunning', 'jobs1 × 1 GiBresizing to 2 GiB'])
-    const address = panel('Address')?.textContent ?? ''
-    expect(address).toContain('Defaultregistry-dev.iii.cloud')
-    expect(address).toContain('Your domainsnone')
-    expect(text()).not.toContain('Make it ready')
-  })
-
-  it('the waiting panel: one commit passed the check and dev still serves the older one', async () => {
-    await board('manage-overview')
-    await settle()
-    const wait = byText('[role=status] b', 'Waiting for you: 1 commit passed the check')?.parentElement
-    expect(wait?.textContent).toContain(
-      `${NEW_SHA.slice(0, 7)} "Search: tweak weights" · checked on iii cloud and here at ${clock(T(1))} · dev still serves ${LIVE_SHA.slice(0, 7)}.`,
-    )
-  })
-
-  it('"by you" only when you started it: a teammate is named, and a deploy made elsewhere is not "checked here"', async () => {
-    const hers = cloudDeploy(7, 'aa11bb2', 'Hotfix', 'ready', 3, ANA, { current: true })
-    const h = await open(overview.status, {
-      [apiPath('/deployments', DEV.id)]: { deployments: [hers, ...devDeploys.map((d) => ({ ...d, current: false }))] },
+describe('the next-action card: one state for each combination of Env2', () => {
+  it('something to deploy: the folder has a commit the environment does not serve', () => {
+    const n = next(dev())
+    expect(n).toMatchObject({
+      state: 'deploy',
+      wait: true,
+      primary: true,
+      action: { label: 'Deploy to dev', kind: 'check' },
     })
-    const serving = panel('Serving')?.textContent ?? ''
-    expect(serving).toContain(`Deployment#7 · live since ${clock(T(2))} · ana, from the console`)
-    expect(serving).not.toContain('you')
-    expect(serving).not.toContain('from this machine')
-    expect(serving).toContain('Checkednot checked first')
-    expect(h.calls.some((c) => c.payload?.path === `/teams/${TEAM.id}/members`)).toBe(true)
+    expect(n.title).toBe("1 commit on feat/search-rank isn't on dev")
+    expect(n.detail).toBe('2be71d0 Search: tweak weights · nothing uncommitted in your folder')
   })
 
-  it('nothing live yet: no health is read, and Serving says so', async () => {
-    const h = await open(overview.status, { [apiPath('/deployments', DEV.id)]: { deployments: [] } })
-    expect(panel('Serving')?.textContent).toContain('Nothing is live on dev yet.')
-    expect(panel('Health')?.textContent).toContain('Nothing runs on dev yet.')
-    expect(h.calls.some((c) => String(c.payload?.path).endsWith('/health'))).toBe(false)
-  })
-
-  it('Restart a group: nothing is written until the confirm; then POST …/groups/app/restart as the person', async () => {
-    const path = apiPath('/machines/groups/app/restart', DEV.id)
-    const h = await open(overview.status, { [path]: null })
-    await click(byText('[role=menuitem]', 'app'))
-    const dialog = el.querySelector('[role=alertdialog]')
-    expect(dialog?.textContent).toContain('Restart app on dev?')
-    expect(writes(h)).toHaveLength(0)
-    await click(byText('[role=alertdialog] button', 'Restart app'))
-    await settle()
-    expect(writes(h)).toHaveLength(1)
-    expect(writes(h)[0].payload).toMatchObject({ method: 'POST', path })
-    expect(typeof writes(h)[0].payload?.idempotency_key).toBe('string')
-    expect(el.querySelector('[role=alertdialog]')).toBeNull()
-    expect(text()).toContain('app is restarting')
-  })
-
-  it('Stop dev: a danger confirm, then POST …/machines/stop; the cloud’s refusal is shown as it says', async () => {
-    const path = apiPath('/machines/stop', DEV.id)
-    const refuse = () => ({ status: 403, body: { code: 'FORBIDDEN', message: 'Only an Owner or Admin can stop it.' } })
-    const h = await open(overview.status, {}, { 'iii-cloud::api::write': refuse })
-    await click(btn('Stop dev'))
-    expect(el.querySelector('[role=alertdialog]')?.textContent).toContain('Stop dev?')
-    await click(byText('[role=alertdialog] button', 'Stop dev'))
-    await settle()
-    expect(writes(h).map((c) => c.payload?.path)).toEqual([path])
-    expect(text()).toContain('Only an Owner or Admin can stop it.')
-  })
-
-  it('Add a domain: POST /domains with the hostname, then the TXT record to add', async () => {
-    const added = {
-      id: 'dom-1',
-      hostname: 'api.example.com',
-      status: 'pending_dns',
-      verification: { type: 'TXT', name: '_iii-cloud.api.example.com', value: 'iii-verify=7f3a9c1e' },
-      created_at: T(0),
-    }
-    const h = await open(
-      overview.status,
-      {},
-      {
-        'iii-cloud::api::write': () => ({ status: 201, body: added }),
-      },
-    )
-    await click(btn('Add a domain'))
-    expect(el.querySelector('[role=dialog]')?.textContent).toContain('Add a domain to dev')
-    expect((btn('Add domain') as HTMLButtonElement).disabled).toBe(true)
-    await type(el.querySelector('#iii-cloud-domain'), ' api.example.com ')
-    await click(btn('Add domain'))
-    await settle()
-    expect(writes(h).map((c) => c.payload)).toMatchObject([
-      { method: 'POST', path: apiPath('/domains', DEV.id), body: { hostname: 'api.example.com' } },
-    ])
-    const dialog = el.querySelector('[role=dialog]')?.textContent ?? ''
-    expect(dialog).toContain('Name_iii-cloud.api.example.com')
-    expect(dialog).toContain('Valueiii-verify=7f3a9c1e')
-  })
-
-  it('a domain still waiting for its TXT record shows the record in the list', async () => {
-    const pending = {
-      id: 'dom-1',
-      hostname: 'api.example.com',
-      status: 'pending_dns',
-      verification: { type: 'TXT', name: '_iii-cloud.api.example.com', value: 'iii-verify=7f3a9c1e' },
-      created_at: T(0),
-    }
-    await open(overview.status, { [apiPath('/domains', DEV.id)]: { domains: [pending] } })
-    expect(panel('Address')?.textContent).toContain(
-      'api.example.com · waiting for its TXT record · TXT _iii-cloud.api.example.com iii-verify=7f3a9c1e',
+  it('something to deploy: uncommitted files count too, and are said', () => {
+    const n = next(dev({}, { ...clean, changed_files: ['a.ts', 'b.ts'] }))
+    expect(n).toMatchObject({ state: 'deploy', action: { kind: 'check' } })
+    expect(n.title).toBe("2 uncommitted files in your folder aren't on dev")
+    expect(next(dev({}, { changed_files: ['a.ts'] })).detail).toBe(
+      '2be71d0 Search: tweak weights · plus 1 uncommitted file',
     )
   })
 
-  it('locked while iii cloud wants a fresh sign-in: no restart, stop, domain or deploy', async () => {
-    const problem = { ...problems[0], code: 'SIGN_IN_REQUIRED' }
-    await open({ ...home, check: { ...home.check!, problems: [problem] } })
-    for (const label of ['Restart a group…', 'Stop dev', 'Add a domain', 'Review and deploy', 'Deploy to dev']) {
-      expect((btn(label) as HTMLButtonElement).disabled, label).toBe(true)
+  it('the check needs you: its title counts what only you can do, and the agent working meanwhile is said', () => {
+    const n = next(dev({ check: needsYou }))
+    expect(n).toMatchObject({
+      state: 'you',
+      wait: true,
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: DEV.id } },
+    })
+    expect(n.title).toBe('2 things need you before dev can get feat/search-rank')
+    const meanwhile = next(dev({ check: needsYou, agent: agent('working') }))
+    expect(meanwhile.state).toBe('you')
+    expect(meanwhile.detail).toContain('Your agent is fixing 1 problem meanwhile.')
+  })
+
+  it('the agent is working and nothing needs you: a plain card with Open the check as the secondary action', () => {
+    const n = next(dev({ check: agentOnly, agent: agent('working') }))
+    expect(n).toMatchObject({
+      state: 'agent',
+      wait: false,
+      primary: false,
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: DEV.id } },
+    })
+    expect(n.title).toBe('Your agent is fixing 1 problem for dev')
+    expect(n.detail).toMatch(/^Working \d+ min in a separate copy\./)
+  })
+
+  it('the check passed on a commit the environment does not serve: Review and deploy', () => {
+    const n = next(dev({ check: passed }))
+    expect(n).toMatchObject({
+      state: 'passed',
+      wait: true,
+      action: { label: 'Review and deploy', kind: 'go', to: { at: 'deploy', env: DEV.id } },
+    })
+    expect(n.title).toBe(`2be71d0 passed the check at ${clock(T(2))}`)
+    expect(n.detail).toContain('It waits for you.')
+  })
+
+  it('a deployment is running: Follow, to that deployment on the Deploy place', () => {
+    const n = next(dev({ deploys: [running7, ...devDeploys] }))
+    expect(n).toMatchObject({
+      state: 'running',
+      wait: false,
+      action: { label: 'Follow', kind: 'go', to: { at: 'deploy', env: DEV.id, deploy: 'dep-7' } },
+    })
+    expect(n.title).toBe('Deployment #7 is deploying')
+    expect(n.detail).toContain('Workers: 2 of 3 ready')
+    expect(n.detail).toContain("dev serves #6 until it's live.")
+  })
+
+  it('a deployment iii cloud holds for approval needs you: Review it, on the Deploy place', () => {
+    const n = next(dev({ deploys: [held7, ...devDeploys] }))
+    expect(n).toMatchObject({
+      state: 'held',
+      wait: true,
+      action: { label: 'Review it', to: { at: 'deploy', env: DEV.id, deploy: 'dep-7' } },
+    })
+  })
+
+  it('the last deployment failed: its cause, who started it, what still serves; See what failed opens its record', () => {
+    const n = next(dev({ deploys: [failed7, ...devDeploys] }, clean))
+    expect(n).toMatchObject({
+      state: 'failed',
+      wait: false,
+      primary: true,
+      action: { label: 'See what failed', kind: 'go', to: { at: 'env', env: DEV.id, deploy: 'dep-7' } },
+    })
+    expect(n.title).toBe("Deployment #7 failed: a migration needs rights iii cloud doesn't give")
+    expect(n.detail).toBe('A push to GitHub, not checked. dev still serves #6.')
+  })
+
+  it('up to date: no action', () => {
+    const n = next(dev({}, clean))
+    expect(n).toMatchObject({ state: 'current', wait: false })
+    expect(n.action).toBeUndefined()
+    expect(n.title).toBe('dev serves everything in your folder')
+    expect(n.detail).toBe('feat/search-rank at 2be71d0, nothing uncommitted.')
+  })
+
+  it('not deployed yet where a pull request deploys: Open pull request #n, a link, with who merges it', () => {
+    const s: Status = { ...base, deploys: [], check: null, pr: { ...pr, number: 170 } }
+    const n = nextAction(s, ENV.id, { live: null })
+    expect(n).toMatchObject({
+      state: 'pull-request',
+      wait: false,
+      action: { label: 'Open pull request #170', kind: 'link', href: pr.url },
+    })
+    expect(n.title).toBe('Nothing is live on production yet')
+    expect(n.detail).toBe("It deploys when pull request #170 into main is merged. You're allowed to merge it.")
+    const role = (r: string): Status => ({
+      ...s,
+      connection: { ...s.connection, teams: [{ ...s.connection.teams[0], role: r }] },
+    })
+    expect(nextAction(role('Developer'), ENV.id, { live: null }).detail).toContain(
+      "An Owner or Admin merges it; you're a Developer.",
+    )
+    expect(nextAction(role('Admin'), ENV.id, { live: null }).detail).toContain("You're allowed to merge it.")
+  })
+
+  it('nothing live and nothing to deploy: says so, and the check is one click away', () => {
+    const n = next(dev({ deploys: [] }, clean), { live: null })
+    expect(n).toMatchObject({ state: 'empty', action: { label: 'Open the check', kind: 'go' } })
+    expect(n.title).toBe('Nothing is live on dev yet')
+  })
+})
+
+describe('the next-action card: when two states apply, the first of the order wins', () => {
+  it('a failed last deployment while a new check is running: the running check', () => {
+    const running = { ...passed, ready: false, run: { ...ready.run!, status: 'running' as const } }
+    const n = next(dev({ deploys: [failed7, ...devDeploys], check: running }, clean))
+    expect(n.state).toBe('agent')
+    expect(n.title).toBe('A check of dev is running')
+  })
+
+  it('a deployment running beats a check that needs you; a held one beats a running one', () => {
+    expect(next(dev({ deploys: [running7, ...devDeploys], check: needsYou })).state).toBe('running')
+    const second = { ...running7, id: 'dep-8', number: 8 }
+    expect(next(dev({ deploys: [second, held7, ...devDeploys], check: needsYou })).state).toBe('held')
+  })
+
+  it('what needs you beats the agent working, which beats a passed check, which beats a failed deployment', () => {
+    expect(next(dev({ check: needsYou, agent: agent('working') })).state).toBe('you')
+    expect(next(dev({ check: passed, agent: agent('working') })).state).toBe('agent')
+    expect(next(dev({ check: passed, deploys: [failed7, ...devDeploys] })).state).toBe('passed')
+  })
+
+  it('a passed check of the very commit whose deployment failed is not offered again: the failure comes first', () => {
+    const same = { ...passed, commit: failed7.commit.sha }
+    expect(next(dev({ check: same, deploys: [failed7, ...devDeploys] }, clean)).state).toBe('failed')
+  })
+
+  it('a passed check of what the environment already serves is no state: it serves everything', () => {
+    expect(next(dev({ check: { ...passed, commit: LIVE.commit.sha } }, clean)).state).toBe('current')
+  })
+
+  it('a failed deployment while the folder has moved on (uncommitted files, or newer commits): deploy again', () => {
+    expect(next(dev({ deploys: [failed7, ...devDeploys] }, { ...clean, changed_files: ['x'] })).state).toBe('deploy')
+    const newer = [{ sha: 'f'.repeat(40), message: 'Fix the migration' }]
+    expect(next(dev({ deploys: [failed7, ...devDeploys] }, { ...clean, not_served: newer })).state).toBe('deploy')
+    // The only commit the folder has beyond the environment is the one that failed: it is still the failure.
+    const same = [{ sha: failed7.commit.sha, message: 'Add slow-query stats' }]
+    expect(next(dev({ deploys: [failed7, ...devDeploys] }, { ...clean, not_served: same })).state).toBe('failed')
+  })
+
+  it('a pull request beats the folder when nothing is live, and never when something is', () => {
+    const s: Status = { ...base, deploys: [], check: null, pr }
+    expect(nextAction(s, ENV.id, { live: null }).state).toBe('pull-request')
+    expect(nextAction(s, ENV.id, { live: { id: 'x', sha: 'a' } }).state).toBe('deploy')
+  })
+})
+
+// ---- the page ----
+
+describe('the environment page', () => {
+  it('the card, Live now and the footer: Env1', async () => {
+    await board('env-page')
+    await settle()
+    expect(card()?.textContent).toContain("1 commit on feat/search-rank isn't on dev")
+    const liveNow = el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
+    expect(liveNow).toContain('Serving9c04e7f Search: rank by starsdeployment #6, since')
+    expect(liveNow).toContain('Health 11 of 11 workers upchecked')
+    expect(liveNow).toContain("Deploys fromthis machine, after the checka push to dev's branch deploys without it")
+    expect(text()).toContain('Secrets and variables')
+    expect(text()).toContain("Machines, domains, rollback and a new environment are in iii cloud's console.")
+    expect(path()).toBe('Projects / registry · dev')
+  })
+
+  it('an environment that deploys from a pull request says when: Deploys from', async () => {
+    await mount(base, ctx({ at: 'env', env: ENV.id }), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
+    await settle()
+    const liveNow = el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
+    expect(liveNow).toContain('Deploys fromwhen its pull request is mergedinto its base branch')
+    expect(liveNow).toContain('Nothing is live yet')
+  })
+
+  it('Deploy to dev starts the check and goes to the Deploy place', async () => {
+    const h = await board('env-page')
+    await settle()
+    await click(btn('Deploy to dev'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, fix: true })
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+  })
+
+  it.each([
+    ['Open the check', { check: needsYou }, 'Projects / registry · dev / Deploy'],
+    ['Review and deploy', { check: passed }, 'Projects / registry · dev / Deploy'],
+    ['Follow', { deploys: [running7, ...devDeploys] }, 'Projects / registry · dev / Deploy'],
+    ['See what failed', { deploys: [failed7, ...devDeploys] }, 'Projects / registry · dev / Deployment #7'],
+  ] as [
+    string,
+    Partial<Status>,
+    string,
+  ][])('"%s" goes where Env2 says, and starts no work', async (label, over, to) => {
+    const h = await mount(
+      dev(over, over.deploys ? clean : {}),
+      ctx({ at: 'env', env: DEV.id }),
+      cloudAnswers({ [apiPath('/deployments', DEV.id)]: { deployments: [] } }),
+    )
+    await settle()
+    await click(btn(label))
+    expect(path()).toBe(to)
+    expect(h.calls.some((c) => c.id === 'iii-cloud::check')).toBe(false)
+  })
+
+  it('a card that waits for you has a strong outline, one that does not a plain one, a failed one is marked', async () => {
+    await board('env-page')
+    expect(card()?.hasAttribute('data-wait')).toBe(true)
+    await mount(dev({ deploys: [failed7, ...devDeploys] }, clean), ctx({ at: 'env', env: DEV.id }, 2), cloudAnswers({}))
+    await settle()
+    expect(card()?.hasAttribute('data-wait')).toBe(false)
+    expect(card()?.hasAttribute('data-failed')).toBe(true)
+  })
+
+  it('no machines, domains, restart, stop or rollback here, and none is read from iii cloud', async () => {
+    const h = await board('env-page')
+    await settle()
+    for (const gone of ['Restart a group', 'Add a domain', 'Stop dev', 'Roll back', 'Your domains', 'Change…']) {
+      expect(text()).not.toContain(gone)
     }
+    const reads = h.calls.filter((c) => c.id === 'iii-cloud::api').map((c) => String(c.payload?.path))
+    expect(reads.filter((p) => /machines|domains|rollback|logs/.test(p))).toEqual([])
+    expect(h.calls.filter((c) => c.id === 'iii-cloud::api::write')).toEqual([])
+  })
+})
+
+describe('a page that is out of date', () => {
+  it('cannot start a check or approve a deployment, but can still be read and followed', async () => {
+    let down = false
+    const status = () => {
+      if (down) throw new Error('worker gone')
+      return envPageStatus
+    }
+    await mount(status as unknown as Status, ctx({ at: 'env', env: DEV.id }), cloudAnswers({}))
+    await settle()
+    expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(false)
+    down = true
+    await click(btn('Refresh'))
+    expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(true)
   })
 })
