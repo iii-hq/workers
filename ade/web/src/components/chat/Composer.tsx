@@ -4,9 +4,9 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardCheck,
-  Ellipsis,
   Loader2,
   Plus,
+  SlidersVertical,
   Square,
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
@@ -1383,15 +1383,12 @@ export function Composer({
               </div>
               {extraPickers ? (
                 <Popover>
-                  <PopoverTrigger
-                    aria-label="More options"
-                    title="More options"
-                    className={cn(
-                      toolbarIconButtonClass,
-                      'composer-toolbar-more',
-                    )}
-                  >
-                    <Ellipsis aria-hidden className="size-4" />
+                  {/* The same pill language as the pickers it stands in
+ for: icon, label, chevron. */}
+                  <PopoverTrigger className="composer-toolbar-more h-8 shrink-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[popup-open]:bg-surface-hover data-[popup-open]:text-ink">
+                    <SlidersVertical aria-hidden className="size-4 shrink-0" />
+                    <span>Options</span>
+                    <ChevronDown aria-hidden className="size-4 shrink-0" />
                   </PopoverTrigger>
                   <PopoverContent
                     align="start"
