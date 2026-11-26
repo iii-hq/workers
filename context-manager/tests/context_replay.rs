@@ -242,8 +242,8 @@ async fn bound_prefix_edits_by_site() {
         Vec<(usize, &'static str, &'static str)>,
     );
     let rows: Vec<Row> = vec![
-        // residual: media aging (follow-up) — the tool image the model
-        // already saw becomes a marker once a later assistant exists.
+        // fixed: media aging — a tool image the model already saw stays
+        // while fewer than 16 are live on a large window.
         (
             "media aging",
             vec![
@@ -254,6 +254,35 @@ async fn bound_prefix_edits_by_site() {
                 user("next".into()),
             ],
             opus(1_000_000, 128_000),
+            AssembleOptions::default,
+            vec![],
+        ),
+        // Request 17 is the first with 16 seen tool images: the oldest 8
+        // become markers in one edit.
+        (
+            "tool image batch aging",
+            std::iter::once(user("look".into()))
+                .chain((1..=17).flat_map(|i| {
+                    let id = format!("c{i}");
+                    [call(&id), result(&id, image.clone())]
+                }))
+                .collect(),
+            opus(1_000_000, 128_000),
+            AssembleOptions::default,
+            vec![(17, "messages[2]", "media aging")],
+        ),
+        // A window too small for two images (usable 25,000) keeps none the
+        // model has seen: the tool image still ages on the next request.
+        (
+            "small-window media aging",
+            vec![
+                user("look".into()),
+                call("c1"),
+                result("c1", image.clone()),
+                reply(),
+                user("next".into()),
+            ],
+            opus(30_000, 2_000),
             AssembleOptions::default,
             vec![(2, "messages[2]", "media aging")],
         ),
@@ -270,10 +299,9 @@ async fn bound_prefix_edits_by_site() {
             AssembleOptions::default,
             vec![(1, "messages[0]", "media aging")],
         ),
-        // residual: cap × media aging (the media-aging follow-up) — the cap
-        // counts the image (~4k tokens) and drops it; once the image ages to
-        // a marker the result fits and is sent uncapped, even with
-        // allow_prune: false.
+        // fixed: cap × media aging — the cap counts the image (~4k tokens)
+        // and drops it; the image no longer ages, so the result stays capped
+        // identically, even with allow_prune: false.
         (
             "cap × media aging",
             vec![
@@ -288,7 +316,7 @@ async fn bound_prefix_edits_by_site() {
             ],
             opus(1_000_000, 128_000),
             no_prune,
-            vec![(2, "messages[2]", "uncap")],
+            vec![],
         ),
         // not an edit for text-only results: the Step 0 cap is
         // deterministic, so such a result is capped identically from the

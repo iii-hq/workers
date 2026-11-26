@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 
 use super::summarize::{PromptSteering, summarize_head};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{Estimator, by_role_from_sizes, estimator_for_model};
+use crate::core::estimate::{
+    Estimator, IMAGE_TOKEN_BUDGET, by_role_from_sizes, estimator_for_model,
+};
 use crate::core::lease;
 use crate::core::prune::{
     PruneParams, cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes,
@@ -41,8 +43,7 @@ use crate::types::{
 };
 
 const TEXT_ONLY_IMAGE_OMITTED: &str = "[image omitted: model does not support vision]";
-const TOOL_IMAGE_OMITTED: &str =
-    "[tool image omitted after use; re-call the function if visual details are needed]";
+const TOOL_IMAGE_OMITTED: &str = "[older tool image omitted after use]";
 const USER_IMAGE_OMITTED: &str =
     "[user image omitted after use; ask the user to resend it if visual details are needed]";
 
@@ -73,35 +74,70 @@ fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>)
         return;
     };
     let mut later_user = false;
-    let mut later_assistant = false;
     let mut later_user_after_assistant = false;
 
     for message in messages.iter_mut().rev() {
         let direct_marker = if supports_vision {
             match message.role() {
                 Role::User if later_user_after_assistant => Some(USER_IMAGE_OMITTED),
-                Role::FunctionResult if later_assistant => Some(TOOL_IMAGE_OMITTED),
                 _ => None,
             }
         } else {
             Some(TEXT_ONLY_IMAGE_OMITTED)
         };
-        let nested_tool_marker = if supports_vision {
-            later_assistant.then_some(TOOL_IMAGE_OMITTED)
-        } else {
-            Some(TEXT_ONLY_IMAGE_OMITTED)
-        };
+        // Tool images on a vision model age in `age_tool_images`.
+        let nested_tool_marker = (!supports_vision).then_some(TEXT_ONLY_IMAGE_OMITTED);
 
         replace_images(message.content_mut(), direct_marker, nested_tool_marker);
 
         match message.role() {
             Role::User if !message.has_function_result_block() => later_user = true,
-            Role::Assistant => {
-                later_assistant = true;
-                later_user_after_assistant |= later_user;
-            }
+            Role::Assistant => later_user_after_assistant |= later_user,
             _ => {}
         }
+    }
+}
+
+const TOOL_IMAGE_WINDOW: usize = 8;
+
+fn tool_image_window(usable_budget: u64) -> usize {
+    (usable_budget / (8 * IMAGE_TOKEN_BUDGET)).min(TOOL_IMAGE_WINDOW as u64) as usize
+}
+
+fn tool_images<'a>(
+    blocks: &'a mut [ContentBlock],
+    in_result: bool,
+    out: &mut Vec<&'a mut ContentBlock>,
+) {
+    for block in blocks {
+        match block {
+            ContentBlock::FunctionResult { content, .. } => tool_images(content, true, out),
+            ContentBlock::Image { .. } if in_result => out.push(block),
+            _ => {}
+        }
+    }
+}
+
+fn age_tool_images(messages: &mut [AgentMessage], window: usize) {
+    let seen = messages
+        .iter()
+        .rposition(|message| message.role() == Role::Assistant)
+        .unwrap_or(0);
+    let mut images = Vec::new();
+    for message in &mut messages[..seen] {
+        let in_result = message.role() == Role::FunctionResult;
+        tool_images(message.content_mut(), in_result, &mut images);
+    }
+    // Whole batches: a sent result is rewritten once per `window` images, not every step.
+    // Window 0 (too small for two images) keeps none the model has already seen.
+    let aged = images
+        .len()
+        .checked_div(window)
+        .map_or(images.len(), |batches| batches.saturating_sub(1) * window);
+    for image in images.into_iter().take(aged) {
+        *image = ContentBlock::Text {
+            text: TOOL_IMAGE_OMITTED.into(),
+        };
     }
 }
 
@@ -401,6 +437,9 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         }
     }
     normalize_media(&mut working, resolved.supports_vision);
+    if resolved.supports_vision == Some(true) {
+        age_tool_images(&mut working, tool_image_window(usable_budget));
+    }
 
     let base_prompt = req.system_prompt.as_deref();
     let provenance = options.provenance;
@@ -938,48 +977,101 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    #[test]
-    fn tool_images_age_after_a_later_assistant_without_losing_neighbors() {
-        let mut messages = vec![
-            message(json!({
-                "role": "function_result", "function_call_id": "c1",
-                "function_id": "browser::screenshot",
-                "content": [
-                    { "type": "text", "text": "caption" },
-                    { "type": "image", "mime": "image/png", "data": "AAAA" }
-                ],
-                "details": {}, "is_error": false, "timestamp": 1
-            })),
-            message(json!({
-                "role": "user", "content": [{
-                    "type": "function_result", "function_call_id": "c2", "content": [{
-                        "type": "image", "mime": "image/png", "data": "BBBB"
-                    }]
-                }], "timestamp": 2
-            })),
-            message(json!({
+    /// `k` single-image tool results (the second nested in a user message),
+    /// then the assistant that saw them.
+    fn shots(k: usize) -> Vec<AgentMessage> {
+        let content = json!([
+            { "type": "text", "text": "caption" },
+            { "type": "image", "mime": "image/png", "data": "AAAA" }
+        ]);
+        (0..k)
+            .map(|i| {
+                message(if i == 1 {
+                    json!({ "role": "user", "content": [{
+                        "type": "function_result", "function_call_id": format!("c{i}"),
+                        "content": content
+                    }], "timestamp": i })
+                } else {
+                    json!({
+                        "role": "function_result", "function_call_id": format!("c{i}"),
+                        "function_id": "browser::screenshot", "content": content,
+                        "details": {}, "is_error": false, "timestamp": i
+                    })
+                })
+            })
+            .chain([message(json!({
                 "role": "assistant", "content": [{ "type": "text", "text": "seen" }],
-                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 3
-            })),
-        ];
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": k
+            }))])
+            .collect()
+    }
+
+    /// Whether each tool image is still an image; captions must survive and
+    /// an aged image must be the marker.
+    fn live_images(messages: &[AgentMessage]) -> Vec<bool> {
+        messages
+            .iter()
+            .filter(|message| message.role() != Role::Assistant)
+            .map(|message| {
+                let blocks = match &message.content()[0] {
+                    ContentBlock::FunctionResult { content, .. } => content.as_slice(),
+                    _ => message.content(),
+                };
+                assert_eq!(
+                    blocks[0],
+                    ContentBlock::Text {
+                        text: "caption".into()
+                    }
+                );
+                match &blocks[1] {
+                    ContentBlock::Image { .. } => true,
+                    aged => {
+                        assert_eq!(
+                            aged,
+                            &ContentBlock::Text {
+                                text: TOOL_IMAGE_OMITTED.into()
+                            }
+                        );
+                        false
+                    }
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tool_images_stay_until_a_whole_batch_ages() {
+        let live = |k, window| {
+            let mut messages = shots(k);
+            normalize_media(&mut messages, Some(true));
+            assert_eq!(messages, shots(k));
+            age_tool_images(&mut messages, window);
+            live_images(&messages)
+        };
+        assert_eq!(live(3, 2), [true, true, true]);
+        assert_eq!(live(4, 2), [false, false, true, true]);
+        assert_eq!(live(5, 2), [false, false, true, true, true]);
+        assert_eq!(live(6, 2), [false, false, false, false, true, true]);
+        assert_eq!(live(3, 1), [false, false, true]);
+        assert_eq!(live(3, 0), [false, false, false]);
+    }
+
+    #[test]
+    fn an_unseen_tool_image_is_never_aged() {
+        let mut messages = shots(5);
+        messages.rotate_right(1);
         let original = messages.clone();
+        for window in [1, 0] {
+            age_tool_images(&mut messages, window);
+            assert_eq!(messages, original);
+        }
+    }
 
-        let mut fresh = vec![messages[0].clone()];
-        normalize_media(&mut fresh, Some(true));
-        assert!(matches!(fresh[0].content()[1], ContentBlock::Image { .. }));
-
-        normalize_media(&mut messages, Some(true));
-        let value = serde_json::to_value(&messages).unwrap();
-        assert_eq!(value[0]["content"][0]["text"], "caption");
-        assert_eq!(value[0]["content"][1]["text"], TOOL_IMAGE_OMITTED);
-        assert_eq!(
-            value[1]["content"][0]["content"][0]["text"],
-            TOOL_IMAGE_OMITTED
-        );
-        assert!(matches!(
-            original[0].content()[1],
-            ContentBlock::Image { .. }
-        ));
+    #[test]
+    fn the_tool_image_window_shrinks_with_the_budget() {
+        let windows =
+            [852_000, 244_000, 100_000, 40_000, 32_768, 32_767, 25_000, 0].map(tool_image_window);
+        assert_eq!(windows, [8, 7, 3, 1, 1, 0, 0, 0]);
     }
 
     #[test]

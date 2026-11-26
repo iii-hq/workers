@@ -767,6 +767,19 @@ describe('entrySegments', () => {
     })
   })
 
+  it('skips a thinking block with empty text', () => {
+    const segments = entrySegments(
+      assistantItem('e-a', [
+        { type: 'thinking', text: '' },
+        { type: 'text', text: 'the answer' },
+      ]),
+      'sess-1',
+    )
+    expect(segments.map((s) => [s.id, s.role])).toEqual([
+      ['e-a:1', 'assistant'],
+    ])
+  })
+
   it('unwraps an agent_trigger call recorded before 0.26', () => {
     const [call] = entrySegments(
       assistantItem('e-a', [

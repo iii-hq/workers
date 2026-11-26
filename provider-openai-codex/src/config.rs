@@ -11,7 +11,7 @@ pub const DEFAULT_API_URL: &str = "https://chatgpt.com/backend-api/codex/respons
 pub const DEFAULT_MAX_TOKENS: u64 = 8192;
 
 /// Map a namespaced router id to the upstream Codex model id.
-fn upstream_model_id(router_id: &str) -> String {
+pub(crate) fn upstream_model_id(router_id: &str) -> String {
     router_id
         .strip_prefix("codex/")
         .unwrap_or(router_id)

@@ -812,7 +812,12 @@ async fn refreshed_snapshot(
             .unwrap_or(entries.len()),
         None => entries.len(),
     };
-    let window = crate::window::build(session_id, entries, window_start, None, None);
+    let mut window = crate::window::build(session_id, entries, window_start, None, None);
+    // Count what the next step sends: it strips thinking logged before the
+    // record, and every entry read here was logged before it.
+    if crate::window::strips_thinking_at_compaction(&last.model) {
+        crate::window::strip_thinking_logged_before(&mut window, entries);
+    }
     let context = deps.context().await;
     let count = |messages: Vec<Value>, system_prompt: &str| {
         context.count_tokens(CountTokensParams {
