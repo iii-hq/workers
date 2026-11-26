@@ -786,3 +786,41 @@ async fn a_conflicting_subscription_does_not_run_a_running_job_again() {
     app.stop().await;
     assert_eq!(runs, 1, "the running job is not run again");
 }
+
+/// A subscription is not dropped when the operations connection cannot open
+/// (here the broker refuses a second connection): nothing would retry it
+/// while the consumer connection is healthy, so it declares on the shared
+/// channel instead.
+#[tokio::test]
+#[serial]
+async fn a_subscription_survives_a_refused_operations_connection() {
+    let Some(broker) = docker::start_rabbitmq().await else {
+        return;
+    };
+    let url = broker.amqp_url();
+    let suffix = Uuid::new_v4().simple().to_string();
+    let topic = format!("orders-{suffix}");
+    let on_order = format!("app::on_order_{suffix}");
+    // The consumer connection is the only one the broker accepts.
+    broker.limit_connections(1);
+    let Some(app) = instance(
+        &format!("refused-{suffix}"),
+        config(&url, None),
+        Some(&on_order),
+    )
+    .await
+    else {
+        return;
+    };
+
+    let _ = subscribe(&app, &on_order, &topic);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    publish(&app, &topic, "one").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.fires.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let fires = app.fires.load(Ordering::SeqCst);
+    app.stop().await;
+    assert_eq!(fires, 1, "the subscription delivers");
+}

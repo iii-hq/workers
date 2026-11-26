@@ -517,12 +517,15 @@ impl QueueAdapter for RabbitMQAdapter {
         // Declared on an operation channel: a queue made earlier with other
         // arguments (another max_priority) fails this subscribe only, instead
         // of closing the shared channel and rebuilding the adapter, which
-        // would run every running job again and repeat on resubscribe.
+        // would run every running job again and repeat on resubscribe. With
+        // no operations connection (refused, timed out) the shared channel
+        // declares as before, so the subscription is not dropped for good:
+        // nothing would retry it while the consumer connection is healthy.
         let topology = match self.operation_channel("subscriber topology").await {
-            Ok(channel) => TopologyManager::new(Arc::new(channel)),
+            Ok(channel) => Arc::new(TopologyManager::new(Arc::new(channel))),
             Err(e) => {
-                tracing::error!(error = ?e, topic = %topic, "Failed to open a RabbitMQ channel to subscribe");
-                return;
+                tracing::warn!(error = %e, topic = %topic, "Declaring the subscription on the shared RabbitMQ channel");
+                Arc::clone(&self.topology)
             }
         };
         if let Err(e) = topology.setup_topic(&topic).await {
