@@ -15,7 +15,7 @@ import {
   Skeleton,
   TerminalStream,
 } from '@iii-dev/console-ui'
-import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { useCopyFlash, usePaneState } from '@iii-dev/console-ui/hooks'
 import { Check, ChevronDown, ChevronRight, Circle, CircleDot, Info } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { AgentRow } from './AgentRow'
@@ -52,10 +52,34 @@ import {
   withAppFile,
 } from './model'
 import { Dot, ErrorPanel, LinkButton, Mono, Notice, PathBar, StatusChip, StepHeader, StepLink, useNow } from './parts'
-import { type AreaProps, pathOf, type Route, type RouteAt, SETUP_STEPS, type SetupStep, setupStep } from './route'
+import { type AreaProps, pathOf, type Route, type RouteAt } from './route'
 import { Steps, stepStates } from './Steps'
 import type { CloudProjectChoice, ComposeFile, Deploy, Project, Status, WorkerError } from './types'
 import { ValuesEditor } from './ValuesEditor'
+
+/**
+ * The steps inside Setup until the redesigned areas take it over: the route carries only `signin` and `confirm`
+ * (Your code and Where it runs), the rest is the check and the deploy, which the Check and deploy area will
+ * own. ponytail: these stay as Setup's own state, derived from the status, so first-time setup keeps working.
+ */
+type SetupStep = 'signin' | 'code' | 'target' | 'values' | 'check' | 'ship' | 'live'
+const SETUP_STEPS: readonly SetupStep[] = ['signin', 'code', 'target', 'values', 'check', 'ship', 'live']
+
+function flowStep(s: Status): SetupStep {
+  if (needsConnect(s) || signInRequired(s)) return 'signin'
+  if (!s.project) return 'code'
+  if (!s.project.workspace) return 'target'
+  const latest = s.deploys.find((d) => d.environment_id === s.project?.environment?.id)
+  if (latest?.outcome === 'ready') return 'live'
+  if (latest?.outcome === 'running' || (latest && needsAction(latest)) || s.check?.ready) return 'ship'
+  return 'check'
+}
+
+/** The step the status is at; an asked step is honored only when it is that one or an earlier one. */
+function setupStep(s: Status, asked?: SetupStep): SetupStep {
+  const at = flowStep(s)
+  return asked && SETUP_STEPS.indexOf(asked) <= SETUP_STEPS.indexOf(at) ? asked : at
+}
 
 const TITLES: Record<SetupStep, { title: string; sub: string }> = {
   signin: { title: 'Start and sign in', sub: 'once, in your browser' },
@@ -97,7 +121,7 @@ type StepProps = {
 }
 
 /** Setting up a project, from sign-in to live (Onb1–Onb7); step 4 is the shared check. */
-export function SetupArea({ host, status, route, go, narrow, workingDir }: AreaProps<RouteAt<'setup'>>) {
+export function SetupArea({ host, status, route, go, narrow, workingDir, paneKey }: AreaProps<RouteAt<'setup'>>) {
   const actions = useActions(host)
   const adding = !!route.adding
   // Adding a project leaves the one in use selected: the steps read the folder `resolve` read beside it (the
@@ -118,15 +142,13 @@ export function SetupArea({ host, status, route, go, narrow, workingDir }: AreaP
   const candidate = fresh && status.candidate?.path === draft.path ? status.candidate : null
   const view: Status = adding ? { ...status, project: candidate, check: null, compose_files: [] } : status
   const at = setupStep(view)
-  const step = setupStep(view, route.step)
-  const toStep = (s: SetupStep) =>
-    go({
-      at: 'setup',
-      step: s,
-      ...(adding ? { adding: true } : {}),
-      ...(route.newProject ? { newProject: true } : {}),
-    })
-  const cancel: Route | null = adding ? { at: 'start' } : status.project?.workspace ? { at: 'home' } : null
+  // The step the person moved to (the rail, a Back, Continue); else the route's (`signin`, or a new cloud project).
+  const [local, setLocal] = usePaneState<SetupStep | null>(`iii-cloud:setup-step:${paneKey}`, null)
+  const asked =
+    route.step === 'signin' ? 'signin' : (local ?? (route.newProject ? 'target' : route.step ? 'code' : undefined))
+  const step = setupStep(view, asked)
+  const toStep = (s: SetupStep) => setLocal(s)
+  const cancel: Route | null = adding ? { at: 'start' } : status.project?.workspace ? { at: 'env', env: '' } : null
   const edit = (d: Partial<Draft>) => setDraft((x) => ({ ...x, ...d }))
   const read = (path: string, team?: string) => {
     edit({ path, manifest: null, cp: null, env: null })
@@ -168,7 +190,14 @@ export function SetupArea({ host, status, route, go, narrow, workingDir }: AreaP
     ) : step === 'values' ? (
       <ValuesStep {...props} narrow={narrow} />
     ) : step === 'check' ? (
-      <CheckStage host={host} status={status} scenario="setup" go={go} narrow={narrow} />
+      <CheckStage
+        host={host}
+        status={status}
+        scenario="setup"
+        // The check's Review and deploy is this screen's own next step until the deploy screen takes setup over.
+        go={(r) => (r.at === 'deploy' && !r.deploy ? toStep('ship') : go(r))}
+        narrow={narrow}
+      />
     ) : step === 'ship' ? (
       <Ship {...props} />
     ) : (
@@ -403,7 +432,7 @@ function Code({
   const resolve = (path: string, team?: string) => {
     // Stay on this step: once the folder resolves, the status points at the next one. Another folder while a
     // project is in use is added beside it (the worker keeps it as the candidate), so the step reads that one.
-    if (adding || (selected?.workspace && path !== selected.path)) go({ at: 'setup', step: 'code', adding: true })
+    if (adding || (selected?.workspace && path !== selected.path)) go({ at: 'setup', step: 'confirm', adding: true })
     else step('code')
     read(path, team)
   }
@@ -572,6 +601,7 @@ function Target({
   host,
   status,
   go,
+  step,
   cancel,
   adding,
   actions,
@@ -654,8 +684,9 @@ function Target({
       ...(draft.bring && draft.mode === 'worktree' ? { bring_changes: true } : {}),
     })
     if (out === null) return
-    // Selected now (an added folder too): the values the project in use reads, then its check.
-    go({ at: 'setup', step: 'values' })
+    // Selected now (an added folder too, so add mode is over): the values the project in use reads, then its check.
+    go({ at: 'setup', step: 'confirm' })
+    step('values')
   }
   const file = pickFile(status, draft.manifest)
   const importChoice =
@@ -841,14 +872,14 @@ function Target({
 /* ── 4. Values (Onb3b) ────────────────────────────────────────────── */
 
 /** The names the app file reads, a value for each, then the check (with the app file picked in step 2). */
-function ValuesStep({ host, status, go, actions, draft, narrow }: StepProps & { narrow: boolean }) {
+function ValuesStep({ host, status, go, step, actions, draft, narrow }: StepProps & { narrow: boolean }) {
   const checking = useChecking(host)
   const env = status.project?.environment
   const check = () => {
     // An app file picked in step 2 that isn't the environment's: the check plans that one.
     const picked = draft.manifest && draft.manifest !== composeFile(env?.manifest) ? { manifest: draft.manifest } : {}
     void actions.call('check', 'iii-cloud::check', { run: true, ...picked })
-    go({ at: 'setup', step: 'check' })
+    step('check')
   }
   return (
     <ValuesEditor
@@ -1233,7 +1264,7 @@ function Live({ host, status, go }: StepProps) {
         </span>
       </div>
       <div className="iii-cloud-row">
-        <Button variant="primary" onClick={() => go({ at: 'home' })}>
+        <Button variant="primary" onClick={() => go({ at: 'env', env: '' })}>
           Go to {name}
         </Button>
       </div>

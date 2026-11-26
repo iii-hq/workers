@@ -26,9 +26,9 @@ const fire = (h: ReturnType<typeof fakeHost>, ev: ChangeEvent) =>
   act(async () => h.handlers.get('iii::iii-cloud-ui::events::console-test')?.(ev))
 const description = () => el.querySelector('header [data-slot=description]')?.textContent
 const path = () => el.querySelector('[role=toolbar] nav')?.textContent
-/** The sidebar's first row: the project, current at its home. */
-const projectRow = () => row('registryiii-hq/registry')
-const atHome = () => projectRow()?.getAttribute('aria-current') === 'page'
+const side = () => el.querySelector('aside[aria-label="registry"]')
+/** The environment the sidebar marks as the page. */
+const current = () => side()?.querySelector('[aria-current=page]')?.textContent
 const uses = (h: ReturnType<typeof fakeHost>) => h.calls.filter((c) => c.id === 'iii-cloud::project::use')
 
 describe('the step rail', () => {
@@ -52,55 +52,60 @@ describe('the step rail', () => {
 })
 
 describe('Manage', () => {
-  it('opens on Start; Open goes home: the sidebar lists the environments, home is the current page', async () => {
-    const h = await mount(live)
+  it("opens on Start; Open goes to the project's environment: the sidebar lists the environments, one is the page", async () => {
+    const h = await mount(
+      live,
+      {},
+      cloudAnswers({
+        [apiPath('/deployments')]: { deployments: [] },
+        [apiPath('/deployments', 'e-dev')]: { deployments: [] },
+      }),
+    )
     expect(path()).toBe('Projects')
     expect(el.querySelector('aside')).toBeNull()
     await click(btn('Open'))
     expect(uses(h)).toEqual([])
     expect(description()).toBe('you@example.com · team iii (Owner)')
-    const side = el.querySelector('aside[aria-label="registry"]')
-    expect(side).not.toBeNull()
-    expect(atHome()).toBe(true)
-    expect(projectRow()?.hasAttribute('data-selected')).toBe(true)
-    expect(row('All environments')).toBeUndefined()
+    expect(side()).not.toBeNull()
+    expect(side()?.textContent).toContain('registry')
+    expect(side()?.textContent).toContain('iii-hq/registry · team iii')
+    expect(current()).toContain('production')
     expect(row('production')?.querySelector('[aria-label=Production]')).not.toBeNull()
     expect(row('dev')?.querySelector('[aria-label=Production]')).toBeNull()
-    expect(side?.textContent).toContain('Folder ~/workspaces/registry')
-    expect(side?.textContent).toContain('Signed in · Owner on team iii')
+    // The state line of each environment, from iii cloud's deployments (nothing is deployed to dev).
+    expect(row('dev')?.textContent).toContain('Not deployed yet')
+    expect(side()?.textContent).toContain('Folder ~/workspaces/registry')
+    expect(side()?.textContent).toContain('you@example.com · Owner')
+    // A new environment is made in iii cloud's console: a link built from the connection's cloud_url.
+    const link = [...side()!.querySelectorAll('a')].find((a) => a.textContent?.startsWith('New environment'))
+    expect(link?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry')
   })
 
-  it('an environment page: the header names it, four line tabs, Refresh reads the status again', async () => {
-    const current = cloudDeploy(40, earlierReady.commit.sha, '', 'ready', 60, null, { current: true })
+  it('an environment page: the path names it, no tabs, Refresh reads the status again, Secrets and variables is a page', async () => {
+    const live40 = cloudDeploy(40, earlierReady.commit.sha, '', 'ready', 60, null, { current: true })
     const h = await mount(
       live,
       ctx({ at: 'home' }),
-      cloudAnswers({ [apiPath('/deployments')]: { deployments: [current] } }),
+      cloudAnswers({ [apiPath('/deployments')]: { deployments: [live40] } }),
     )
-    await click(row('production'))
-    expect(row('production')?.getAttribute('aria-current')).toBe('page')
-    expect(projectRow()?.hasAttribute('aria-current')).toBe(false)
-    expect(path()).toBe('Projects / registry / production')
+    expect(current()).toContain('production')
+    expect(path()).toBe('Projects / registry · production')
     expect(el.querySelector('[role=toolbar]')?.textContent).toContain('Live')
     expect(el.querySelector('[role=toolbar]')?.textContent).toMatch(/as of \d{1,2}:\d{2}/)
-    expect(tabs()).toEqual(['Overview', 'Deploys', 'Settings', 'Checks'])
-    expect(selectedTab()).toBe('Overview')
+    // No environment tabs on a wide pane (the old Overview/Deploys/Settings/Checks bar is gone too).
+    expect(tabs()).not.toContain('production')
+    expect(tabs()).not.toContain('Overview')
     expect(el.querySelector('section[aria-label=Serving]')).not.toBeNull()
-    await click(btn('Checks'))
-    expect(selectedTab()).toBe('Checks')
     await click(btn('Refresh'))
     expect(h.calls.at(-1)).toEqual({ id: 'iii-cloud::status', payload: { refresh: true } })
-    // The path's project goes home, and Projects goes to Start.
-    await click(btn('registry'))
-    expect(atHome()).toBe(true)
+    await click(btn('Secrets and variables'))
+    expect(path()).toBe('Projects / registry · production / Secrets and variables')
+    expect(el.querySelector('aside')).toBeNull()
+    // The path's environment goes back to it, and Projects goes to Start.
+    await click(btn('registry · production'))
+    expect(path()).toBe('Projects / registry · production')
     await click(btn('Projects'))
     expect(path()).toBe('Projects')
-    await click(btn('Open'))
-    // Checks opens the check itself in Deploy from this machine.
-    await click(row('production'))
-    await click(btn('Checks'))
-    await click(btn('Open the check'))
-    expect(text()).toContain('iii cloud stops at the first thing it cannot accept')
   })
 
   it('an environment that is not selected is selected first, once, with a skeleton until it is', async () => {
@@ -113,26 +118,36 @@ describe('Manage', () => {
     expect(el.querySelector('section[aria-label=Serving]')).toBeNull()
     const project = { ...live.project!, environment: { ...dev, manifest: null, url: null } }
     await fire(h, { kind: 'project', id: 'p1', terminal: true, summary: '', record: project })
-    expect(path()).toBe('Projects / registry / dev')
+    expect(path()).toBe('Projects / registry · dev')
     expect(el.querySelector('section[aria-label=Serving]')).not.toBeNull()
     expect(uses(h)).toHaveLength(1)
   })
 
-  it('a stored env route restored on mount whose env is not selected opens home, with no project::use', async () => {
-    ui.panes['iii-cloud:route:t'] = { at: 'env', env: 'e-dev', tab: 'deploys' }
+  it('a stored env route restored on mount whose env is not selected opens the selected one, with no project::use', async () => {
+    ui.panes['iii-cloud:route:t'] = { at: 'env', env: 'e-dev' }
     const h = await mount(live)
-    expect(atHome()).toBe(true)
+    expect(current()).toContain('production')
     expect(uses(h)).toEqual([])
   })
 
-  it('a pane whose env another pane moved the selection away from goes home, not to a skeleton', async () => {
+  it('a pane whose env another pane moved the selection away from opens the selected one, not a skeleton', async () => {
     const h = await mount(live, ctx({ at: 'env', env: ENV.id }))
-    expect(path()).toBe('Projects / registry / production')
+    expect(path()).toBe('Projects / registry · production')
     const project = { ...live.project!, environment: { ...dev, manifest: null, url: null } }
     await fire(h, { kind: 'project', id: 'p1', terminal: true, summary: '', record: project })
-    expect(atHome()).toBe(true)
+    expect(path()).toBe('Projects / registry · dev')
     expect(el.querySelector('.iii-cloud-skeleton')).toBeNull()
     expect(uses(h)).toEqual([])
+  })
+
+  it('a narrow pane: the environments are the tabs under the path, with no sidebar', async () => {
+    ui.narrow = true
+    await mount(live, ctx({ at: 'env', env: ENV.id }))
+    expect(el.querySelector('aside')).toBeNull()
+    expect(tabs()).toEqual(['production', 'dev'])
+    expect(selectedTab()).toBe('production')
+    // The path bar's back goes to Projects.
+    expect(btn('Back to Projects')).toBeTruthy()
   })
 
   it('the header description is who is signed in, in every area', async () => {
@@ -141,9 +156,9 @@ describe('Manage', () => {
       { at: 'home' },
       { at: 'env', env: ENV.id },
       { at: 'deploy', env: ENV.id },
-      { at: 'new-env' },
+      { at: 'secrets', env: ENV.id },
       { at: 'setup' },
-      { at: 'setup', step: 'code', adding: true },
+      { at: 'setup', step: 'confirm', adding: true },
     ]
     for (const [i, at] of places.entries()) {
       await mount(live, ctx(at, i + 1))
@@ -161,11 +176,11 @@ describe('Manage', () => {
     ])
   })
 
-  it('a switch the worker refuses goes back home and says why', async () => {
+  it('a switch the worker refuses goes back to the selected environment and says why', async () => {
     const gone = Object.assign(new Error('gone'), { code: 'ENVIRONMENT_DELETED' })
-    await mount(live, ctx({ at: 'env', env: 'e-dev', tab: 'deploys' }), { 'iii-cloud::project::use': gone })
+    await mount(live, ctx({ at: 'env', env: 'e-dev' }), { 'iii-cloud::project::use': gone })
     expect(text()).toContain('That environment no longer exists in iii cloud.')
-    expect(atHome()).toBe(true)
+    expect(current()).toContain('production')
   })
 
   it('an environment in no project of this machine is an empty state with the way to Projects', async () => {
@@ -176,29 +191,28 @@ describe('Manage', () => {
     expect(path()).toBe('Projects')
   })
 
-  it('a new panels.open re-navigates; old contexts land on their tab of the selected environment', async () => {
+  it('a new panels.open re-navigates; old contexts land on the environment, its secrets or a deployment', async () => {
     const h = fakeHost(live)
     const at = async (id: number, context: unknown) => {
       await act(async () => root.render(<CloudPage host={h.host} panelSide="left" tabId="t" {...ctx(context, id)} />))
       await flush()
     }
     await at(1, { at: 'home' })
-    await click(row('production'))
-    expect(selectedTab()).toBe('Overview')
+    expect(path()).toBe('Projects / registry · production')
     await at(1, { at: 'home' })
-    expect(selectedTab()).toBe('Overview')
+    expect(path()).toBe('Projects / registry · production')
     await at(2, { tab: 'secrets' })
-    expect(selectedTab()).toBe('Settings')
+    expect(path()).toBe('Projects / registry · production / Secrets and variables')
     expect(text()).toContain('Secrets and variables')
     await at(3, { tab: 'deploys', deployId: earlierReady.id })
-    expect(selectedTab()).toBe('Deploys')
-    expect(text()).toContain('Deploy #40 · 1a2b3c4')
+    expect(path()).toBe(`Projects / registry · production / Deployment #${earlierReady.number}`)
+    expect(text()).toContain('Deployment #40 · 1a2b3c4')
   })
 
-  it('Deploy from this machine opens the deploy steps of the environment', async () => {
+  it('Deploy to production opens the check and deploy screen of the environment', async () => {
     await mount(live, ctx({ at: 'env', env: ENV.id }))
-    await click(btn('Deploy from this machine'))
-    expect(path()).toBe('Projects / registry / production / Deploy')
+    await click(btn('Deploy to production'))
+    expect(path()).toBe('Projects / registry · production / Deploy')
     expect(rail('Deploy steps')).toEqual(['current', 'todo', 'todo', 'todo'])
     expect(text()).toContain('What goes to production?')
   })
@@ -212,36 +226,6 @@ describe('Manage', () => {
     await click(btn('Cancel'))
     expect(path()).toBe('Projects')
     expect(uses(h)).toEqual([])
-  })
-
-  it('New environment: the form, then the deploy steps of the environment it made', async () => {
-    let status = live
-    const made = { id: 'e-new', name: 'qa', production: false, branch: 'main' }
-    const h = fakeHost(() => status, {
-      'iii-cloud::project::create_environment': () => {
-        const p = status.project!
-        status = {
-          ...status,
-          project: {
-            ...p,
-            environment: { ...made, manifest: null, url: null },
-            environments: [...p.environments, made],
-          },
-        }
-        return { environment_id: 'e-new', project_id: 'p1' }
-      },
-    })
-    await act(async () => root.render(<CloudPage host={h.host} panelSide="right" tabId="t" {...ctx({ at: 'home' })} />))
-    await flush()
-    await click(row('New environment'))
-    expect(row('New environment')?.getAttribute('aria-current')).toBe('page')
-    expect((el.querySelector('#iii-cloud-ne-branch') as HTMLInputElement).value).toBe('main')
-    await type(el.querySelector('#iii-cloud-ne-name'), 'qa')
-    await click(btn('Create qa'))
-    await flush()
-    expect(path()).toBe('Projects / registry / qa / Deploy')
-    expect(el.querySelector('aside[aria-label="Deploy steps"]')).not.toBeNull()
-    expect(h.calls.some((c) => c.id === 'iii-cloud::project::use')).toBe(false)
   })
 })
 
@@ -279,12 +263,12 @@ describe('DeployPill: the way back to a deploy going on', () => {
       deploys: b.status.deploys.map((d, i) => (i ? d : { ...d, status: 'needs_action' as const })),
     }
     await mount(waiting, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
-    expect(pills().map((p) => p.textContent)).toEqual(['Deploy #6 needs you'])
+    expect(pills().map((p) => p.textContent)).toEqual(['Deployment #6 needs you'])
     expect(pills()[0].querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('warn')
     ui.narrow = true
     await mount(waiting, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
     expect(pills().map((p) => p.textContent)).toEqual(['#6 · needs you'])
-    expect(pills()[0].getAttribute('aria-label')).toBe('Deploy #6 needs you')
+    expect(pills()[0].getAttribute('aria-label')).toBe('Deployment #6 needs you')
   })
 
   it('a phone: "#6 · deploying", the whole sentence in its aria-label', async () => {
@@ -295,14 +279,14 @@ describe('DeployPill: the way back to a deploy going on', () => {
     expect(p?.getAttribute('aria-label')).toMatch(/^Deploying #6 to dev · \d+ min$/)
   })
 
-  it('more than two: "+N" opens the first one\'s Deploys tab', async () => {
+  it('more than two: "+N" opens the first one\'s environment', async () => {
     const b = boards['manage-overview-deploying']
     const [d] = b.status.deploys
     const many = { ...b.status, deploys: [d, { ...d, id: 'd7', number: 7 }, { ...d, id: 'd8', number: 8 }] }
     await mount(many, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
     expect(pills().map((p) => p.textContent?.slice(0, 12))).toEqual(['Deploying #6', 'Deploying #7', '+1'])
     await click(pills()[2])
-    expect(selectedTab()).toBe('Deploys')
+    expect(path()).toBe('Projects / registry · dev')
   })
 
   it('the setup rail: step 6 says "deploying #6" and shows that deploy', async () => {
@@ -347,7 +331,7 @@ describe("every project's deploys going on (running_deploys)", () => {
   const uses = (h: ReturnType<typeof fakeHost>) =>
     h.calls.filter((c) => c.id === 'iii-cloud::project::use').map((c) => c.payload)
   const confirmLeave = async () => {
-    const ok = [...el.querySelectorAll('[role=alertdialog] button')].find((b) => b.textContent?.startsWith('Switch to'))
+    const ok = [...el.querySelectorAll('[role=alertdialog] button')].find((b) => b.textContent?.startsWith('Open '))
     if (ok) await click(ok)
   }
 

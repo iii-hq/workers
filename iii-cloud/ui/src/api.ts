@@ -4,9 +4,9 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { errorCode, errorMessage } from '@iii-dev/console-ui/format'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { plainMessage, workerError } from './model'
-import type { Status, WorkerError } from './types'
+import type { DeploymentList, Status, WorkerError } from './types'
 
 export type CloudWriteMethod = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -136,6 +136,19 @@ export function useCloud<T>(
     loading: full !== null && (!fresh || state.busy),
     refetch,
   }
+}
+
+/**
+ * Every environment's `/deployments`, read once per refresh by the shell and shared with the pages inside it;
+ * a page outside the shell reads its own (`useDeployments`).
+ */
+export const Feeds = createContext<Record<string, Cloud<DeploymentList>> | null>(null)
+const PENDING: Cloud<DeploymentList> = { data: null, error: null, loading: true, refetch: () => undefined }
+
+export function useDeployments(host: Host, status: Status, envId: string): Cloud<DeploymentList> {
+  const shared = useContext(Feeds)
+  const own = useCloud<DeploymentList>(host, status, envId, shared ? null : '/deployments')
+  return shared ? (shared[envId] ?? PENDING) : own
 }
 
 /**

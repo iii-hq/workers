@@ -1,5 +1,18 @@
 import { formatDuration, formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
-import type { Check, Connection, Deploy, HandoffKind, Problem, Run, Stage, Status, WorkerError } from './types'
+import { clock } from './asked'
+import type {
+  Check,
+  CloudDeployment,
+  Connection,
+  Deploy,
+  HandoffKind,
+  Members,
+  Problem,
+  Run,
+  Stage,
+  Status,
+  WorkerError,
+} from './types'
 
 export const PAGE_ID = 'iii-cloud'
 export const EVENTS_FN = 'iii::iii-cloud-ui::events'
@@ -55,20 +68,20 @@ export function envSlug(s: Status | null, environmentId?: string): string {
 
 export function planLine(c: Check): string {
   const p = c.plan
-  if (p.status === 'unavailable') return 'iii cloud check: unavailable'
-  if (p.status === 'not_pushed') return 'iii cloud check: commit not pushed'
-  if (p.status === 'commit_not_planned') return 'iii cloud check: waits for the merge'
+  if (p.status === 'unavailable') return "iii cloud's plan: unavailable"
+  if (p.status === 'not_pushed') return "iii cloud's plan: commit not pushed"
+  if (p.status === 'commit_not_planned') return "iii cloud's plan: waits for the merge"
   return p.blocking
-    ? `iii cloud check: ${p.blocking} to fix${p.at_least ? ', at least' : ''}`
-    : 'iii cloud check is clean'
+    ? `iii cloud's plan: ${p.blocking} to fix${p.at_least ? ', at least' : ''}`
+    : "iii cloud's plan is clean"
 }
 
 export const peopleToDecide = (c: Check) => c.problems.filter((p: Problem) => p.owner === 'person').length
 
 export function runLine(r: Run): string {
-  if (r.status === 'failed') return `Run here failed${r.error ? ` at ${stageLabel(r.error.stage)}` : ''}`
+  if (r.status === 'failed') return `Local run failed${r.error ? ` at ${stageLabel(r.error.stage)}` : ''}`
   const hc = r.healthcheck?.status
-  return `Ran here like the cloud: ${r.workers.ready} of ${r.workers.total} workers, ${r.routes.count} routes${hc != null ? `, healthcheck ${hc}` : ''}`
+  return `Local run: ${r.workers.ready} of ${r.workers.total} workers, ${r.routes.count} routes${hc != null ? `, healthcheck ${hc}` : ''}`
 }
 
 const RUN_LABELS: Record<Stage['name'], string> = {
@@ -120,7 +133,7 @@ const PLAIN: Record<string, string> = {
   WORKTREE_FAILED: 'A separate copy of your code could not be prepared. Nothing was changed in your own files.',
   RUN_BUSY: 'A run is already in progress.',
   IDEMPOTENCY_KEY_REUSED: 'That request was already sent with different content. Try again.',
-  WORKER_RESTARTED: 'The worker restarted while this was running. Run it again.',
+  WORKER_RESTARTED: 'A restart stopped this while it was running. Run it again.',
   DEVICE_CODE_EXPIRED: 'The sign-in code expired before it was approved. Start the sign-in again.',
   ACCOUNT_BLOCKED: 'This iii cloud account is blocked. Contact your team admin.',
   BROWSER_SIGN_IN_UNAVAILABLE: "Browser sign-in isn't available on this iii cloud yet",
@@ -167,7 +180,7 @@ const PLAIN_DETAIL: Record<string, string> = {
   MERGE_CONFLICT:
     'Your agent can merge them in its copy and resolve the conflicts, then check again. Nothing was checked.',
   PUSH_REFUSED: 'Nothing was deployed. Check that you can push to this repository, then try again.',
-  PUSH_UNKNOWN: 'See Deploys before you deploy again.',
+  PUSH_UNKNOWN: 'See Deployments before you deploy again.',
 }
 const GENERIC = 'Something went wrong. Try again in a moment.'
 /** Codes whose worker message is already the plain sentence ("billing no longer exists in iii cloud."). */
@@ -182,7 +195,8 @@ const VALUE_PLAIN: Record<string, string> = {
   FILE_CHANGED: '{file} no longer has {name}. Pick another source, or add it back to the file.',
   NO_URL: '{env} has no address yet.',
   NOT_SAVED: "iii cloud didn't take it.",
-  LOCAL_NOT_SAVED: "Saved in iii cloud. The .env of the run here couldn't be written, so the run here doesn't have it.",
+  LOCAL_NOT_SAVED:
+    "Saved in iii cloud. The .env of the local run couldn't be written, so the local run doesn't have it.",
 }
 /** One value's result in words. The worker's NOT_SAVED ("iii cloud refused it (CODE).") is kept: it is its own. */
 export function valueMessage(e: { code: string; message: string }, row: { env: string; name: string; file?: string }) {
@@ -280,14 +294,17 @@ export function directBranch(s: Status): string | null {
   return env && base && env.branch !== base ? env.branch : null
 }
 
-/** One set of sentence-case words for statuses, used everywhere (never lower-cased or de-underscored on the fly). */
+/**
+ * One set of sentence-case words for a deployment's state, the cloud console's (never lower-cased or
+ * de-underscored on the fly). `ready` is the one serving (`Live`, see `deployState`); an older one is `Replaced`.
+ */
 export const OUTCOME_LABEL: Record<Deploy['outcome'], string> = {
   running: 'Deploying',
-  ready: 'Ready',
+  ready: 'Live',
   failed: 'Failed',
   no_route: 'No route',
   canceled: 'Canceled',
-  replaced: 'Superseded',
+  replaced: 'Replaced',
 }
 export const CONNECTION_LABEL: Record<Connection['status'], string> = {
   signed_out: 'Signed out',
@@ -298,8 +315,125 @@ export const CONNECTION_LABEL: Record<Connection['status'], string> = {
 }
 export const GONE_LABEL = 'Environment or deployment no longer exists'
 export const isGone = (d: Deploy) => d.status === 'gone'
-export const deployWord = (d: Deploy) =>
-  isGone(d) ? GONE_LABEL : needsAction(d) ? 'Needs your action' : OUTCOME_LABEL[d.outcome]
+
+export type Tone = RowTone | 'ghost'
+type Stateful = { id: string; status: string; outcome?: Deploy['outcome']; current?: boolean }
+
+/**
+ * The word and dot of one deployment, the same on every screen (local record or iii cloud's list). `serving` is
+ * the id of the one serving the environment (`servingId`): it is Live, and any other that went ready is Replaced.
+ */
+export function deployState(d: Stateful, serving: string | null = null): { label: string; tone: Tone } {
+  if (d.status === 'gone') return { label: GONE_LABEL, tone: 'ghost' }
+  if (d.current || d.id === serving) return { label: 'Live', tone: 'ok' }
+  if (d.status === 'needs_action') return { label: 'Needs your action', tone: 'warn' }
+  const o =
+    d.outcome ?? (d.status === 'queued' || d.status === 'in_progress' ? 'running' : (d.status as Deploy['outcome']))
+  const label = o === 'ready' ? OUTCOME_LABEL.replaced : (OUTCOME_LABEL[o] ?? o)
+  return { label, tone: o === 'running' ? 'live' : o === 'failed' || o === 'no_route' ? 'alert' : 'ghost' }
+}
+
+/** The id of the deployment serving an environment: iii cloud's `current` one, else the worker's newest ready. */
+export const servingId = (s: Status, envId: string | undefined, cloud?: CloudDeployment[] | null): string | null =>
+  cloud?.find((d) => d.current)?.id ?? servingDeploy(s, envId)?.id ?? null
+
+/** The word of a local deployment record; pass `serving` to tell Live from Replaced. */
+export const deployWord = (d: Deploy, serving: string | null = null) => deployState(d, serving).label
+
+export type Live = { label: string; tone: Tone; sha: string | null }
+/** An environment's state from iii cloud's deployments (newest first); null before they are read. */
+export function liveOf(list: CloudDeployment[] | null | undefined): Live | null {
+  if (!list) return null
+  const newest = list[0]
+  const current = list.find((d) => d.current)
+  if (newest && newest !== current && ['queued', 'in_progress', 'needs_action', 'failed'].includes(newest.status)) {
+    const st = deployState(newest)
+    return {
+      label: newest.status === 'failed' ? 'Last deployment failed' : st.label,
+      tone: st.tone,
+      sha: newest.commit.sha,
+    }
+  }
+  return current
+    ? { label: 'Live', tone: 'ok', sha: current.commit.sha }
+    : { label: 'Nothing live yet', tone: 'ghost', sha: null }
+}
+
+/** 3 Dec: a short date in English whatever the browser's language. */
+export const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+
+/** 14:34 today, else 3 Dec. */
+export function when(iso: string): string {
+  return new Date(iso).toDateString() === new Date().toDateString() ? clock(iso) : shortDate(iso)
+}
+
+/** Who started a deployment, as iii cloud says: you, a teammate by name, an API key, or null for a push. */
+function whoStarted(cloud: CloudDeployment | null | undefined, s: Status, members: Members | null | undefined) {
+  const uid = cloud?.triggered_by.user_id
+  if (uid) {
+    if (uid === s.connection.user?.id) return 'you'
+    const u = members?.members.find((m) => m.user.id === uid)?.user
+    return u?.name ?? u?.github_login ?? u?.email ?? 'a teammate'
+  }
+  return cloud?.triggered_by.api_key_id ? 'an API key' : null
+}
+
+export type Origin = {
+  /** Who started it, in words ("you", "bruno"); null when no one is named (a push). */
+  by: string | null
+  /** Where it came from. */
+  from: 'machine' | 'push' | 'console' | 'merge'
+  /** A ready check of the deployed commit existed. */
+  checked: boolean
+  /** The pull request that was merged, for `from: 'merge'`. */
+  pr: number | null
+  /** "you, from this machine", "a push to GitHub", "you, from the merge of #12 · approved by you". */
+  origin: string
+  /** `origin`, then ` · checked` or `, not checked`: "you, from this machine · checked". */
+  line: string
+}
+
+/**
+ * The one answer to "who started this deployment, from where, and was it checked first".
+ * The worker's own record (`status.deploys`) wins for where and whether it was checked: only it knows what it
+ * deployed (`check_id`), merged (`pr`, `approved_by_worker`) and checked (`checked_ready`). iii cloud's list wins
+ * for who: its `triggered_by` is the actor. `from_console` is not "from the console": the worker also sets it
+ * for a push (it did not create that deployment either), so a push is told by `type` before it.
+ */
+export function deployOrigin(
+  s: Status,
+  ref: { id: string; type?: string },
+  cloud?: CloudDeployment | null,
+  members?: Members | null,
+): Origin {
+  const local = s.deploys.find((d) => d.id === ref.id)
+  const type = local?.type ?? cloud?.type ?? ref.type
+  const pr = local?.pr ?? null
+  // `check_id` is set only by the worker's own deploy; an approval it made, or a record it created, say the same.
+  const machine = !!local && (!!local.check_id || local.approved_by_worker || local.from_console === false)
+  const from: Origin['from'] = pr != null ? 'merge' : machine ? 'machine' : type === 'push' ? 'push' : 'console'
+  const named = whoStarted(cloud, s, members)
+  // The worker deployed it with the person's credentials: an API key or no name from iii cloud is still "you".
+  const by =
+    from === 'machine' || (from === 'merge' && local?.approved_by_worker)
+      ? named && named !== 'an API key'
+        ? named
+        : 'you'
+      : named
+  const what =
+    from === 'merge'
+      ? `the merge of #${pr}`
+      : from === 'machine'
+        ? 'this machine'
+        : from === 'push'
+          ? 'a push to GitHub'
+          : from === 'console'
+            ? 'the console'
+            : ''
+  const origin = from === 'push' ? (by ? `${what} by ${by}` : what) : `${by ? `${by}, ` : ''}from ${what}`
+  const checked = !!local?.checked_ready
+  return { by, from, checked, pr, origin, line: `${origin}${checked ? ' · checked' : ', not checked'}` }
+}
 
 /** The agent is mid-run on another kind of hand-off: a new request goes to it as a follow-up, not into a new chat. */
 export function followUp(s: Status, kind: HandoffKind): boolean {
@@ -315,6 +449,12 @@ export function envPageUrl(s: Status, page: 'variables' | 'config'): string | nu
   const p = s.project
   if (!p?.team?.slug || !p.cloud_project?.slug || !p.environment) return null
   return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}/${p.environment.name}/${page}`
+}
+/** The project in the iii cloud console (where a new environment, machines, domains and rollback live), built from the connection's `cloud_url`. */
+export function projectUrl(s: Status): string | null {
+  const p = s.project
+  if (!p?.team?.slug || !p.cloud_project?.slug) return null
+  return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}`
 }
 /** Where the variables of this environment live in the iii cloud console. */
 export const variablesUrl = (s: Status) => envPageUrl(s, 'variables')
@@ -447,18 +587,6 @@ export const failureWords = (e: { worker: string | null; code: string }) =>
 
 export const failedStage = (d: Deploy) => (d.error ? cloudStageLabel(d.error.stage) : 'a stage')
 
-export function deploySource(d: Deploy): string {
-  const from =
-    d.pr != null
-      ? `from the merge of #${d.pr}`
-      : fromConsole(d)
-        ? 'from the console'
-        : d.type === 'push'
-          ? 'from a push to GitHub'
-          : d.type
-  return d.pr != null && d.approved_by_worker ? `${from} · approved by you` : from
-}
-
 export const isFailedDeploy = (d: Deploy) => d.outcome === 'failed' || d.outcome === 'no_route'
 
 const SIZE: Record<string, string> = {
@@ -472,9 +600,9 @@ const SIZE: Record<string, string> = {
 export const sizeOf = (s: string) => SIZE[s] ?? s
 
 /** A deploy of the environment is still going: what the check and the review say instead of deploying over it. */
-export const deployBusy = (d: Deploy, env: string) => ({
-  headline: `Deploy #${d.number} to ${env} is already running`,
-  detail: `It started ${deploySource(d)} ${ago(d.created_at)}. Starting yours now would replace it.`,
+export const deployBusy = (s: Status, d: Deploy, env: string) => ({
+  headline: `Deployment #${d.number} to ${env} is already running`,
+  detail: `It started ${deployOrigin(s, d).origin} ${ago(d.created_at)}. Starting yours now would replace it.`,
 })
 
 /** A bare code is not a title: "LOCK_MISSING" reads "Lock missing". */
@@ -504,9 +632,9 @@ const PROBLEM_PLURAL: Record<string, string> = {
 
 /** What a group of one code means, said once under its title. */
 const PROBLEM_PLURAL_DETAIL: Record<string, string> = {
-  EMPTY_DEFAULT_VARIABLE: 'Each one defaults to empty in your app file, and iii cloud has no value for it.',
+  EMPTY_DEFAULT_VARIABLE: 'Each one defaults to empty in your compose file, and iii cloud has no value for it.',
   WORKER_OUTDATED:
-    "Each registers its config in a way iii cloud doesn't allow, so it can't start there. Your agent updates them in the app file and its lock.",
+    "Each registers its config in a way iii cloud doesn't allow, so it can't start there. Your agent updates them in the compose file and its lock.",
 }
 export const groupDetail = (code: string | null) => (code ? (PROBLEM_PLURAL_DETAIL[code] ?? null) : null)
 
@@ -584,7 +712,7 @@ export function importMessage(s: Status, choice?: ImportChoice): string {
 /** The compose file an environment checks and deploys: its manifest, else the root file. */
 export const composeFile = (manifest: string | null | undefined) => manifest || 'worker-compose.yaml'
 
-/** The app file: the latest check's, else the environment's. `switches`: it is not the environment's,
+/** The compose file: the latest check's, else the environment's. `switches`: it is not the environment's,
     so the environment moves to it when the person confirms the deploy. */
 export function appFile(s: Status): { path: string; switches: boolean; note: string | null } {
   const current = composeFile(s.project?.environment?.manifest)

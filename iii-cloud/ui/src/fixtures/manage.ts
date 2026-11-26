@@ -165,16 +165,20 @@ export const homeCloud: Record<string, unknown> = {
   [`/teams/${TEAM.id}/members`]: members,
 }
 
-const manageHome: Board = { status: home, context: { at: 'home' }, cloud: homeCloud }
+const manageHome: Board = { status: home, context: { at: 'env', env: '' }, cloud: homeCloud }
 const manageEmpty: Board = {
   status: { ...home, project: { ...home.project!, environments: [], environment: null }, check: null, deploys: [] },
-  context: { at: 'home' },
+  context: { at: 'env', env: '' },
 }
 // The test makes the next status read fail: the page keeps this one, from 9 minutes ago.
-const manageStale: Board = { status: { ...home, refreshed_at: T(9) }, context: { at: 'home' }, cloud: homeCloud }
+const manageStale: Board = {
+  status: { ...home, refreshed_at: T(9) },
+  context: { at: 'env', env: '' },
+  cloud: homeCloud,
+}
 const manageDeleted: Board = {
   status: { ...home, problems: [{ code: 'PROJECT_DELETED', message: 'The project was deleted.' }] },
-  context: { at: 'home' },
+  context: { at: 'env', env: '' },
   cloud: {
     [`/teams/${TEAM.id}/deletions`]: {
       deletions: [

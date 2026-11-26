@@ -25,32 +25,22 @@ import {
   TableViewport,
 } from '@iii-dev/console-ui'
 import { Check } from 'lucide-react'
-import { createContext, type ReactNode, useContext, useState } from 'react'
-import { type Cloud, cloudWrite, useCloud } from './api'
+import { type ReactNode, useState } from 'react'
+import { type Cloud, cloudWrite, useCloud, useDeployments } from './api'
 import { clock } from './asked'
 import { useLocked } from './hub'
-import { composeFile, OUTCOME_LABEL, plural, type RowTone, servingDeploy, sha7, sizeOf } from './model'
-import { Dot, ErrorPanel, Facts, Mono, Notice } from './parts'
+import { composeFile, deployOrigin, plural, servingDeploy, sha7, sizeOf, type Tone, when } from './model'
+import { Dot, ErrorPanel, Facts, Mono, Notice, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
-import type { Status, WorkerError } from './types'
+import type { CloudDeployment, DeploymentList, Members, Status, WorkerError } from './types'
 
 // ---- iii cloud's answers the Manage pages read (cloud-v1.yaml), only the fields they use ----
 
-export type CloudDeployment = {
-  id: string
-  number: number
-  environment_id: string
-  type: string
-  status: 'queued' | 'in_progress' | 'needs_action' | 'ready' | 'failed' | 'replaced' | 'canceled'
-  /** The one that serves the environment. */
-  current: boolean
-  commit: { sha: string; branch?: string; message?: string }
-  triggered_by: { user_id: string | null; api_key_id: string | null }
-  created_at: string
-  finished_at: string | null
-}
-export type DeploymentList = { deployments: CloudDeployment[] }
-export type Members = { members: { user: { id: string; email: string; name?: string; github_login?: string } }[] }
+export { Feeds, useDeployments } from './api'
+export { deployState, type Live, liveOf, when } from './model'
+// The deployment types, the one-source functions and the Feeds context moved to the foundation; re-exported
+// so the Manage pages keep importing them from here.
+export type { CloudDeployment, DeploymentList, Members } from './types'
 export type Health = {
   status: 'healthy' | 'degraded' | 'down' | 'stopped'
   checked_at: string
@@ -76,115 +66,9 @@ type Domain = {
 
 // ---- shared with Manage.tsx (and any env tab) ----
 
-/**
- * Every environment's `/deployments`, read once per refresh by Manage and shared with its pages; a page
- * outside Manage reads its own (`useDeployments`).
- */
-export const Feeds = createContext<Record<string, Cloud<DeploymentList>> | null>(null)
-const PENDING: Cloud<DeploymentList> = { data: null, error: null, loading: true, refetch: () => undefined }
-
-export function useDeployments(host: Host, status: Status, envId: string): Cloud<DeploymentList> {
-  const shared = useContext(Feeds)
-  const own = useCloud<DeploymentList>(host, status, envId, shared ? null : '/deployments')
-  return shared ? (shared[envId] ?? PENDING) : own
-}
-
-/** 14:34 today, else 3 Dec. */
-export function when(iso: string): string {
-  const d = new Date(iso)
-  return d.toDateString() === new Date().toDateString()
-    ? clock(iso)
-    : d.toLocaleDateString([], { day: 'numeric', month: 'short' })
-}
-
-/** Who started a deployment: you, a teammate by name, an API key, or a push. */
-export function byWho(d: CloudDeployment, s: Status, members: Members | null): string {
-  const uid = d.triggered_by.user_id
-  if (uid) {
-    if (uid === s.connection.user?.id) return 'you'
-    const u = members?.members.find((m) => m.user.id === uid)?.user
-    return u?.name ?? u?.github_login ?? u?.email ?? 'a teammate'
-  }
-  if (d.triggered_by.api_key_id) return 'an API key'
-  return d.type === 'push' ? 'a push' : 'iii cloud'
-}
-
-type Tone = RowTone | 'ghost'
-const STATE: Record<CloudDeployment['status'], [string, Tone]> = {
-  queued: ['Deploying', 'live'],
-  in_progress: ['Deploying', 'live'],
-  needs_action: ['Needs your action', 'warn'],
-  ready: ['Ready', 'ok'],
-  failed: ['Failed', 'alert'],
-  replaced: [OUTCOME_LABEL.replaced, 'ghost'],
-  canceled: [OUTCOME_LABEL.canceled, 'ghost'],
-}
-/** One deployment's word and dot: the one serving is Live. */
-export const deployState = (d: CloudDeployment): { label: string; tone: Tone } => {
-  const [label, tone] = d.current ? ['Live', 'ok' as const] : STATE[d.status]
-  return { label, tone }
-}
-
-export type Live = { label: string; tone: Tone; sha: string | null }
-/** An environment's state from its deployments (newest first); null before they are read. */
-export function liveOf(list: CloudDeployment[] | null | undefined): Live | null {
-  if (!list) return null
-  const newest = list[0]
-  const current = list.find((d) => d.current)
-  if (newest && newest !== current && ['queued', 'in_progress', 'needs_action', 'failed'].includes(newest.status)) {
-    const label = newest.status === 'failed' ? 'Last deploy failed' : STATE[newest.status][0]
-    return { label, tone: STATE[newest.status][1], sha: newest.commit.sha }
-  }
-  return current
-    ? { label: 'Live', tone: 'ok', sha: current.commit.sha }
-    : { label: 'Nothing live yet', tone: 'ghost', sha: null }
-}
-
-const TINT: Partial<Record<Tone, string>> = { ok: 'ok', alert: 'alert', warn: 'warn' }
-
-/** A word with its status dot on the status tint; the word stays ink (`data-stale` greys it out). */
-export function StateChip({ live }: { live: { label: string; tone: Tone } }) {
-  return (
-    <Chip className="iii-cloud-state" data-tint={TINT[live.tone]}>
-      <Dot tone={live.tone} />
-      {live.label}
-    </Chip>
-  )
-}
-
-/**
- * A panel: the 40 px header with its title (`onTitle`: a link that opens it) and an end slot, then the body
- * (`flush`: a table fills it).
- */
-export function Section({
-  title,
-  onTitle,
-  end,
-  flush,
-  children,
-}: {
-  title: string
-  onTitle?: () => void
-  end?: ReactNode
-  flush?: boolean
-  children: ReactNode
-}) {
-  return (
-    <Panel className="iii-cloud-panel" role="region" aria-label={title}>
-      <PanelHeader className="iii-cloud-panel-head">
-        {onTitle ? (
-          <button type="button" className="iii-cloud-titlelink" onClick={onTitle}>
-            {title}
-          </button>
-        ) : (
-          <span>{title}</span>
-        )}
-        {end ? <span className="iii-cloud-panel-end">{end}</span> : null}
-      </PanelHeader>
-      {flush ? children : <PanelBody className="iii-cloud-panel-body">{children}</PanelBody>}
-    </Panel>
-  )
-}
+/** The shared pieces (parts.tsx) under the names the Manage pages already use. */
+export const StateChip = ({ live }: { live: { label: string; tone: Tone } }) => <StatePill state={live} />
+export { Section }
 
 const sameCommit = (a: string, b: string) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
 
@@ -258,7 +142,7 @@ export function WaitingPanel({
       }
       detail={detail}
       action={
-        <Button variant="primary" disabled={locked} onClick={() => go({ at: 'deploy', env: envId, step: 'review' })}>
+        <Button variant="primary" disabled={locked} onClick={() => go({ at: 'deploy', env: envId })}>
           Review and deploy
         </Button>
       }
@@ -343,9 +227,10 @@ export function EnvOverview({ host, status, go, envId }: EnvTabProps) {
   const [ask, setAsk] = useState<Ask>(null)
   const [done, setDone] = useState<string | null>(null)
   if (!env) return null
-  const tab = (t: 'deploys' | 'settings') => go({ at: 'env', env: envId, tab: t })
-
-  const local = current ? status.deploys.find((d) => d.id === current.id) : undefined
+  // The deployments list opens on the deployment that serves; the secrets page is its own route.
+  const tab = (t: 'deploys' | 'settings') =>
+    go(t === 'settings' ? { at: 'secrets', env: envId } : { at: 'env', env: envId, deploy: current?.id })
+  const origin = current ? deployOrigin(status, current, current, members.data) : null
   const count = workerCount(machines.data)
   const stopped = machines.data?.status === 'stopped'
   const groups = machines.data?.groups ?? []
@@ -384,11 +269,11 @@ export function EnvOverview({ host, status, go, envId }: EnvTabProps) {
                     </>,
                   ],
                   [
-                    'Deploy',
-                    `#${current.number} · live since ${when(current.finished_at ?? current.created_at)} · by ${byWho(current, status, members.data)}${local?.approved_by_worker ? ' from this machine' : ''}`,
+                    'Deployment',
+                    `#${current.number} · live since ${when(current.finished_at ?? current.created_at)} · ${origin?.origin}`,
                   ],
                   [
-                    'App file',
+                    'Compose file',
                     <>
                       <Mono>{composeFile(env.manifest)}</Mono>
                       {count ? ` · ${plural(count.workers, 'worker')} in ${plural(count.groups, 'group')}` : ''} ·{' '}
@@ -397,15 +282,12 @@ export function EnvOverview({ host, status, go, envId }: EnvTabProps) {
                       </button>
                     </>,
                   ],
-                  [
-                    'Checked',
-                    local?.checked_ready ? 'on iii cloud and here, before the deploy' : 'not checked here first',
-                  ],
+                  ['Checked', origin?.checked ? 'before the deployment' : 'not checked first'],
                 ]}
               />
               <span>
                 <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => tab('deploys')}>
-                  All deploys
+                  All deployments
                 </button>
               </span>
             </>

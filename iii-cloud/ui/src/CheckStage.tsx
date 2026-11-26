@@ -775,8 +775,7 @@ function Stage({ host, status: s, scenario, go, narrow, readOnly }: CheckStagePr
   const agentOpen = f.agent.filter((x) => !x.fixed)
   const youOpen = f.person.filter((x) => !x.fixed)
   const past = readOnly ? [] : historyOf(s, c, envId)
-  const review = () =>
-    go(scenario === 'setup' ? { at: 'setup', step: 'ship' } : { at: 'deploy', env: envId, step: 'review' })
+  const review = () => go({ at: 'deploy', env: envId })
   const ask = () => void handOff(host, s, 'ready')
   const canAsk = !!host.chat?.compose && !launching
   const chosen = (!readOnly && s.override_choices) || {}
@@ -858,14 +857,14 @@ function Stage({ host, status: s, scenario, go, narrow, readOnly }: CheckStagePr
       stops.push({
         key: 'busy',
         variant: 'info',
-        ...deployBusy(d, env),
+        ...deployBusy(s, d, env),
         acts: [
           {
             label: `Follow #${d.number}`,
-            onClick: () => go({ at: 'deploy', env: envId, step: 'follow', deploy: d.id }),
+            onClick: () => go({ at: 'deploy', env: envId, deploy: d.id }),
           },
         ],
-        lock: `Unlocks when deploy #${d.number} is done.`,
+        lock: `Unlocks when deployment #${d.number} is done.`,
       })
     }
     const tip = envHead(s, envId)

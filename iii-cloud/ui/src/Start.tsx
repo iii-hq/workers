@@ -20,7 +20,7 @@ import { useCloud } from './api'
 import { ConnectView } from './ConnectView'
 import { type DeploymentList, liveOf, StateChip } from './EnvOverview'
 import { useActions, useLocked } from './hub'
-import { ago, minutesLabel, needsAction, plural, sha7, tilde } from './model'
+import { ago, minutesLabel, needsAction, plural, sha7, shortDate, tilde } from './model'
 import {
   Dot,
   ErrorPanel,
@@ -211,7 +211,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
     const rec = deletions.data?.deletions.find((d) => d.kind === 'project' && d.project?.id === place.cp)
     line1 =
       rec?.restorable && rec.restorable_until
-        ? `restorable until ${new Date(rec.restorable_until).toLocaleDateString([], { day: 'numeric', month: 'short' })}`
+        ? `restorable until ${shortDate(rec.restorable_until)}`
         : 'deleted in iii cloud'
   } else if (going && run) {
     line1 = `deploying #${run.number}${going.env ? ` to ${going.env}` : ''} · ${minutesLabel(now - Date.parse(run.created_at))}`
@@ -258,7 +258,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       },
       place.envName,
     )
-  const open = () => go(setUp ? { at: 'home' } : { at: 'setup' })
+  const open = () => go(setUp ? { at: 'env', env: '' } : { at: 'setup' })
   const cloud = `${status.connection.cloud_url.replace(/\/$/, '')}/${status.connection.teams.find((t) => t.id === team)?.slug ?? ''}`
   // Until iii cloud lists the row's environments, Switch can't tell which one to ask for.
   const reading = !place.current && envs.loading && !envs.data && !envs.error
@@ -463,10 +463,10 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
   const offline = status.connection.status !== 'connected'
   // Adding keeps the project in use until Continue; with none in use, it is the first setup.
   const using = !!status.project?.workspace
-  const addFolder: Route = using ? { at: 'setup', step: 'code', adding: true } : { at: 'setup', step: 'code' }
+  const addFolder: Route = using ? { at: 'setup', step: 'confirm', adding: true } : { at: 'setup', step: 'confirm' }
   const addCloud: Route = using
-    ? { at: 'setup', step: 'target', adding: true, newProject: true }
-    : { at: 'setup', step: 'target', newProject: true }
+    ? { at: 'setup', step: 'confirm', adding: true, newProject: true }
+    : { at: 'setup', step: 'confirm', newProject: true }
   const rows = places.map((p) => (
     <PlaceRow
       key={p.key}

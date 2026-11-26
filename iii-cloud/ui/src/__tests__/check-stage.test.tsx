@@ -410,10 +410,8 @@ describe('passed', () => {
     expect(text()).toContain('Only the commit that passed can be deployed.')
     expect(btn('Review and deploy')?.getAttribute('data-variant')).toBe('primary')
     await click(btn('Review and deploy'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id, step: 'review' })
-    const s = await stage(B('deploy-passed'), {}, { scenario: 'setup' })
-    await click(btn('Review and deploy'))
-    expect(s.go).toHaveBeenCalledWith({ at: 'setup', step: 'ship' })
+    // The screen picks its step from the state: a passed check is the review.
+    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id })
   })
 
   it('Review is never enabled while the check is not ready', async () => {
@@ -486,7 +484,7 @@ describe('when the check cannot finish (Dep7)', () => {
     }
     await stage({ ...s, check: { ...s.check!, ready: false, run } })
     expect(panel('The run here stopped at Frozen install')?.textContent).toContain(
-      'The worker restarted while this was running',
+      'A restart stopped this while it was running',
     )
     expect(btn('Run again')).not.toBeNull()
   })
@@ -520,14 +518,14 @@ describe('when the check cannot finish (Dep7)', () => {
 
   it('busy: Follow #N is the only way on and Review stays locked', async () => {
     const h = await stage(B('state-busy'))
-    expect(panel('Deploy #6 to dev is already running')?.textContent).toContain(
+    expect(panel('Deployment #6 to dev is already running')?.textContent).toContain(
       'It started from the console 2m ago. Starting yours now would replace it.',
     )
     expect(locked()).toBe(true)
-    expect(text()).toContain('Unlocks when deploy #6 is done.')
+    expect(text()).toContain('Unlocks when deployment #6 is done.')
     expect(text()).not.toContain('Deploy mine after it')
     await click(btn('Follow #6'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id, step: 'follow', deploy: 'dep-dev-6' })
+    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id, deploy: 'dep-dev-6' })
   })
 
   it('O1: a console override is a diff in words; "Use my file\'s" records the choice and never locks Review', async () => {
@@ -623,7 +621,7 @@ describe('when the check cannot finish (Dep7)', () => {
       { id: 'iii-cloud::check', payload: { run: true, push: true } },
     ])
     await click(btn('Deploy 9c04e7f without it'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id, step: 'review' })
+    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: DEV.id })
   })
 
   /** The worktree took `dev` (the environment's branch) at `taken`; the folder is on main at `head`; dev is at `devTip`. */

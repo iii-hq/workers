@@ -64,10 +64,6 @@
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
 }
-/* Out of date: statuses are greyed out until the worker answers again. */
-[data-iii-ui='iii-cloud'] [data-stale] .iii-cloud-state {
-  opacity: 0.5;
-}
 
 /* The page header (Home, an environment, New environment): 44 px on the panel, the title in sans 14/500,
    what belongs to it right after, "as of" and Refresh pushed to the end. */
@@ -118,23 +114,6 @@
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-crumbs .iii-cloud-head-title {
   color: var(--color-ink);
-}
-/* A status word: ink 12/500 on its status tint; the dot stays. */
-[data-iii-ui='iii-cloud'] .iii-cloud-state {
-  border-color: transparent;
-  border-radius: var(--radius-full);
-  color: var(--color-ink);
-  font-size: 12px;
-  font-weight: 500;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='ok'] {
-  background: var(--color-ok-muted);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='alert'] {
-  background: var(--color-alert-muted);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='warn'] {
-  background: var(--color-warn-muted);
 }
 /* Production: an outlined pill. */
 [data-iii-ui='iii-cloud'] .iii-cloud-prodchip {

@@ -31,17 +31,15 @@ import { FailureCard, failureTail, LogLines } from './FailureCard'
 import { hubOf, useLocked } from './hub'
 import {
   composeFile,
+  deployOrigin,
   deployRows,
-  deploySource,
-  deployWord,
+  deployState,
   isFailedDeploy,
-  isGone,
   needsAction,
-  OUTCOME_LABEL,
-  type RowTone,
   roleOf,
   servingDeploy,
   sha7,
+  shortDate,
   workerError,
 } from './model'
 import { Dot, ErrorPanel, Mono, Notice } from './parts'
@@ -55,36 +53,37 @@ type LogPage = { lines: { message: string }[] }
 export function EnvDeploys({ host, status, route, go, narrow, envId }: EnvTabProps) {
   const deploys = status.deploys.filter((d) => d.environment_id === envId)
   const list = useDeployments(host, status, envId).data
-  const open = (deploy?: string) => go({ at: 'env', env: envId, tab: 'deploys', deploy })
+  const open = (deploy?: string) => go({ at: 'env', env: envId, deploy })
   const env = status.project?.environment?.name ?? 'this environment'
   if (deploys.length === 0) {
     return (
       <EmptyState
         icon={Rocket}
-        title={`No deploys of ${env} yet`}
-        description="Deploy from this machine checks your code on iii cloud and here, then deploys it."
-        action={{ label: 'Deploy from this machine', onClick: () => go({ at: 'deploy', env: envId }) }}
+        title={`No deployments of ${env} yet`}
+        description="Deploying from this machine checks your code, then deploys it."
+        action={{ label: `Deploy to ${env}`, onClick: () => go({ at: 'deploy', env: envId }) }}
       />
     )
   }
   const live = list?.deployments.find((d) => d.current)?.id ?? servingDeploy(status, envId)?.id ?? null
-  const picked = route.deploy ? deploys.find((d) => d.id === route.deploy) : narrow ? undefined : deploys[0]
+  const asked = route.at === 'env' ? route.deploy : undefined
+  const picked = asked ? deploys.find((d) => d.id === asked) : narrow ? undefined : deploys[0]
   const detail = picked ? (
     <DeployDetail
       key={picked.id}
       {...{ host, status, envId, deploys, list, live, narrow, open }}
       deploy={picked}
-      reviewWaiting={() => go({ at: 'deploy', env: envId, step: 'review' })}
+      reviewWaiting={() => go({ at: 'deploy', env: envId })}
     />
-  ) : route.deploy ? (
+  ) : asked ? (
     <EmptyState
-      title="Deploy not found"
-      description={`It is not among the latest 20 deploys of ${env}.`}
-      action={{ label: 'All deploys', onClick: () => open() }}
+      title="Deployment not found"
+      description={`It is not among the latest 20 deployments of ${env}.`}
+      action={{ label: 'All deployments', onClick: () => open() }}
     />
   ) : null
-  if (narrow && route.deploy) return detail
-  const rows = <DeployList deploys={deploys} live={live} selected={picked?.id} open={open} />
+  if (narrow && asked) return detail
+  const rows = <DeployList status={status} deploys={deploys} live={live} selected={picked?.id} open={open} />
   return narrow ? (
     rows
   ) : (
@@ -95,21 +94,13 @@ export function EnvDeploys({ host, status, route, go, narrow, envId }: EnvTabPro
   )
 }
 
-/** The list's word for a deploy: the one serving is Live, an earlier live one Superseded. */
-function wordOf(d: Deploy, live: string | null): { label: string; tone: RowTone } {
-  if (d.id === live) return { label: 'Live', tone: 'ok' }
-  const label = d.outcome === 'ready' && !isGone(d) ? OUTCOME_LABEL.replaced : deployWord(d)
-  const tone = needsAction(d) ? 'warn' : d.outcome === 'running' ? 'live' : isFailedDeploy(d) ? 'alert' : 'edge'
-  return { label, tone }
-}
-
-const Word = ({ d, live }: { d: Deploy; live: string | null }) => <StateChip live={wordOf(d, live)} />
+const Word = ({ d, live }: { d: Deploy; live: string | null }) => <StateChip live={deployState(d, live)} />
 
 function dayOf(iso: string): string {
   const day = (t: Date) => new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()
   const at = new Date(iso)
   const back = Math.round((day(new Date()) - day(at)) / 86_400_000)
-  return back === 0 ? 'Today' : back === 1 ? 'Yesterday' : at.toLocaleDateString([], { day: 'numeric', month: 'short' })
+  return back === 0 ? 'Today' : back === 1 ? 'Yesterday' : shortDate(iso)
 }
 
 const message = (d: Deploy) => d.commit.message?.split('\n')[0]
@@ -121,7 +112,7 @@ function headline(d: Deploy, live: string | null): string {
   const how =
     d.id === live
       ? 'is live'
-      : isGone(d)
+      : d.status === 'gone'
         ? 'no longer exists'
         : needsAction(d)
           ? 'needs your action'
@@ -131,16 +122,18 @@ function headline(d: Deploy, live: string | null): string {
               ? 'failed'
               : d.outcome === 'canceled'
                 ? 'was canceled'
-                : 'was superseded'
-  return `Deploy #${d.number} ${how}`
+                : 'was replaced'
+  return `Deployment #${d.number} ${how}`
 }
 
 function DeployList({
+  status,
   deploys,
   live,
   selected,
   open,
 }: {
+  status: Status
   deploys: Deploy[]
   live: string | null
   selected?: string
@@ -154,7 +147,7 @@ function DeployList({
   }
   // A flush column under the tabs: "#6", its word and the time, then the commit on the next line.
   return (
-    <List aria-label="Deploys" className="iii-cloud-dlist">
+    <List aria-label="Deployments" className="iii-cloud-dlist">
       {days.map((g) => (
         <ListGroup key={g.day}>
           <ListGroupLabel>{g.day}</ListGroupLabel>
@@ -171,7 +164,7 @@ function DeployList({
               }
               description={
                 <>
-                  <Mono>{sha7(d.commit.sha)}</Mono> {message(d) ?? deploySource(d)}
+                  <Mono>{sha7(d.commit.sha)}</Mono> {message(d) ?? deployOrigin(status, d).origin}
                 </>
               }
               selected={d.id === selected}
@@ -222,22 +215,25 @@ function DeployDetail({
   const project = status.project
   const env = project?.environment?.name ?? 'the environment'
   const failed = isFailedDeploy(d)
-  const by = list?.deployments.find((x) => x.id === d.id)?.triggered_by.user_id
-  const byYou = !!by && by === status.connection.user?.id
   const earlierLive = deploys.some((x) => x.outcome === 'ready' && Date.parse(x.created_at) < Date.parse(d.created_at))
   const servingNow = deploys.find((x) => x.id === live)
   const replacedBy = d.replaced_by ? deploys.find((x) => x.id === d.replaced_by) : undefined
   const meta = (
     <span className="iii-cloud-desc">
-      Deploy #{d.number} · <Mono>{sha7(d.commit.sha)}</Mono> · {whenOf(d, deploys, live)} · {deploySource(d)}
-      {d.checked_ready ? '' : ', not checked here first'}
-      {byYou ? ' · by you' : ''}
+      Deployment #{d.number} · <Mono>{sha7(d.commit.sha)}</Mono> · {whenOf(d, deploys, live)} ·{' '}
+      {
+        deployOrigin(
+          status,
+          d,
+          list?.deployments.find((x) => x.id === d.id),
+        ).line
+      }
     </span>
   )
   const file = composeFile(project?.environment?.manifest)
   const fileLine = project?.repository ? (
     <span className="iii-cloud-desc">
-      Current app file <Mono>{file}</Mono> ·{' '}
+      Current compose file <Mono>{file}</Mono> ·{' '}
       <a
         className="iii-cloud-link"
         href={`https://github.com/${project.repository}/blob/${d.commit.sha}/${file}`}
@@ -253,11 +249,11 @@ function DeployDetail({
     <div className="iii-cloud-ddetail">
       {narrow ? (
         <div className="iii-cloud-row">
-          <IconButton label="Back to deploys" variant="ghost" className="iii-cloud-touch" onClick={() => open()}>
+          <IconButton label="Back to deployments" variant="ghost" className="iii-cloud-touch" onClick={() => open()}>
             <ArrowLeft />
           </IconButton>
           <span className="iii-cloud-dhead">
-            {env} · deploy #{d.number}
+            {env} · deployment #{d.number}
           </span>
           <Word d={d} live={live} />
         </div>
@@ -293,10 +289,10 @@ function DeployDetail({
       {d.replaced_by ? (
         <Notice
           variant="info"
-          headline={`Deploy ${replacedBy ? `#${replacedBy.number}` : sha7(d.replaced_by)} replaced it before it went live`}
+          headline={`Deployment ${replacedBy ? `#${replacedBy.number}` : sha7(d.replaced_by)} replaced it before it went live`}
           action={
             <Button size="sm" variant="secondary" onClick={() => open(d.replaced_by as string)}>
-              Open that deploy
+              Open that deployment
             </Button>
           }
         />
@@ -571,7 +567,7 @@ function Rollback({
           {changed ? (
             <Notice
               variant="warn"
-              headline={`Deploy #${changed.number} started on ${name} at ${clock(changed.created_at)}`}
+              headline={`Deployment #${changed.number} started on ${name} at ${clock(changed.created_at)}`}
               detail="Rolling back now would undo it. Look at that deploy first."
               action={
                 <Button size="sm" variant="secondary" onClick={() => void openNewer(changed.id)}>

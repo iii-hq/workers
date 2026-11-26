@@ -150,7 +150,7 @@ export const rcSkippedValues: Values = {
   ...rcValues,
   items: rcValues.items.map((i) => (RC_SKIPPED.includes(i.name) ? { ...i, skipped: true } : i)),
 }
-const valuesAt: Board = { status: rcValuesStep, context: { at: 'setup', step: 'values' } }
+const valuesAt: Board = { status: rcValuesStep, context: { at: 'setup' } }
 
 /** The Values step, and what `values` answers on two boards of other areas (index.ts spreads these last). */
 export const boards = {

@@ -743,7 +743,7 @@ export const boards: Record<CheckBoardId, Board> = {
   'deploy-fixing': { status: fixingNow, context: deploy },
   'setup-fixing': {
     status: { ...fixingNow, check: { ...rerun, problems: [rights, stripe] }, secrets: [stripeAsk] },
-    context: { at: 'setup', step: 'check' },
+    context: { at: 'setup' },
   },
   'deploy-passed': { status: passedNow, context: deploy },
   'state-docker': {
@@ -818,14 +818,14 @@ export const boards: Record<CheckBoardId, Board> = {
     },
     context: deploy,
   },
-  'setup-fixing-live': { status: rcFixing, context: { at: 'setup', step: 'check' } },
-  'setup-fixing-here': { status: rcFixingHere, context: { at: 'setup', step: 'check' } },
-  'setup-fixing-skipped': { status: rcSkipped, context: { at: 'setup', step: 'check' } },
-  'setup-fixing-secret-skipped': { status: rcSecretSkipped, context: { at: 'setup', step: 'check' } },
+  'setup-fixing-live': { status: rcFixing, context: { at: 'setup' } },
+  'setup-fixing-here': { status: rcFixingHere, context: { at: 'setup' } },
+  'setup-fixing-skipped': { status: rcSkipped, context: { at: 'setup' } },
+  'setup-fixing-secret-skipped': { status: rcSecretSkipped, context: { at: 'setup' } },
   // O1/O2: the stuck screen of 26/11: dev's console web setting against the file, and the workers' config.
   'setup-config-override': {
     status: { ...rcFixing, check: overridden(rcCheck, [webOverride]) },
-    context: { at: 'setup', step: 'check' },
+    context: { at: 'setup' },
     configImport: configPreview,
   },
   'deploy-run-pending': {
@@ -844,6 +844,6 @@ export const boards: Record<CheckBoardId, Board> = {
       },
       skipped_problems: ['LOCAL_CONFIG_NOT_SET'],
     },
-    context: { at: 'setup', step: 'check' },
+    context: { at: 'setup' },
   },
 }

@@ -145,13 +145,13 @@ const failedCloud = {
 
 const manageDeploysFailed: Board = {
   status: devStatus,
-  context: { at: 'env', env: DEV.id, tab: 'deploys', deploy: 'dep-2' },
+  context: { at: 'env', env: DEV.id, deploy: 'dep-2' },
   cloud: failedCloud,
 }
 
 const manageRollback: Board = {
   status: devStatus,
-  context: { at: 'env', env: DEV.id, tab: 'deploys', deploy: 'dep-5' },
+  context: { at: 'env', env: DEV.id, deploy: 'dep-5' },
   dialog: true,
   cloud: {
     [apiPath('/deployments', DEV.id)]: devList,

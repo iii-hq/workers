@@ -5,7 +5,7 @@ import { DEV, home, homeCloud } from './manage'
 
 const manageOverview: Board = {
   status: home,
-  context: { at: 'env', env: DEV.id, tab: 'overview' },
+  context: { at: 'env', env: DEV.id },
   cloud: { ...homeCloud, [apiPath('/domains', DEV.id)]: { domains: [] } },
 }
 

@@ -33,9 +33,9 @@ describe('Overview (Mng6)', () => {
     await settle()
     const serving = panel('Serving')?.textContent ?? ''
     expect(serving).toContain(`Commit${LIVE_SHA.slice(0, 7)} Search: rank by stars`)
-    expect(serving).toContain(`Deploy#6 · live since ${clock(T(5))} · by you from this machine`)
-    expect(serving).toContain('App fileapi/worker-compose-prod.yaml · 11 workers in 3 groups · Change…')
-    expect(serving).toContain('Checkedon iii cloud and here, before the deploy')
+    expect(serving).toContain(`Deployment#6 · live since ${clock(T(5))} · you, from this machine`)
+    expect(serving).toContain('Compose fileapi/worker-compose-prod.yaml · 11 workers in 3 groups · Change…')
+    expect(serving).toContain('Checkedbefore the deployment')
     expect(panel('Health')?.textContent).toBe(`Healthiii cloud: 11 of 11 workers upchecked ${clock(T(1))}`)
     const machines = [...(panel('Machines')?.querySelectorAll('tbody tr') ?? [])].map((r) => r.textContent)
     expect(machines).toEqual(['app1 × 1 GiBrunning', 'http1 × 500 MiBrunning', 'jobs1 × 1 GiBresizing to 2 GiB'])
@@ -60,10 +60,10 @@ describe('Overview (Mng6)', () => {
       [apiPath('/deployments', DEV.id)]: { deployments: [hers, ...devDeploys.map((d) => ({ ...d, current: false }))] },
     })
     const serving = panel('Serving')?.textContent ?? ''
-    expect(serving).toContain(`Deploy#7 · live since ${clock(T(2))} · by ana`)
-    expect(serving).not.toContain('by you')
+    expect(serving).toContain(`Deployment#7 · live since ${clock(T(2))} · ana, from the console`)
+    expect(serving).not.toContain('you')
     expect(serving).not.toContain('from this machine')
-    expect(serving).toContain('Checkednot checked here first')
+    expect(serving).toContain('Checkednot checked first')
     expect(h.calls.some((c) => c.payload?.path === `/teams/${TEAM.id}/members`)).toBe(true)
   })
 
@@ -148,13 +148,7 @@ describe('Overview (Mng6)', () => {
   it('locked while iii cloud wants a fresh sign-in: no restart, stop, domain or deploy', async () => {
     const problem = { ...problems[0], code: 'SIGN_IN_REQUIRED' }
     await open({ ...home, check: { ...home.check!, problems: [problem] } })
-    for (const label of [
-      'Restart a group…',
-      'Stop dev',
-      'Add a domain',
-      'Review and deploy',
-      'Deploy from this machine',
-    ]) {
+    for (const label of ['Restart a group…', 'Stop dev', 'Add a domain', 'Review and deploy', 'Deploy to dev']) {
       expect((btn(label) as HTMLButtonElement).disabled, label).toBe(true)
     }
   })

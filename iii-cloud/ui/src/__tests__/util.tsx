@@ -91,6 +91,8 @@ export async function mount(
 export const board = (id: keyof typeof boards, extra: Partial<PageRenderProps> = {}, answers = {}) => {
   // Typed as a Board: an area module keyed with `satisfies` keeps each board's narrow type.
   const b: Board = boards[id]
+  // A board's `values` is Setup's Values step, which the route no longer names: the pane remembers it.
+  if (b.values && b.context?.at === 'setup') ui.panes['iii-cloud:setup-step:t'] = 'values'
   return mount(
     b.status,
     { ...(b.context ? ctx(b.context) : {}), ...extra },

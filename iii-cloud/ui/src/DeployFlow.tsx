@@ -24,6 +24,7 @@ import {
   Skeleton,
   TerminalStream,
 } from '@iii-dev/console-ui'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { Circle, CircleDot, Info } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useCloud } from './api'
@@ -53,6 +54,7 @@ import {
   plainMessage,
   plural,
   projectName,
+  projectUrl,
   RESOURCE_KIND,
   roleOf,
   sendLabel,
@@ -76,7 +78,7 @@ import {
   useLeave,
   useNow,
 } from './parts'
-import { type AreaProps, DEPLOY_STEPS, type DeployStep, envState, pathOf, type Route, type RouteAt } from './route'
+import { type AreaProps, envState, pathOf, type Route, type RouteAt } from './route'
 import { Steps, stepStates } from './Steps'
 import type { BranchRef, Check, Deploy, Status, WorkerError } from './types'
 import { notSet, useValues, ValuesDialog } from './ValuesEditor'
@@ -101,11 +103,14 @@ const titles = (env: string): Record<DeployStep, { title: string; sub: string }>
   follow: { title: 'Live', sub: 'follow it to live' },
 })
 
-/** The step shown: a deploy to follow, the review once the check passed (else the check), else the asked step. */
+/** The steps of this screen (the route carries none: the state says where it is, a click on the rail moves it). */
+export type DeployStep = 'what' | 'check' | 'review' | 'follow'
+const DEPLOY_STEPS: readonly DeployStep[] = ['what', 'check', 'review', 'follow']
+
+/** The step shown: a deployment to follow, the review once the check passed, else what goes. */
 function shownStep(r: RouteAt<'deploy'>, s: Status): DeployStep {
-  if (r.step === 'follow' || r.deploy) return 'follow'
-  if (r.step === 'review') return s.check?.ready ? 'review' : 'check'
-  return r.step ?? 'what'
+  if (r.deploy) return 'follow'
+  return s.check?.ready ? 'review' : 'what'
 }
 
 /** `check` for a deploy: it runs here, pushes the fix branch (a worktree's only), and keeps to a picked file. */
@@ -121,13 +126,24 @@ const summaryText = (c: Check | null | undefined) => {
 }
 
 /** Deploying from this machine: the step rail beside what goes, the check, the review and the deploy. */
-export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteAt<'deploy'>>) {
+export function DeployArea({ host, status, route, go: goRoute, narrow, paneKey }: AreaProps<RouteAt<'deploy'>>) {
   const act = useActions(host)
   const env = route.env
   const state = envState(status, env)
   const name = status.project?.environments.find((e) => e.id === env)?.name ?? 'the environment'
-  const step = shownStep(route, status)
-  const to = (s: DeployStep, deploy?: string) => go({ at: 'deploy', env, step: s, ...(deploy ? { deploy } : {}) })
+  // A step the person or the flow moved to (kept per pane, so a reload stays on it); none: the one the state says.
+  const [picked, setPicked] = usePaneState<DeployStep | null>(`iii-cloud:deploy-step:${paneKey}:${env}`, null)
+  const step = picked ?? shownStep(route, status)
+  // Going to this screen again (the check's "Review and deploy") lets the state choose the step.
+  const go = (r: Route) => {
+    if (r.at === 'deploy' && r.env === env && !r.deploy) setPicked(null)
+    goRoute(r)
+  }
+  const to = (s: DeployStep, deploy?: string) => {
+    setPicked(s === 'follow' ? null : s)
+    if (s === 'follow' ? deploy : route.deploy)
+      goRoute({ at: 'deploy', env, ...(s === 'follow' && deploy ? { deploy } : {}) })
+  }
   const checkAgain = () => {
     void act.call('check', 'iii-cloud::check', checkPayload(status, appFile(status).path))
     to('check')
@@ -146,7 +162,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
       <EmptyState
         title="Not an environment of this project"
         description="It may have been deleted. Pick one from the project's environments."
-        action={{ label: `Back to ${projectName(status)}`, onClick: () => go({ at: 'home' }) }}
+        action={{ label: `Back to ${projectName(status)}`, onClick: () => go({ at: 'env', env: '' }) }}
       />
     )
   } else if (step === 'what') {
@@ -158,7 +174,8 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
         status={status}
         envId={env}
         switching={state === 'switching'}
-        go={go}
+        // Continue starts the check: this screen's next step.
+        go={(r) => (r.at === 'deploy' && r.env === env && !r.deploy ? to('check') : go(r))}
         act={act}
         narrow={narrow}
       />
@@ -280,12 +297,8 @@ function ActionError({
         headline={plainMessage(error)}
         detail={stays ? `${stays}.` : plainDetail(error)}
         action={
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => go({ at: 'env', env: p?.environment?.id ?? '', tab: 'deploys' })}
-          >
-            See Deploys
+          <Button size="sm" variant="secondary" onClick={() => go({ at: 'env', env: p?.environment?.id ?? '' })}>
+            See Deployments
           </Button>
         }
       />
@@ -505,7 +518,7 @@ function WhatGoes({
     if (used === null) return
     // The check runs on (it waits for the run here); the check step follows it.
     void act.call('check', 'iii-cloud::check', checkPayload(status, pick))
-    go({ at: 'deploy', env: envId, step: 'check' })
+    go({ at: 'deploy', env: envId })
   }
 
   return (
@@ -555,8 +568,11 @@ function WhatGoes({
             className="iii-cloud-choice"
             leading={<Circle />}
             label="New environment"
-            description="a trial for this branch"
-            onClick={() => go({ at: 'new-env', ...(branch ? { branch } : {}) })}
+            description="a trial for this branch, made in iii cloud's console"
+            onClick={() => {
+              const url = projectUrl(status)
+              if (url) window.open(url, '_blank', 'noreferrer')
+            }}
           />
         </List>
       </div>
@@ -913,7 +929,7 @@ function Review({
       {busy ? (
         <Notice
           variant="info"
-          {...deployBusy(busy, env.name)}
+          {...deployBusy(status, busy, env.name)}
           action={
             <Button size="sm" variant="primary" onClick={() => follow(busy.id)}>
               Follow #{busy.number}
@@ -1150,9 +1166,9 @@ function Follow({
   if (elsewhere) {
     return (
       <EmptyState
-        title="Deploy not found"
-        description={`It isn't a deploy of ${env.name}. Its own environment's Deploys has it.`}
-        action={{ label: 'Open Deploys', onClick: () => go({ at: 'env', env: envId, tab: 'deploys' }) }}
+        title="Deployment not found"
+        description={`It isn't a deployment of ${env.name}. Its own environment has it.`}
+        action={{ label: 'Open deployments', onClick: () => go({ at: 'env', env: envId }) }}
       />
     )
   }
@@ -1382,11 +1398,13 @@ function Follow({
             <Button variant="primary" onClick={() => go({ at: 'env', env: envId })}>
               Back to {env.name}
             </Button>
-            <Button variant="secondary" onClick={() => go({ at: 'env', env: envId, tab: 'deploys' })}>
-              Open Deploys
+            <Button variant="secondary" onClick={() => go({ at: 'env', env: envId, deploy: d?.id })}>
+              Open deployments
             </Button>
             {prev ? (
-              <span className="iii-cloud-dep-sub">If something's off, roll back to #{prev.number} under Deploys.</span>
+              <span className="iii-cloud-dep-sub">
+                If something's off, roll back to #{prev.number} in iii cloud's console.
+              </span>
             ) : null}
           </div>
         </>

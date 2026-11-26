@@ -469,7 +469,7 @@ describe('change file (Mng11)', () => {
       manifest: 'api/worker-compose.staging.yaml',
     })
     expect(el.querySelector('[role=dialog]')).toBeNull()
-    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry / dev / Deploy')
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry · dev / Deploy')
   })
 
   it('has no Change… when the worktree has no other file to pick', async () => {

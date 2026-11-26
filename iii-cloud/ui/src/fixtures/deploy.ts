@@ -189,11 +189,11 @@ const dev: Status = {
   secrets: [stripe],
 }
 const reviewed: Status = { ...dev, check: devCheck }
-const follow = (d: Deploy) => ({ at: 'deploy' as const, env: DEV.id, step: 'follow' as const, deploy: d.id })
+const follow = (d: Deploy) => ({ at: 'deploy' as const, env: DEV.id, deploy: d.id })
 
 export const boards = {
   'deploy-what': { status: dev, context: { at: 'deploy', env: DEV.id } },
-  'deploy-review': { status: reviewed, context: { at: 'deploy', env: DEV.id, step: 'review' } },
+  'deploy-review': { status: reviewed, context: { at: 'deploy', env: DEV.id } },
   'deploy-follow-running': {
     status: { ...reviewed, deploys: [running6, serving5] },
     context: follow(running6),

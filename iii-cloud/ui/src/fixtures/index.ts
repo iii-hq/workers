@@ -3,11 +3,9 @@
 import type { RunningDeploy } from '../types'
 import { type Board, ENV } from './base'
 import { boards as check } from './check'
-import { boards as checks } from './checks'
 import { boards as deploy, running6 } from './deploy'
 import { boards as deploys } from './deploys'
 import { boards as manage } from './manage'
-import { boards as newEnv } from './new-env'
 import { boards as overview } from './overview'
 import { boards as settings } from './settings'
 import { boards as setup } from './setup'
@@ -57,9 +55,7 @@ export const boards = {
   ...manage,
   ...overview,
   ...deploys,
-  ...checks,
   ...settings,
-  ...newEnv,
   ...start,
   // Last: it adds the `values` answer to boards of other areas.
   ...values,

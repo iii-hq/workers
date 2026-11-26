@@ -11,6 +11,7 @@ import { needsConnect, needsProject, whoLine } from './model'
 import { ErrorPanel, Notice } from './parts'
 import { type AreaProps, defaultRoute, envState, type Route, routeFromContext } from './route'
 import { SetupArea } from './Setup'
+import { ProjectShell } from './Sidebar'
 import { StartArea } from './Start'
 import type { Status } from './types'
 
@@ -24,7 +25,7 @@ function shown(stored: Route | null, s: Status): Route {
   const r = stored ?? defaultRoute(s)
   if (r.at === 'start' || r.at === 'setup') return r
   if (needsConnect(s) || needsProject(s)) return defaultRoute(s)
-  if ((r.at === 'env' || r.at === 'deploy') && !r.env) {
+  if (!r.env) {
     const id = s.project?.environment?.id
     return id ? { ...r, env: id } : defaultRoute(s)
   }
@@ -32,7 +33,8 @@ function shown(stored: Route | null, s: Status): Route {
 }
 
 /**
- * The one `iii-cloud` page: a router over Setup, Deploy and Manage. The route comes from the pane's
+ * The one `iii-cloud` page: a router over Projects, first time, check and deploy, and an environment (with
+ * its project's sidebar) or its secrets. The route comes from the pane's
  * context (each new `panels.open` re-navigates) and stays per pane; areas move with `go`.
  */
 export function CloudPage({
@@ -76,7 +78,7 @@ export function CloudPage({
   const route = status ? shown(stored, status) : null
   // An env or deploy route for another of the project's environments: the person's own move selects it
   // (once per env); a route restored on mount, or one another pane moved the selection away from, goes home.
-  const env = route && (route.at === 'env' || route.at === 'deploy') ? route.env : null
+  const env = route && (route.at === 'env' || route.at === 'deploy' || route.at === 'secrets') ? route.env : null
   const state = status && env ? envState(status, env) : null
   const want = state === 'switching' ? env : null
   const asked = useRef<string | null>(null)
@@ -87,7 +89,7 @@ export function CloudPage({
       return
     }
     if (!navigated.current) {
-      setStored({ at: 'home' })
+      setStored({ at: 'env', env: '' })
       return
     }
     const p = status?.project
@@ -98,7 +100,7 @@ export function CloudPage({
       environment_id: want,
       mode: p.workspace.mode,
     }).then((out) => {
-      if (out === null) setStored({ at: 'home' })
+      if (out === null) setStored({ at: 'env', env: '' })
     })
   }, [want, state])
 
@@ -135,7 +137,11 @@ export function CloudPage({
         ) : route.at === 'setup' ? (
           <SetupArea {...props} route={route} />
         ) : route.at === 'deploy' ? (
-          <DeployArea {...props} route={route} />
+          <DeployArea key={route.env} {...props} route={route} />
+        ) : route.at === 'env' ? (
+          <ProjectShell host={host} status={status} route={route} go={go} narrow={narrow}>
+            <ManageArea {...props} route={route} />
+          </ProjectShell>
         ) : (
           <ManageArea {...props} route={route} />
         )}

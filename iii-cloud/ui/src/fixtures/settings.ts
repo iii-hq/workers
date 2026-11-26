@@ -141,7 +141,7 @@ export const devResources = {
 
 const manageSettings: Board = {
   status: settingsStatus,
-  context: { at: 'env', env: DEV.id, tab: 'settings' },
+  context: { at: 'secrets', env: DEV.id },
   cloud: {
     [apiPath('', DEV.id)]: devEnvironment,
     [apiPath('/variables', DEV.id)]: devVariables,

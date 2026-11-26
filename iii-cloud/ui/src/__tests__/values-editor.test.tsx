@@ -265,7 +265,7 @@ describe('Save', () => {
     expect(rowOf('SESSION_SECRET')?.querySelector('[role=alert]')).toBeNull()
     expect(rowOf('SESSION_SECRET')?.textContent).toContain('Saved · just now')
     expect(rowOf('SESSION_SECRET')?.textContent).toContain(
-      "Saved in iii cloud. The .env of the run here couldn't be written, so the run here doesn't have it.",
+      "Saved in iii cloud. The .env of the local run couldn't be written, so the local run doesn't have it.",
     )
     expect(h.onSaved).toHaveBeenCalledTimes(1)
   })

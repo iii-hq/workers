@@ -33,7 +33,9 @@ export function useAsked(checkId: string | undefined): string | null {
   )
 }
 
-export const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+/** 14:34 in the person's time zone; English (en-GB reads 24 h) whatever the browser's language. */
+export const clock = (iso: string) =>
+  new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
 
 /** Forget every remembered hand-off (this tab's memory and the stored keys). */
 export function clearAsked() {

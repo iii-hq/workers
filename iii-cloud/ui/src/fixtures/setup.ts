@@ -178,7 +178,7 @@ export type SetupBoard =
 
 export const boards: Record<SetupBoard, Board> = {
   'setup-signin': { status: { ...base, connection: waiting, project: null, check: null }, context: { at: 'setup' } },
-  'setup-code': { status: { ...base, project: notImported, check: null }, context: { at: 'setup', step: 'code' } },
+  'setup-code': { status: { ...base, project: notImported, check: null }, context: { at: 'setup', step: 'confirm' } },
   'setup-target': {
     status: { ...base, project: chosen, check: null },
     context: { at: 'setup' },

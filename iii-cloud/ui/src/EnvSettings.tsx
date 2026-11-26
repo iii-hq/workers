@@ -1041,7 +1041,7 @@ function ChangeFile({ c, go, onClose }: { c: Ctx; go: (r: Route) => void; onClos
     // The check runs on; its stage shows it from the hub's `checking` count.
     void call('check', 'iii-cloud::check', { run: true, manifest: pick })
     onClose()
-    go({ at: 'deploy', env: c.envId, step: 'check' })
+    go({ at: 'deploy', env: c.envId })
   }
   return (
     <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>

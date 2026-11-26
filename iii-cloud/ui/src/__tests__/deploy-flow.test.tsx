@@ -7,7 +7,7 @@ import { DEV, devCheck, running6, serving5 } from '../fixtures/deploy'
 import { devOptional, devValues } from '../fixtures/values'
 import type { BranchRef, Status } from '../types'
 import type { Call } from './host'
-import { board, btn, byText, click, ctx, el, flush, lastCall, mount, text, type, usePage } from './util'
+import { board, btn, byText, click, ctx, el, flush, lastCall, mount, text, type, ui, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -21,7 +21,15 @@ const current = () => el.querySelector('[aria-current=step]')?.textContent ?? ''
 const radio = (label: string) =>
   [...el.querySelectorAll('[role=radio]')].find((r) => r.textContent?.startsWith(label)) as HTMLElement | undefined
 const dialogButton = (t: string) => [...el.querySelectorAll('[role=dialog] button')].find((b) => b.textContent === t)
-const route = (r: Record<string, unknown>, id = 1) => ctx({ at: 'deploy', ...r }, id)
+/**
+ * A deploy route. The route has no step; the screen picks it from the state and remembers the one the person
+ * moved to in the pane: `step: 'what' | 'check'` here is that remembered move (the old route's step).
+ */
+const route = (r: Record<string, unknown>, id = 1) => {
+  const { step, ...rest } = r
+  if (step === 'what' || step === 'check') ui.panes[`iii-cloud:deploy-step:t:${rest.env || ENV.id}`] = step
+  return ctx({ at: 'deploy', ...rest }, id)
+}
 /** production's check passed; with its pull request open; after the merge, its deploy running. */
 const passedProd: Status = { ...base, check: ready }
 const withPr: Status = { ...passedProd, pr }
@@ -215,8 +223,12 @@ describe('Dep1 what goes', () => {
     await click(radio('production'))
     expect(text()).toContain('What goes to production?')
     await board('deploy-what')
+    // A new environment is made in iii cloud's console: the radio opens it, and this screen stays.
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
     await click(radio('New environment'))
-    expect(el.querySelector('aside[aria-label="Deploy steps"]')).toBeNull()
+    expect(open).toHaveBeenCalledWith('https://cloud.iii.dev/iii/registry', '_blank', 'noreferrer')
+    expect(text()).toContain('What goes to')
+    open.mockRestore()
   })
 
   it('MERGE_CONFLICT: nothing is checked; the agent merges your branch in the worktree, as a follow-up', async () => {
@@ -265,9 +277,9 @@ describe('Dep1 what goes', () => {
   it('pushes_directly decides the direct case; without a default branch nothing claims a push', async () => {
     const s = passedProd
     const brief = { ...agentStatus.handoff_brief!, pushes_directly: true }
-    await mount({ ...s, pr: null, handoff_brief: brief }, route({ env: '' }))
+    await mount({ ...s, pr: null, handoff_brief: brief }, route({ env: '', step: 'what' }))
     expect(radio('production')?.textContent).toContain('pushes, then deploys')
-    await mount(s, route({ env: '' }, 2))
+    await mount(s, route({ env: '', step: 'what' }, 2))
     expect(radio('production')?.textContent).toContain('opens a pull request')
     expect(text()).not.toContain('pushes, then deploys')
   })
@@ -288,9 +300,9 @@ describe('the check step', () => {
     expect(current()).toContain('Check before deploy')
   })
 
-  it('a review asked before the check passed shows the check', async () => {
+  it('a check that has not passed is the check, never the review', async () => {
     const s = boards['deploy-review'].status
-    await mount({ ...s, check: { ...devCheck, ready: false } }, route({ env: DEV.id, step: 'review' }))
+    await mount({ ...s, check: { ...devCheck, ready: false } }, route({ env: DEV.id, step: 'check' }))
     expect(current()).toContain('Check before deploy')
     expect(text()).not.toContain('Ready to deploy')
   })
@@ -349,7 +361,7 @@ describe('Dep5 review and deploy', () => {
   it('a deploy of dev still running locks Review, says so, and Follow #6 follows it', async () => {
     const s = boards['deploy-review'].status
     await mount({ ...s, deploys: [running6, ...s.deploys] }, route({ env: DEV.id, step: 'review' }))
-    expect(text()).toContain('Deploy #6 to dev is already running')
+    expect(text()).toContain('Deployment #6 to dev is already running')
     expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(true)
     await click(btn('Follow #6'))
     expect(text()).toContain('Deploying 9c04e7f to dev')
@@ -438,17 +450,17 @@ describe('Dep5 review and deploy', () => {
     expect(current()).toContain('Check before deploy')
   })
 
-  it('PUSH_UNKNOWN: a plain sentence without git output, See Deploys, and Deploy stays locked', async () => {
+  it('PUSH_UNKNOWN: a plain sentence without git output, See Deployments, and Deploy stays locked', async () => {
     const message =
       'Could not tell whether 9c04e7f reached dev: the push failed and origin did not answer after. See Deploys before deploying again. Git said: fatal: unable to access'
     await board('deploy-review', {}, { 'iii-cloud::deploy': fail('PUSH_UNKNOWN', message) })
     await click(btn('Deploy 9c04e7f to dev'))
     expect(text()).toContain("Couldn't tell whether the push reached GitHub.")
-    expect(text()).toContain('See Deploys before you deploy again.')
+    expect(text()).toContain('See Deployments before you deploy again.')
     expect(text()).not.toContain('fatal:')
     expect(btn('Deploy again')).toBeFalsy()
     expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(true)
-    await click(btn('See Deploys'))
+    await click(btn('See Deployments'))
     expect(el.querySelector('aside[aria-label="Deploy steps"]')).toBeNull()
   })
 
@@ -507,10 +519,10 @@ describe('Dep6 follow', () => {
     expect(text()).toContain('https://registry-2-dev.iii.cloud')
     expect(text()).toContain("iii cloud says it's healthy")
     expect(text()).toContain('11 of 11 workers up')
-    expect(text()).toContain("If something's off, roll back to #5 under Deploys.")
+    expect(text()).toContain("If something's off, roll back to #5 in iii cloud's console.")
     await click(btn('Back to dev'))
     expect(el.querySelector('aside[aria-label="Deploy steps"]')).toBeNull()
-    expect(el.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('Overview')
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry · dev')
   })
 
   it('failed: what only the cloud saw, its log lines, and Fix with your agent hands off deploy_fix', async () => {
@@ -584,17 +596,16 @@ describe('Dep6 follow', () => {
     expect(btn('Confirm deploy')?.hasAttribute('disabled')).toBe(true)
   })
 
-  it("a deploy of another environment isn't followed here: Deploy not found", async () => {
+  it("a deployment of another environment isn't followed here: Deployment not found", async () => {
     const s = boards['deploy-review'].status
     await mount({ ...s, deploys: [following, serving5] }, route({ env: DEV.id, step: 'follow', deploy: following.id }))
-    expect(text()).toContain('Deploy not found')
+    expect(text()).toContain('Deployment not found')
     expect(text()).not.toContain('7a1f3b2')
   })
 })
 
 describe('the way out of Deploy', () => {
   const nav = () => el.querySelector('[role=toolbar] nav')?.textContent
-  const selectedTab = () => el.querySelector('[role=tab][aria-selected=true]')?.textContent
 
   it.each([
     'deploy-what',
@@ -604,25 +615,24 @@ describe('the way out of Deploy', () => {
     'deploy-follow-failed',
   ] as const)('%s: the path bar names the deploy, and its environment opens the environment', async (id) => {
     await board(id)
-    expect(nav()).toBe('Projects / registry / dev / Deploy')
-    await click(btn('dev'))
+    expect(nav()).toBe('Projects / registry · dev / Deploy')
+    await click(btn('registry · dev'))
     expect(el.querySelector('aside[aria-label="Deploy steps"]')).toBeNull()
-    expect(selectedTab()).toBe('Overview')
+    expect(nav()).toBe('Projects / registry · dev')
   })
 
   it('the check step has the same way out', async () => {
     await mount(boards['deploy-what'].status, route({ env: DEV.id, step: 'check' }))
-    expect(nav()).toBe('Projects / registry / dev / Deploy')
-    await click(btn('registry'))
-    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry')
+    expect(nav()).toBe('Projects / registry · dev / Deploy')
+    await click(btn('Projects'))
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects')
   })
 
   it('step what: Cancel goes back to the environment', async () => {
     const h = await board('deploy-what')
     const before = worker(h.calls).length
     await click(btn('Cancel'))
-    expect(selectedTab()).toBe('Overview')
-    expect(nav()).toBe('Projects / registry / dev')
+    expect(nav()).toBe('Projects / registry · dev')
     expect(
       worker(h.calls)
         .slice(before)

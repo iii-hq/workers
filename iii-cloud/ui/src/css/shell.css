@@ -57,6 +57,20 @@
   min-height: 100%;
   padding: 12px 10px;
 }
+/* The project at the top of its sidebar: the name, then repository and team (faint). */
+[data-iii-ui='iii-cloud'] .iii-cloud-side-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side > .iii-cloud-linkbtn {
+  padding: 0 10px;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-side-foot {
   display: flex;
   flex-direction: column;
@@ -91,6 +105,72 @@
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-envhead {
   min-width: 0;
+}
+/* StatePill: a status word, ink 12/500 on its status tint; the dot stays. Out of date (data-stale) greys it out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-state {
+  border-color: transparent;
+  border-radius: var(--radius-full);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='ok'] {
+  background: var(--color-ok-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='alert'] {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='warn'] {
+  background: var(--color-warn-muted);
+}
+[data-iii-ui='iii-cloud'] [data-stale] .iii-cloud-state {
+  opacity: 0.5;
+}
+/* DetailRow: label, value with its note, and the action at the end; rows share a card and divide by a hairline. */
+[data-iii-ui='iii-cloud'] .iii-cloud-detail {
+  display: grid;
+  grid-template-columns: minmax(96px, 120px) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 12px 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail + .iii-cloud-detail {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-label {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-value {
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-note {
+  display: block;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+@container iii-cloud (max-width: 640px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-detail {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-detail-label {
+    grid-column: 1 / -1;
+  }
+}
+/* SectionCard's count: a small neutral number next to the title. */
+[data-iii-ui='iii-cloud'] .iii-cloud-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+/* The primary action of a page header: sits at the end of the title's line, full width on a phone. */
+[data-iii-ui='iii-cloud'] .iii-cloud-pageaction {
+  flex-shrink: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-pageaction {
+  width: 100%;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-url {
   min-width: 0;

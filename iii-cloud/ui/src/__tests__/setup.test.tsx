@@ -26,6 +26,7 @@ import {
   row,
   text,
   type,
+  ui,
   usePage,
 } from './util'
 
@@ -45,7 +46,13 @@ const of = (h: { calls: Call[] }, id: string) => h.calls.filter((c) => c.id === 
 const sent = (h: { calls: Call[] }) =>
   h.calls.map((c) => c.id).filter((id) => id !== 'iii-cloud::status' && id !== 'iii-cloud::api')
 const facts = () => [...el.querySelectorAll('.iii-cloud-setup-fact')].map((f) => f.textContent)
-const toCode = ctx({ at: 'setup', step: 'code' })
+const toCode = ctx({ at: 'setup', step: 'confirm' })
+/** The route names only `confirm`; Setup remembers which of its two parts (Your code, Where it runs) the person is on. */
+const at = (step: 'code' | 'target', extra: Record<string, unknown> = {}) => {
+  if (step === 'target') ui.panes['iii-cloud:setup-step:t'] = 'target'
+  else delete ui.panes['iii-cloud:setup-step:t']
+  return ctx({ at: 'setup', step: 'confirm', ...extra })
+}
 /** Signed in, the folder found, no environment chosen yet, and no other repositories. */
 const unset: Status = { ...base, project: project(false), check: null }
 
@@ -406,7 +413,7 @@ describe('3 where it runs (Onb3)', () => {
           teams: [...s.connection.teams, { id: 't2', name: 'partners', slug: 'p', role: 'Owner' }],
         },
       },
-      ctx({ at: 'setup', step: 'target' }),
+      at('target'),
       { 'iii-cloud::project::create': { cloud_projects: [made], project_id: 'p9', environment_id: 'e-extra' } },
     )
     expect(checked('Project')).toMatch(/^New project/)
@@ -804,7 +811,7 @@ describe('adding a project (add mode)', () => {
     environment: null,
   }
   const adding: Status = { ...base, candidate }
-  const atAdd = (step: string) => ctx({ at: 'setup', step, adding: true })
+  const atAdd = (step: 'code' | 'target') => at(step, { adding: true })
   /** The page's own calls, without the status and cloud reads. */
   const own = (h: { calls: Call[] }) =>
     h.calls.filter((c) => c.id !== 'iii-cloud::status' && c.id !== 'iii-cloud::api').map((c) => c.id)
@@ -818,8 +825,8 @@ describe('adding a project (add mode)', () => {
   })
 
   it('Cancel on Code and on Target goes back to Start, with no call', async () => {
-    for (const [i, step] of ['code', 'target'].entries()) {
-      const h = await mount(adding, ctx({ at: 'setup', step, adding: true }, i + 1))
+    for (const [i, step] of (['code', 'target'] as const).entries()) {
+      const h = await mount(adding, { ...atAdd(step), ...ctx({ at: 'setup', step: 'confirm', adding: true }, i + 1) })
       expect(text()).toContain(step === 'code' ? 'Which code goes to the cloud?' : 'Where should it run?')
       const before = own(h).length
       await click(btn('Cancel'))
@@ -843,13 +850,13 @@ describe('adding a project (add mode)', () => {
     expect(sent(h).slice(-1)).toEqual(['iii-cloud::values'])
     expect(of(h, 'iii-cloud::check')).toEqual([])
     // The values of the project now in use: add mode is over.
-    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry / Set up')
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / Add a project')
   })
 
   it('the rail’s Your code with another folder enters add mode; the folder resolves beside the project in use', async () => {
     const h = await mount(base, ctx({ at: 'setup' }))
     await click(row('Your code'))
-    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / registry / Set up')
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / Add a project')
     await type(el.querySelector('[data-directory-picker]'), '/home/you/workspaces/billing')
     expect(el.querySelector('[role=toolbar] nav')?.textContent).toBe('Projects / Add a project')
     expect(of(h, 'iii-cloud::project::resolve').at(-1)).toEqual({ path: '/home/you/workspaces/billing' })

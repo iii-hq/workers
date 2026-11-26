@@ -95,7 +95,7 @@ describe('Start (desktop)', () => {
         mode: 'checkout',
       },
     ])
-    expect(path()).toBe('Projects / registry')
+    expect(path()).toBe('Projects / registry · production')
   })
 
   it('until iii cloud lists the environments, Switch is off and busy', async () => {
@@ -133,7 +133,7 @@ describe('Start (desktop)', () => {
     await board('start')
     await settle()
     expect(place('old')?.querySelector('[data-chip]')?.textContent).toBe('Deleted')
-    const until = new Date(Date.UTC(2026, 11, 3, 12)).toLocaleDateString([], { day: 'numeric', month: 'short' })
+    const until = '3 Dec'
     expect(lines('old')[0]).toBe(`restorable until ${until}`)
     expect(place('old')?.querySelector('a')?.textContent).toBe('Open in iii cloud')
     expect(switchOf('old')).toBeNull()
@@ -155,13 +155,13 @@ describe('Start (desktop)', () => {
     await click(switchOf('billing'))
     const dialog = el.querySelector('[role=alertdialog]')
     expect(dialog?.textContent).toContain('Leave registry · production while it waits for you?')
-    expect(dialog?.textContent).toContain('1 secret is waiting. It keeps waiting; switch back to answer.')
-    expect(btn('Switch to billing')).toBeTruthy()
+    expect(dialog?.textContent).toContain('1 secret is waiting. It keeps waiting; open it again to answer.')
+    expect(btn('Open billing')).toBeTruthy()
     await click(btn('Stay'))
     expect(el.querySelector('[role=alertdialog]')).toBeNull()
     expect(uses(h)).toEqual([])
     await click(switchOf('billing'))
-    await click(btn('Switch to billing'))
+    await click(btn('Open billing'))
     expect(uses(h)).toHaveLength(1)
   })
 
@@ -178,7 +178,7 @@ describe('Start (desktop)', () => {
     down = true
     await click(btn('Refresh'))
     expect(text()).toContain("iii cloud isn't answering")
-    await click(btn('Switch to billing'))
+    await click(btn('Open billing'))
     expect(el.querySelector('[role=alertdialog]')).toBeNull()
     expect(uses(h)).toEqual([])
   })
@@ -229,7 +229,7 @@ describe('Start (desktop)', () => {
     expect(path()).toBe('Projects / Add a project')
     await click(btn('Projects'))
     await click(btn('Open'))
-    expect(path()).toBe('Projects / registry')
+    expect(path()).toBe('Projects / registry · production')
     expect(uses(h)).toEqual([])
   })
 

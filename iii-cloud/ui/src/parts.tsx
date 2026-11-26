@@ -4,6 +4,9 @@ import {
   Chip,
   ConfirmDialog,
   IconButton,
+  Panel,
+  PanelBody,
+  PanelHeader,
   StatusBar,
   StatusDot,
   StatusPanel,
@@ -23,7 +26,16 @@ import {
 import { Fragment, type ReactNode, useEffect, useState } from 'react'
 import { clock } from './asked'
 import { hubOf, useActions, useLocked, useStale } from './hub'
-import { envName, minutesLabel, needsAction, plainDetail, plainMessage, type RowTone, whatWaits } from './model'
+import {
+  envName,
+  minutesLabel,
+  needsAction,
+  plainDetail,
+  plainMessage,
+  type RowTone,
+  type Tone,
+  whatWaits,
+} from './model'
 import type { PathItem, Route } from './route'
 import type { Deploy, Project, Status, WorkerError } from './types'
 
@@ -150,6 +162,117 @@ export function Facts({ rows }: { rows: [string, ReactNode][] }) {
 }
 
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
+
+const TINT: Partial<Record<Tone, string>> = { ok: 'ok', alert: 'alert', warn: 'warn' }
+
+/** A state word with its dot on the status tint (`deployState`, `liveOf`): the word stays ink. */
+export function StatePill({ state }: { state: { label: string; tone: Tone } }) {
+  return (
+    <Chip className="iii-cloud-state" data-tint={TINT[state.tone]}>
+      <Dot tone={state.tone} />
+      {state.label}
+    </Chip>
+  )
+}
+
+/**
+ * A card with a header: the title (`onTitle` makes it a link), its `count` beside it, a right-hand `note`
+ * (faint) and `end` (an action); then the body (`flush`: a list or table fills it). The look of "You",
+ * "Your agent" and "Deployments".
+ */
+export function SectionCard({
+  title,
+  count,
+  note,
+  onTitle,
+  end,
+  flush,
+  children,
+}: {
+  title: string
+  count?: number
+  note?: ReactNode
+  onTitle?: () => void
+  end?: ReactNode
+  flush?: boolean
+  children: ReactNode
+}) {
+  return (
+    <Panel className="iii-cloud-panel" role="region" aria-label={title}>
+      <PanelHeader className="iii-cloud-panel-head">
+        <span className="iii-cloud-row">
+          {onTitle ? (
+            <button type="button" className="iii-cloud-titlelink" onClick={onTitle}>
+              {title}
+            </button>
+          ) : (
+            <span>{title}</span>
+          )}
+          {count != null ? <span className="iii-cloud-count">{count}</span> : null}
+        </span>
+        {note || end ? (
+          <span className="iii-cloud-panel-end">
+            {note}
+            {end}
+          </span>
+        ) : null}
+      </PanelHeader>
+      {flush ? children : <PanelBody className="iii-cloud-panel-body">{children}</PanelBody>}
+    </Panel>
+  )
+}
+
+/**
+ * One row of a card of facts: a `label`, its value (`children`) with a faint `note` under it, and an `action`
+ * at the end, usually "Change" (`onChange`). The confirm screen and the secrets page both read this way.
+ */
+export function DetailRow({
+  label,
+  note,
+  action,
+  onChange,
+  children,
+}: {
+  label: string
+  note?: ReactNode
+  action?: ReactNode
+  /** Shorthand for the "Change" action. */
+  onChange?: () => void
+  children: ReactNode
+}) {
+  return (
+    <div className="iii-cloud-detail">
+      <span className="iii-cloud-detail-label">{label}</span>
+      <span className="iii-cloud-detail-value">
+        {children}
+        {note ? <span className="iii-cloud-detail-note">{note}</span> : null}
+      </span>
+      {action ??
+        (onChange ? (
+          <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={onChange}>
+            Change
+          </button>
+        ) : null)}
+    </div>
+  )
+}
+
+/** The one primary action of a page header ("Deploy to dev", "Continue"): the title's line, full width on a phone. */
+export function PageAction({
+  onClick,
+  disabled,
+  children,
+}: {
+  onClick: () => void
+  disabled?: boolean
+  children: ReactNode
+}) {
+  return (
+    <Button variant="primary" className="iii-cloud-pageaction" disabled={disabled} onClick={onClick}>
+      {children}
+    </Button>
+  )
+}
 
 /** A small secondary button that opens `href` in a new tab (GitHub, iii cloud, the app). */
 export function LinkButton({ href, children }: { href: string; children: ReactNode }) {
@@ -281,7 +404,7 @@ export function PathBar({
 /** "as of 14:40" and Refresh: reads the status again, and with it every cloud route on the page. */
 /** The deploy a follow page shows: the one it names if it is that environment's, else the environment's newest. */
 function followed(s: Status, r: Route | undefined): string | undefined {
-  if (r?.at !== 'deploy' || r.step !== 'follow') return undefined
+  if (r?.at !== 'deploy' || !r.deploy) return undefined
   const asked = s.deploys.find((d) => d.id === r.deploy && d.environment_id === r.env)
   return (asked ?? s.deploys.find((d) => d.environment_id === r.env))?.id
 }
@@ -336,7 +459,7 @@ export function moving(s: Status): Moving[] {
 export function useFollow(host: Host, status: Status, go: (r: Route) => void) {
   const sw = useSwitch(host, status, go)
   const follow = (m: Moving, key = m.deploy.id) => {
-    const to: Route = { at: 'deploy', env: m.deploy.environment_id, step: 'follow', deploy: m.deploy.id }
+    const to: Route = { at: 'deploy', env: m.deploy.environment_id, deploy: m.deploy.id }
     if (!m.other) {
       // Another environment selects it: something waiting on the person here asks first.
       const here = m.deploy.environment_id === status.project?.environment?.id
@@ -393,7 +516,7 @@ export function DeployPill({
           size="sm"
           variant="secondary"
           className="iii-cloud-pill iii-cloud-pill-more"
-          aria-label={`${on.length} deploys going on: see them on Projects`}
+          aria-label={`${on.length} deployments going on: see them on Projects`}
           onClick={() => go({ at: 'start' })}
         >
           <Dot tone={on.some((m) => needsAction(m.deploy)) ? 'warn' : 'live'} />
@@ -408,7 +531,7 @@ export function DeployPill({
         const d = m.deploy
         const wait = needsAction(d)
         const what = wait
-          ? `deploy #${d.number} needs you`
+          ? `deployment #${d.number} needs you`
           : `deploying #${d.number}${m.env ? ` to ${m.env}` : ''} · ${minutesLabel(now - Date.parse(d.created_at))}`
         const full = m.name ? `${m.name} · ${what}` : `${what.charAt(0).toUpperCase()}${what.slice(1)}`
         const short = `${m.name ? `${m.name} ` : ''}#${d.number} · ${wait ? 'needs you' : 'deploying'}`
@@ -448,16 +571,16 @@ export function DeployPill({
           size="sm"
           variant="secondary"
           className="iii-cloud-pill iii-cloud-pill-more"
-          aria-label={`${on.length - shown} more ${on.length - shown === 1 ? 'deploy' : 'deploys'} going on`}
-          // This project's go to its Deploys tab; only other projects' are listed on Start, one row each.
-          onClick={() => go(first ? { at: 'env', env: first.deploy.environment_id, tab: 'deploys' } : { at: 'start' })}
+          aria-label={`${on.length - shown} more ${on.length - shown === 1 ? 'deployment' : 'deployments'} going on`}
+          // This project's go to its environment; only other projects' are listed on Start, one row each.
+          onClick={() => go(first ? { at: 'env', env: first.deploy.environment_id } : { at: 'start' })}
         >
           +{on.length - shown}
         </Button>
       ) : null}
       {error ? (
         <span role="alert" className="iii-cloud-pill-err" title={plainMessage(error)}>
-          Couldn't switch
+          Couldn't open it
         </span>
       ) : null}
       {dialog}
@@ -507,7 +630,7 @@ export function useSwitch(host: Host, status: Status, go: (r: Route) => void) {
           await hubOf(host).refresh(false)
           return go(then)
         }
-        go(note ? { at: 'home', note } : { at: 'home' })
+        go(note ? { at: 'env', env: '', note } : { at: 'env', env: '' })
       })
     })
   return { switching: busy === 'use' ? target : null, error, switchTo, leave, dialog }
@@ -520,7 +643,7 @@ export function StaleNotice({ host, status }: { host: Host; status: Status }) {
     <Notice
       variant="warn"
       headline={`iii cloud isn't answering · showing what it said${status.refreshed_at ? ` at ${clock(status.refreshed_at)}` : ''}`}
-      detail="Statuses are greyed out until it answers. Deploy, rollback and saves stay locked."
+      detail="Statuses are greyed out until it answers. Deploying and saves stay locked."
       action={
         <Button variant="secondary" size="sm" onClick={() => void hubOf(host).refresh(true)}>
           Try again
@@ -553,8 +676,8 @@ export function useLeave(host: Host, status: Status) {
         if (!open) setAsk(null)
       }}
       title={`Leave ${here} while it waits for you?`}
-      description={`${sentence(waits)}. It keeps waiting; switch back to answer.`}
-      confirmLabel={`Switch to ${ask?.to ?? ''}`}
+      description={`${sentence(waits)}. It keeps waiting; open it again to answer.`}
+      confirmLabel={`Open ${ask?.to ?? ''}`}
       cancelLabel="Stay"
       onConfirm={() => {
         const run = ask?.run

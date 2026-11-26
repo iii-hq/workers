@@ -125,9 +125,9 @@ function checkView(c: Check, env: string): CardView {
     lines,
     action: c.ready
       ? c.run
-        ? { label: 'See the run', open: { at: 'env', env: c.environment_id, tab: 'checks', check: c.id } }
+        ? { label: 'See the run', open: { at: 'deploy', env: c.environment_id } }
         : undefined
-      : { label: 'Open the check', open: { at: 'env', env: c.environment_id, tab: 'checks', check: c.id } },
+      : { label: 'Open the check', open: { at: 'deploy', env: c.environment_id } },
   }
 }
 
@@ -163,7 +163,7 @@ function secretView(r: SecretRequest, env: string): CardView {
     ],
     action:
       r.state === 'waiting'
-        ? { label: 'Open settings', open: { at: 'env', env: r.environment_id, tab: 'settings' } }
+        ? { label: 'Open secrets and variables', open: { at: 'secrets', env: r.environment_id } }
         : undefined,
   }
 }
@@ -203,7 +203,7 @@ function deployView(d: Deploy, fn: string, env: string): CardView {
             ? { tone: 'danger', label: 'Failed' }
             : { tone: 'neutral', label: d.outcome },
     lines,
-    action: { label: 'Open deploy', open: { at: 'env', env: d.environment_id, tab: 'deploys', deploy: d.id } },
+    action: { label: 'Open deployment', open: { at: 'env', env: d.environment_id, deploy: d.id } },
   }
 }
 

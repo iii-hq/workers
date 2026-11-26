@@ -35,24 +35,26 @@ const logText = () => el.querySelector('section[aria-label=Log]')?.textContent ?
 const gets = (calls: { id: string; payload?: Record<string, unknown> }[], path: string) =>
   calls.filter((c) => c.id === 'iii-cloud::api' && c.payload?.path === path)
 const listWords = () =>
-  [...el.querySelectorAll('[aria-label=Deploys] [role=row]')].map((r) => r.querySelector('[data-chip]')?.textContent)
+  [...el.querySelectorAll('[aria-label=Deployments] [role=row]')].map(
+    (r) => r.querySelector('[data-chip]')?.textContent,
+  )
 
 describe('Mng2: the list beside one deploy', () => {
   it('lists every deploy with its number, word, commit and time; the routed one is open', async () => {
     await board('manage-deploys-failed')
-    expect(listWords()).toEqual(['Live', 'Superseded', 'Superseded', 'Superseded', 'Failed', 'Failed'])
-    const rows = [...el.querySelectorAll('[aria-label=Deploys] [role=row]')]
+    expect(listWords()).toEqual(['Live', 'Replaced', 'Replaced', 'Replaced', 'Failed', 'Failed'])
+    const rows = [...el.querySelectorAll('[aria-label=Deployments] [role=row]')]
     expect(rows[0].textContent).toContain('#6')
     expect(rows[0].textContent).toContain('Search: rank by stars')
     expect(rows[0].textContent).toContain('9c04e7f')
-    expect(el.querySelector('[aria-label=Deploys] [aria-current=true]')?.textContent).toContain('#2')
-    expect(text()).toContain('Deploy #2 · 86c49e1 · ')
-    expect(text()).toContain('from a push to GitHub, not checked here first')
+    expect(el.querySelector('[aria-label=Deployments] [aria-current=true]')?.textContent).toContain('#2')
+    expect(text()).toContain('Deployment #2 · 86c49e1 · ')
+    expect(text()).toMatch(/a push to GitHub( by [\w ]+)?, not checked/)
     const file = byText('a', 'see the file in 86c49e1')
     expect(file?.getAttribute('href')).toBe(
       'https://github.com/iii-hq/registry/blob/86c49e1d2a3b4c5d6e7f8091a2b3c4d5e6f70812/api/worker-compose-prod.yaml',
     )
-    expect(text()).toContain('Current app file api/worker-compose-prod.yaml')
+    expect(text()).toContain('Current compose file api/worker-compose-prod.yaml')
   })
 
   it('the plain title comes before the fix and the log; nothing was live, so nobody saw it', async () => {
@@ -109,19 +111,19 @@ describe('Mng2: the list beside one deploy', () => {
 
   it('a row opens its deploy; the deploy a card names opens directly', async () => {
     await board('manage-deploys-failed')
-    await click([...el.querySelectorAll('[aria-label=Deploys] [role=row]')][0])
-    expect(text()).toContain('Deploy #6 · 9c04e7f · live since')
-    await board('manage-deploys-failed', ctx({ at: 'env', env: DEV.id, tab: 'deploys', deploy: 'dep-5' }, 2))
-    expect(el.querySelector('[aria-label=Deploys] [aria-current=true]')?.textContent).toContain('#5')
-    expect(text()).toContain('Deploy #5 · d738d2f · live ')
+    await click([...el.querySelectorAll('[aria-label=Deployments] [role=row]')][0])
+    expect(text()).toContain('Deployment #6 · 9c04e7f · live since')
+    await board('manage-deploys-failed', ctx({ at: 'env', env: DEV.id, deploy: 'dep-5' }, 2))
+    expect(el.querySelector('[aria-label=Deployments] [aria-current=true]')?.textContent).toContain('#5')
+    expect(text()).toContain('Deployment #5 · d738d2f · live ')
     expect(text()).toContain(' to ')
-    expect(text()).toContain('by you')
+    expect(text()).toContain('you, from this machine')
   })
 
-  it('a deploy that is not among the latest 20 says so', async () => {
-    await mount(boards['manage-deploys-failed'].status, ctx({ at: 'env', env: DEV.id, tab: 'deploys', deploy: 'nope' }))
-    expect(text()).toContain('Deploy not found')
-    expect(text()).toContain('It is not among the latest 20 deploys of dev.')
+  it('a deployment that is not among the latest 20 says so', async () => {
+    await mount(boards['manage-deploys-failed'].status, ctx({ at: 'env', env: DEV.id, deploy: 'nope' }))
+    expect(text()).toContain('Deployment not found')
+    expect(text()).toContain('It is not among the latest 20 deployments of dev.')
   })
 })
 
@@ -129,15 +131,15 @@ describe('Mng10: a failure on a phone', () => {
   it('one pane: back, the title, the fix, the last lines folded open; Back returns to the list', async () => {
     ui.narrow = true
     await board('manage-deploys-phone')
-    expect(el.querySelector('[aria-label=Deploys]')).toBeNull()
-    expect(text()).toContain('dev · deploy #2')
+    expect(el.querySelector('[aria-label=Deployments]')).toBeNull()
+    expect(text()).toContain('dev · deployment #2')
     expect(text()).toContain('Your agent works on your computer; you can follow it from here.')
     expect(text()).toContain('Last lines of the log')
     expect(text()).toContain('group app has no http package: routes are not served')
     expect(el.querySelector('section[aria-label=Log]')).toBeNull()
-    await click(btn('Back to deploys'))
-    expect(el.querySelector('[aria-label=Deploys]')).not.toBeNull()
-    expect(text()).not.toContain('dev · deploy #2')
+    await click(btn('Back to deployments'))
+    expect(el.querySelector('[aria-label=Deployments]')).not.toBeNull()
+    expect(text()).not.toContain('dev · deployment #2')
   })
 })
 
@@ -223,7 +225,7 @@ describe('Mng7: rollback', () => {
     await flush()
     expect(write).not.toHaveBeenCalled()
     expect(h.calls.some((c) => c.id === 'iii-cloud::api::write')).toBe(false)
-    expect(el.querySelector('[role=dialog]')?.textContent).toContain('Deploy #7 started on dev at')
+    expect(el.querySelector('[role=dialog]')?.textContent).toContain('Deployment #7 started on dev at')
     expect(confirm()?.disabled).toBe(true)
     expect(btn('Open #7')).toBeTruthy()
   })
@@ -317,7 +319,7 @@ describe('boards 01-12', () => {
     expect(byText('a', 'Open full logs')?.getAttribute('href')).toContain('/deployments/42')
     expect(logText()).toContain('worker registry exited (137)')
     expect(text()).toContain('not reached')
-    expect(el.querySelector('[role=tab][aria-selected=true]')?.textContent).toBe('Deploys')
+    expect(el.querySelector('[role=toolbar] nav')?.textContent).toContain('Deployment #')
     expect(text()).not.toContain('evidence sent')
     await click(btn('Fix with your agent'))
     const arg = h.compose.mock.calls[0][0]
@@ -339,10 +341,10 @@ describe('replaced deploys, dirty runs and new codes', () => {
       created_at: new Date(Date.parse(s.deploys[0].created_at) - 600_000).toISOString(),
     }
     await mount({ ...s, deploys: [newer, old] }, ctx({ tab: 'deploys', deployId: old.id }))
-    expect(text()).toContain('Deploy #41 replaced it before it went live')
-    await click(btn('Open that deploy'))
-    expect(el.querySelector('[aria-label=Deploys] [aria-current=true]')?.textContent).toContain('9d8c7b6')
-    expect(text()).toContain('Deploy #41 · 9d8c7b6')
+    expect(text()).toContain('Deployment #41 replaced it before it went live')
+    await click(btn('Open that deployment'))
+    expect(el.querySelector('[aria-label=Deployments] [aria-current=true]')?.textContent).toContain('9d8c7b6')
+    expect(text()).toContain('Deployment #41 · 9d8c7b6')
   })
 })
 
@@ -412,9 +414,10 @@ describe('failed deploys, console deploys, projects and direct environments', ()
 
   it('a deploy started in the console is labeled as such in the list', async () => {
     const s = watch
-    const d = { ...s.deploys[1], from_console: true, pr: null, approved_by_worker: false }
-    await mount({ ...s, deploys: [d] }, ctx({ tab: 'deploys' }))
-    expect(el.querySelector('[aria-label=Deploys]')?.textContent).toContain('from the console')
+    // A push is `from_console` too (the worker did not create it), but its type says it is a push: not the console.
+    const d = { ...s.deploys[1], type: 'manual', from_console: true, pr: null, approved_by_worker: false }
+    await mount({ ...s, deploys: [d] }, ctx({ tab: 'deploys', deployId: d.id }))
+    expect(el.querySelector('[aria-label=Deployments]')?.textContent).toContain('from the console')
   })
 })
 
@@ -422,7 +425,7 @@ describe('final core fields', () => {
   it('a deploy that no longer exists says so; a release failure shows its command', async () => {
     const s = watch
     const gone = { ...s.deploys[1], status: 'gone' as const, outcome: 'canceled' as const }
-    await mount({ ...s, deploys: [gone] }, ctx({ tab: 'deploys' }))
+    await mount({ ...s, deploys: [gone] }, ctx({ tab: 'deploys', deployId: gone.id }))
     expect(text()).toContain('Environment or deployment no longer exists')
     const f = {
       ...s.deploys[0],

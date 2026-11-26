@@ -86,6 +86,23 @@ export type ComposeFile = {
   has_cloud_block?: boolean
 }
 
+// iii cloud's answers the page reads (cloud-v1.yaml), only the fields it uses.
+export type CloudDeployment = {
+  id: string
+  number: number
+  environment_id: string
+  type: string
+  status: 'queued' | 'in_progress' | 'needs_action' | 'ready' | 'failed' | 'replaced' | 'canceled'
+  /** The one that serves the environment. */
+  current: boolean
+  commit: { sha: string; branch?: string; message?: string }
+  triggered_by: { user_id: string | null; api_key_id: string | null }
+  created_at: string
+  finished_at: string | null
+}
+export type DeploymentList = { deployments: CloudDeployment[] }
+export type Members = { members: { user: { id: string; email: string; name?: string; github_login?: string } }[] }
+
 export type Connection = {
   status: 'signed_out' | 'waiting' | 'connected' | 'expired' | 'error'
   method: 'browser' | 'api_key' | null

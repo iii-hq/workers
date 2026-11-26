@@ -3,13 +3,24 @@ import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import setup from '../../page'
+import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
 import { base, following, ready, secretRequests } from '../fixtures/base'
-import { configDir, opensToPublic, plainMessage, settingWords, whoLine, workerError } from '../model'
-import type { ChangeEvent } from '../types'
+import {
+  configDir,
+  deployOrigin,
+  deployState,
+  opensToPublic,
+  plainMessage,
+  settingWords,
+  shortDate,
+  whoLine,
+  workerError,
+} from '../model'
+import type { ChangeEvent, CloudDeployment, Deploy, Status } from '../types'
 import { fakeHost } from './host'
-import { btn, click, ctx, el, flush, mount, root, text, usePage } from './util'
+import { btn, click, ctx, el, flush, mount, root, text, ui, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -65,12 +76,84 @@ describe('plain error messages', () => {
       status: 'failed' as const,
       error: { stage: 'install' as const, code: 'CLOUD_ERROR', message: 'CLOUD_ERROR: boom' },
     }
+    // The person moved on from "What goes" to the check: the screen remembers its step in the pane.
+    ui.panes[`iii-cloud:deploy-step:t:${base.project!.environment!.id}`] = 'check'
     await mount(
-      { ...s, check: { ...s.check!, run } },
-      { panelContext: { id: 1, pageId: 'iii-cloud', context: { at: 'deploy', env: '', step: 'check' } } },
+      { ...s, check: { ...s.check!, ready: false, run } },
+      { panelContext: { id: 1, pageId: 'iii-cloud', context: { at: 'deploy', env: '' } } },
     )
     expect(text()).toContain('iii cloud had a problem')
     expect(text()).not.toContain('CLOUD_ERROR')
+  })
+})
+
+describe('one source per fact (the review, defects 1, 2 and 7)', () => {
+  const dep = (over: Partial<Deploy>): Deploy => ({
+    ...following,
+    pr: null,
+    approved_by_worker: false,
+    from_console: false,
+    check_id: null,
+    ...over,
+  })
+  const cloud = (d: Deploy, over: Partial<CloudDeployment> = {}): CloudDeployment => ({
+    id: d.id,
+    number: d.number,
+    environment_id: d.environment_id,
+    type: d.type,
+    status: 'ready',
+    current: false,
+    commit: { sha: d.commit.sha },
+    triggered_by: { user_id: null, api_key_id: null },
+    created_at: d.created_at,
+    finished_at: null,
+    ...over,
+  })
+  const at = (...ds: Deploy[]): Status => ({ ...base, deploys: ds })
+
+  it('the same deployment reads the same wherever it is asked: local record alone, or with iii cloud, a push never "from the console"', () => {
+    // A push: the worker did not create it, so it marks `from_console` too; its type says it is a push.
+    const push = dep({ id: 'p', type: 'push', from_console: true, checked_ready: false })
+    const s = at(push)
+    const alone = deployOrigin(s, push)
+    expect(alone.line).toBe('a push to GitHub, not checked')
+    expect(deployOrigin(s, push, cloud(push)).line).toBe(alone.line)
+    expect(deployOrigin(s, { id: 'p', type: 'push' }, cloud(push)).line).toBe(alone.line)
+    // Made by this worker: it was checked first, and an API key from iii cloud is still "you".
+    const mine = dep({ id: 'm', type: 'manual', check_id: 'chk-1', checked_ready: true })
+    const viaKey = cloud(mine, { triggered_by: { user_id: null, api_key_id: 'k' } })
+    expect(deployOrigin(at(mine), mine, viaKey).line).toBe('you, from this machine · checked')
+    expect(deployOrigin(at(mine), mine).line).toBe('you, from this machine · checked')
+    // A merge, a console deployment, a teammate by name (iii cloud wins for who).
+    const merged = dep({ id: 'g', pr: 12, approved_by_worker: true, checked_ready: true })
+    expect(deployOrigin(at(merged), merged).line).toBe('you, from the merge of #12 · checked')
+    const con = dep({ id: 'c', type: 'manual', from_console: true, checked_ready: false })
+    const bruno = cloud(con, { triggered_by: { user_id: 'u-bruno', api_key_id: null } })
+    const members = { members: [{ user: { id: 'u-bruno', email: 'b@x.y', name: 'bruno' } }] }
+    expect(deployOrigin(at(con), con, bruno, members).line).toBe('bruno, from the console, not checked')
+  })
+
+  it('an older live deployment is Replaced, the one serving is Live, in the local record and in iii cloud', () => {
+    const old = dep({ id: 'old', outcome: 'ready', status: 'ready' })
+    const now = dep({ id: 'now', outcome: 'ready', status: 'ready' })
+    expect(deployState(old, 'now')).toEqual({ label: 'Replaced', tone: 'ghost' })
+    expect(deployState(now, 'now')).toEqual({ label: 'Live', tone: 'ok' })
+    expect(deployState(cloud(old), 'now').label).toBe('Replaced')
+    expect(deployState(cloud(now, { current: true })).label).toBe('Live')
+    expect(deployState(dep({ outcome: 'canceled', status: 'canceled' })).label).toBe('Canceled')
+    expect(deployState(dep({ outcome: 'failed', status: 'failed' })).label).toBe('Failed')
+    expect(deployState(dep({ outcome: 'running', status: 'in_progress' })).label).toBe('Deploying')
+  })
+
+  it('a date is English whatever the browser language: it never asks the browser for its own', () => {
+    const spy = vi.spyOn(Date.prototype, 'toLocaleDateString')
+    expect(shortDate('2026-11-25T12:00:00Z')).toBe('25 Nov')
+    expect(spy.mock.calls.every((c) => c[0] === 'en-GB')).toBe(true)
+    spy.mockRestore()
+    const time = vi.spyOn(Date.prototype, 'toLocaleTimeString')
+    expect(clock('2026-11-25T12:00:00Z')).toMatch(/^\d{2}:\d{2}$/)
+    expect(time.mock.calls.every((c) => c[0] === 'en-GB')).toBe(true)
+    time.mockRestore()
   })
 })
 
@@ -227,28 +310,23 @@ describe('board 11: chat cards', () => {
     expect(text()).toContain('Signed in')
   })
 
-  it('check not ready opens the check; ready opens the run, both its own check on the Checks tab of its environment', async () => {
+  it('check not ready opens the check; ready opens the run, both on the check and deploy screen of the environment', async () => {
     const { h, renderer } = await registered()
     await show(renderer.tryRender(env(wrap(cardRecords.checkBlocked), 'iii-cloud::check')))
     expect(text()).toContain('Not ready')
     expect(text()).toContain('registry/production')
     expect(text()).toContain('commit 3c4d2e0')
-    expect(text()).toContain('iii cloud check: 3 to fix, at least')
+    expect(text()).toContain("iii cloud's plan: 3 to fix, at least")
     expect(text()).toContain('Checks here: 4 problems')
     expect(text()).toContain('2 need your decision')
-    const checks = (id: string) => ({
-      at: 'env',
-      env: cardRecords.checkBlocked.environment_id,
-      tab: 'checks',
-      check: id,
-    })
+    const check = (c: { environment_id: string }) => ({ at: 'deploy', env: c.environment_id })
     await click(btn('Open the check'))
-    expect(h.open).toHaveBeenCalledWith({ pageId: 'iii-cloud', context: checks(cardRecords.checkBlocked.id) })
+    expect(h.open).toHaveBeenCalledWith({ pageId: 'iii-cloud', context: check(cardRecords.checkBlocked) })
     await show(renderer.tryRenderDisplay(env(wrap(cardRecords.checkReady), 'iii-cloud::check')))
-    expect(text()).toContain('iii cloud check is clean')
-    expect(text()).toContain('Ran here like the cloud: 3 of 3 workers, 14 routes, healthcheck 200')
+    expect(text()).toContain("iii cloud's plan is clean")
+    expect(text()).toContain('Local run: 3 of 3 workers, 14 routes, healthcheck 200')
     await click(btn('See the run'))
-    expect(h.open).toHaveBeenLastCalledWith({ pageId: 'iii-cloud', context: checks(cardRecords.checkReady.id) })
+    expect(h.open).toHaveBeenLastCalledWith({ pageId: 'iii-cloud', context: check(cardRecords.checkReady) })
   })
 
   it('a check card turns ready when the hub gets the record of the same id', async () => {
@@ -272,15 +350,15 @@ describe('board 11: chat cards', () => {
     expect(text()).not.toContain('Not ready')
   })
 
-  it('secret card never shows a value and opens Settings', async () => {
+  it('secret card never shows a value and opens Secrets and variables', async () => {
     const { h, renderer } = await registered()
     await show(renderer.tryRender(env(wrap(cardRecords.secret), 'iii-cloud::secret')))
     expect(text()).toContain('SESSION_SECRET')
     expect(text()).toContain('type it on the iii cloud page; the value never comes back to this chat')
-    await click(btn('Open settings'))
+    await click(btn('Open secrets and variables'))
     expect(h.open).toHaveBeenCalledWith({
       pageId: 'iii-cloud',
-      context: { at: 'env', env: cardRecords.secret.environment_id, tab: 'settings' },
+      context: { at: 'secrets', env: cardRecords.secret.environment_id },
     })
   })
 
@@ -294,10 +372,10 @@ describe('board 11: chat cards', () => {
     await show(renderer.tryRender(env(wrap(cardRecords.failed), 'iii-cloud::deploy')))
     expect(text()).toContain('Failed')
     expect(text()).toContain('Workers: registry ran out of memory')
-    await click(btn('Open deploy'))
+    await click(btn('Open deployment'))
     expect(h.open).toHaveBeenCalledWith({
       pageId: 'iii-cloud',
-      context: { at: 'env', env: cardRecords.failed.environment_id, tab: 'deploys', deploy: cardRecords.failed.id },
+      context: { at: 'env', env: cardRecords.failed.environment_id, deploy: cardRecords.failed.id },
     })
   })
 })
