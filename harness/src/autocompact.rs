@@ -178,14 +178,22 @@ fn checked_tokens(value: &Value, setting: &Value, message: &str) -> Result<u64, 
 }
 
 /// A project's (or a conversation's) setting, as `harness::projects::create`
-/// and `update` store it: `{mode: "inherit"}`, `{mode: "off"}` or
-/// `{mode: "tokens", tokens}`. Refused with `bad_setting` (a mode other than
-/// these, or `tokens` without a number) or `bad_tokens` (outside
-/// 20,000-2,000,000).
+/// and `update` store it: `{mode: "inherit"}`, `{mode: "off", tokens?}` or
+/// `{mode: "tokens", tokens}`. With `off`, a `tokens` is kept and inert (the
+/// size the switch comes back to), as the global level keeps it; `inherit`
+/// clears the level and drops it. Refused with `bad_setting` (a mode other
+/// than these, or `tokens` without a number) or `bad_tokens` (outside
+/// 20,000-2,000,000, whatever the mode that keeps it).
 pub fn validate_override(value: &Value) -> Result<Value, HarnessError> {
     match value.get("mode").and_then(Value::as_str) {
         Some("inherit") => Ok(json!({ "mode": "inherit" })),
-        Some("off") => Ok(json!({ "mode": "off" })),
+        Some("off") => match value.get("tokens") {
+            None | Some(Value::Null) => Ok(json!({ "mode": "off" })),
+            Some(_) => {
+                let tokens = checked_tokens(value, value, BAD_SETTING_OVERRIDE)?;
+                Ok(json!({ "mode": "off", "tokens": tokens }))
+            }
+        },
         Some("tokens") => {
             let tokens = checked_tokens(value, value, BAD_SETTING_OVERRIDE)?;
             Ok(json!({ "mode": "tokens", "tokens": tokens }))
@@ -365,29 +373,25 @@ pub fn resolve_with(
 /// own, or a side chat's conversation's (its own copy goes stale). An
 /// unreadable one reads as none (every level inherits).
 async fn conversation_metadata(session: &SessionClient, record: &TurnRecord) -> Map<String, Value> {
+    // `None`: the session is missing, or its metadata could not be read.
     let read = |session_id: String| async move {
         session
             .metadata_of(&session_id)
             .await
-            .map(Option::unwrap_or_default)
             .unwrap_or_else(|error| {
-                tracing::warn!(session_id, %error, "autocompact: session metadata unreadable; it inherits");
-                Map::new()
+                tracing::warn!(session_id, %error, "autocompact: session metadata unreadable");
+                None
             })
     };
-    let own = read(record.session_id.clone()).await;
+    let own = read(record.session_id.clone()).await.unwrap_or_default();
     if record.parent.is_some() {
         return own;
     }
     match crate::side_chat::side_chat_parent(&own) {
-        Some(parent) => {
-            let mut parent_metadata = read(parent.to_string()).await;
-            // A conversation that went away leaves the side chat its own copy.
-            if parent_metadata.is_empty() {
-                parent_metadata = own;
-            }
-            parent_metadata
-        }
+        // The conversation's metadata as it is, empty included: one with no
+        // `autocompact` inherits, through its project. Only a conversation
+        // that is gone (or unreadable) leaves the side chat its frozen copy.
+        Some(parent) => read(parent.to_string()).await.unwrap_or(own),
         None => own,
     }
 }
@@ -486,23 +490,39 @@ pub fn gained_enough(before: u64, after: u64) -> bool {
     after.saturating_mul(10) <= before.saturating_mul(9)
 }
 
-/// `160000` → `160k`, `1200000` → `1.2M`: the token sizes the notices name.
+/// `160000` → `160k`, `1200000` → `1.2M`: the token sizes the notices name,
+/// word for word as the ADE's `formatTokens` (`ade/web/src/lib/autocompact.ts`)
+/// writes them, so a notice reads like the settings page: from 999,500 in M
+/// (999,999 is "1M", not "1000k"), from 10,000 in whole k, from 1,000 in k
+/// with one decimal.
 pub fn short_tokens(tokens: u64) -> String {
-    fn trimmed(value: f64) -> String {
-        let text = format!("{value:.1}");
-        text.strip_suffix(".0").unwrap_or(&text).to_string()
-    }
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else if tokens < 1_000_000 {
-        let k = tokens as f64 / 1_000.0;
-        if k < 10.0 {
-            format!("{}k", trimmed(k))
-        } else {
-            format!("{}k", k.round() as u64)
-        }
+    if tokens >= 999_500 {
+        format!("{}M", one_decimal(tokens as f64 / 1_000_000.0))
+    } else if tokens >= 10_000 {
+        // `Math.round`: a tie goes up, as `f64::round` does for a positive.
+        format!("{}k", (tokens as f64 / 1_000.0).round() as u64)
+    } else if tokens >= 1_000 {
+        format!("{}k", one_decimal(tokens as f64 / 1_000.0))
     } else {
-        format!("{}M", trimmed(tokens as f64 / 1_000_000.0))
+        tokens.to_string()
+    }
+}
+
+/// JavaScript's `value.toFixed(1)` with a trailing `.0` dropped: the exact
+/// value of the double rounded to one decimal, a tie going up (Rust's
+/// `{:.1}` takes a tie to the even digit: 9.25 is "9.2" there, "9.3" here).
+fn one_decimal(value: f64) -> String {
+    // A double below 2^53 has at most 52 fractional binary digits, so 60
+    // decimals print its exact value.
+    let exact = format!("{value:.60}");
+    let (whole, fraction) = exact.split_once('.').unwrap_or((&exact, "0"));
+    let mut digits = fraction.bytes();
+    let first = u64::from(digits.next().unwrap_or(b'0') - b'0');
+    let up = u64::from(digits.next().unwrap_or(b'0') >= b'5');
+    let tenths = whole.parse::<u64>().unwrap_or(0) * 10 + first + up;
+    match tenths % 10 {
+        0 => (tenths / 10).to_string(),
+        tenth => format!("{}.{tenth}", tenths / 10),
     }
 }
 
@@ -723,6 +743,9 @@ pub async fn at_turn_end(deps: &Deps, session: &SessionClient, record: &mut Turn
     };
     let outcome = Box::pin(crate::compaction::run(deps, request, compaction_id)).await;
     record.compacting = None;
+    // A Stop abandoned it: that Stop stopped the compaction only. The turn
+    // completes and keeps its continuation (written with the terminal record).
+    record.compaction_stopped = outcome.status == crate::compaction::Status::Cancelled;
     if outcome.status == crate::compaction::Status::Ok {
         match crate::context_snapshot::get(&deps.iii, &record.session_id, cfg.session_timeout_ms)
             .await

@@ -600,10 +600,11 @@ that is not `inherit` decides:
 `harness::chat-settings::set` and `harness::projects::create|update` refuse
 anything else with `bad_setting`, `bad_tokens` or `bad_instructions` (a
 rejection, `{code, message, field, ...}`, with ready copy such as "Between 20k
-and 2M tokens"). The global `tokens` stays stored with `mode: "off"`, inert,
-so turning it back on restores the size; `instructions: ""` clears them; a
-project's `{mode: "inherit"}` clears its value. A sub-agent has no setting
-of its own: it follows its project and the global.
+and 2M tokens"). At every level, `tokens` stays stored with `mode: "off"`,
+inert, so turning it back on restores the size (a bad one is still refused);
+`instructions: ""` clears them; a project's `{mode: "inherit"}` clears its
+value. A sub-agent has no setting of its own: it follows its project and the
+global.
 Each turn resolves the setting at its first step and keeps it on its record
 (`autocompact`), and the end of the turn resolves it again.
 
@@ -631,8 +632,12 @@ and the record "Auto-compacted at 160k · 161k →
 `harness::side-chat::open` takes the turn's reply as final, and
 `harness::side-chat::summarize` on a compacting side chat answers
 `side_chat_busy`. `harness::on-turn-completed` carries the refreshed
-snapshot. A Stop abandons the summary (`status: "cancelled"`, no record) and
-the turn completes.
+snapshot. A Stop abandons the summary (`status: "cancelled"`, no record:
+"Auto-compact stopped. The conversation goes on and compacts again after its
+next turn.", with no back-off) and answers `stopping: true`; the reply is
+already final, so the Stop stops the compaction only: a message queued during
+it keeps its turn (the record marks `compaction_stopped: true` and keeps
+`continues`).
 
 **Inside a turn** every `context::assemble` carries `compaction_budget:
 cap_tokens` with `compaction_instructions` and the turn's
@@ -924,8 +929,8 @@ in the error message, `{ code, message, ... }`: `name_taken`, `folder_taken`
 `{ mode: "global" }` (the default) or `{ mode: "pinned", account_id }`: the
 Claude Code account its conversations run on (see
 [Claude Code accounts](#claude-code-accounts)). Its `autocompact` is
-`{ mode: "inherit" }` (the default), `{ mode: "off" }` or
-`{ mode: "tokens", tokens }` (see [Autocompact](#autocompact)).
+`{ mode: "inherit" }` (the default), `{ mode: "off", tokens? }` (the size
+kept, inert) or `{ mode: "tokens", tokens }` (see [Autocompact](#autocompact)).
 
 **Descriptions.** `harness::set-description { description, title? }` is a
 tool the model gets in every turn (with its own description, in the cached
@@ -947,8 +952,9 @@ without another model request.
 { agent_writes }, autocompact: { mode, tokens?, instructions? } }`;
 `harness::chat-settings::set { patch }` merges the patch into the stored
 `harness` configuration on the server (an `autocompact` field set to `null`
-is removed; `tokens` and `instructions` stay while the mode is `off`). A
-harness older than 1.13 refuses a configuration that holds `autocompact`.
+is removed; `tokens` and `instructions` stay while the mode is `off`; the
+default, off with neither, is not stored). A harness older than 1.13 refuses
+a configuration that holds `autocompact`.
 
 **Context pane.** `harness::context-items { session_id }` answers what a
 conversation gathered, newest first: `subagents` (direct children, with

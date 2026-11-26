@@ -147,10 +147,16 @@ pub fn merge_patch(stored: &Value, patch: &Value) -> Result<Value, HarnessError>
                     }
                 }
                 let checked = crate::autocompact::validate_global(&Value::Object(autocompact))?;
-                let stored = serde_json::to_value(checked).map_err(|error| {
-                    HarnessError::Internal(format!("autocompact setting: {error}"))
-                })?;
-                merged.insert("autocompact".into(), stored);
+                // The default (off, no size, no instructions) is left out of
+                // the stored entry, so a harness older than 1.13 still boots.
+                if checked.is_default() {
+                    merged.remove("autocompact");
+                } else {
+                    let stored = serde_json::to_value(checked).map_err(|error| {
+                        HarnessError::Internal(format!("autocompact setting: {error}"))
+                    })?;
+                    merged.insert("autocompact".into(), stored);
+                }
             }
             other => {
                 return Err(HarnessError::InvalidRequest(format!(
@@ -290,6 +296,16 @@ mod tests {
             cleared["autocompact"],
             json!({ "mode": "off", "tokens": 160_000 })
         );
+        // The default (off, no size, no instructions) is not stored, so a
+        // harness older than 1.13 still boots on the entry.
+        let default = merge_patch(&cleared, &json!({ "autocompact": { "tokens": null } })).unwrap();
+        assert_eq!(default, stored, "the default leaves the entry as it was");
+        let never_set = merge_patch(
+            &stored,
+            &json!({ "autocompact": { "mode": "off", "instructions": "" } }),
+        )
+        .unwrap();
+        assert_eq!(never_set, stored);
         // The ADE sends the whole object: `tokens` stays with `mode: "off"`
         // (inert until it is turned back on), `instructions: ""` clears.
         let whole = merge_patch(

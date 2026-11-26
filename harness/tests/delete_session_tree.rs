@@ -2651,6 +2651,37 @@ async fn a_failing_recall_ledger_purge_still_acknowledges_session_deleted() {
     );
 }
 
+/// The autocompact back-off and log are best-effort too: a store that cannot
+/// clear them must not fail the deletion or skip the purges after them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_autocompact_purge_still_acknowledges_session_deleted() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .fail_scope
+        .insert(harness::autocompact::BACKOFF_SCOPE.into());
+    let ack = on_session_deleted::handle(
+        &stack.deps,
+        SessionDeletedEvent {
+            session_id: "child2".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(ack.ok);
+    let store = stack.store.lock().unwrap();
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == harness::autocompact::BACKOFF_SCOPE
+        && data["key"] == "child2"));
+    // The purges after it ran: the side-chat lock and the turn record.
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == harness::side_chat::LOCK_SCOPE
+        && data["key"] == "child2"));
+    assert!(store.state("harness_turn", "child2").is_null());
+}
+
 /// A step holds its record in memory and writes it back when it ends. The
 /// purge waits that step out, so it deletes the step's last write instead of
 /// the step re-creating the record it just deleted.

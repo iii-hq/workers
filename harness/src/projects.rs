@@ -981,6 +981,7 @@ mod tests {
                 json!({ "mode": "tokens", "tokens": 3_000_000 }),
                 "bad_tokens",
             ),
+            (json!({ "mode": "off", "tokens": 10_000 }), "bad_tokens"),
         ] {
             let refused = store
                 .create(
@@ -1007,7 +1008,7 @@ mod tests {
         }
         // Nothing refused was written.
         assert_eq!(store.list(file_str).await.unwrap().revision, 1);
-        // Stored normalized: a stray `tokens` on another mode is dropped.
+        // Off keeps its size, inert (the size the switch comes back to).
         let off = store
             .update(
                 file_str,
@@ -1020,7 +1021,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(off.project.autocompact, json!({ "mode": "off" }));
+        assert_eq!(
+            off.project.autocompact,
+            json!({ "mode": "off", "tokens": 160_000 })
+        );
         // Clearing the project's value sends `{mode: "inherit"}`.
         let cleared = store
             .update(

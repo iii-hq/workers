@@ -57,7 +57,16 @@ pub async fn handle(
     crate::filesystem_grants::purge(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
     crate::budget::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::context_snapshot::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;
-    crate::autocompact::forget_session(deps, &event.session_id).await?;
+    // Best-effort: a back-off or a log line left behind is harmless (nothing
+    // reads a deleted conversation's back-off, and the log ring rotates the
+    // line out), so a state error here must not skip the purges after it.
+    if let Err(error) = crate::autocompact::forget_session(deps, &event.session_id).await {
+        tracing::warn!(
+            session_id = %event.session_id,
+            %error,
+            "session deleted: autocompact back-off and log not cleared"
+        );
+    }
     crate::ask_settlement::purge(deps, &event.session_id, cfg.session_timeout_ms).await?;
     crate::side_chat::delete_lock(deps, &event.session_id).await?;
     crate::usage_report::delete(&deps.iii, &event.session_id, cfg.session_timeout_ms).await?;

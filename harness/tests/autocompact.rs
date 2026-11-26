@@ -842,7 +842,7 @@ async fn the_end_of_a_turn_leaves_the_conversation_alone_otherwise() {
 
 /// A send while the end of a turn compacts waits in the queue and runs after
 /// the compaction; `side-chat::open` takes the compacting turn's reply as
-/// final.
+/// final, and the side chat's record is not compacting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_sent_while_it_compacts_waits_and_runs_after() {
     let mut store = ended_world(150_000, 12_000, 916_000);
@@ -875,6 +875,14 @@ async fn a_message_sent_while_it_compacts_waits_and_runs_after() {
         stack.store().sent("session::fork")[0]["entry_id"],
         format!("e_{TURN}_3_assistant")
     );
+    {
+        // The side chat's record is a finished turn: the compaction stays the
+        // conversation's.
+        let store = stack.store();
+        let seeded = turn_record(&store, "s-fork");
+        assert_eq!(seeded["status"], "completed", "{seeded}");
+        assert!(seeded.get("compacting").is_none(), "{seeded}");
+    }
 
     let sent = harness::functions::send::handle(
         &stack.deps,
@@ -1022,10 +1030,115 @@ async fn a_stop_abandons_the_summary_and_the_turn_still_completes() {
         .expect("the start notice is closed");
     assert_eq!(
         notice["data"]["message"],
-        "Auto-compact stopped. The conversation goes on and compacts at the model's limit."
+        "Auto-compact stopped. The conversation goes on and compacts again after its next turn."
     );
     assert_eq!(turn_record(&store, S)["status"], "completed");
+    // No back-off: the next turn's end compacts at the threshold again.
     assert!(store.get(autocompact::BACKOFF_SCOPE, S).is_null());
+}
+
+/// A Stop that lands while the turn only compacts stops the compaction only:
+/// the reply is final, and a message queued during the summary gets its turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_the_summary_leaves_the_queued_message_its_turn() {
+    let mut store = ended_world(150_000, 12_000, 916_000);
+    store.hold = Some("context::compact");
+    let stack = Arc::new(Stack::new(store, projects(), global(None)).await);
+    let running = tokio::spawn({
+        let stack = stack.clone();
+        async move { stack.run(S, 3).await }
+    });
+    stack.held("context::compact").await;
+    let sent = harness::functions::send::handle(
+        &stack.deps,
+        serde_json::from_value(json!({ "session_id": S, "message": "next question" })).unwrap(),
+    )
+    .await
+    .expect("the send is accepted");
+    assert_eq!(sent.queued, Some(true));
+    let stopped = harness::functions::stop::handle(
+        &stack.deps,
+        serde_json::from_value(json!({ "session_id": S })).unwrap(),
+    )
+    .await
+    .expect("the stop is accepted");
+    assert!(stopped.stopping, "the stop stopped the compaction");
+    tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the stop ends the wait for the summary")
+        .unwrap();
+    let done = stack.completions(1).await;
+    assert_eq!(done[0]["status"], "cancelled");
+    stack.release();
+
+    let store = stack.copy();
+    let next_turn = turn_record(&store, S);
+    assert_ne!(
+        next_turn["turn_id"], TURN,
+        "the queued message has its turn"
+    );
+    assert_eq!(next_turn["status"], "running");
+    assert!(
+        next_turn.get("abort").is_none_or(|abort| abort == false),
+        "{next_turn}"
+    );
+    assert!(
+        store.calls.iter().any(|(f, data, action)| {
+            f == "harness::turn"
+                && action["type"] == "enqueue"
+                && data["turn_id"] == next_turn["turn_id"]
+        }),
+        "the next turn is enqueued"
+    );
+    assert!(
+        store.messages[S].iter().any(|entry| {
+            entry["message"]["role"] == "user"
+                && entry["message"]["content"][0]["text"] == "next question"
+        }),
+        "the queued message reached the transcript"
+    );
+    assert!(store.custom(S, "compaction", None).is_none(), "no record");
+}
+
+/// A Stop whose read lands after the abandoned compaction's turn completed
+/// with a queued message (before its reseed, or when the reseed failed)
+/// leaves that continuation alone; without the abandoned compaction, a
+/// finished turn's continuation is still taken back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_stop_keeps_the_continuation_of_a_stopped_compaction() {
+    for (stopped_compaction, keeps) in [(true, true), (false, false)] {
+        let mut store = ended_world(150_000, 12_000, 916_000);
+        let mut turn = turn_record(&store, S);
+        turn["status"] = json!("completed");
+        turn["continues"] = json!(true);
+        if stopped_compaction {
+            turn["compaction_stopped"] = json!(true);
+        }
+        store.put("harness_turn", S, turn);
+        let stack = Stack::new(store, projects(), global(None)).await;
+        let stopped = harness::functions::stop::handle(
+            &stack.deps,
+            serde_json::from_value(json!({ "session_id": S })).unwrap(),
+        )
+        .await;
+        let store = stack.copy();
+        let turn = turn_record(&store, S);
+        if keeps {
+            assert!(stopped.expect("the stop is accepted").stopping);
+            assert_eq!(turn["continues"], true, "{turn}");
+            assert!(
+                turn.get("abort").is_none_or(|abort| abort == false),
+                "{turn}"
+            );
+        } else {
+            assert!(
+                turn.get("continues")
+                    .is_none_or(|continues| continues == false),
+                "taken back: {turn}"
+            );
+            assert_eq!(turn["abort"], true, "{turn}");
+        }
+    }
 }
 
 /// D162, D166: a failure says why and backs off; a usage limit names the
@@ -1274,15 +1387,23 @@ async fn an_older_context_manager_compacts_at_the_models_limit() {
 
 /// D160 and the clarified contract: a failed or busy inline attempt writes
 /// no notice, starts no back-off, and drops the budget for the rest of the
-/// turn.
+/// turn. So does one at the model's own limit (`trigger: "usable"`): the
+/// context is then past the budget too, and every later step would call the
+/// summariser again on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_inline_attempt_drops_the_budget_for_the_rest_of_the_turn() {
-    for status in ["failed", "busy"] {
+    for (trigger, usable, status) in [
+        ("budget", 916_000, "failed"),
+        ("budget", 916_000, "busy"),
+        ("usable", 175_000, "failed"),
+        ("usable", 175_000, "busy"),
+    ] {
+        let status = format!("{trigger} {status}");
         let reply = json!({
-            "token_count": 170_000, "usable": 916_000, "effective_max_output_tokens": 64_000,
+            "token_count": 170_000, "usable": usable, "effective_max_output_tokens": 64_000,
             "applied": { "initial_token_count": 181_000, "compacted": false },
-            "compaction_budget": 180_000,
-            "compaction": { "trigger": "budget", "status": status,
+            "compaction_budget": usable.min(180_000),
+            "compaction": { "trigger": trigger, "status": status.split(' ').nth(1),
                             "failure": { "kind": "timeout", "message": "slow" } },
         });
         let stack = Stack::new(generate_world(reply), projects(), global(None)).await;
@@ -1305,6 +1426,53 @@ async fn a_failed_inline_attempt_drops_the_budget_for_the_rest_of_the_turn() {
         assert!(store.custom(S, "notice", None).is_none(), "{status}");
         assert!(store.events_of(ON_COMPACTION_FN).is_empty(), "{status}");
         assert!(store.get(autocompact::BACKOFF_SCOPE, S).is_null());
+    }
+}
+
+/// A side chat reads its conversation's metadata as it is: one with no
+/// `autocompact` (empty metadata included) inherits, through its project
+/// and the global. Only a conversation that is gone leaves the side chat its
+/// frozen copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_side_chat_falls_back_to_its_copy_only_when_its_conversation_is_gone() {
+    let cases = [
+        (Some(json!({})), json!({ "scope": "global" }), Some(300_000)),
+        (
+            Some(json!({ "project_id": ACME })),
+            acme_rule(),
+            Some(160_000),
+        ),
+        (None, json!({ "scope": "session" }), Some(600_000)),
+    ];
+    for (parent, rule, tokens) in cases {
+        let mut store = Store::default();
+        if let Some(metadata) = &parent {
+            store
+                .sessions
+                .insert(S.into(), session(S, "Fix the build", metadata.clone()));
+        }
+        // The side chat's copy, frozen when it opened.
+        store.sessions.insert(
+            SIDE.into(),
+            session(
+                SIDE,
+                "Side chat",
+                json!({ "side_chat_of": S, "project_id": ACME,
+                        "autocompact": { "mode": "tokens", "tokens": 600_000 } }),
+            ),
+        );
+        let stack = Stack::new(store, projects(), global(Some(300_000))).await;
+        let record =
+            serde_json::from_value(ended_turn(SIDE, snapshot(SIDE, 100_000, 5_000, 916_000)))
+                .unwrap();
+        let session = stack.deps.session().await;
+        let resolution = autocompact::resolve(&stack.deps, &session, &record).await;
+        assert_eq!(
+            serde_json::to_value(&resolution.rule).unwrap(),
+            rule,
+            "{parent:?}"
+        );
+        assert_eq!(resolution.setting_tokens, tokens, "{parent:?}");
     }
 }
 
