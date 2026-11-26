@@ -426,6 +426,11 @@ available for review and revert. Objects released from a shared repository are
 reclaimed by Git's normal garbage collection; an orphan repository is removed
 with all of its packs and indexes.
 
+The real-engine regression requires Git 2.45 or newer on `PATH` for its
+`for-each-ref --include-root-refs` inventory. It checks this capability before
+creating fixtures or starting the engine. This is a test-only requirement;
+production reconciliation does not use that option.
+
 To run the startup and session-deletion regression with a real engine and worker:
 
 ```sh

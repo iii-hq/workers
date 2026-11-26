@@ -13,6 +13,21 @@ use iii_sdk::{CallRequest, Error, InitOptions, RegisterFunction, register_worker
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+fn require_root_ref_inventory() {
+    let help = std::process::Command::new("git")
+        .args(["for-each-ref", "-h"])
+        .env("LC_ALL", "C")
+        .output()
+        .expect("turn_retention requires Git 2.45 or newer on PATH");
+    // Git's help exits with status 129; check the option rather than its status.
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("include-root-refs")
+            || String::from_utf8_lossy(&help.stderr).contains("include-root-refs"),
+        "turn_retention requires Git 2.45 or newer with for-each-ref --include-root-refs; \
+         update Git on PATH before running the real-engine test"
+    );
+}
+
 fn git(repo: &Path, args: &[&str], input: Option<&str>) -> String {
     let mut child = std::process::Command::new("git")
         .arg("--git-dir")
@@ -275,8 +290,9 @@ fn start_worker(binary: &Path, run: &Path, url: &str, name: &str) -> tokio::proc
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires III_BIN and a release III_IDE_BIN; launches an isolated engine"]
+#[ignore = "requires Git 2.45+, III_BIN and a release III_IDE_BIN; launches an isolated engine"]
 async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
+    require_root_ref_inventory();
     let engine = std::env::var_os("III_BIN").expect("III_BIN is required");
     let worker = PathBuf::from(std::env::var_os("III_IDE_BIN").expect("III_IDE_BIN is required"));
     let temporary = tempfile::tempdir().unwrap();
