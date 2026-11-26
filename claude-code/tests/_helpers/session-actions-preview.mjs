@@ -168,7 +168,7 @@ async function testSessionActions(code) {
           (element.getAttribute('aria-label') ?? element.textContent) === name
         );
       });
-    return { document, click, text, shortcut, follow, focus };
+    return { document, click, text, shortcut, follow, focus, until };
   }
 
   await test('hides replies on the config event without waiting for refresh or polling', async (t) => {
@@ -250,6 +250,24 @@ async function testSessionActions(code) {
     assert.match(document.body.textContent, /Working · Background/);
     await click('Open original: Background indexing');
     await text('Background indexing · Done');
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+  });
+
+  await test('keeps following a finished background original after it leaves the rail', async (t) => {
+    const { click, text, shortcut, document, until } = setup(t);
+    const row = '[aria-label="Open original: Background indexing"]';
+    await click('Open original: Background indexing');
+    await text('Background indexing · Working');
+    assert.equal(document.documentElement.dataset.replyWatches, '1');
+
+    shortcut('KeyF');
+    await until(() => !document.querySelector(row));
+    await text('Background indexing · Done');
+    assert.equal(
+      document.querySelector('[role="log"]').textContent,
+      'Synthetic reply for Background indexing.',
+    );
+    assert.equal(document.documentElement.dataset.replyWatches, '1');
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 

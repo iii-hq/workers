@@ -269,7 +269,6 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const onScreen = rows.find(
     (row) => row.pty_session_id && row.pty_session_id === terminal.current,
   )?.id;
-  const followed = rows.some((row) => row.claude_session_id === follow);
 
   const closeComposer = () => {
     setComposing(null);
@@ -569,7 +568,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           iii={host.iii}
           id={follow}
           configId={configId}
-          available={followed && !sessions.error}
+          // The gated reply snapshot can still find originals that finish and leave the rail.
+          available={currentVisibility}
           opener={followOpener}
           onClose={() => setFollow(null)}
         />

@@ -275,7 +275,7 @@ export function registerAgents(
   current: () => Prepared,
   external: () => boolean,
   tracker: { has(sessionId: string): boolean },
-  visibilityEpoch: () => number | null = () => null,
+  visibilityEpoch: () => number | null,
 ): {
   replyRow: (id: string) => Promise<{ row: AgentRow; env: Prepared['env'] }>;
   /** How a terminal opens a listed session; throws why one cannot be. */
@@ -294,6 +294,12 @@ export function registerAgents(
       showAll = replies || external(),
       readPtys = !replies,
       markExternal = false,
+    }: {
+      host?: Prepared;
+      replies?: boolean;
+      showAll?: boolean;
+      readPtys?: boolean;
+      markExternal?: boolean;
     } = {},
   ) => {
     const [records, snapshot, hooked, ptys] = await Promise.all([

@@ -104,11 +104,17 @@ const host = {
         mode?: string;
         cursor?: string;
         include_config_id?: boolean;
+        all?: boolean;
       },
     ) {
       if (fn === 'claude::agents::list') {
         return {
-          agents: allowed ? rows.map(currentRow) : rows.filter((entry) => !entry.external_only),
+          agents: rows
+            .map(currentRow)
+            .filter(
+              (row) =>
+                (allowed || !row.external_only) && (p.all || row.kind !== 'background' || row.alive),
+            ),
           ...(p.include_config_id ? { config_id: configId } : {}),
         };
       }
@@ -267,6 +273,10 @@ function Preview() {
       deliver();
     }
     if (e.code === 'KeyY') releaseHeldLookup?.();
+    if (e.code === 'KeyF') {
+      backgroundFinished = true;
+      emit('claude::terminal::activity', {});
+    }
   };
   return (
     <TooltipProvider>
