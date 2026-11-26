@@ -320,10 +320,9 @@ export function ImageResizeView({
                   renderControl={(props) => (
                     <Input
                       {...props}
-                      type="number"
+                      // A number input hands "" for text it cannot parse ("200px"), which would read as the default.
+                      type="text"
                       inputMode="numeric"
-                      min={1}
-                      step={1}
                       placeholder="Default"
                       value={options.width}
                       onChange={(width) => handlers.onOption({ width })}
@@ -338,10 +337,8 @@ export function ImageResizeView({
                   renderControl={(props) => (
                     <Input
                       {...props}
-                      type="number"
+                      type="text"
                       inputMode="numeric"
-                      min={1}
-                      step={1}
                       placeholder="Default"
                       value={options.height}
                       onChange={(height) => handlers.onOption({ height })}
@@ -391,11 +388,8 @@ export function ImageResizeView({
                   renderControl={(props) => (
                     <Input
                       {...props}
-                      type="number"
+                      type="text"
                       inputMode="numeric"
-                      min={1}
-                      max={100}
-                      step={1}
                       placeholder="Default"
                       disabled={png}
                       value={options.quality}

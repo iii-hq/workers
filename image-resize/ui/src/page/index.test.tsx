@@ -264,6 +264,15 @@ describe('ImageResizeView', () => {
     expect(resizeButton(html)).not.toContain('disabled')
   })
 
+  it('takes the box and quality as text, so input the browser cannot parse as a number reaches the field check', () => {
+    const html = render({ state: chosen })
+    for (const field of ['width', 'height', 'quality']) {
+      const input = html.match(new RegExp(`<input[^>]*id="${field}"[^>]*>`))?.[0] ?? ''
+      expect(input, field).toContain('type="text"')
+      expect(input, field).toMatch(/inputmode="numeric"/i)
+    }
+  })
+
   it('shows each invalid option next to its field', () => {
     const errors: FieldErrors = {
       width: 'Enter a whole number of pixels, 1 or more.',
