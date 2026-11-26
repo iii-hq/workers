@@ -1,6 +1,6 @@
 //! HTTP server: routes `/`, the installable-PWA resources, `/assets/*`,
-//! `/ws` (WebSocket proxy), and — when injectable UI is enabled — `/ui`,
-//! `/ui/*`, and `/vendor/*`.
+//! `/ws` (WebSocket proxy), `/ws/ws/channels/{id}` (SDK stream sockets), and
+//! — when injectable UI is enabled — `/ui`, `/ui/*`, and `/vendor/*`.
 //!
 //! Binds `<http_host>:<http_port>` — `127.0.0.1` by default. Set `http_host`
 //! in the seed config or `--http-host` to select an interface. Front it
@@ -94,7 +94,7 @@ impl AppState {
     }
 }
 
-/// Connection settings extracted by the `/ws` proxy.
+/// Connection settings extracted by the `/ws` and stream socket proxies.
 impl FromRef<AppState> for proxy::ProxyConfig {
     fn from_ref(state: &AppState) -> Self {
         Self {
@@ -114,7 +114,10 @@ pub fn router(state: AppState) -> Router {
         .route("/icons/{*path}", get(assets::icon_handler))
         .route("/assets/{*path}", get(assets::asset_handler))
         .route("/runtime", get(runtime_handler))
-        .route("/ws", get(proxy::ws_proxy));
+        .route("/ws", get(proxy::ws_proxy))
+        // The doubled `/ws`: the browser SDK appends `/ws/channels/<id>` to
+        // its socket address, which is `<origin>/ws`.
+        .route("/ws/ws/channels/{channel_id}", get(proxy::channel_proxy));
 
     // `/probe` runs the observers page's test request server-side so the panel
     // can read a redirect's real status (302 etc.) — a browser `fetch` cannot.

@@ -1,0 +1,10 @@
+# Agent permissions for the image-resize worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# The config-reload callback and the console UI's asset server are
+# bus-internal; `image_resize::resize` stays unlisted, so it needs approval.
+version: 1
+
+rules:
+  - '!image-resize::on-config-change'
+  - '!image-resize::ui-content'

@@ -7,4 +7,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: image-resize
 tags: [image, resize, jpeg, png, webp, media]
-description: III engine image resize worker (JPEG/PNG/WebP, EXIF orient, scale-to-fit / crop-to-fit)
+description: Downscale JPEG, PNG and WebP images to fit or fill a box (EXIF-aware, never enlarges; JPEG, PNG or lossy WebP out)
+
+dependencies:
+  configuration: "latest"

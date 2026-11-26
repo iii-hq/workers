@@ -90,6 +90,7 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `ios-simulator` | yes | Shared page chrome with `PageSidebar` drill-in, `List`/`ListItem`, `Selector` (tenant), `Toolbar`/`StatusBar`, `Tabs`, `DropdownMenu`, `useConfirm`, `ImageViewer`, `Dialog`, `LiveRegion`, `SettingsField` config form, `host.overlays` live preview (the browser's deck); `useWorkerLive` for device/media events, `usePaneState`, `useContainerNarrow`, format subpath, `lucide-react` | The live iPhone: bezel, side keys and pointer→multi-touch mapping; frame-event-fed frames and the serial input queue stay local |
 | `ide` (scope `ide`) | yes | Migrated: shared tooltips, `CodeEditor`/`FileDiff`, terminal atoms, `DirectoryPicker`, shared hooks/format/icons; `.xterm` vendor CSS allowlisted via `allowUnscopedSelectors`; neutral editor/terminal tabs | Terminal, filesystem, source control, timeline |
 | `iii-directory` | yes | Migrated: `SearchField`, `MetaRow`/`ActionLine`, `Kbd`/`KeyCombo`, `CollapsibleCard`, shared hooks/format/icons; neutral navigation selection | Registry/document editing workflows |
+| `image-resize` | yes | Shared page chrome (`PageShell`/`PageHeader`), `Settings*` fields with `Input`/`Select` for the options and the `configForms` form, `ImageThumbnailButton` + `ImageViewer`, `MetaRow`, `Eyebrow`, `StatusPanel`, `EmptyState`, `Skeleton`, `LiveRegion`, `Button`/`IconButton`; `errorMessage`/`formatBytes`, `lucide-react` | Drop zone and the original/resized comparison |
 | `kanban` | yes | Shared page chrome, `List`/`ListItem`, `Card`, `Tabs`, `Selector`/`Select`, `ConfirmDialog`, `CodeEditor`, `Markdown`, `SettingsDeck` form; imports `usePaneState`/`useContainerNarrow`/`errorMessage`/`formatRelative`/`unwrapEnvelope` from the package, `lucide-react` | Board columns, ticket detail, function-call and observer-activity renderers |
 | `llm-router` | yes | Shared finite selects and configuration controls; tokens only | Provider/model configuration semantics |
 | `mcp-client` | yes | Shared page chrome with `PageSidebar`, `List`/`ListItem`, `SearchField`, `Tabs`, `SegmentedControl`, `StatusDot`/`StatusPanel`/`EmptyState`/`Skeleton`, `useConfirm`, `JsonHighlight`, `TerminalCommandLine`, `LiveRegion`; `useWorkerLive`, `useContainerNarrow`, `useCopyFlash`; tokens only | Three-column function browser with the path row; schema-driven Test form, resource picker, prompt messages |
@@ -162,6 +163,7 @@ owns; the registry refuses those at registration. See
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |
 | pdf | choose file; setup: open | `O` | |
+| image-resize | choose image, resize, download; setup: open | `Mod+Enter` | |
 | onboarding, vscode | setup: open | | |
 
 Every page names its `data-autofocus` target. Shared `TableRow interactive` and `List` carry the arrows, Enter and Space for the rows and lists built from them.
