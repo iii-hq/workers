@@ -18,6 +18,7 @@ export const GENERAL_ANCHOR = {
   projects: 'settings-general-projects',
   sessionDescriptions: 'settings-general-session-descriptions',
   claudeAccounts: 'settings-general-claude-accounts',
+  autocompact: 'settings-general-autocompact',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
   allowlist: 'settings-general-allowlist',
@@ -162,6 +163,26 @@ const CLAUDE_ACCOUNT_FIELDS: SettingsSearchField[] = [
   },
 ]
 
+/** Chat › Auto-compact, on a harness with `harness::autocompact::models` (chat-projects §3.3.1). */
+const AUTOCOMPACT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'autocompact',
+    label: 'Auto-compact',
+    trail: ['Chat'],
+    description:
+      "Compact conversations by themselves at a size, or at the model's limit.",
+    keywords: [
+      'compact',
+      'autocompact',
+      'context',
+      'tokens',
+      'summary',
+      'limit',
+    ],
+    anchor: A.autocompact,
+  },
+]
+
 const PERMISSION_FIELDS: SettingsSearchField[] = [
   {
     key: 'permissions',
@@ -264,7 +285,7 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
 
 /**
  * The General page's searchable fields; Permissions, Projects, Session
- * descriptions and Claude Code accounts only when they render.
+ * descriptions, Claude Code accounts and Auto-compact only when they render.
  */
 export function generalSearchFields(
   approvalGateAvailable: boolean,
@@ -272,6 +293,7 @@ export function generalSearchFields(
     projects?: boolean
     descriptions?: boolean
     claudeAccounts?: boolean
+    autocompact?: boolean
   } = {},
 ): SettingsSearchField[] {
   return [
@@ -279,6 +301,7 @@ export function generalSearchFields(
     ...(chat.projects ? PROJECT_FIELDS : []),
     ...(chat.descriptions ? DESCRIPTION_FIELDS : []),
     ...(chat.claudeAccounts ? CLAUDE_ACCOUNT_FIELDS : []),
+    ...(chat.autocompact ? AUTOCOMPACT_FIELDS : []),
     ...(approvalGateAvailable ? PERMISSION_FIELDS : []),
     ...TRAILING_FIELDS,
   ]
