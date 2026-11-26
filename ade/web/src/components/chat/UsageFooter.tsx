@@ -1,51 +1,35 @@
 import { TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/shadcn/button'
-import { FactMeter } from '@/components/ui/FactCard'
+import { Hint } from '@/components/ui/Hint'
 import { getDefaultBackend } from '@/lib/backend'
 import {
-  type ClaudeAccount,
   type ClaudeAccounts,
   dismissSuggestion,
   useClaudeAccounts,
 } from '@/lib/backend/claude-accounts'
 import {
   FOOTER_TITLE,
-  footerName,
-  footerTitle,
-  level,
   mostRoom,
   NOT_NOW,
-  noReading,
-  oldestReading,
-  percent,
+  ringLine,
+  ringsLabel,
+  ringsOrder,
   suggestionBody,
   suggestionTitle,
   suggestionUse,
-  type UsageLevel,
 } from '@/lib/claude-accounts-words'
-import { cn } from '@/lib/utils'
+import { bundledProviderMark } from '@/lib/provider-marks'
 import { AccountDot } from './AccountCard'
 import {
   type AccountActions,
   AccountsStatus,
   useAccountActions,
-  useUsageNow,
 } from './AccountCards'
 import { ClaudeAccountsDialog } from './ClaudeAccountsDialog'
 import { requestClaudeAccountsDialog } from './claude-accounts-dialog-request'
-
-const LEVEL_TEXT: Record<UsageLevel, string> = {
-  normal: 'text-ink-faint',
-  high: 'text-warn',
-  full: 'text-alert',
-}
-
-const LEVEL_ACCENT: Record<UsageLevel, string | undefined> = {
-  normal: undefined,
-  high: 'var(--color-warn)',
-  full: 'var(--color-alert)',
-}
+import { ProviderIcon } from './ProviderIcon'
+import { UsageRing } from './UsageRing'
 
 /**
  * tmux's suggestion card (§4.3.3), when its rules are in suggest mode and
@@ -117,69 +101,22 @@ export function SuggestionCard({
   )
 }
 
-/** One account's mini meter: "Work · global 64%". */
-function FooterMeter({
-  account: a,
-  isGlobal,
-  onOpen,
-}: {
-  account: ClaudeAccount
-  isGlobal: boolean
-  onOpen: () => void
-}) {
-  const week = a.usage?.week ?? null
-  const pct = week ? percent(week.usedPercent) : 0
-  const tone = level(week)
-  const name = footerName(a, isGlobal)
-  const missing = week ? null : noReading(a)
-  return (
-    <li>
-      <button
-        type="button"
-        data-footer-account={a.id}
-        onClick={onOpen}
-        className="flex w-full flex-col gap-1 rounded-md px-1.5 py-1 text-left hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
-      >
-        <span className="flex min-w-0 items-center gap-1.5 text-xs">
-          <AccountDot color={a.color} />
-          <span className="min-w-0 flex-1 truncate text-ink">{name}</span>
-          {week ? (
-            <span className={cn('font-mono tabular-nums', LEVEL_TEXT[tone])}>
-              {pct}%
-            </span>
-          ) : null}
-        </span>
-        {week ? (
-          <FactMeter
-            value={pct}
-            accent={LEVEL_ACCENT[tone]}
-            label={`${name} ${pct}% this week`}
-          />
-        ) : missing ? (
-          <span className="truncate text-meta text-ink-faint">{missing}</span>
-        ) : null}
-      </button>
-    </li>
-  )
-}
-
 /**
- * The sidebar's usage footer (§4.3.3, D137): "Usage this week · 4 min ago"
- * and a mini meter per Claude Code account, the suggestion card above it.
- * Claude Code only; a click opens the accounts.
+ * The sidebar's usage footer (§4.3.3, D137, D178): one button, the Claude
+ * Code mark and a ring per account's week, the global account first, no
+ * text; the button's name says every account and a ring's tooltip its own
+ * line. The suggestion card above it. Claude Code only; a click opens the
+ * accounts.
  */
 export function UsageFooter() {
   const realBackend = getDefaultBackend().id === 'real'
   const data = useClaudeAccounts(realBackend)
   const actions = useAccountActions(data)
-  const now = useUsageNow()
   const [ownOpen, setOwnOpen] = useState(false)
   const claude = data.claude
   if (data.gate !== 'full' || !claude || claude.accounts.length === 0) {
     return null
   }
-  const readAt =
-    oldestReading(claude.accounts) ?? data.usage?.generatedAtMs ?? null
   const open = () => {
     if (!requestClaudeAccountsDialog()) setOwnOpen(true)
   }
@@ -191,19 +128,31 @@ export function UsageFooter() {
     >
       <AccountsStatus data={data} actions={actions} />
       <SuggestionCard data={data} actions={actions} />
-      <h2 className="px-1.5 text-xs font-medium text-ink-faint">
-        {footerTitle(readAt, now)}
-      </h2>
-      <ul className="flex flex-col gap-0.5">
-        {claude.accounts.map((a) => (
-          <FooterMeter
+      <button
+        type="button"
+        data-usage-rings=""
+        aria-label={ringsLabel(claude.accounts, claude.global)}
+        onClick={open}
+        className="flex min-h-11 items-center gap-2.5 self-start rounded-xl px-1.5 py-1 hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+      >
+        <ProviderIcon
+          iconSvg={bundledProviderMark('claude-code')}
+          label="Claude Code"
+          providerId="claude-code"
+          className="size-5"
+        />
+        {ringsOrder(claude.accounts, claude.global).map((a) => (
+          <Hint
             key={a.id}
-            account={a}
-            isGlobal={a.id === claude.global}
-            onOpen={open}
-          />
+            side="top"
+            label={ringLine(a, a.id === claude.global)}
+          >
+            <span aria-hidden data-footer-account={a.id} className="flex">
+              <UsageRing week={a.usage?.week} color={a.color} />
+            </span>
+          </Hint>
         ))}
-      </ul>
+      </button>
       {actions.dialogs}
       {ownOpen ? <ClaudeAccountsDialog open onOpenChange={setOwnOpen} /> : null}
     </section>

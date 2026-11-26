@@ -784,18 +784,62 @@ export function splitSpoken(view: SplitView): string {
 
 /* ── the footer (§4.3.3) ───────────────────────────────────────────── */
 
+/*
+ * D178: the footer is one row, the Claude Code mark and a ring per account's
+ * week, with no text on screen; what the screen no longer shows goes in the
+ * button's accessible name (`ringsLabel`) and, on a pointer, each ring's
+ * tooltip (`ringLine`).
+ */
+
 export const FOOTER_TITLE = 'Usage this week'
 
-/** "Usage this week · 4 min ago". */
-export function footerTitle(asOfMs: number | null, nowMs: number): string {
-  return asOfMs === null
-    ? FOOTER_TITLE
-    : `${FOOTER_TITLE} · ${ago(asOfMs, nowMs)}`
+/** The rings' order: the global account first, then the others as listed. */
+export function ringsOrder(
+  accounts: readonly ClaudeAccount[],
+  globalId: string | null | undefined,
+): ClaudeAccount[] {
+  const global = accounts.filter((a) => a.id === globalId)
+  return [...global, ...accounts.filter((a) => a.id !== globalId)]
 }
 
 /** A mini meter's label: "Work · global", "Personal". */
 export function footerName(a: ClaudeAccount, global: boolean): string {
   return global ? `${a.name} · ${GLOBAL_TAG}` : a.name
+}
+
+/**
+ * An account's week as the footer says it: "62%", or why there is no
+ * reading ("Not signed in", "Usage unavailable: no network"); an account
+ * with only a 5-hour window reads "Usage unavailable".
+ */
+export function weekReading(a: ClaudeAccount): string {
+  const week = a.usage?.week
+  if (week) return `${percent(week.usedPercent)}%`
+  return noReading(a) ?? usageError(a.usage?.error)
+}
+
+/** A ring's tooltip: "Work · global · 62%", "Side project · Not signed in". */
+export function ringLine(a: ClaudeAccount, global: boolean): string {
+  return `${footerName(a, global)} · ${weekReading(a)}`
+}
+
+export const RINGS_OPENS = 'Opens Claude Code accounts.'
+
+/**
+ * The footer button's accessible name, every ring in order: "Claude Code
+ * usage this week: Work, global, 62%; Personal, 12%; Side project, Not
+ * signed in. Opens Claude Code accounts."
+ */
+export function ringsLabel(
+  accounts: readonly ClaudeAccount[],
+  globalId: string | null | undefined,
+): string {
+  const parts = ringsOrder(accounts, globalId).map((a) =>
+    [a.name, ...(a.id === globalId ? [GLOBAL_TAG] : []), weekReading(a)].join(
+      ', ',
+    ),
+  )
+  return `Claude Code usage this week: ${parts.join('; ')}. ${RINGS_OPENS}`
 }
 
 /** The oldest reading's time among the accounts that have one. */

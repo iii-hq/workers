@@ -14,7 +14,6 @@ import {
   claudePlan,
   defaultChoiceLabel,
   foldersCell,
-  footerTitle,
   globalRefusal,
   globalToast,
   level,
@@ -32,12 +31,16 @@ import {
   resets,
   resolutionText,
   resolveAccount,
+  ringLine,
+  ringsLabel,
+  ringsOrder,
   sessionsCell,
   splitSpoken,
   splitView,
   suggestionBody,
   suggestionTitle,
   waitingBanner,
+  weekReading,
 } from './claude-accounts-words'
 
 /* Sat 2026-11-21 10:00 UTC. */
@@ -98,10 +101,6 @@ describe('reset times', () => {
     expect(ago(NOW - 4 * 60_000, NOW)).toBe('4 min ago')
     expect(ago(NOW - 3 * HOUR, NOW)).toBe('3 h ago')
     expect(ago(NOW - 49 * HOUR, NOW)).toBe('2 days ago')
-    expect(footerTitle(NOW - 4 * 60_000, NOW)).toBe(
-      'Usage this week · 4 min ago',
-    )
-    expect(footerTitle(null, NOW)).toBe('Usage this week')
   })
 })
 
@@ -139,6 +138,48 @@ describe('accounts', () => {
     expect(accountUse(side)).toBe('Not signed in')
     expect(accountWeek(work)).toBe('Work · 64% this week')
     expect(accountWeek(side)).toBe('Side project')
+  })
+})
+
+describe('the usage rings (D178)', () => {
+  const withGlobal = (id: string) => usageFixture(NOW, { global: id }).claude
+
+  it('puts the global account first, then the others as listed', () => {
+    const claude = withGlobal('side-project')
+    expect(ringsOrder(claude.accounts, claude.global).map((a) => a.id)).toEqual(
+      ['side-project', 'default', 'personal'],
+    )
+    expect(
+      ringsOrder(usage.claude.accounts, usage.claude.global).map((a) => a.id),
+    ).toEqual(['default', 'personal', 'side-project'])
+  })
+
+  it("says a week's reading, or why there is none", () => {
+    expect(weekReading(work)).toBe('64%')
+    expect(weekReading(side)).toBe('Not signed in')
+    const fiveHourOnly: ClaudeAccount = {
+      ...personal,
+      usage: personal.usage ? { ...personal.usage, week: null } : null,
+    }
+    expect(weekReading(fiveHourOnly)).toBe('Usage unavailable')
+  })
+
+  it("writes each ring's tooltip in the footer's words", () => {
+    expect(ringLine(work, true)).toBe('Work · global · 64%')
+    expect(ringLine(personal, false)).toBe('Personal · 22%')
+    expect(ringLine(side, false)).toBe('Side project · Not signed in')
+  })
+
+  it('names the button with every account, the global one first', () => {
+    expect(ringsLabel(usage.claude.accounts, usage.claude.global)).toBe(
+      'Claude Code usage this week: Work, global, 64%; Personal, 22%; ' +
+        'Side project, Not signed in. Opens Claude Code accounts.',
+    )
+    const claude = withGlobal('personal')
+    expect(ringsLabel(claude.accounts, claude.global)).toBe(
+      'Claude Code usage this week: Personal, global, 22%; Work, 64%; ' +
+        'Side project, Not signed in. Opens Claude Code accounts.',
+    )
   })
 })
 
