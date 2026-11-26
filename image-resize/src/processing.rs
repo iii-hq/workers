@@ -438,23 +438,28 @@ mod tests {
 
     #[test]
     fn crop_to_fit_keeps_the_centre() {
-        let columns = RgbImage::from_fn(300, 100, |x, _| match x / 100 {
-            0 => image::Rgb([255, 0, 0]),
-            1 => image::Rgb([0, 255, 0]),
-            _ => image::Rgb([0, 0, 255]),
-        });
-        let png = encode_image(&DynamicImage::ImageRgb8(columns), ImageFormat::Png);
-        let out = run(
-            &png,
-            Format::Png,
-            Format::Png,
-            ResizeStrategy::CropToFit,
-            100,
-            100,
-            100,
-        );
-        assert_eq!((out.width(), out.height()), (100, 100));
-        assert!(out.to_rgb8().pixels().all(|p| p.0 == [0, 255, 0]));
+        for (w, h) in [(300, 100), (100, 300)] {
+            let bands = RgbImage::from_fn(w, h, |x, y| match x.max(y) / 100 {
+                0 => image::Rgb([255, 0, 0]),
+                1 => image::Rgb([0, 255, 0]),
+                _ => image::Rgb([0, 0, 255]),
+            });
+            let png = encode_image(&DynamicImage::ImageRgb8(bands), ImageFormat::Png);
+            let out = run(
+                &png,
+                Format::Png,
+                Format::Png,
+                ResizeStrategy::CropToFit,
+                100,
+                100,
+                100,
+            );
+            assert_eq!((out.width(), out.height()), (100, 100), "{w}x{h}");
+            assert!(
+                out.to_rgb8().pixels().all(|p| p.0 == [0, 255, 0]),
+                "{w}x{h}"
+            );
+        }
     }
 
     #[test]
