@@ -400,6 +400,35 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
+## Turn history retention
+
+The IDE reconciles its private turn snapshot repositories at startup, after
+`session::on-deleted`, and every five minutes. It removes refs that no retained
+turn references, and removes a repository when it has no retained snapshots or
+other refs. Session records are removed only when `session::get` confirms the
+session is absent. A missing workspace alone does not discard its history.
+Unavailable session lookups preserve history and are retried; corrupt local
+records defer reconciliation. The worker logs the number of records, refs and
+repositories removed.
+
+`turns.max_blob_bytes` limits the separate pre-image blob store under `objects/`.
+It is not a quota for the Git repositories under `repos/`: valid snapshots remain
+available for review and revert. Objects released from a shared repository are
+reclaimed by Git's normal garbage collection; an orphan repository is removed
+with all of its packs and indexes.
+
+To run the startup and session-deletion regression with a real engine and worker:
+
+```sh
+cargo build --locked --release --bin ide
+III_BIN="$(command -v iii)" III_IDE_BIN="$PWD/target/release/ide" \
+  cargo test --locked --test turn_retention -- --ignored --nocapture
+```
+
+The test starts an isolated engine and uses temporary repositories and a controlled
+session catalog. Set `III_IDE_BIN` to the actual binary path if Cargo's target
+directory is overridden.
+
 ## Observable functions
 
 The worker hosts four event functions. Each is private (only this worker
