@@ -2780,38 +2780,31 @@ async fn first_sent(h: &Harness) -> Option<String> {
     None
 }
 
+/// The agent looks a run's code up in the skill's table, so the worker sorts it the same way: a code the
+/// table gives to the person must not be sent to the agent as a continue, nor the other way round.
 #[test]
-fn every_run_code_has_an_owner() {
+fn a_run_codes_owner_is_the_one_the_skills_table_gives_it() {
     use iii_cloud::handoff::{RunOwner, run_code_owner};
-    for code in [
-        "INSTALL_FAILED",
-        "BUILD_FAILED",
-        "RELEASE_FAILED",
-        "COMPOSE_FAILED",
-        "WORKERS_NOT_READY",
-        "NO_ROUTE",
-        "ROUTE_OUTSIDE_HTTP_GROUP",
-        "ROUTE_OUTSIDE_PREFIX",
-        "HEALTHCHECK_FAILED",
-    ] {
-        assert_eq!(run_code_owner(code), RunOwner::Agent, "{code}");
+    let skill =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/skills/plan-codes.md"))
+            .unwrap();
+    let after = skill.split("## Local run failures").nth(1).unwrap();
+    let table = after.split("\n## ").next().unwrap();
+    let mut rows = 0;
+    for line in table.lines().filter(|l| l.starts_with("| `")) {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let code = cells[1].trim_matches('`');
+        let owner = match cells[2] {
+            "agent" => RunOwner::Agent,
+            "person" => RunOwner::Person,
+            "none" => RunOwner::Interrupted,
+            other => panic!("{code}: owner {other}"),
+        };
+        assert_eq!(run_code_owner(code), owner, "{code}");
+        rows += 1;
     }
-    for code in [
-        "DOCKER_MISSING",
-        "PORT_IN_USE",
-        "TOOL_MISSING",
-        "LOCAL_ENGINE_VERSION",
-    ] {
-        assert_eq!(run_code_owner(code), RunOwner::Person, "{code}");
-    }
-    for code in [
-        "WORKER_RESTARTED",
-        "RUN_PANIC",
-        "RUN_REPLACED",
-        "RUN_TIMEOUT",
-        "GIT_FAILED",
-        "SOMETHING_NEW",
-    ] {
+    assert!(rows >= 16, "{rows} rows read");
+    for code in ["GIT_FAILED", "SOMETHING_NEW"] {
         assert_eq!(run_code_owner(code), RunOwner::Interrupted, "{code}");
     }
 }
@@ -2857,10 +2850,12 @@ async fn a_run_that_failed_on_the_persons_machine_waits_for_the_person_and_shows
 /// A run cut short is nobody's fault: the continue says to run it again.
 #[tokio::test]
 async fn an_interrupted_run_gets_a_continue_that_says_to_run_it_again() {
-    let (h, _w, _created, _keep) = idle_with_run(run_with("RUN_TIMEOUT", |_| {})).await;
+    let (h, _w, _created, _keep) = idle_with_run(run_with("WORKER_RESTARTED", |_| {})).await;
     let m = first_sent(&h).await.expect("a continue");
     assert!(
-        m.contains("RUN_TIMEOUT: the local run was interrupted; run `check {run: true}` again"),
+        m.contains(
+            "WORKER_RESTARTED: the local run was interrupted; run `check {run: true}` again"
+        ),
         "{m}"
     );
     assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);

@@ -1374,20 +1374,30 @@ fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
 pub enum RunOwner {
     /// The agent fixes it in the worktree.
     Agent,
-    /// The person's machine: Docker, a port, a tool, the iii binary.
+    /// The person's: Docker, a tool, the iii binary, or a decision about the routes.
     Person,
     /// Nobody's fault: the run was cut short; run it again.
     Interrupted,
 }
 
 /// The one place that sorts a run's error code (`src/run.rs`): the turn-end
-/// judgment and the brief both read it. An unknown code is an interruption.
+/// judgment and the brief both read it. It is the Owner column of "Local run
+/// failures" in `skills/plan-codes.md`, where the agent looks the code up, and a
+/// test holds the two together (`none` there is an interruption here). An
+/// unknown code is an interruption.
 pub fn run_code_owner(code: &str) -> RunOwner {
     match code {
-        "INSTALL_FAILED" | "BUILD_FAILED" | "RELEASE_FAILED" | "COMPOSE_FAILED"
-        | "WORKERS_NOT_READY" | "NO_ROUTE" | "HEALTHCHECK_FAILED" => RunOwner::Agent,
-        c if c.starts_with("ROUTE_OUTSIDE_") => RunOwner::Agent,
-        "DOCKER_MISSING" | "PORT_IN_USE" | "TOOL_MISSING" | "LOCAL_ENGINE_VERSION" => {
+        "INSTALL_FAILED"
+        | "BUILD_FAILED"
+        | "RELEASE_FAILED"
+        | "PORT_IN_USE"
+        | "COMPOSE_FAILED"
+        | "WORKERS_NOT_READY"
+        | "NO_ROUTE"
+        | "ROUTE_OUTSIDE_PREFIX"
+        | "HEALTHCHECK_FAILED"
+        | "RUN_TIMEOUT" => RunOwner::Agent,
+        "TOOL_MISSING" | "DOCKER_MISSING" | "ROUTE_OUTSIDE_HTTP_GROUP" | "LOCAL_ENGINE_VERSION" => {
             RunOwner::Person
         }
         _ => RunOwner::Interrupted,
