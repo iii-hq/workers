@@ -486,7 +486,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
     >
       {mode === 'step' ? (
         <StepHeader
-          title="Give the values your app reads"
+          title="Give the secrets and variables your app reads"
           sub={props.lead}
           back={
             n || k ? (
@@ -500,11 +500,11 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
       ) : null}
       {mode === 'dialog' ? (
         <div className="iii-cloud-val-dhead">
-          <DialogTitle>Values for {env}</DialogTitle>
+          <DialogTitle>Secrets and variables for {env}</DialogTitle>
           {v ? (
             <DialogDescription>
               {some.length ? (
-                `The run here needs ${some.length === 1 ? 'this name' : `these ${some.length} names`} on this machine.`
+                `The local run needs ${some.length === 1 ? 'this name' : `these ${some.length} names`} on this machine.`
               ) : (
                 <>
                   <Mono>{v.manifest}</Mono> reads {plural(items.length, 'name')};{' '}
@@ -689,11 +689,11 @@ export function ReadOnly({ host, status, values }: { host: Host; status: Status;
   const { busy, call } = useActions(host)
   const url = variablesUrl(status)
   if (values.save === 'role')
-    return <Notice variant="info" headline="Changing production's values takes Owner or Admin." />
+    return <Notice variant="info" headline="Changing production's secrets and variables takes Owner or Admin." />
   return (
     <Notice
       variant="info"
-      headline="An API key can't write values. Set them in iii cloud's console, or sign in with the browser."
+      headline="An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser."
       detail={
         <span className="iii-cloud-row iii-cloud-val-roacts">
           {url ? (
@@ -870,7 +870,7 @@ function ValueRow({
     // A copy stays in iii cloud: the local run's .env gets only what is typed or read from a file.
     p.source.startsWith('copy:') && i.need === 'required' ? 'iii cloud only; the local run needs it typed.' : null,
     // P3: what the local run has for it (saving a typed or file value writes the run's .env).
-    unsetHere(i) && state?.s !== 'saved' ? 'needed to run here' : null,
+    unsetHere(i) && state?.s !== 'saved' ? 'needed for the local run' : null,
     i.here === 'from_file' && i.here_file ? `the local run takes it from ${i.here_file}` : null,
     state?.s === 'saved' && state.note ? valueMessage(state.note, { env, name: i.name }) : null,
   ].filter((x): x is string => !!x)

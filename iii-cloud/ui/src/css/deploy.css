@@ -8,10 +8,3 @@
   min-width: 0;
   margin: 0 auto;
 }
-/* Setup's step rail head, until the first-time package drops the rail. */
-[data-iii-ui='iii-cloud'] .iii-cloud-dep-railhead {
-  padding: 0 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-ink-faint);
-}

@@ -46,7 +46,7 @@ export function createConfigForm(host: Host) {
         : 'Not signed in'
     return (
       <>
-        <SettingsSection title="iii cloud" description="Where the worker signs in and which iii it runs here.">
+        <SettingsSection title="iii cloud" description="Where you sign in and which iii the local run uses.">
           <SettingsList>
             <SettingsField
               id="iii-cloud-url"
@@ -60,7 +60,7 @@ export function createConfigForm(host: Host) {
               id="iii-cloud-bin"
               field="iii_bin"
               label="iii binary"
-              description="The iii the run here uses. It must report the cloud's engine version."
+              description="The iii the local run uses. It must report the cloud's engine version."
               meta={
                 status
                   ? `detected ${status.worker.iii_version ?? 'none'} · cloud engine ${status.worker.cloud_engine ?? 'unknown'}`
@@ -74,7 +74,7 @@ export function createConfigForm(host: Host) {
             <SettingsRow label="Account" description={signedIn} />
           </SettingsList>
         </SettingsSection>
-        <SettingsSection title="Deploy and run here">
+        <SettingsSection title="Deploy and local run">
           <SettingsList>
             <SettingsField
               id="iii-cloud-merge"
@@ -114,7 +114,7 @@ export function createConfigForm(host: Host) {
               id="iii-cloud-timeout"
               field="run_timeout_s"
               label="Run timeout"
-              description="Seconds for the whole run here, from install to healthcheck."
+              description="Seconds for the whole local run, from install to healthcheck."
               error={errors?.get('/run_timeout_s')}
               renderControl={(p) => (
                 <Input

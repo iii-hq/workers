@@ -1,7 +1,7 @@
 // What the check found, as CheckStage's sections show it: one deduplicated list (every count comes from it),
 // split by owner, then grouped by code and file ("21 variables have no value in iii cloud").
 
-import { checklist, groupDetail, groupTitle, isDatabaseVar, problemDetail, problemTitle, variableName } from './model'
+import { checklist, isDatabaseVar, problemDetail, problemTitle, variableName } from './model'
 import type { Problem, SecretRequest, Status } from './types'
 
 export type Item = {
@@ -31,15 +31,6 @@ export type Item = {
   skipped?: boolean
 }
 
-export type Group = {
-  key: string
-  code: string | null
-  file: string | null
-  items: Item[]
-}
-
-/** Values the person gives with "Set values". */
-export const VALUE_CODES = new Set(['EMPTY_DEFAULT_VARIABLE', 'LOCAL_VARIABLE_UNSET', 'SECRET_MISSING'])
 /** O2: the workers' config, which the person copies to iii cloud (or skips, or sets in the console). */
 const CONFIG_CODES = new Set(['LOCAL_CONFIG_NOT_SET'])
 
@@ -76,14 +67,6 @@ function excerptKey(p: Problem | null): string | null {
 export function location(file: string | null, line: number | null, target: string | null): string | null {
   const at = file ? (line != null ? `${file}:${line}` : file) : null
   return [at, target].filter(Boolean).join(' · ') || null
-}
-
-/** The excerpt's code: nothing when its lines are blank or only repeat where it is. */
-export function codeLines(p: Problem | null): string[] {
-  const x = p?.excerpt
-  if (!x) return []
-  const where = p?.file ? [p.file, p.line != null ? `${p.file}:${p.line}` : p.file] : []
-  return x.lines.some((l) => l.trim() && !where.includes(l.trim())) ? x.lines : []
 }
 
 const RANK: Record<Problem['severity'], number> = { block: 0, warn: 1, info: 2 }
@@ -249,52 +232,5 @@ export function findings(s: Status): Findings {
   }
 }
 
-/** A value the person gives with "Set values": theirs to do, not a note. */
-export const personAction = (i: Item) => !!i.secret || (!!i.code && VALUE_CODES.has(i.code))
-/** O2: the workers' config, theirs to copy; a warning, so "Worth a look" leads with it. */
+/** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
-
-/**
- * Within a section, the problems sharing a code and a file form one group (first seen first). A fixed row has
- * no code: it joins the open rows of its title.
- */
-export function groupItems(items: Item[]): Group[] {
-  const codeOf = new Map<string, string>()
-  for (const it of items) if (it.code) codeOf.set(it.title, it.code)
-  const groups = new Map<string, Group>()
-  for (const it of items) {
-    const code = it.code ?? codeOf.get(it.title) ?? null
-    const key = `${code ?? `title:${it.title}`}|${it.file ?? ''}${it.skipped ? '|skipped' : ''}`
-    const g = groups.get(key)
-    if (g) g.items.push(it)
-    else groups.set(key, { key, code, file: it.file, items: [it] })
-  }
-  return [...groups.values()]
-}
-
-/** The group's sentence, count first; one item keeps its own title. */
-export const titleOf = (g: Group) =>
-  g.items.length > 1 ? groupTitle(g.code, g.items[0].title, g.items.length) : g.items[0].title
-
-/** A group's location: its file, its lines (`81–101` when they follow each other, else `40, 46, 52`; mixed `81–94, 96`), and the path its targets share (`…environment`). */
-export function groupLocation(g: Group): string | null {
-  const lines = [...new Set(g.items.map((i) => i.line).filter((l): l is number => l != null))].sort((a, b) => a - b)
-  // Runs of following lines read as spans: 81–94, 96, 98–101.
-  const runs: number[][] = []
-  for (const l of lines) {
-    const last = runs.at(-1)
-    if (last && l === last[last.length - 1] + 1) last.push(l)
-    else runs.push([l])
-  }
-  const span = runs.map((r) => (r.length > 2 ? `${r[0]}–${r.at(-1)}` : r.join(', '))).join(', ')
-  const at = g.file ? (lines.length ? `${g.file}:${span}` : g.file) : null
-  const parents = new Set(g.items.map((i) => i.target?.split('.').slice(0, -1).join('.') ?? ''))
-  const [parent] = parents
-  return [at, parents.size === 1 && parent ? parent : null].filter(Boolean).join(' · ') || null
-}
-
-/** The group's own sentence ("Each one defaults to empty …"), else the detail every item shares, said once. */
-export function sharedDetail(g: Group): string | null {
-  const first = g.items[0].detail
-  return groupDetail(g.code) ?? (first && g.items.every((i) => i.detail === first) ? first : null)
-}

@@ -147,6 +147,18 @@ describe('You', () => {
     expect(h.go).not.toHaveBeenCalled()
   })
 
+  it('a missing secret can be left empty on purpose: values::save leave_empty, then the check runs again', async () => {
+    const h = await stage(B('deploy-problems'), {
+      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'STRIPE_SECRET_KEY', ok: true }] },
+    })
+    const row = youItems()[0]
+    await click([...row.querySelectorAll('button')].find((b) => b.textContent === 'Leave it empty'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::values::save')?.payload).toMatchObject({
+      items: [{ name: 'STRIPE_SECRET_KEY', from: 'leave_empty' }],
+    })
+    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
+  })
+
   it('a value that could not be saved says why and stays', async () => {
     await stage(B('deploy-problems'), {
       'iii-cloud::values::save': {

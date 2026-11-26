@@ -5,6 +5,7 @@ import { CloudPage } from '../CloudPage'
 import { boards } from '../fixtures'
 import { apiPath, base, ENV, earlierReady, signedOut } from '../fixtures/base'
 import { cloudDeploy } from '../fixtures/manage'
+import { DEV, FILE } from '../fixtures/setup'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
 import { board, btn, click, cloudAnswers, ctx, el, flush, mount, root, row, text, ui, usePage } from './util'
@@ -197,7 +198,7 @@ describe('Manage', () => {
     expect(path()).toBe('Projects / registry · production / Deploy')
     // One screen, no step rail: the header says the next thing to do.
     expect(rail('Deploy steps')).toEqual([])
-    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('2 things need you · 2 for your agent to fix')
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('Check main for production')
   })
 
   it('Add a project opens the confirmation in add mode, at the folder; Cancel comes back to Start', async () => {
@@ -214,7 +215,6 @@ describe('Manage', () => {
 
 describe('DeployPill: the way back to a deploy going on', () => {
   const pills = () => [...el.querySelectorAll('[role=toolbar] .iii-cloud-pill')]
-  const steps = (label: string) => el.querySelector(`aside[aria-label="${label}"] [aria-current=step]`)?.textContent
 
   it.each([
     'manage-overview-deploying',
@@ -406,5 +406,124 @@ describe("every project's deploys going on (running_deploys)", () => {
         mode: 'checkout',
       },
     ])
+  })
+})
+
+describe('the hand-over between places, end to end', () => {
+  const calls = (h: ReturnType<typeof fakeHost>, ...ids: string[]) =>
+    h.calls.filter((c) => ids.includes(c.id)).map((c) => c.id)
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await flush()
+  }
+
+  it('Projects: Open goes to the environment and switches nothing', async () => {
+    const h = await mount(live, ctx({ at: 'start' }), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
+    await click(btn('Open'))
+    expect(path()).toBe('Projects / registry · production')
+    expect(uses(h)).toEqual([])
+  })
+
+  it('first time: Confirm takes the project up, starts the check, then opens the Deploy screen', async () => {
+    const b = boards['setup-existing']
+    // The worker takes the project up on project::use: the status carries its environment from then on.
+    let used = false
+    const status = (() =>
+      used
+        ? {
+            ...b.status,
+            project: {
+              ...b.status.project!,
+              workspace: { mode: 'worktree' as const, path: '~/workspaces/registry-iii-cloud', branch: 'b' },
+              environment: { ...DEV, manifest: FILE, url: null },
+              environments: [DEV],
+            },
+          }
+        : b.status) as unknown as Status
+    const h = await mount(status, ctx(b.context), {
+      ...cloudAnswers(b.cloud ?? {}),
+      'iii-cloud::project::use': () => {
+        used = true
+        return {}
+      },
+    })
+    await click(el.querySelector('button[data-variant=primary]'))
+    await settle()
+    expect(calls(h, 'iii-cloud::project::use', 'iii-cloud::check')).toEqual([
+      'iii-cloud::project::use',
+      'iii-cloud::check',
+    ])
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toEqual({ run: true })
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+  })
+
+  it('the environment: Deploy to <env> starts the check, then opens the Deploy screen', async () => {
+    const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
+    await click(btn('Deploy to production'))
+    expect(calls(h, 'iii-cloud::check')).toEqual(['iii-cloud::check'])
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    expect(path()).toBe('Projects / registry · production / Deploy')
+  })
+
+  it('the Deploy screen: Back to <env> returns to the environment', async () => {
+    await board('deploy-follow-live')
+    await click(btn('Back to dev'))
+    expect(path()).toBe('Projects / registry · dev')
+  })
+
+  it('the Deploy screen: Secrets and variables, and Review of the filled names, open the secrets page', async () => {
+    const b = boards['deploy-problems']
+    await board('deploy-problems')
+    await click(btn('Secrets and variables'))
+    expect(path()).toBe('Projects / registry · dev / Secrets and variables')
+    const filled = {
+      environment_id: b.status.project?.environment?.id,
+      environment: 'dev',
+      manifest: 'api/worker-compose-prod.yaml',
+      read_from: 'workspace',
+      cloud: 'read',
+      save: 'ok',
+      items: [
+        {
+          name: 'FILLED',
+          need: 'required',
+          in_cloud: 'set',
+          here: 'from_file',
+          here_file: 'api/.env.test',
+          suggestions: [],
+        },
+      ],
+    }
+    await mount(b.status, b.context ? ctx(b.context, 2) : {}, { 'iii-cloud::values': filled })
+    await click(btn('Review'))
+    expect(path()).toBe('Projects / registry · dev / Secrets and variables')
+  })
+
+  it("a failed deployment's record: Fix with your agent hands off, then opens the Deploy screen", async () => {
+    const h = await board('manage-deploys-failed')
+    await settle()
+    expect(path()).toBe('Projects / registry · dev / Deployment #2')
+    await click(btn('Fix with your agent'))
+    await settle()
+    expect(h.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toMatchObject({
+      kind: 'deploy_fix',
+      deployment_id: 'dep-2',
+    })
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+  })
+
+  it('chat cards open routes that exist: the check, the secrets page, a deployment followed, a deployment recorded', async () => {
+    const env = ENV.id
+    const routes: [unknown, RegExp][] = [
+      [{ at: 'deploy', env }, /production \/ Deploy$/],
+      [{ at: 'secrets', env }, /production \/ Secrets and variables$/],
+      [{ at: 'deploy', env, deploy: earlierReady.id }, /production \/ Deploy$/],
+      [{ at: 'env', env, deploy: earlierReady.id }, /production \/ Deployment #40$/],
+    ]
+    for (const [i, [route, shown]] of routes.entries()) {
+      await mount(live, ctx(route, i + 1), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
+      await settle()
+      expect(path()).toMatch(shown)
+      expect(text()).not.toContain('Not in a project on this machine')
+    }
   })
 })

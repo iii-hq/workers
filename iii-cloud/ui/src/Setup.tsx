@@ -581,7 +581,7 @@ function Confirm({
   const agent =
     mode === 'checkout'
       ? 'Your agent changes the files in this folder directly, with no separate copy.'
-      : `Your agent works in a separate copy of the repository, so your folder stays as it is.${changed ? ` The ${plural(changed, 'file')} you changed here that aren't on GitHub go into the copy too.` : ''}`
+      : `Your agent works in a separate copy of the repository, so your folder stays as it is.${changed ? ` The ${plural(changed, 'file')} you changed on this machine that aren't on GitHub go into the copy too.` : ''}`
   const loading = resolving || (!project && !!path && !err)
 
   return (

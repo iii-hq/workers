@@ -442,7 +442,7 @@ describe('a key that cannot write, or a role that cannot', () => {
   it('an API key: the list is read-only and points at iii cloud', async () => {
     await open({}, { ...devSecretValues, save: 'api_key' })
     await settle()
-    expect(text()).toContain("An API key can't write values.")
+    expect(text()).toContain("An API key can't write secrets and variables.")
     expect((action('STRIPE_SECRET_KEY') as HTMLButtonElement).disabled).toBe(true)
     expect((btn('Add') as HTMLButtonElement).disabled).toBe(true)
     expect((btn('Paste a .env') as HTMLButtonElement).disabled).toBe(true)
@@ -451,7 +451,7 @@ describe('a key that cannot write, or a role that cannot', () => {
   it('production without Owner or Admin says so', async () => {
     await open({}, { ...devSecretValues, save: 'role' })
     await settle()
-    expect(text()).toContain("Changing production's values takes Owner or Admin.")
+    expect(text()).toContain("Changing production's secrets and variables takes Owner or Admin.")
   })
 })
 

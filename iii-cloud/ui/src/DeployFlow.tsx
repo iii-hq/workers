@@ -3,11 +3,21 @@
 // Only the person deploys: every push to an environment's branch, merge and deploy here is one of their clicks.
 
 import type { Host } from '@iii-dev/console-ui'
-import { Button, Checkbox, EmptyState, List, ListItem, PageMain, Skeleton, TerminalStream } from '@iii-dev/console-ui'
+import {
+  Button,
+  Checkbox,
+  ConfirmDialog,
+  EmptyState,
+  List,
+  ListItem,
+  PageMain,
+  Skeleton,
+  TerminalStream,
+} from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Circle, CircleDot, Copy } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
-import { useCloud } from './api'
+import { cloudWrite, useCloud } from './api'
 import { clock, useLaunch } from './asked'
 import { ActionBar, ActionError, CheckStage, checkPayload, GoesSub, ScreenHead, TypedConfirm } from './CheckStage'
 import { handOff, openAgentChat } from './handoff'
@@ -19,6 +29,7 @@ import {
   COMPOSE_ISSUE,
   cloudStageLabel,
   composeFile,
+  deployOrigin,
   deployRows,
   deployState,
   deployWord,
@@ -338,6 +349,7 @@ function Follow({
   const now = useNow(15_000)
   const launching = useLaunch()?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
+  const [canceling, setCanceling] = useState(false)
   const envId = d.environment_id
   const running = d.outcome === 'running' && !needsAction(d)
   const live = d.outcome === 'ready'
@@ -402,6 +414,11 @@ function Follow({
     .reverse()
     .map((l) => (l.worker ? `${l.worker}: ${l.message}` : l.message))
     .join('\n')
+  // The dialog stays open and busy until this settles, then closes itself; a refusal shows in it.
+  const cancel = async () => {
+    await cloudWrite(host, status, envId, 'POST', `/deployments/${d.id}/cancel`)
+    void hubOf(host).refresh(true)
+  }
   const cloudLog = d.console_url || projectUrl(status)
   const chatOpen = activeSameKind(status, 'deploy_fix')
 
@@ -460,7 +477,7 @@ function Follow({
         <Notice
           variant="warn"
           headline="Needs your action"
-          detail={`iii cloud holds this deployment until you approve what it creates and changes${approves.length ? `: ${approves.join(', ')}` : ''}.${confirmable ? '' : ` No passed check here matches deployment #${d.number}. Check again before you deploy.`}`}
+          detail={`iii cloud holds this deployment until you approve what it creates and changes${approves.length ? `: ${approves.join(', ')}` : ''}.${confirmable ? '' : ` No passed check matches deployment #${d.number}. Check again before you deploy.`}`}
           action={
             <span className="iii-cloud-row">
               <Button
@@ -578,6 +595,25 @@ function Follow({
             page; the deployment goes on, and the console tells you when it's done. If it fails, Fix with your agent
             gets its log lines.
           </p>
+          {deployOrigin(status, d).from === 'machine' ? (
+            <>
+              <div className="iii-cloud-row">
+                <Button variant="secondary" size="sm" onClick={() => setCanceling(true)}>
+                  Cancel the deployment
+                </Button>
+              </div>
+              <ConfirmDialog
+                open={canceling}
+                onOpenChange={setCanceling}
+                title={`Cancel deployment #${d.number}?`}
+                description="iii cloud stops it at the stage it is in. Nothing is deleted."
+                confirmLabel={`Cancel deployment #${d.number}`}
+                cancelLabel="Keep deploying"
+                tone="danger"
+                onConfirm={cancel}
+              />
+            </>
+          ) : null}
         </>
       ) : null}
       {live && prev && projectUrl(status) ? (

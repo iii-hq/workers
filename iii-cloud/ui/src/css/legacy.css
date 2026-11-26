@@ -10,12 +10,6 @@
   min-height: 0;
   overflow: auto;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 1;
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-body {
   display: flex;
   flex-direction: column;
@@ -83,44 +77,6 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-ink {
   color: var(--color-ink);
 }
-/* The tab row: on the header's surface, its rule the pane's full width, never squeezed by a tall tab. */
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tablist'] {
-  flex-shrink: 0;
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0 24px;
-  justify-content: flex-start;
-  background: var(--color-panel);
-  /* As tall as its tabs: a fixed 32px row clipped the selected tab's underline. */
-  height: auto;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab'] {
-  font-weight: 400;
-  border-color: transparent;
-  /* Square, so the underline runs straight to its ends. */
-  border-radius: 0;
-}
-/* Focus: an inset ring the tab row can't clip; the selected tab keeps its underline. */
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab']:focus-visible {
-  border-color: transparent;
-  box-shadow: none;
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -4px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab'][aria-selected='true']:focus-visible,
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab'][data-active]:focus-visible {
-  box-shadow: inset 0 -2px 0 var(--color-ink);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab'][aria-selected='true'],
-[data-iii-ui='iii-cloud'] .iii-cloud-tabs [role='tab'][data-active] {
-  font-weight: 500;
-  box-shadow: inset 0 -2px 0 var(--color-ink);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-dottext {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-code {
   display: flex;
   align-items: center;
@@ -155,10 +111,6 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-ptitle {
-  display: block;
-  font-weight: 500;
-}
 [data-iii-ui='iii-cloud'] .iii-cloud-psmall {
   display: block;
   font-size: 12px;
@@ -180,10 +132,6 @@
   justify-content: flex-end;
   gap: 8px;
   padding-top: 12px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-touch {
-  min-width: 44px;
-  min-height: 44px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-skeleton {
   display: block;
@@ -283,7 +231,6 @@
   align-items: stretch;
   gap: 8px;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-agent > .iii-cloud-ui-error,
 [data-iii-ui='iii-cloud'] .iii-cloud-agent > [role='status'] {
   flex-basis: 100%;
 }
@@ -318,10 +265,6 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-why[data-open] .iii-cloud-why-text {
   -webkit-line-clamp: unset;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-ptitle .iii-ui-spin {
-  vertical-align: text-bottom;
-  margin-right: 6px;
-}
 @media (prefers-reduced-motion: reduce) {
   [data-iii-ui='iii-cloud'] .iii-ui-spin {
     animation: none;
@@ -332,12 +275,6 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-logbox {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   min-width: 0;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-log {

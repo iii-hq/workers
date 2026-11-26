@@ -165,6 +165,24 @@ describe('the deployment', () => {
     expect(btn('Back to dev')).toBeNull()
   })
 
+  it('running from this machine: Cancel the deployment asks first, then posts the cancel to iii cloud', async () => {
+    const h = await board('deploy-follow-running', {}, { 'iii-cloud::api::write': { status: 202, body: {} } })
+    const writes = () => h.calls.filter((c) => c.id === 'iii-cloud::api::write')
+    await click(btn('Cancel the deployment'))
+    expect(writes()).toEqual([])
+    expect(text()).toContain('Cancel deployment #6?')
+    await click(btn('Keep deploying'))
+    expect(writes()).toEqual([])
+    await click(btn('Cancel the deployment'))
+    await click(btn('Cancel deployment #6'))
+    await flush()
+    expect(writes()).toHaveLength(1)
+    expect(writes()[0].payload).toMatchObject({
+      method: 'POST',
+      path: expect.stringContaining('/deployments/dep-6/cancel'),
+    })
+  })
+
   it('live: the address with Open and Copy, health, and Back to dev', async () => {
     await board('deploy-follow-live')
     expect(title()).toBe('dev is serving 9c04e7f')

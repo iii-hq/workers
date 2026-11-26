@@ -7,7 +7,6 @@ import {
   Panel,
   PanelBody,
   PanelHeader,
-  StatusBar,
   StatusDot,
   StatusPanel,
   type StatusPanelProps,
@@ -114,16 +113,6 @@ export function Dot({ tone }: { tone: RowTone | 'ghost' }) {
   return <StatusDot tone={d.tone} pulse={d.pulse} aria-hidden />
 }
 
-/** A status mark followed by a word that stays ink. */
-export function DotText({ tone, children }: { tone: RowTone | 'ghost'; children: ReactNode }) {
-  return (
-    <span className="iii-cloud-dottext">
-      <Dot tone={tone} />
-      {children}
-    </span>
-  )
-}
-
 const CHIP_TONE = { success: 'ok', warning: 'warn', danger: 'alert', neutral: null } as const
 
 /** A neutral chip with a status dot: the word stays ink, only the dot carries the status (AA). */
@@ -147,19 +136,6 @@ export function StatusChip({
 
 /** Spinner for a running check (the shared spin recipe). */
 export const Spinner = () => <Loader2 className="iii-ui-spin" aria-hidden />
-
-export function Facts({ rows }: { rows: [string, ReactNode][] }) {
-  return (
-    <dl className="iii-cloud-facts">
-      {rows.map(([k, v]) => (
-        <div key={k} className="iii-cloud-fact">
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
 
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
 
@@ -283,14 +259,6 @@ export function LinkButton({ href, children }: { href: string; children: ReactNo
         <ExternalLink />
       </a>
     </Button>
-  )
-}
-
-export function Footer({ left, live }: { left: ReactNode; live?: { tone: RowTone; label: string } | null }) {
-  return (
-    <StatusBar aria-label="iii cloud status" end={live ? <DotText tone={live.tone}>{live.label}</DotText> : undefined}>
-      {left}
-    </StatusBar>
   )
 }
 

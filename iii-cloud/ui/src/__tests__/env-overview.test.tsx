@@ -276,7 +276,7 @@ describe('the environment page', () => {
     const h = await board('env-page')
     await settle()
     await click(btn('Deploy to dev'))
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, fix: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
     expect(path()).toBe('Projects / registry · dev / Deploy')
   })
 

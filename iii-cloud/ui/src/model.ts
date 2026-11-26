@@ -220,9 +220,6 @@ export const conflictFiles = (message: string) => message.match(/Conflicting fil
 /** The faint line under a headline: a known explanation. The worker's `fix` is for the agent, never shown. */
 export const plainDetail = (e: { code: string }) => PLAIN_DETAIL[e.code]
 
-/** `+dirty` marks a run of uncommitted changes: the same commit, not another one. */
-export const isDirty = (commit: string) => commit.endsWith('+dirty')
-
 /** Problem ids the agent is working on, only while it works. */
 export const workingOnIds = (s: Status): Set<string> =>
   new Set(s.agent?.state === 'working' ? (s.agent.working_on ?? []) : [])
@@ -277,9 +274,6 @@ export function usablePr(s: Status): Status['pr'] {
   return p.state === 'OPEN' && s.check && p.head_sha === s.check.commit ? p : null
 }
 
-/** Started in the iii cloud console, not by this worker. */
-export const fromConsole = (d: Deploy) => d.from_console === true
-
 /** The repository's default branch, as the worker reports it. */
 export const defaultBranch = (s: Status): string | null => s.project?.default_branch ?? null
 
@@ -314,7 +308,6 @@ export const CONNECTION_LABEL: Record<Connection['status'], string> = {
   error: 'Error',
 }
 export const GONE_LABEL = 'Environment or deployment no longer exists'
-export const isGone = (d: Deploy) => d.status === 'gone'
 
 export type Tone = RowTone | 'ghost'
 type Stateful = { id: string; status: string; outcome?: Deploy['outcome']; current?: boolean }
@@ -589,16 +582,6 @@ export const failedStage = (d: Deploy) => (d.error ? cloudStageLabel(d.error.sta
 
 export const isFailedDeploy = (d: Deploy) => d.outcome === 'failed' || d.outcome === 'no_route'
 
-const SIZE: Record<string, string> = {
-  '0.25x': '500 MiB',
-  '0.5x': '1 GiB',
-  '1x': '2 GiB',
-  '2x': '4 GiB',
-  '4x': '8 GiB',
-}
-/** A machine size in people's words: "1x" is "2 GiB". */
-export const sizeOf = (s: string) => SIZE[s] ?? s
-
 /** A deploy of the environment is still going: what the check and the review say instead of deploying over it. */
 export const deployBusy = (s: Status, d: Deploy, env: string) => ({
   headline: `Deployment #${d.number} to ${env} is already running`,
@@ -612,35 +595,6 @@ export function problemTitle(p: Problem): string {
   const words = p.code.toLowerCase().replace(/_/g, ' ')
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
-
-/** A group of one code in one file: the plural sentence after its count ("21 variables have no value in iii cloud"). */
-const PROBLEM_PLURAL: Record<string, string> = {
-  EMPTY_DEFAULT_VARIABLE: 'variables have no value in iii cloud',
-  LOCAL_VARIABLE_UNSET: 'variables have no value',
-  LOCAL_CONFIG_NOT_SET: "worker configs aren't in iii cloud yet",
-  SECRET_MISSING: 'secrets have no value',
-  /** findings' own: a name the person skipped for now. */
-  SKIPPED_VALUE: 'names have no value',
-  WORKER_OUTDATED: 'workers are outdated',
-  QUEUE_WORKER_OUTDATED: 'queue workers are outdated',
-  MISSING_WORKER_DIRECTORY: 'worker directories are missing',
-  UNGROUPED_WORKER: 'workers are in no group',
-  LITERAL_CREDENTIAL: 'credentials are written in the file',
-  ENV_FILE_MISSING: 'referenced .env files are missing',
-  PATH_OUTSIDE_BUNDLE: 'path:// folders are outside the repository',
-}
-
-/** What a group of one code means, said once under its title. */
-const PROBLEM_PLURAL_DETAIL: Record<string, string> = {
-  EMPTY_DEFAULT_VARIABLE: 'Each one defaults to empty in your compose file, and iii cloud has no value for it.',
-  WORKER_OUTDATED:
-    "Each registers its config in a way iii cloud doesn't allow, so it can't start there. Your agent updates them in the compose file and its lock.",
-}
-export const groupDetail = (code: string | null) => (code ? (PROBLEM_PLURAL_DETAIL[code] ?? null) : null)
-
-/** "21 variables have no value in iii cloud"; a code without a plural reads "<title> ×N". */
-export const groupTitle = (code: string | null, title: string, n: number) =>
-  code && PROBLEM_PLURAL[code] ? `${n} ${PROBLEM_PLURAL[code]}` : `${title} ×${n}`
 
 /** The cloud's message without the `CODE · ` prefix older checks carried. */
 export function problemDetail(p: Problem): string | null {
@@ -686,10 +640,6 @@ export const HANDOFF_POINTER = 'Details: iii-cloud::status · skill iii://iii-cl
 
 /** "1 commit", "3 commits"; `many` for an irregular plural. */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-
-/** Names the file defaults to empty (`${X:-}`), with no value: "5 optional names have no value in dev; they default to empty". */
-export const optionalUnset = (n: number, env: string) =>
-  `${plural(n, 'optional name')} ${n === 1 ? 'has' : 'have'} no value in ${env}; ${n === 1 ? 'it defaults' : 'they default'} to empty`
 
 /** What the person says to the agent: a plain sentence. The problems, fixes and paths are in `status`. */
 export function handoffMessage(s: Status): string {
@@ -920,4 +870,3 @@ export function whatWaits(s: Status): string[] {
     held ? `deploy #${held.number} needs your action` : null,
   ].filter((w): w is string => !!w)
 }
-export const waitingOnYou = (s: Status) => whatWaits(s).length > 0

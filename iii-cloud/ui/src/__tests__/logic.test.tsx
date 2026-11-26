@@ -6,7 +6,7 @@ import setup from '../../page'
 import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
-import { base, following, ready, secretRequests } from '../fixtures/base'
+import { base, ENV, following, ready, secretRequests } from '../fixtures/base'
 import {
   configDir,
   deployOrigin,
@@ -168,9 +168,8 @@ describe('replaced deploys, dirty runs and new codes', () => {
 })
 
 describe('check events', () => {
-  // Skipped: it read the check inside Setup's old inner step; the Deploy place owns that screen now.
-  it.skip('an older check does not replace the current one; a newer one does', async () => {
-    const h = await mount(base, ctx({ at: 'setup' }))
+  it('an older check does not replace the current one; a newer one does', async () => {
+    const h = await mount(base, ctx({ at: 'deploy', env: ENV.id }))
     const cur = base.check!
     const fire = (c: typeof cur) =>
       act(async () =>
@@ -189,7 +188,7 @@ describe('check events', () => {
       ready: true,
       problems: [],
     }
-    const title = () => el.querySelector('.iii-cloud-setup h2')?.textContent
+    const title = () => el.querySelector('h2.iii-cloud-h')?.textContent
     expect(title()).toBe('2 things need you · 2 for your agent to fix')
     await fire(older)
     expect(title()).toBe('2 things need you · 2 for your agent to fix')
@@ -200,7 +199,7 @@ describe('check events', () => {
       ready: true,
       problems: [],
     })
-    expect(title()).toBe('Review and deploy to production')
+    expect(title()).toBe('Ready to deploy to production')
   })
 })
 
@@ -237,9 +236,8 @@ describe("codes that keep the worker's own words", () => {
 })
 
 describe('live data', () => {
-  // Skipped: it read the deploy inside Setup's old inner step; the Deploy place owns that screen now.
-  it.skip('upserts a deploy event into the page and observes once per tab', async () => {
-    const h = await mount(base, ctx({ at: 'setup' }))
+  it('upserts a deploy event into the page and observes once per tab', async () => {
+    const h = await mount(base, ctx({ at: 'deploy', env: ENV.id, deploy: following.id }))
     expect(h.observed).toEqual([{ source: 'iii-cloud::on-change', target: 'iii::iii-cloud-ui::events::console-test' }])
     expect(text()).not.toContain('7a1f3b2')
     const ev: ChangeEvent = {
@@ -420,15 +418,13 @@ describe('configuration form', () => {
 })
 
 describe('Host without optional slots', () => {
-  // Skipped: it read Setup's old check step; the Deploy place owns that screen now.
-  it.skip('renders the page with no panels, chat or commands', async () => {
+  it('renders the page with no panels, chat or commands', async () => {
     const h = fakeHost(base)
     const bare = { ...h.host, panels: undefined, chat: undefined, commands: undefined } as unknown as Host
-    await act(async () => root.render(<CloudPage host={bare} panelSide="left" tabId="" {...ctx({ at: 'setup' })} />))
-    await flush()
-    expect(el.querySelector('aside[aria-label="Setup steps"] [aria-current=step]')?.textContent).toContain(
-      'Check before deploy',
+    await act(async () =>
+      root.render(<CloudPage host={bare} panelSide="left" tabId="" {...ctx({ at: 'deploy', env: ENV.id })} />),
     )
-    expect(el.querySelector('.iii-cloud-setup h2')?.textContent).toBe('2 things need you · 2 for your agent to fix')
+    await flush()
+    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('2 things need you · 2 for your agent to fix')
   })
 })

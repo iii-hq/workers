@@ -177,7 +177,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
       expect(changeOf(label)?.textContent).toBe('Change')
     }
     expect(text()).toContain(
-      "Your agent works in a separate copy of the repository, so your folder stays as it is. The 4 files you changed here that aren't on GitHub go into the copy too.",
+      "Your agent works in a separate copy of the repository, so your folder stays as it is. The 4 files you changed on this machine that aren't on GitHub go into the copy too.",
     )
     expect(el.querySelector('aside')).toBeNull()
   })

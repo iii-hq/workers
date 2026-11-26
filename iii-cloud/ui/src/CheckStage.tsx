@@ -535,16 +535,16 @@ function SecretField({
   name: string
   env: string
   why: string | null
-  /** The error to show, or null once it is saved. */
-  save: (value: string) => Promise<string | null>
+  /** The error to show, or null once it is saved. No value: left empty on purpose. */
+  save: (value: string | null) => Promise<string | null>
 }) {
   const [value, setValue] = useState('')
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const submit = async () => {
+  const submit = async (typed: string | null) => {
     setBusy(true)
-    const out = await save(value)
+    const out = await save(typed)
     setBusy(false)
     setError(out)
     if (out === null) {
@@ -575,8 +575,11 @@ function SecretField({
             value={value}
             onChange={setValue}
           />
-          <Button variant="secondary" disabled={!value || busy} onClick={() => void submit()}>
+          <Button variant="secondary" disabled={!value || busy} onClick={() => void submit(value)}>
             Save
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={() => void submit(null)}>
+            Leave it empty
           </Button>
         </span>
       )}
@@ -1251,11 +1254,11 @@ export function CheckStage(props: CheckStageProps) {
     ? `${filled.length} of ${read?.items.length} names your compose file reads were filled from ${files.join(' and ')}, saved as secrets.${empty ? ` ${empty} optional ${empty === 1 ? 'one is' : 'ones are'} empty.` : ''}`
     : null
 
-  const saveSecret = async (name: string, value: string): Promise<string | null> => {
+  const saveSecret = async (name: string, value: string | null): Promise<string | null> => {
     const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
       environment_id: envId,
       ...(c?.manifest ? { manifest: c.manifest } : {}),
-      items: [{ name, from: 'typed', type: 'secret', value }],
+      items: [value === null ? { name, from: 'leave_empty' } : { name, from: 'typed', type: 'secret', value }],
     })
     if (!out) return 'It could not be saved. Try again.'
     const bad = out.results.find((r) => !r.ok)

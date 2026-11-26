@@ -15,7 +15,7 @@ export function Destinations({ status, saved }: { status: Status; saved: boolean
   if (status.connection.method === 'api_key') {
     return (
       <span className="iii-cloud-psmall">
-        {lead} the .env of the agent's copy of your code for the run here.{' '}
+        {lead} the .env of the agent's copy of your code for the local run.{' '}
         {url ? (
           <a href={url} target="_blank" rel="noreferrer">
             Set it in iii cloud's console too
@@ -29,7 +29,7 @@ export function Destinations({ status, saved }: { status: Status; saved: boolean
   }
   return (
     <span className="iii-cloud-psmall">
-      {lead} the .env of the agent's copy of your code for the run here and to iii cloud{env ? ` for ${env}` : ''}.
+      {lead} the .env of the agent's copy of your code for the local run and to iii cloud{env ? ` for ${env}` : ''}.
     </span>
   )
 }

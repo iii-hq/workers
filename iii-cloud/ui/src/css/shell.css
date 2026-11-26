@@ -1,53 +1,7 @@
-/* The shell (U1): the page body, the step rail of Setup and Deploy, the Manage sidebar, panel headers and the env header. */
+/* The shell (U1): the page body, the Manage sidebar, panel headers and the env header. */
 [data-iii-ui='iii-cloud'] .iii-cloud-pagebody {
   flex: 1;
   min-height: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail {
-  padding: 12px 10px;
-}
-/* A step: the mark at the top, the title and its line wrapping, a hairline down to the next mark. */
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step {
-  align-items: flex-start;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step:not(:last-child)::after {
-  position: absolute;
-  top: 32px;
-  bottom: -8px;
-  left: 23.5px;
-  width: 1px;
-  background: var(--color-edge);
-  content: '';
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step .iii-ui-list-item__title,
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step .iii-ui-list-item__description {
-  white-space: normal;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step .iii-ui-list-item__title {
-  padding-top: 2px;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  box-sizing: border-box;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--color-control-edge);
-  border-radius: 9999px;
-  font-size: 12px;
-  background: var(--color-panel);
-  color: var(--color-ink-faint);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step[data-step='done'] .iii-cloud-rail-mark {
-  color: var(--color-ok);
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-rail-step[data-step='current'] .iii-cloud-rail-mark {
-  border-color: var(--color-ink);
-  background: var(--color-ink);
-  color: var(--color-panel);
-  font-weight: 600;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-side {
   display: flex;

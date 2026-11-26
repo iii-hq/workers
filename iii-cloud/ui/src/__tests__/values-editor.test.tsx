@@ -353,7 +353,7 @@ describe('read-only', () => {
   it('an API key: the list without pickers, the console link and the browser sign-in; Check still works', async () => {
     const h = await editor({ ...rcValues, save: 'api_key' }, {}, { mode: 'step' }, { ...rcFixing })
     expect(text()).toContain(
-      "An API key can't write values. Set them in iii cloud's console, or sign in with the browser.",
+      "An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser.",
     )
     expect(el.querySelector('a[href$="/variables"]')?.textContent).toBe("Open test's values in iii cloud")
     expect(text()).toContain("Continue still works: the check lists what's missing.")
@@ -373,7 +373,7 @@ describe('read-only', () => {
         mode: 'dialog',
       },
     )
-    expect(text()).toContain("Changing production's values takes Owner or Admin.")
+    expect(text()).toContain("Changing production's secrets and variables takes Owner or Admin.")
     expect(text()).toContain('Ask an Owner or Admin, or continue to the check.')
     expect(el.querySelector('select, input, textarea')).toBeNull()
     expect(btn('Close')).toBeTruthy()
@@ -383,13 +383,15 @@ describe('read-only', () => {
 describe('the step', () => {
   it('P1: its title and forward action are its own header; the footer keeps only the summary', async () => {
     await editor(rcValues, {}, { mode: 'step' })
-    expect(el.querySelector('.iii-cloud-stephead h2')?.textContent).toBe('Give the values your app reads')
+    expect(el.querySelector('.iii-cloud-stephead h2')?.textContent).toBe(
+      'Give the secrets and variables your app reads',
+    )
     expect(el.querySelector('.iii-cloud-stephead-fwd button')?.textContent).toBe('Save 12 values and check')
     expect(el.querySelector('.iii-cloud-stephead-back button')?.textContent).toBe('Check without saving')
     expect(el.querySelector('.iii-cloud-val-foot button')).toBeNull()
   })
 
-  it('P3: what the run here lacks is Not set, "needed to run here"; a from_file one says its file; never the database', async () => {
+  it('P3: what the local run lacks is Not set, "needed for the local run"; a from_file one says its file; never the database', async () => {
     const v = {
       ...rcValues,
       items: [
@@ -402,11 +404,11 @@ describe('the step', () => {
     // Set in iii cloud but not here: still to do, so it is listed and counted.
     expect(names()).toEqual(['SESSION_SECRET', 'GH_ORG'])
     expect(rowOf('SESSION_SECRET')?.querySelector('.iii-cloud-val-state')?.textContent).toBe('Not set')
-    expect(rowOf('SESSION_SECRET')?.textContent).toContain('needed to run here')
-    // Keeping iii cloud's value would leave the run here without it: the field waits for one.
+    expect(rowOf('SESSION_SECRET')?.textContent).toContain('needed for the local run')
+    // Keeping iii cloud's value would leave the local run without it: the field waits for one.
     expect(input('SESSION_SECRET')).toBeTruthy()
     expect(rowOf('GH_ORG')?.textContent).toContain('the local run takes it from api/.env.test')
-    expect(rowOf('GH_ORG')?.textContent).not.toContain('needed to run here')
+    expect(rowOf('GH_ORG')?.textContent).not.toContain('needed for the local run')
   })
 
   it('Save N values and check, or Check without saving; with nothing unset, all set and Show all', async () => {
