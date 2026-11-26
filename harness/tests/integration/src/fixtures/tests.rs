@@ -61,6 +61,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             "UI-005",
             "UI-006",
             "UI-007",
+            "UI-008",
             "UI-SEC-001"
         ])
     );
