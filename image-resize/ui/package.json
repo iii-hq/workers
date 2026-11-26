@@ -15,6 +15,7 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "esbuild": "catalog:",
+    "jsdom": "^30.0.1",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

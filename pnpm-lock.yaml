@@ -812,6 +812,9 @@ importers:
       esbuild:
         specifier: 'catalog:'
         version: 0.25.12
+      jsdom:
+        specifier: ^30.0.1
+        version: 30.0.1
       lucide-react:
         specifier: 'catalog:'
         version: 1.25.0(react@19.2.8)

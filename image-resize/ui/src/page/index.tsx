@@ -452,7 +452,7 @@ export function ImageResizeView({
                 )}
                 <MetaRow items={original} />
               </div>
-              <div className="imgr-figure" ref={refs.result} tabIndex={-1}>
+              <div className="imgr-figure" role="group" aria-label="Resized" ref={refs.result} tabIndex={-1}>
                 <Eyebrow as="h2">Resized</Eyebrow>
                 {resized}
               </div>
@@ -511,9 +511,14 @@ export function ImageResizePage({ host, onRequestClose, commands }: { host: Host
     setAnnouncement((previous) => ({ seq: (previous?.seq ?? 0) + 1, text, urgency }))
 
   const pick = (file: File | undefined) => {
+    const notice = noticeFor(file)
+    const active = document.activeElement
+    // A pick replaces both figures and a refused one drops Remove too; Choose is the one control every pick keeps.
+    if (file && (active?.closest('.imgr-figures') || (notice && active?.closest('.imgr-drop')))) {
+      choose.current?.focus()
+    }
     if (file) generation.current += 1
     dispatch({ type: 'pick', generation: generation.current, file })
-    const notice = noticeFor(file)
     if (notice) announce(noticeCopy(notice).headline, 'assertive')
   }
 
@@ -528,10 +533,9 @@ export function ImageResizePage({ host, onRequestClose, commands }: { host: Host
     if (!source || inFlight.current === generation.current) return
     const built = buildMetadata(options, source.file.type)
     if ('errors' in built) {
+      // Each field error is its own role="alert"; a summary here would cut them off.
       setErrors(built.errors)
-      const fields = Object.keys(built.errors)
-      announce(`Fix ${fields.length} ${fields.length === 1 ? 'option' : 'options'} to resize`, 'assertive')
-      form.current?.querySelector<HTMLElement>(`[data-field="${fields[0]}"]`)?.focus()
+      form.current?.querySelector<HTMLElement>(`[data-field="${Object.keys(built.errors)[0]}"]`)?.focus()
       return
     }
     setErrors({})

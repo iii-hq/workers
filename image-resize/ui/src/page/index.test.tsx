@@ -1,7 +1,11 @@
+// @vitest-environment jsdom
+
+import type { Host } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
-import type { ComponentProps, ReactNode } from 'react'
+import { act, type ComponentProps, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   type FieldErrors,
   initialState,
@@ -11,7 +15,8 @@ import {
   type State,
   StreamUnavailableError,
 } from '../lib/resize'
-import { focusFallsWithCall, ImageResizeView, type ImageResizeViewProps } from './index'
+import { focusFallsWithCall, ImageResizePage, ImageResizeView, type ImageResizeViewProps } from './index'
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 vi.mock('@iii-dev/console-ui', () => ({
   Button: ({
@@ -42,10 +47,14 @@ vi.mock('@iii-dev/console-ui', () => ({
   ImageViewer: ({ title, description }: { title?: string; description?: string }) => (
     <figure data-viewer={title}>{description}</figure>
   ),
-  Input: ({ onChange: _onChange, ...props }: { onChange?: unknown } & Omit<ComponentProps<'input'>, 'onChange'>) => (
-    <input readOnly {...props} />
+  Input: ({
+    onChange,
+    ...props
+  }: { onChange?: (next: string) => void } & Omit<ComponentProps<'input'>, 'onChange'>) => (
+    <input {...props} onChange={(event) => onChange?.(event.currentTarget.value)} />
   ),
-  LiveRegion: () => null,
+  LiveRegion: ({ announcement }: { announcement: { text: string; urgency: string } | null }) =>
+    announcement ? <output data-urgency={announcement.urgency}>{announcement.text}</output> : null,
   MetaRow: ({ items }: { items: { label: string; value: string; tone?: string }[] }) => (
     <dl>
       {items.map((item) => (
@@ -185,8 +194,10 @@ describe('ImageResizeView', () => {
     expect(html).toContain('Not resized yet|Set the options and select Resize.')
     // The viewer prints the picture's own size before the description.
     expect(html).toContain(`<figure data-viewer="photo.jpg">${formatBytes(1000)} · image/jpeg</figure>`)
-    // Focus lands here when Resize disables or Try again unmounts.
-    expect(html).toMatch(/<div class="imgr-figure" tabindex="-1"><span>Resized<\/span>/)
+    // Focus lands here when Resize disables or Try again unmounts, so it is named.
+    expect(html).toMatch(
+      /<div class="imgr-figure" role="group" aria-label="Resized" tabindex="-1"><span>Resized<\/span>/,
+    )
     expect(html).toContain('1 to 100, for JPEG and WebP.')
     expect(resizeButton(html)).not.toContain('disabled')
   })
@@ -287,7 +298,7 @@ describe('ImageResizeView', () => {
 
 describe('focusFallsWithCall', () => {
   it('catches Resize and every control in the Resized figure, the Download link included', () => {
-    // Node has no DOM: a stand-in for the button class the check relies on.
+    // A stand-in for the button class the check relies on.
     class Button {
       constructor(readonly type: string) {}
     }
@@ -307,5 +318,82 @@ describe('focusFallsWithCall', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('ImageResizePage', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    // jsdom has neither object URLs nor scrolling.
+    URL.createObjectURL = vi.fn(() => 'blob:preview')
+    URL.revokeObjectURL = vi.fn()
+    Element.prototype.scrollIntoView = vi.fn()
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+
+  type Call = (id: string, payload: { output_channel: WritableStream }) => Promise<unknown>
+  const mount = (call: Call) =>
+    act(async () => root.render(<ImageResizePage host={{ iii: { call } } as unknown as Host} />))
+
+  const pick = async (file: File) => {
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]') as HTMLInputElement
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+  }
+
+  const type = async (field: string, text: string) => {
+    const input = container.querySelector<HTMLInputElement>(`#${field}`) as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setValue?.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  const button = (label: string) =>
+    [...container.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement
+  const submit = () => act(async () => button('Resize').click())
+
+  it("leaves an invalid option to its field's own alert and moves focus there", async () => {
+    await mount(vi.fn())
+    await pick(photo)
+    await type('width', '12px')
+    await submit()
+
+    expect(container.querySelector('[data-row="width"] [role="alert"]')?.textContent).toBe(
+      'Enter a whole number of pixels, 1 or more.',
+    )
+    expect(document.activeElement?.id).toBe('width')
+    // A summary in the live region would cut off the field's alert, or the alert the summary.
+    expect(container.querySelector('output')).toBeNull()
+  })
+
+  it('moves focus to Choose when a pick replaces the control that held it', async () => {
+    await mount(async (_id, payload) => {
+      payload.output_channel.getWriter()
+      throw new Error('boom')
+    })
+    await pick(photo)
+    await submit()
+    act(() => button('Try again').focus())
+
+    await pick(new File([new Uint8Array(10)], 'other.png', { type: 'image/png' }))
+    expect(document.activeElement).toBe(button('Choose another'))
+
+    // A refused pick drops the figures and Remove.
+    act(() => button('Remove').focus())
+    const huge = new File([new Uint8Array(1)], 'huge.png', { type: 'image/png' })
+    Object.defineProperty(huge, 'size', { value: MAX_INPUT_BYTES + 1 })
+    await pick(huge)
+    expect(document.activeElement).toBe(button('Choose an image'))
   })
 })
