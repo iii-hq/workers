@@ -390,20 +390,25 @@ fn kanban_reads_and_the_ticket_loop_are_allowed() {
     }
 }
 
-/// The deepwork orchestrator files each run under its own project: a create
-/// whose `lead` is `deepwork` is allowed; any other create matches no rule and
-/// waits for a person (never a blanket allow or deny).
+/// The deepwork and workflow orchestrators file each run under its own
+/// project: a create whose `lead` is `deepwork` or `workflow` is allowed; any
+/// other create matches no rule and waits for a person (never a blanket allow
+/// or deny).
 #[test]
-fn only_a_deepwork_run_project_create_is_allowed() {
+fn only_a_kit_run_project_create_is_allowed() {
     let permissions = repository_permissions();
-    assert!(matches!(
-        permissions.check(
-            "kanban::project::create",
-            &json!({"name": "deepwork: goal · a7f442", "lead": "deepwork"}),
-            PermissionMode::Manual
-        ),
-        Decision::Allow { .. }
-    ));
+    for args in [
+        json!({"name": "deepwork: goal · a7f442", "lead": "deepwork"}),
+        json!({"name": "Billing", "lead": "workflow"}),
+    ] {
+        assert!(
+            matches!(
+                permissions.check("kanban::project::create", &args, PermissionMode::Manual),
+                Decision::Allow { .. }
+            ),
+            "{args} should be allowed"
+        );
+    }
     for args in [json!({}), json!({"name": "Q3", "lead": "tech-lead"})] {
         assert!(
             matches!(
