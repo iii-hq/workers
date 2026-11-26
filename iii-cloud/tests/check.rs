@@ -1266,3 +1266,68 @@ async fn each_part_of_the_reuse_key_changes_it() {
         "compose file"
     );
 }
+
+/// An `iii` whose run never gets its worker: it says who it waits on after the window.
+async fn with_waiting_runs(h: &Harness, ws: &std::path::Path) {
+    let script = h.dir.path().join("iii-waiting");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) exec sleep 300;;\n  call) echo '{\"workers\":[]}';;\nesac\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = h.ctx.config().await;
+    *h.ctx.cfg.write().await = std::sync::Arc::new(iii_cloud::config::Config {
+        iii_bin: script.to_string_lossy().into(),
+        data_dir: h.dir.path().join("data").to_string_lossy().into(),
+        run_timeout_s: 30,
+        ..(*cfg).clone()
+    });
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "startup_timeout: 300s\ncontainers:\n  alpha:\n    worker: package://foo\n",
+    )
+    .unwrap();
+    git(ws, &["commit", "-qam", "a worker"]);
+    // The run's own files are excluded in a real workspace.
+    // (the worktree's `.git` may be a file: ask git where the file is)
+    let exclude = git(
+        ws,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    std::fs::create_dir_all(std::path::Path::new(&exclude).parent().unwrap()).unwrap();
+    std::fs::write(exclude, "*.iii-cloud-run.*\n.iii\nconfig\n").unwrap();
+}
+
+#[tokio::test]
+async fn a_clean_workspace_attaches_to_its_run_and_a_dirty_one_never_does() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    with_waiting_runs(&h, &ws).await;
+    // Back as soon as the run says who it waits on (0.6 s under the test tick).
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let first_run = running(first.run.as_ref());
+    assert!(first_run.waiting_on.is_some(), "{first_run:?}");
+    let again = check(&h.ctx, run_req()).await.unwrap();
+    assert_eq!(
+        running(again.run.as_ref()).id,
+        first_run.id,
+        "the same key attaches"
+    );
+    // Uncommitted work: the key does not see it, so the call must not attach.
+    std::fs::write(ws.join("dirty.txt"), "x").unwrap();
+    let dirty = check(&h.ctx, run_req()).await.unwrap();
+    assert_ne!(running(dirty.run.as_ref()).id, first_run.id);
+    let old = h
+        .ctx
+        .store
+        .read(|s| s.find_check(&first.id).and_then(|c| c.run.clone()))
+        .unwrap();
+    assert_eq!(old.error.unwrap().code, "RUN_REPLACED");
+}

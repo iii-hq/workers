@@ -856,6 +856,9 @@ pub async fn fetch_plan(
 
 pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let started = Instant::now();
+    // The harness drops a call at 300 s: every wait of this one ends by then,
+    // counted from the start (the fetch and the plan read take from it too).
+    let deadline = started + crate::run::CALL_WAIT;
     if request
         .manifest
         .as_deref()
@@ -1188,7 +1191,6 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     if request.run.unwrap_or(false) {
         // The run reads the saved plan's runtimes and this check's problems as it
         // starts, so it starts here, once both are stored, and not before.
-        let deadline = Instant::now() + crate::run::CALL_WAIT;
         let key = run_key(
             &ctx.config().await.postgres_image,
             &sel.workspace,

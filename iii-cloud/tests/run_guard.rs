@@ -733,6 +733,8 @@ async fn the_replacing_run_is_of_the_commit_the_workspace_has_when_it_takes_the_
     .unwrap();
     begin(&h, "chk", &ws, Some("k")).await.unwrap();
     add_check(&h, &ws, "chk2");
+    // Let compose start and set its trap, or the teardown is instant.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let (hh, sel) = (h.ctx.clone(), selected_of(&h, &ws));
     let replacing = tokio::spawn(async move {
         let until = Instant::now() + Duration::from_secs(20);
@@ -791,4 +793,118 @@ async fn a_replaced_run_leaves_no_process_of_its_stage_behind() {
     );
     assert!(!alive(child), "the stage's shell is gone");
     assert!(!alive(grandchild), "what it started is gone too");
+}
+
+/// Compose takes 3 s to stop once told to.
+const SLOW_TEARDOWN: &str = "trap 'sleep 3; exit 0' TERM; sleep 300 & wait;";
+
+#[tokio::test]
+async fn a_slow_teardown_does_not_hold_the_call_past_its_deadline() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, TWO_WORKERS).await;
+    let bin = fake_iii(&h, SLOW_TEARDOWN);
+    use_iii(&h, &server, &bin).await;
+    let first = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    add_check(&h, &ws, "chk2");
+    // Let compose start and set its trap.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let begun = Instant::now();
+    let until = begun + Duration::from_millis(300);
+    let run = iii_cloud::run::start_with(
+        &h.ctx,
+        "chk2".into(),
+        selected_of(&h, &ws),
+        Some("k2".into()),
+        until,
+    )
+    .await
+    .unwrap();
+    assert!(
+        begun.elapsed() < Duration::from_secs(2),
+        "not the 3 s of the teardown"
+    );
+    assert_eq!(run.id, first.id, "the run as it is, still stopping");
+}
+
+#[tokio::test]
+async fn a_run_already_told_to_stop_is_not_attached_to() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, TWO_WORKERS).await;
+    let bin = fake_iii(&h, SLOW_TEARDOWN);
+    use_iii(&h, &server, &bin).await;
+    add_check(&h, &ws, "chk2");
+    add_check(&h, &ws, "chk3");
+    begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    // Let compose start and set its trap.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Another environment's call replaces it and waits for its teardown.
+    let mut other = selected_of(&h, &ws);
+    other.env.id = "33333333-3333-4333-8333-333333333333".into();
+    let hh = h.ctx.clone();
+    tokio::spawn(async move {
+        let until = Instant::now() + Duration::from_secs(20);
+        let _ =
+            iii_cloud::run::start_with(&hh, "chk2".into(), other, Some("k2".into()), until).await;
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The first environment asks again with its key: the dying run is not its run.
+    let until = Instant::now() + Duration::from_millis(300);
+    let _ = iii_cloud::run::start_with(
+        &h.ctx,
+        "chk3".into(),
+        selected_of(&h, &ws),
+        Some("k".into()),
+        until,
+    )
+    .await;
+    let slot = ws.to_string_lossy().into_owned();
+    let runs = h.ctx.runs.lock().unwrap();
+    let followers = runs.get(&slot).unwrap().followers.lock().unwrap().clone();
+    assert!(
+        followers.is_empty(),
+        "it attached to the dying run: {followers:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_list_that_cannot_be_read_neither_clears_the_wait_nor_resets_its_clock() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, SLOW_START).await;
+    let bin = fake_iii(&h, BETA_LOG);
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let since = waiting(&h, "chk").await.waiting_on.unwrap().since;
+    // The engine's list times out for 200 ms, then answers as before.
+    set_workers(&h, "not json");
+    let mut seen = vec![];
+    for step in 0..40 {
+        if step == 20 {
+            set_workers(&h, ONLY_ALPHA);
+        }
+        seen.push(run_of(&h, "chk").unwrap());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for run in seen.iter().filter(|r| r.status == RunStatus::Running) {
+        let w = run.waiting_on.as_ref().expect("still waiting");
+        assert_eq!(w.since, since);
+        assert_eq!(run.workers.ready, 1, "the count is kept");
+    }
+}
+
+#[test]
+fn a_container_counts_as_exited_only_when_seen_dead_twice_in_a_row() {
+    use iii_cloud::run::confirm_exited;
+    let dead = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut before = vec![];
+    assert!(
+        confirm_exited(&mut before, dead(&["beta"])).is_empty(),
+        "one look"
+    );
+    assert!(
+        confirm_exited(&mut before, dead(&[])).is_empty(),
+        "it was restarting"
+    );
+    assert!(confirm_exited(&mut before, dead(&["beta"])).is_empty());
+    assert_eq!(confirm_exited(&mut before, dead(&["beta"])), vec!["beta"]);
 }
