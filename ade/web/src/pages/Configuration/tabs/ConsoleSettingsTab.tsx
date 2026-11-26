@@ -157,6 +157,9 @@ export function ConsoleSettingsTab({
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
+  // True only once the saved defaults are in hand. Until then (and after a
+  // failed load) the mode and allowlist stay read-only: a write made against
+  // the placeholders would replace the real allowlist with an empty one.
   const [loaded, setLoaded] = useState(false)
   const [pendingFull, setPendingFull] = useState(false)
   const [completionBellEnabled, setCompletionBellEnabled] = useState(
@@ -202,13 +205,12 @@ export function ConsoleSettingsTab({
         if (cancelled) return
         setDefaultMode(cfg.defaultMode)
         setAllowlist(cfg.allowlist)
+        setLoaded(true)
       } catch (err) {
         console.error(
           '[console-settings] failed to load approval-gate config',
           err,
         )
-      } finally {
-        if (!cancelled) setLoaded(true)
       }
     })()
     return () => {
@@ -511,6 +513,7 @@ export function ConsoleSettingsTab({
               control={
                 <Select
                   value={loaded ? defaultMode : 'manual'}
+                  disabled={!loaded}
                   onValueChange={(value) =>
                     handleModeChange(value as PermissionMode)
                   }
@@ -547,6 +550,7 @@ export function ConsoleSettingsTab({
                 <Button
                   type="button"
                   variant="outline"
+                  disabled={!loaded}
                   onClick={() => setAllowlistOpen(true)}
                 >
                   Manage

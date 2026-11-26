@@ -49,8 +49,13 @@ interface SelectProps<T extends string> {
   name?: string
   /** Stable configuration path applied to the visible trigger for deep-link focus. */
   'data-field'?: string
-  /** Compact text-only trigger used in inline sentences and setup controls. */
-  appearance?: 'default' | 'inline'
+  /**
+   * `inline` is the compact text-only trigger used in inline sentences and
+   * setup controls. `pill` is the quiet toolbar pill beside the composer's
+   * model and agent pickers: icon, label, chevron, tinted only while hovered
+   * or open; 40px on touch, 32px on desktop.
+   */
+  appearance?: 'default' | 'inline' | 'pill'
   /** Overrides the trigger appearance's default chevron visibility. */
   showChevron?: boolean
   /** Forwarded to the trigger for screen-readers. */
@@ -165,11 +170,14 @@ export function Select<T extends string>({
   const rootValue = selected ? (value as string) : null
 
   const heading = sheetTitle ?? aria['aria-label'] ?? 'Select option'
-  const chevronVisible = showChevron ?? appearance === 'default'
+  const chevronVisible = showChevron ?? appearance !== 'inline'
   const triggerClassName = cn(
-    appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-input focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-input sm:text-sm'
-      : 'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
+    appearance === 'inline' &&
+      'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-input focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-input sm:text-sm',
+    appearance === 'pill' &&
+      'inline-flex h-10 max-w-full min-w-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-surface-hover data-[state=open]:text-ink sm:h-8 sm:text-sm',
+    appearance === 'default' &&
+      'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',
     className,
   )

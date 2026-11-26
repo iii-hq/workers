@@ -7,10 +7,6 @@ import { GENERAL_ANCHOR } from '@/pages/Configuration/lib/general-settings-index
 import { openGeneralSettingsRow } from '@/pages/Configuration/lib/reveal-general-row'
 import { FullModeConfirmDialog } from './FullModeConfirmDialog'
 
-// viewport: phone chrome — the one sm utility here is the pill's touch
-// height versus its desktop height, like the model pill beside it; see
-// viewport-breakpoint-conformance.test.ts.
-
 interface PermissionModePickerProps {
   /** Backend-owned mode for THIS conversation. */
   value: PermissionMode
@@ -54,7 +50,7 @@ export function PermissionModePicker({
           disabled={disabled}
           aria-label="approval mode"
           leading={<ShieldCheck className="size-4" />}
-          className="h-10 gap-x-1.5 rounded-lg border-0 bg-transparent px-2 text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-transparent data-[state=open]:bg-surface-hover sm:h-8"
+          appearance="pill"
           popupClassName="min-w-64"
           options={[
             {
