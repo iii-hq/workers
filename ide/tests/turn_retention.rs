@@ -337,6 +337,21 @@ async fn worker_startup_and_session_deletion_reconcile_real_git_repositories() {
     .await;
     let logs = std::fs::read_to_string(run.join("fixed.log")).unwrap();
     assert!(!logs.contains("authority_unavailable=true"), "{logs}");
+    let interface: Value = authority
+        .call(CallRequest {
+            function_id: "engine::functions::info".into(),
+            payload: json!({"function_id":"shell::turns::on-session-deleted"}),
+            action: None,
+            timeout_ms: Some(2000),
+        })
+        .await
+        .unwrap();
+    for field in ["request_schema", "response_schema"] {
+        assert_eq!(
+            interface[field]["type"], "object",
+            "the registered deletion observer must expose typed schemas"
+        );
+    }
     // A real-store validation must not print private record contents on failure.
     assert!(
         records(&store) == expected_records,

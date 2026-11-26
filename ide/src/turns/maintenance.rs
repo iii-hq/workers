@@ -15,6 +15,11 @@ use super::*;
 const DELETED_FN_ID: &str = "shell::turns::on-session-deleted";
 const INTERVAL: Duration = Duration::from_secs(300);
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SessionDeleted {
+    session_id: String,
+}
+
 #[derive(Debug, Default, Serialize)]
 struct Summary {
     removed_sessions: usize,
@@ -260,12 +265,14 @@ pub(super) fn register(iii: &IIIClient, log: Arc<TurnLog>) {
     let notified = wake.clone();
     iii.register_function(
         DELETED_FN_ID,
-        RegisterFunction::new_async(move |_event: Value| {
+        RegisterFunction::new_async(move |event: Delivered<SessionDeleted>| {
             let notified = notified.clone();
             async move {
                 // Recheck the authority instead of trusting a delivered payload.
-                notified.notify_one();
-                Ok::<_, Error>(json!({ "ok": true }))
+                if delivered_event(event).is_some_and(|event| !event.session_id.is_empty()) {
+                    notified.notify_one();
+                }
+                Ok::<Ack, Error>(Ack { ok: true })
             }
         })
         .description("Internal: reconcile turn snapshots after a session is deleted.")
