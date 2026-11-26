@@ -68,6 +68,7 @@ type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation:
 interface AgentList {
   agents: AgentRow[];
   config_id?: string;
+  external_visibility?: string | null;
   detail?: string;
 }
 
@@ -165,7 +166,11 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const generation = useRef(0);
   const configPending = useRef(false);
   const [visibility, setVisibility] = useState(0);
-  const [watch, setWatch] = useState<{ iii: ExtensionIii; configId: string }>();
+  const [watch, setWatch] = useState<{
+    iii: ExtensionIii;
+    configId: string;
+    token: string;
+  }>();
   const sessions = useWorkerLive<AgentList & { generation: number }>({
     iii,
     sources: SOURCES,
@@ -199,7 +204,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const observerId = sessionActionNonce();
     const off: (() => void)[] = [];
     let connected = true;
-    let watched = false;
+    let watched: string | null = null;
     let checking = false;
     let probe = 0;
     const invalidate = () => {
@@ -211,37 +216,50 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       configPending.current = false;
       refresh();
     };
-    const acceptWatch = (active: boolean) => {
-      if (watched === active) return;
-      watched = active;
+    const acceptWatch = (token: string | null) => {
+      if (watched === token) return;
+      watched = token;
       invalidate();
-      setWatch(active ? { iii, configId } : undefined);
-      // The visible list must start after the engine confirmed admission.
-      if (active) refresh();
+      setWatch(token ? { iii, configId, token } : undefined);
+      // Never reopen from cached rows: get a list stamped with the new permission.
+      if (token) refresh();
     };
     const checkWatch = async () => {
       if (!connected || checking) return;
       checking = true;
       const current = probe;
-      let active = false;
+      let token: string | null = null;
       try {
-        const watch = await iii.call<{
-          id?: string;
-          function_id?: string;
-          target?: { function_id?: string };
-          state?: string;
-        }>('engine::observers::get', { id: observerId }, { timeoutMs: WATCH_CHECK_MS });
-        active =
+        const [watch, visibility] = await Promise.all([
+          iii.call<{
+            id?: string;
+            function_id?: string;
+            target?: { function_id?: string };
+            state?: string;
+          }>('engine::observers::get', { id: observerId }, { timeoutMs: WATCH_CHECK_MS }),
+          iii.call<{ external_visibility?: unknown }>(
+            'claude::agents::visibility',
+            {},
+            { timeoutMs: WATCH_CHECK_MS },
+          ),
+        ]);
+        const snapshot = visibility?.external_visibility;
+        if (
           watch?.id === observerId &&
           watch.function_id === 'configuration::on-updated' &&
           watch.target?.function_id === target(handler) &&
-          watch.state === 'active';
+          watch.state === 'active' &&
+          typeof snapshot === 'string' &&
+          snapshot
+        ) {
+          token = snapshot;
+        }
       } catch {
-        // A pending, denied, or missing watch cannot keep external data visible.
+        // Neither a missing browser watch nor an unconfirmed worker snapshot can authorize data.
       }
       if (current !== probe) return;
       checking = false;
-      acceptWatch(active);
+      acceptWatch(token);
     };
     const change = {
       function_id: 'configuration::on-updated',
@@ -259,6 +277,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         iii.on(settled, () => {
           invalidate();
           reload();
+          void checkWatch();
         }),
       );
       off.push(iii.observe(change, target(handler), { id: observerId }));
@@ -269,7 +288,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           if (!connected) {
             probe++;
             checking = false;
-            acceptWatch(false);
+            acceptWatch(null);
           } else {
             reload();
             void checkWatch();
@@ -277,14 +296,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         }),
       );
       // ADE returns only a disposer, not the SDK's asynchronous admission state.
-      // Check that state without rerunning the terminal host inventory on a timer.
+      // Check both sides without rerunning the terminal host inventory on every heartbeat.
       const timer = window.setInterval(() => void checkWatch(), WATCH_CHECK_MS);
       off.push(() => window.clearInterval(timer));
       void checkWatch();
     } catch {
       connected = false;
       probe++;
-      acceptWatch(false);
+      acceptWatch(null);
     }
     return () => {
       connected = false;
@@ -321,6 +340,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     !!configId &&
     watch?.iii === iii &&
     watch.configId === configId &&
+    sessions.data?.external_visibility === watch.token &&
     sessions.data?.generation === visibility &&
     !sessions.error;
   const listed = sessions.data?.agents ?? [];

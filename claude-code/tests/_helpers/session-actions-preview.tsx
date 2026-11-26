@@ -44,6 +44,8 @@ const watches = new Set<{
 }>();
 const configId = 'fixture-claude';
 let allowed = true;
+let visibility = 1;
+const externalVisibility = () => (allowed ? `fixture-${visibility}` : null);
 let sourceAvailable = true;
 let backgroundFinished = false;
 const currentRow = (row: (typeof rows)[number]) =>
@@ -133,6 +135,9 @@ const host = {
           state: 'active',
         };
       }
+      if (fn === 'claude::agents::visibility') {
+        return { external_visibility: externalVisibility() };
+      }
       if (fn === 'claude::agents::list') {
         return {
           agents: rows
@@ -142,7 +147,9 @@ const host = {
                 (allowed || !row.external_only) &&
                 (p.all || row.kind !== 'background' || row.alive),
             ),
-          ...(p.include_config_id ? { config_id: configId } : {}),
+          ...(p.include_config_id
+            ? { config_id: configId, external_visibility: externalVisibility() }
+            : {}),
         };
       }
       const listed = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
@@ -295,6 +302,11 @@ function Preview() {
       }
       allowed = false;
     }
+    if (e.code === 'KeyW') {
+      // Change only the synthetic worker snapshot; the browser watch stays active.
+      allowed = !allowed;
+      visibility++;
+    }
     if (e.code === 'KeyS') scenario('stale');
     if (e.code === 'KeyN') scenario('sibling');
     if (e.code === 'KeyA') {
@@ -351,6 +363,7 @@ function Preview() {
               type="button"
               onClick={() => {
                 allowed = !allowed;
+                visibility++;
                 emit('configuration::on-updated', {
                   id: configId,
                   event_type: 'configuration:updated',

@@ -296,6 +296,7 @@ async function list(fake: FakeIii, payload: unknown = {}) {
   return (await fake.registered.get('claude::agents::list')?.(payload)) as {
     agents: Array<{ id: string; pty_session_id?: string }>;
     config_id?: string;
+    external_visibility?: string | null;
     detail?: string;
   };
 }
@@ -315,6 +316,34 @@ describe('claude::agents::list', () => {
         }),
       }),
     );
+  });
+
+  it('binds opt-in inventory to the current visibility snapshot without inventory reads on probe', async () => {
+    let epoch: number | null = null;
+    const makeWorker = () =>
+      host(ok([interactive('external', 'idle')]), { visibilityEpoch: () => epoch });
+    const fake = makeWorker();
+    const probe = (worker: FakeIii = fake) =>
+      worker.registered.get('claude::agents::visibility')?.({});
+
+    expect(await probe()).toEqual({ external_visibility: null });
+    epoch = 1;
+    const visible = await probe();
+    expect(visible).toEqual({ external_visibility: expect.any(String) });
+    expect(await probe(makeWorker())).not.toEqual(visible);
+    expect(fake.calls).toEqual([]);
+    expect(await list(fake)).not.toHaveProperty('external_visibility');
+    const { external_visibility } = await list(fake, { include_config_id: true });
+    expect(visible).toEqual({ external_visibility });
+
+    epoch = null;
+    expect(await probe()).toEqual({ external_visibility: null });
+    expect(await list(fake, { include_config_id: true })).toMatchObject({
+      external_visibility: null,
+      agents: [],
+    });
+    epoch = 2;
+    expect(await probe()).not.toEqual(visible);
   });
 
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
@@ -389,11 +418,11 @@ describe('claude::agents::list', () => {
       },
       { external: true, visibilityEpoch: () => epoch },
     );
-    const pending = list(fake);
+    const pending = list(fake, { include_config_id: true });
     await started;
     epoch++;
     releaseInventory();
-    expect((await pending).agents).toEqual([]);
+    expect(await pending).toMatchObject({ agents: [], external_visibility: null });
   });
 
   it('reads the console terminal of a session, only from the claude page', async () => {

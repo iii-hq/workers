@@ -383,6 +383,35 @@ async function testSessionActions(code) {
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
+  await test('revalidates cached external rows and Fork notices against the independent worker snapshot', async (t) => {
+    const { click, document, shortcut, text, until } = setup(t, { missingForkDirectory: true });
+    const original = '[aria-label="Open original: Design review"]';
+    const notice = () => document.querySelector('.claude-sessions-notices [role="alert"]');
+    await text('/fixture/external-only');
+    shortcut('KeyW');
+    await until(() => !document.querySelector(original));
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.body.textContent, /Console original/);
+
+    shortcut('KeyW');
+    await until(() => document.querySelector(original));
+    await click('Fork Design review');
+    await click('Create fork');
+    await text('the folder /fixture/external-only is not reachable');
+    assert.ok(document.querySelector(original));
+
+    shortcut('KeyW');
+    await until(() => !document.querySelector(original));
+    assert.equal(notice(), null);
+    assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+    assert.match(document.body.textContent, /Console original/);
+
+    shortcut('KeyW');
+    await until(() => document.querySelector(original));
+    assert.equal(notice(), null);
+    assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+  });
+
   await test('clears an external fork failure on access revocation without affecting console notices', async (t) => {
     const { click, focus, shortcut, document, until } = setup(t, {
       heartbeat: false,

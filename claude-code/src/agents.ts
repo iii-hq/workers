@@ -71,7 +71,7 @@ const ListPayloadSchema = z.object({
   include_config_id: z
     .boolean()
     .optional()
-    .describe('Include the configuration entry ID for the console viewer.'),
+    .describe('Include the configuration entry ID and visibility snapshot for the console viewer.'),
 });
 
 const StopPayloadSchema = z.object({
@@ -318,6 +318,25 @@ export function registerAgents(
     return { merge, detail: snapshot.detail };
   };
 
+  // Bind cached inventory to this worker instance as well as its live permission epoch.
+  const visibilityKey = randomBytes(32);
+  const visibilityToken = (epoch: number | null) =>
+    epoch === null
+      ? null
+      : createHmac('sha256', visibilityKey).update(String(epoch)).digest('base64url');
+  const visibilitySchema = z.string().nullable();
+  iii.registerFunction(
+    'claude::agents::visibility',
+    async () => ({ external_visibility: visibilityToken(visibilityEpoch()) }),
+    {
+      description:
+        'Read the current external inventory visibility snapshot without listing sessions.',
+      metadata: { internal: true },
+      request_format: jsonSchema(z.object({})),
+      response_format: jsonSchema(z.object({ external_visibility: visibilitySchema })),
+    },
+  );
+
   iii.registerFunction(
     'claude::agents::list',
     async (payload: unknown) => {
@@ -328,7 +347,8 @@ export function registerAgents(
         markExternal: include_config_id,
       });
       // Recheck at publication; merge the same snapshot without external rows if revoked.
-      const authorized = epoch !== null && epoch === visibilityEpoch();
+      const currentEpoch = visibilityEpoch();
+      const authorized = epoch !== null && epoch === currentEpoch;
       const { agents, hidden } = merge(authorized);
       const details = detail ? [authorized ? detail : 'Terminal host inventory unavailable'] : [];
       if (hidden > 0) {
@@ -338,7 +358,12 @@ export function registerAgents(
       }
       return {
         agents,
-        ...(include_config_id ? { config_id: CONFIG_ID } : {}),
+        ...(include_config_id
+          ? {
+              config_id: CONFIG_ID,
+              external_visibility: visibilityToken(authorized ? epoch : null),
+            }
+          : {}),
         ...(details.length ? { detail: details.join('; ') } : {}),
       };
     },
@@ -350,6 +375,7 @@ export function registerAgents(
         z.object({
           agents: z.array(AgentRowSchema),
           config_id: z.string().optional(),
+          external_visibility: visibilitySchema.optional(),
           detail: z.string().optional(),
         }),
       ),
