@@ -28,16 +28,19 @@ vi.mock('@/components/chat/DirectoryPicker', () => ({
   ),
 }))
 const pickNext = { path: '/home/u/work/acme/api' }
-// No engine here: every call fails, so the seeded stores stand.
+// No engine here: every call fails, so the seeded stores stand. The calls
+// are kept, to read the request a save sends.
+const engine = vi.hoisted(() => ({ calls: [] as [string, unknown][] }))
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    call: async () => {
+    call: async (fn: string, payload?: unknown) => {
+      engine.calls.push([fn, payload])
       throw new Error('no engine in tests')
     },
   }),
 }))
 
-import { ProjectDialog } from './ProjectDialog'
+import { ProjectDialog, saveProject } from './ProjectDialog'
 
 const billing: ChatProject = {
   id: 'prj_billing',
@@ -515,6 +518,60 @@ describe("the project's Auto-compact (§3.3.2)", () => {
       expect.objectContaining({
         changed: expect.objectContaining({ autocompact: false }),
       }),
+    )
+  })
+
+  describe.each([
+    [123_456, '123k'],
+    [400_500, '401k'],
+    [1_234_567, '1.2M'],
+  ])('an exact size it did not edit (%d, shown %s)', (exact, shown) => {
+    const project = {
+      ...billing,
+      autocompact: { mode: 'tokens', tokens: exact },
+    }
+
+    it('a rename leaves it out of the patch, exact', async () => {
+      withPhase3()
+      const { save } = render({ project, initialFolders: undefined })
+      expect(field().value).toBe(shown)
+      expect(checked()).toBe(1)
+      typeName('billing')
+      await act(async () => {
+        button('Save')?.click()
+      })
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autocompact: { mode: 'tokens', tokens: exact },
+          changed: expect.objectContaining({ name: true, autocompact: false }),
+        }),
+      )
+    })
+
+    it('the request a rename sends carries the name only', async () => {
+      withPhase3()
+      engine.calls.length = 0
+      render({ project, initialFolders: undefined, save: saveProject })
+      typeName('billing')
+      await act(async () => {
+        button('Save')?.click()
+      })
+      const updates = engine.calls.filter(
+        ([fn]) => fn === 'harness::projects::update',
+      )
+      expect(updates).toEqual([
+        ['harness::projects::update', { id: 'prj_billing', name: 'billing' }],
+      ])
+    })
+  })
+
+  it('names no global value before the settings are read', () => {
+    setChatCapabilitiesForTests({ autocompact: true, chatSettings: true })
+    seedChatSettingsForTests(null)
+    render({ project: billing, initialFolders: undefined })
+    // The first choice's row: the label, and no "at …" until it is known.
+    expect(section()?.querySelector('div')?.textContent).toBe(
+      'Use the global setting',
     )
   })
 

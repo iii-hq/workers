@@ -13,9 +13,9 @@ import { refreshChatProjects } from '@/hooks/use-chat-projects'
 import { useChatSettings } from '@/hooks/use-chat-settings'
 import {
   type AutocompactSetting,
+  fieldTokens,
   formatTokens,
   parseAutocompactSetting,
-  parseTokens,
   sameSetting,
 } from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
@@ -172,6 +172,8 @@ export function ProjectDialog({
   const withAutocompact = caps.autocompact
   const [autocompactMode, setAutocompactMode] =
     useState<ProjectAutocompactMode>('inherit')
+  /** The size the field was seeded with, exact: untouched text keeps it. */
+  const [autocompactSeed, setAutocompactSeed] = useState(AUTOCOMPACT_START)
   const [autocompactText, setAutocompactText] = useState(
     formatTokens(AUTOCOMPACT_START),
   )
@@ -199,12 +201,11 @@ export function ProjectDialog({
     setBring(true)
     setAccount(parseProjectAccount(project?.account))
     const autocompact = parseAutocompactSetting(project?.autocompact)
+    const seed =
+      autocompact.mode === 'tokens' ? autocompact.tokens : AUTOCOMPACT_START
     setAutocompactMode(autocompact.mode)
-    setAutocompactText(
-      formatTokens(
-        autocompact.mode === 'tokens' ? autocompact.tokens : AUTOCOMPACT_START,
-      ),
-    )
+    setAutocompactSeed(seed)
+    setAutocompactText(formatTokens(seed))
     setErrors({})
     setSaving(false)
   }, [open])
@@ -295,7 +296,9 @@ export function ProjectDialog({
     let autocompact: AutocompactSetting | undefined
     if (withAutocompact) {
       if (autocompactMode === 'tokens') {
-        const parsed = parseTokens(autocompactText)
+        // The field shows the size rounded: untouched, it is the exact one,
+        // so a rename doesn't rewrite 123456 as 123000.
+        const parsed = fieldTokens(autocompactText, autocompactSeed)
         if (!parsed.ok) {
           setErrors({ autocompact: parsed.error })
           autocompactFieldRef.current?.focus()
@@ -561,7 +564,10 @@ export function ProjectDialog({
                     setErrors((c) => ({ ...c, autocompact: undefined }))
                   }
                 }}
-                global={chatSettings.autocompact}
+                global={
+                  chatSettings.loaded ? chatSettings.autocompact : undefined
+                }
+                stored={autocompactSeed}
                 error={errors.autocompact}
                 choiceRef={autocompactRef}
                 fieldRef={autocompactFieldRef}

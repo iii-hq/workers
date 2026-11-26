@@ -2,12 +2,12 @@ import { type ReactNode, type Ref, useId } from 'react'
 import { AutocompactTokenInput } from '@/components/chat/AutocompactTokenInput'
 import {
   AUTOCOMPACT_PRESETS,
+  fieldTokens,
   formatTokens,
   type GlobalAutocompact,
   globalNow,
   ONLY_MODEL_LIMIT,
   PROJECT_HINT,
-  parseTokens,
   SECTION_LABEL,
   USE_GLOBAL,
   VALUE_LEAD,
@@ -72,6 +72,7 @@ export function ProjectAutocompactSection({
   onModeChange,
   onTextChange,
   global,
+  stored,
   error,
   choiceRef,
   fieldRef,
@@ -81,8 +82,13 @@ export function ProjectAutocompactSection({
   text: string
   onModeChange: (next: ProjectAutocompactMode) => void
   onTextChange: (next: string) => void
-  /** The global setting, for "Use the global setting · at 400k". */
-  global: GlobalAutocompact
+  /**
+   * The global setting, for "Use the global setting · at 400k"; undefined
+   * while it isn't read (no value shown, never a guess).
+   */
+  global: GlobalAutocompact | undefined
+  /** The exact size the field was seeded with (`fieldTokens`). */
+  stored?: number
   error?: string
   /** The checked choice, for the dialog opened on this section. */
   choiceRef?: Ref<HTMLInputElement>
@@ -90,7 +96,7 @@ export function ProjectAutocompactSection({
 }) {
   const ids = useId()
   const name = `${ids}-mode`
-  const parsed = parseTokens(text)
+  const parsed = fieldTokens(text, stored)
   const typed = parsed.ok ? parsed.tokens : null
   const choice = { name, mode, onModeChange, choiceRef }
   return (
@@ -106,7 +112,9 @@ export function ProjectAutocompactSection({
         <Choice id={`${ids}-inherit`} value="inherit" {...choice}>
           {USE_GLOBAL}
         </Choice>
-        <span className="text-xs text-ink-faint">{globalNow(global)}</span>
+        {global ? (
+          <span className="text-xs text-ink-faint">{globalNow(global)}</span>
+        ) : null}
       </div>
       <div className="flex min-h-8 flex-wrap items-center gap-2 text-sm text-ink">
         <Choice id={`${ids}-tokens`} value="tokens" {...choice}>

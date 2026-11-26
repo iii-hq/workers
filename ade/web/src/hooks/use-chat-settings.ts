@@ -92,6 +92,11 @@ export interface ChatSettingsApi {
   /** The engine has `harness::chat-settings::*`. */
   available: boolean
   settings: ChatSettings | null
+  /**
+   * The settings have been read: until then `autocompact` is a placeholder
+   * (off), never shown as what applies.
+   */
+  loaded: boolean
   /** Agents write descriptions (`descriptions.agent_writes`, default true). */
   agentWrites: boolean
   setAgentWrites: (on: boolean) => Promise<void>
@@ -121,6 +126,7 @@ export function useChatSettings(enabled = true): ChatSettingsApi {
     () => ({
       available,
       settings: current.settings,
+      loaded: current.settings !== null,
       agentWrites: current.settings?.descriptions.agent_writes ?? true,
       setAgentWrites: async (on: boolean) => {
         const before = current.settings

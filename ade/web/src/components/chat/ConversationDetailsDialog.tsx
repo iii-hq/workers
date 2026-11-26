@@ -21,9 +21,9 @@ import {
   type AutocompactSetting,
   autocompactOf,
   conversationAutocompact,
+  fieldTokens,
   formatTokens,
   inheritChoiceLabel,
-  parseTokens,
   sideChatLine,
 } from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
@@ -68,10 +68,9 @@ export type ConversationDetailsSection = 'account' | 'autocompact'
 /** The size "Compact at…" starts at when the conversation had none. */
 const AUTOCOMPACT_START = 160_000
 
-function autocompactTextOf(setting: AutocompactSetting): string {
-  return formatTokens(
-    setting.mode === 'tokens' ? setting.tokens : AUTOCOMPACT_START,
-  )
+/** The size the row's field starts at: its own, else the start size. */
+function autocompactSeedOf(setting: AutocompactSetting): number {
+  return setting.mode === 'tokens' ? setting.tokens : AUTOCOMPACT_START
 }
 
 interface ConversationDetailsDialogProps {
@@ -192,10 +191,22 @@ export function ConversationDetailsDialog({
   const [autocompactChoice, setAutocompactChoice] =
     useState<AutocompactChoice>('inherit')
   const [autocompactText, setAutocompactText] = useState('')
+  /** The size the field was seeded with, exact: untouched text keeps it. */
+  const [autocompactSeed, setAutocompactSeed] = useState(AUTOCOMPACT_START)
   const [autocompactError, setAutocompactError] = useState<string | null>(null)
   const openOnAutocompact =
     initialSection === 'autocompact' && showAutocompact && !autocompactLocked
   const history = descriptionHistory(conversation.sessionMetadata)
+  // What the row inherits is shown only once it is read: the global before
+  // the settings answer, and a project before the list does, are unknown.
+  const globalRead = chatSettings.loaded
+  const projectsRead = chatProjects.loaded || !chatProjects.available
+  const inheritedGlobal = globalRead ? chatSettings.autocompact : undefined
+  const draftProject =
+    projectList.find((project) => project.id === draft.projectId) ??
+    (draft.projectId && draft.projectId !== NO_PROJECT && !projectsRead
+      ? undefined
+      : null)
 
   // Every open starts from the live values, with the name selected: most
   // edits replace it, so typing straight away is the fast path.
@@ -207,7 +218,9 @@ export function ConversationDetailsDialog({
     setSaving(false)
     const own = autocompactOf(conversation)
     setAutocompactChoice(own.mode)
-    setAutocompactText(autocompactTextOf(own))
+    const seed = autocompactSeedOf(own)
+    setAutocompactSeed(seed)
+    setAutocompactText(formatTokens(seed))
     setAutocompactError(null)
     const frame = requestAnimationFrame(() => {
       if (openOnAutocompact && autocompactRef.current) {
@@ -243,7 +256,9 @@ export function ConversationDetailsDialog({
   /** The row's setting, or null while its size is not a size. */
   const autocompactDraft = (): AutocompactSetting | null => {
     if (autocompactChoice !== 'tokens') return { mode: autocompactChoice }
-    const parsed = parseTokens(autocompactText)
+    // The field shows the size rounded: untouched, it is the exact one, so
+    // a save that didn't touch it leaves 123456 alone (the patch drops it).
+    const parsed = fieldTokens(autocompactText, autocompactSeed)
     if (!parsed.ok) {
       setAutocompactError(parsed.error)
       autocompactFieldRef.current?.focus()
@@ -512,11 +527,8 @@ export function ConversationDetailsDialog({
                 setAutocompactError(null)
               }}
               inheritLabel={inheritChoiceLabel({
-                project:
-                  projectList.find(
-                    (project) => project.id === draft.projectId,
-                  ) ?? null,
-                global: chatSettings.autocompact,
+                project: draftProject,
+                global: inheritedGlobal,
               })}
               error={autocompactError}
               lockedText={
@@ -528,6 +540,8 @@ export function ConversationDetailsDialog({
                         global: chatSettings.autocompact,
                         conversations,
                         parent: sideChatParent,
+                        globalRead,
+                        projectsRead,
                       })?.tokens,
                     )
                   : null
