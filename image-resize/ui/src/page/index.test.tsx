@@ -58,6 +58,9 @@ vi.mock('@iii-dev/console-ui', () => ({
     </dl>
   ),
   PageHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
+  PageMain: ({ children, className }: { children?: ReactNode; className?: string }) => (
+    <main className={className}>{children}</main>
+  ),
   PageShell: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Select: ({ value, placeholder }: { value?: string; placeholder?: string }) => (
     <div data-select={value ?? placeholder} />
@@ -164,6 +167,10 @@ describe('ImageResizeView', () => {
     expect(html).toContain('No image yet|Images up to 64 MiB can be resized here and compared with the original.')
     expect(resizeButton(html)).toContain('disabled=""')
     expect(html).toMatch(/<form[^>]*novalidate=""/i)
+  })
+
+  it('puts the column in the pane-wide PageMain, so the gutters beside it scroll too', () => {
+    expect(render()).toMatch(/<h1>Image resize<\/h1><main class="imgr-main"><div class="imgr">/)
   })
 
   it('shows the chosen image as a compact bar and as the original figure', () => {

@@ -14,6 +14,7 @@ import {
   MetaRow,
   type MetaRowItem,
   PageHeader,
+  PageMain,
   type PageRenderProps,
   PageShell,
   Select,
@@ -231,242 +232,247 @@ export function ImageResizeView({
         description="Downscale a JPEG, PNG or WebP image and compare it with the original."
         onClose={onRequestClose}
       />
-      <div className="imgr">
-        <div
-          className="imgr-drop"
-          data-dragging={dragging || undefined}
-          data-compact={source ? true : undefined}
-          onDragOver={(event) => {
-            event.preventDefault()
-            if (!dragging) handlers.onDragging(true)
-          }}
-          onDragLeave={(event) => {
-            // Moving over the button inside fires dragleave on the zone too.
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) handlers.onDragging(false)
-          }}
-          onDrop={(event) => {
-            event.preventDefault()
-            handlers.onDragging(false)
-            handlers.onFile(event.dataTransfer.files?.[0])
-          }}
-        >
-          <p className="imgr-drop-label">
-            {dragging ? (
-              source ? (
-                'Drop to replace'
-              ) : (
-                'Drop to use this image'
-              )
-            ) : source ? (
-              <>
-                <span className="imgr-drop-name">{source.file.name}</span>
-                <span className="imgr-drop-size">{formatBytes(source.file.size)}</span>
-              </>
-            ) : (
-              'Drop a JPEG, PNG or WebP image here'
-            )}
-          </p>
-          <Button
-            ref={refs.choose}
-            variant="secondary"
-            size={source ? 'sm' : undefined}
-            data-autofocus=""
-            data-settings-narrow-action=""
-            onClick={handlers.onChoose}
-          >
-            {source ? 'Choose another' : 'Choose an image'}
-          </Button>
-          {source ? (
-            <IconButton label="Remove image" onClick={handlers.onRemove}>
-              <Trash2 />
-            </IconButton>
-          ) : null}
-          <input
-            ref={refs.input}
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            hidden
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (file) handlers.onFile(file)
-              event.target.value = ''
+      <PageMain className="imgr-main">
+        <div className="imgr">
+          <div
+            className="imgr-drop"
+            data-dragging={dragging || undefined}
+            data-compact={source ? true : undefined}
+            onDragOver={(event) => {
+              event.preventDefault()
+              if (!dragging) handlers.onDragging(true)
             }}
-          />
-        </div>
-
-        {notice && <StatusPanel variant="warn" {...noticeCopy(notice)} />}
-
-        <form
-          ref={refs.form}
-          className="imgr-form"
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault()
-            handlers.onSubmit()
-          }}
-        >
-          <SettingsSection
-            title="Options"
-            description="Empty options use the worker's configured defaults. The image is never enlarged."
+            onDragLeave={(event) => {
+              // Moving over the button inside fires dragleave on the zone too.
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) handlers.onDragging(false)
+            }}
+            onDrop={(event) => {
+              event.preventDefault()
+              handlers.onDragging(false)
+              handlers.onFile(event.dataTransfer.files?.[0])
+            }}
           >
-            <SettingsList>
-              <SettingsField
-                field="width"
-                label="Width"
-                controlSize="compact"
-                error={errors.width}
-                renderControl={(props) => (
-                  <Input
-                    {...props}
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    step={1}
-                    placeholder="Default"
-                    value={options.width}
-                    onChange={(width) => handlers.onOption({ width })}
-                  />
-                )}
-              />
-              <SettingsField
-                field="height"
-                label="Height"
-                controlSize="compact"
-                error={errors.height}
-                renderControl={(props) => (
-                  <Input
-                    {...props}
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    step={1}
-                    placeholder="Default"
-                    value={options.height}
-                    onChange={(height) => handlers.onOption({ height })}
-                  />
-                )}
-              />
-              <SettingsField
-                field="strategy"
-                label="Strategy"
-                renderControl={(props) => (
-                  <Select
-                    {...props}
-                    value={options.strategy}
-                    options={STRATEGIES}
-                    onChange={(strategy) => handlers.onOption({ strategy })}
-                    allowEmpty
-                    emptyLabel="Default"
-                    placeholder="Default"
-                    onClear={() => handlers.onOption({ strategy: undefined })}
-                    sheetTitle="Strategy"
-                  />
-                )}
-              />
-              <SettingsField
-                field="format"
-                label="Format"
-                renderControl={(props) => (
-                  <Select
-                    {...props}
-                    value={options.format}
-                    options={FORMATS}
-                    onChange={(format) => handlers.onOption({ format })}
-                    allowEmpty
-                    emptyLabel="Same as the input"
-                    placeholder="Same as the input"
-                    onClear={() => handlers.onOption({ format: undefined })}
-                    sheetTitle="Format"
-                  />
-                )}
-              />
-              <SettingsField
-                field="quality"
-                label="Quality"
-                description={png ? 'PNG is lossless; quality does not apply.' : '1 to 100, for JPEG and WebP.'}
-                controlSize="compact"
-                error={png ? undefined : errors.quality}
-                renderControl={(props) => (
-                  <Input
-                    {...props}
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={100}
-                    step={1}
-                    placeholder="Default"
-                    disabled={png}
-                    value={options.quality}
-                    onChange={(quality) => handlers.onOption({ quality })}
-                  />
-                )}
-              />
-            </SettingsList>
-          </SettingsSection>
-          <Button
-            variant="primary"
-            type="submit"
-            className="imgr-action"
-            data-settings-narrow-action=""
-            disabled={!canSubmit(state)}
-          >
-            {running ? 'Resizing…' : 'Resize'}
-          </Button>
-        </form>
-
-        {source ? (
-          <div className="imgr-figures">
-            <div className="imgr-figure">
-              <Eyebrow as="h2">Original</Eyebrow>
-              {source.preview === 'failed' ? (
-                unavailable
+            <p className="imgr-drop-label">
+              {dragging ? (
+                source ? (
+                  'Drop to replace'
+                ) : (
+                  'Drop to use this image'
+                )
+              ) : source ? (
+                <>
+                  <span className="imgr-drop-name">{source.file.name}</span>
+                  <span className="imgr-drop-size">{formatBytes(source.file.size)}</span>
+                </>
               ) : (
-                <div className="imgr-frame">
-                  {urls.source && (
-                    <>
-                      <ImageThumbnailButton
-                        className="imgr-open"
-                        title={source.file.name}
-                        onClick={() => handlers.onViewer('source')}
-                      >
-                        <img
-                          className="imgr-image"
+                'Drop a JPEG, PNG or WebP image here'
+              )}
+            </p>
+            <Button
+              ref={refs.choose}
+              variant="secondary"
+              size={source ? 'sm' : undefined}
+              data-autofocus=""
+              data-settings-narrow-action=""
+              onClick={handlers.onChoose}
+            >
+              {source ? 'Choose another' : 'Choose an image'}
+            </Button>
+            {source ? (
+              <IconButton label="Remove image" onClick={handlers.onRemove}>
+                <Trash2 />
+              </IconButton>
+            ) : null}
+            <input
+              ref={refs.input}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) handlers.onFile(file)
+                event.target.value = ''
+              }}
+            />
+          </div>
+
+          {notice && <StatusPanel variant="warn" {...noticeCopy(notice)} />}
+
+          <form
+            ref={refs.form}
+            className="imgr-form"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault()
+              handlers.onSubmit()
+            }}
+          >
+            <SettingsSection
+              title="Options"
+              description="Empty options use the worker's configured defaults. The image is never enlarged."
+            >
+              <SettingsList>
+                <SettingsField
+                  field="width"
+                  label="Width"
+                  controlSize="compact"
+                  error={errors.width}
+                  renderControl={(props) => (
+                    <Input
+                      {...props}
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      placeholder="Default"
+                      value={options.width}
+                      onChange={(width) => handlers.onOption({ width })}
+                    />
+                  )}
+                />
+                <SettingsField
+                  field="height"
+                  label="Height"
+                  controlSize="compact"
+                  error={errors.height}
+                  renderControl={(props) => (
+                    <Input
+                      {...props}
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      placeholder="Default"
+                      value={options.height}
+                      onChange={(height) => handlers.onOption({ height })}
+                    />
+                  )}
+                />
+                <SettingsField
+                  field="strategy"
+                  label="Strategy"
+                  renderControl={(props) => (
+                    <Select
+                      {...props}
+                      value={options.strategy}
+                      options={STRATEGIES}
+                      onChange={(strategy) => handlers.onOption({ strategy })}
+                      allowEmpty
+                      emptyLabel="Default"
+                      placeholder="Default"
+                      onClear={() => handlers.onOption({ strategy: undefined })}
+                      sheetTitle="Strategy"
+                    />
+                  )}
+                />
+                <SettingsField
+                  field="format"
+                  label="Format"
+                  renderControl={(props) => (
+                    <Select
+                      {...props}
+                      value={options.format}
+                      options={FORMATS}
+                      onChange={(format) => handlers.onOption({ format })}
+                      allowEmpty
+                      emptyLabel="Same as the input"
+                      placeholder="Same as the input"
+                      onClear={() => handlers.onOption({ format: undefined })}
+                      sheetTitle="Format"
+                    />
+                  )}
+                />
+                <SettingsField
+                  field="quality"
+                  label="Quality"
+                  description={png ? 'PNG is lossless; quality does not apply.' : '1 to 100, for JPEG and WebP.'}
+                  controlSize="compact"
+                  error={png ? undefined : errors.quality}
+                  renderControl={(props) => (
+                    <Input
+                      {...props}
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={100}
+                      step={1}
+                      placeholder="Default"
+                      disabled={png}
+                      value={options.quality}
+                      onChange={(quality) => handlers.onOption({ quality })}
+                    />
+                  )}
+                />
+              </SettingsList>
+            </SettingsSection>
+            <Button
+              variant="primary"
+              type="submit"
+              className="imgr-action"
+              data-settings-narrow-action=""
+              disabled={!canSubmit(state)}
+            >
+              {running ? 'Resizing…' : 'Resize'}
+            </Button>
+          </form>
+
+          {source ? (
+            <div className="imgr-figures">
+              <div className="imgr-figure">
+                <Eyebrow as="h2">Original</Eyebrow>
+                {source.preview === 'failed' ? (
+                  unavailable
+                ) : (
+                  <div className="imgr-frame">
+                    {urls.source && (
+                      <>
+                        <ImageThumbnailButton
+                          className="imgr-open"
+                          title={source.file.name}
+                          onClick={() => handlers.onViewer('source')}
+                        >
+                          <img
+                            className="imgr-image"
+                            src={urls.source}
+                            alt={`Original: ${source.file.name}`}
+                            onLoad={(event) =>
+                              handlers.onPreviewLoad(
+                                event.currentTarget.naturalWidth,
+                                event.currentTarget.naturalHeight,
+                              )
+                            }
+                            onError={() => handlers.onPreviewError('source')}
+                          />
+                        </ImageThumbnailButton>
+                        <ImageViewer
+                          open={viewer === 'source'}
+                          onOpenChange={(open) => handlers.onViewer(open ? 'source' : null)}
                           src={urls.source}
                           alt={`Original: ${source.file.name}`}
-                          onLoad={(event) =>
-                            handlers.onPreviewLoad(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)
-                          }
-                          onError={() => handlers.onPreviewError('source')}
+                          title={source.file.name}
+                          description={`${formatBytes(source.file.size)} · ${source.file.type || 'unknown'}`}
                         />
-                      </ImageThumbnailButton>
-                      <ImageViewer
-                        open={viewer === 'source'}
-                        onOpenChange={(open) => handlers.onViewer(open ? 'source' : null)}
-                        src={urls.source}
-                        alt={`Original: ${source.file.name}`}
-                        title={source.file.name}
-                        description={`${formatBytes(source.file.size)} · ${source.file.type || 'unknown'}`}
-                      />
-                    </>
-                  )}
-                </div>
-              )}
-              <MetaRow items={original} />
+                      </>
+                    )}
+                  </div>
+                )}
+                <MetaRow items={original} />
+              </div>
+              <div className="imgr-figure" ref={refs.result} tabIndex={-1}>
+                <Eyebrow as="h2">Resized</Eyebrow>
+                {resized}
+              </div>
             </div>
-            <div className="imgr-figure" ref={refs.result} tabIndex={-1}>
-              <Eyebrow as="h2">Resized</Eyebrow>
-              {resized}
-            </div>
-          </div>
-        ) : (
-          <EmptyState
-            title="No image yet"
-            description="Images up to 64 MiB can be resized here and compared with the original."
-          />
-        )}
+          ) : (
+            <EmptyState
+              title="No image yet"
+              description="Images up to 64 MiB can be resized here and compared with the original."
+            />
+          )}
 
-        <LiveRegion announcement={announcement} />
-      </div>
+          <LiveRegion announcement={announcement} />
+        </div>
+      </PageMain>
     </PageShell>
   )
 }
