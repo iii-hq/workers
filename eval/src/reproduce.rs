@@ -654,6 +654,11 @@ async fn plan(
             request_overhead_tokens: 0,
             allow_prune: harness::window::binds_thinking(&rebuilt.model).then_some(false),
             provenance: false,
+            // A reproduction rebuilds one request as it was sent: no
+            // autocompact budget, and no summary (and so no account) of its own.
+            compaction_budget: None,
+            compaction_instructions: None,
+            provider_options: None,
         })
         .await
         .map_err(EvalError::Dependency)?;
