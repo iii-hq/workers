@@ -895,6 +895,7 @@ async fn a_skipped_name_is_no_local_problem_and_the_check_can_be_ready_until_und
                 log_tail: vec![],
                 error: None,
                 reused: false,
+                waiting_on: None,
             }),
             &c.commit,
         )
@@ -1092,7 +1093,8 @@ async fn the_answers_after_the_one_fetch_follow_the_remote() {
     let moved = git(&other, &["rev-parse", "HEAD"]);
     let before = trips(&log);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    assert_eq!(trips(&log) - before, 1);
+    // The branch's fetch, and the one more look at every branch for the unpushed commit.
+    assert_eq!(trips(&log) - before, 2);
     assert_eq!(c.base, moved);
     assert!(codes(&c).contains(&"BASE_NOT_IN_HISTORY"));
 }
@@ -1184,20 +1186,83 @@ async fn a_passed_run_is_reused_until_something_it_was_made_from_changes() {
     let state = h.ctx.store.read(|s| serde_json::to_string(s).unwrap());
     assert!(!state.contains("one-value-0042") && !state.contains("other-value-0043"));
     pass_stored_runs(&h);
-    // A changed compose file (committed) runs again.
+    // A compose file changed and not committed (the commit stays the same) runs again.
     std::fs::write(
         ws.join("worker-compose.yaml"),
         "containers: {}\n# changed\n",
     )
     .unwrap();
-    git(&ws, &["commit", "-qam", "compose"]);
     let compose = check(&h.ctx, run_req()).await.unwrap();
     assert!(!running(compose.run.as_ref()).reused);
+    git(&ws, &["checkout", "worker-compose.yaml"]);
     pass_stored_runs(&h);
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
     // Another commit with the same compose file runs again.
     std::fs::write(ws.join("other.txt"), "o").unwrap();
     git(&ws, &["add", "."]);
     git(&ws, &["commit", "-qm", "other"]);
     let other = check(&h.ctx, run_req()).await.unwrap();
     assert!(!running(other.run.as_ref()).reused);
+}
+
+/// Each part of the reuse key moves it: the Postgres image, the engine, the
+/// environment, its settings, and the compose file's content with the commit unchanged.
+#[tokio::test]
+async fn each_part_of_the_reuse_key_changes_it() {
+    use iii_cloud::check::run_key;
+    use iii_cloud::local::Manifest;
+    let r = repo();
+    let ws = &r.checkout;
+    let skipped = std::collections::BTreeSet::new();
+    let manifest = || Manifest::load(ws, Some("worker-compose.yaml")).unwrap();
+    let key = |image: &'static str,
+               engine: &'static str,
+               env: &'static str,
+               settings: serde_json::Value| {
+        let m = manifest();
+        let skipped = skipped.clone();
+        async move {
+            run_key(
+                image,
+                ws,
+                Some(&m),
+                Some(engine),
+                env,
+                &settings,
+                &[],
+                &skipped,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let base = key("pg:16", "0.27.0", "env-a", json!({})).await;
+    assert_eq!(base, key("pg:16", "0.27.0", "env-a", json!({})).await);
+    assert_ne!(
+        base,
+        key("pg:17", "0.27.0", "env-a", json!({})).await,
+        "image"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.1", "env-a", json!({})).await,
+        "engine"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-b", json!({})).await,
+        "environment"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-a", json!({"build_command": "x"})).await,
+        "settings"
+    );
+    // The compose file changed and not committed: the same HEAD, another key.
+    std::fs::write(ws.join("worker-compose.yaml"), "containers: {}\n# edited\n").unwrap();
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-a", json!({})).await,
+        "compose file"
+    );
 }

@@ -247,6 +247,7 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
         log_tail: vec![],
         error: None,
         reused: false,
+        waiting_on: None,
     };
     h.ctx.store.update(|s| {
         s.put_check_for(
@@ -1351,6 +1352,7 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
                 message: "api did not connect".into(),
             }),
             reused: false,
+            waiting_on: None,
         });
         s.put_check(c);
     });

@@ -1110,6 +1110,18 @@ pub struct Run {
     /// A passed run of an earlier check answered this one: nothing ran again.
     #[serde(default)]
     pub reused: bool,
+    /// The workers stage has gone a minute with no new worker: who it waits for.
+    /// The run is still `running`; null otherwise.
+    #[serde(default)]
+    pub waiting_on: Option<WaitingOn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WaitingOn {
+    /// The containers that have not connected.
+    pub containers: Vec<String>,
+    /// When the wait was noticed (RFC 3339).
+    pub since: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -372,38 +372,118 @@ fn add_workspace(h: &support::Harness, name: &str) -> std::path::PathBuf {
     ws
 }
 
+/// Two workers, a startup timeout of 120 s (1.2 s under the test tick: the 60 s
+/// window is 0.6 s).
+const SLOW_START: &str = "startup_timeout: 120s\ncontainers:\n  alpha:\n    worker: package://foo\n  beta:\n    worker: package://bar\n";
+const BETA_LOG: &str = "mkdir -p .iii/compose/iii-cloud-run/logs; printf '# header\\nstdout\\tlistening\\nstderr\\tboom-from-beta\\n' > .iii/compose/iii-cloud-run/logs/beta.log;";
+
+async fn waiting(h: &support::Harness, check: &str) -> Run {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(run) = run_of(h, check).filter(|r| r.waiting_on.is_some()) {
+            return run;
+        }
+        assert!(Instant::now() < deadline, "{:?}", run_of(h, check));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
-async fn no_new_worker_for_a_minute_fails_early_naming_the_container_and_its_log() {
+async fn a_minute_with_no_new_worker_says_who_it_waits_on_and_the_run_goes_on() {
     let server = MockServer::start().await;
-    let (h, _ws) = with_check(&server, TWO_WORKERS).await;
-    let bin = fake_iii(
-        &h,
-        "mkdir -p .iii/compose/iii-cloud-run/logs; printf '# header\\nstdout\\tlistening\\nstderr\\tboom-from-beta\\n' > .iii/compose/iii-cloud-run/logs/beta.log;",
-    );
+    let (h, _ws) = with_check(&server, SLOW_START).await;
+    let bin = fake_iii(&h, BETA_LOG);
     use_iii(&h, &server, &bin).await;
     set_workers(&h, ONLY_ALPHA);
     let begun = Instant::now();
     start(&h.ctx, "chk".into()).await.unwrap();
-    let run = ended(&h, "chk").await;
-    // The 60 s window is 600 ms under the test tick; the compose file's own ceiling is 60 s.
-    assert!(begun.elapsed() < Duration::from_secs(20));
-    let error = run.error.unwrap();
-    assert_eq!(
-        (error.stage, error.code.as_str()),
-        (StageName::Workers, "WORKERS_NOT_READY")
-    );
-    assert!(error.message.contains("no new one"), "{}", error.message);
+    // Before the window nothing is said; the window (0.6 s) passes, the ceiling (1.2 s) not yet.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(run_of(&h, "chk").unwrap().waiting_on.is_none());
+    let run = waiting(&h, "chk").await;
     assert!(
-        error.message.contains("Did not connect: beta."),
-        "{}",
-        error.message
+        begun.elapsed() >= Duration::from_millis(550),
+        "the window is 0.6 s"
     );
+    assert_eq!(run.status, RunStatus::Running, "not a failure");
+    assert_eq!(run.waiting_on.as_ref().unwrap().containers, vec!["beta"]);
     assert!(
         run.log_tail.iter().any(|l| l == "[beta] boom-from-beta"),
         "{:?}",
         run.log_tail
     );
     assert!(!run.log_tail.iter().any(|l| l.contains("# header")));
+    // A non-terminal event said so.
+    let events = h.fake.events.lock().unwrap().clone();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == EventKind::Run && !e.terminal && !e.record["waiting_on"].is_null()),
+        "{events:?}"
+    );
+    // The compose file's ceiling still ends it, as the cloud's does.
+    let run = ended(&h, "chk").await;
+    let error = run.error.unwrap();
+    assert_eq!(error.code, "WORKERS_NOT_READY");
+    assert!(
+        error.message.contains("Did not connect: beta."),
+        "{}",
+        error.message
+    );
+    assert!(run.waiting_on.is_none());
+}
+
+#[tokio::test]
+async fn a_worker_that_connects_after_the_wait_clears_it_and_the_run_passes() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, SLOW_START).await;
+    let bin = fake_iii(&h, BETA_LOG);
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    waiting(&h, "chk").await;
+    set_workers(&h, ALL);
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.status, RunStatus::Passed, "{:?}", run.error);
+    assert!(run.waiting_on.is_none());
+}
+
+#[tokio::test]
+async fn a_container_restarting_is_not_an_exit() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, SLOW_START).await;
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    gone.wait().unwrap();
+    // `restart: on-failure`: the record keeps the dead pid while it backs off.
+    let bin = fake_iii(
+        &h,
+        &format!(
+            "mkdir -p .iii/compose/iii-cloud-run; echo '{{\"containers\":{{\"beta\":{{\"pid\":{pid},\"status\":\"restarting\"}}}}}}' > .iii/compose/iii-cloud-run/state.json;"
+        ),
+    );
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let run = run_of(&h, "chk").unwrap();
+    assert_eq!((run.status, run.error), (RunStatus::Running, None));
+    set_workers(&h, ALL);
+    assert_eq!(ended(&h, "chk").await.status, RunStatus::Passed);
+}
+
+#[test]
+fn a_taken_postgres_port_is_not_reported_as_a_missing_docker() {
+    let (code, message) = iii_cloud::run::docker_failure(
+        49000,
+        "docker: Error response: Bind for 127.0.0.1:49000 failed: port is already allocated.",
+    );
+    assert_eq!(code, "PORT_IN_USE");
+    assert!(message.contains("49000"), "{message}");
+    assert_eq!(
+        iii_cloud::run::docker_failure(1, "no such image").0,
+        "DOCKER_MISSING"
+    );
 }
 
 #[tokio::test]
@@ -445,15 +525,35 @@ async fn a_run_of_another_workspace_starts_while_one_is_running() {
     let ws2 = add_workspace(&h, "other");
     add_check(&h, &ws2, "chk2");
     let first = start(&h.ctx, "chk".into()).await.unwrap();
-    let second = iii_cloud::run::start_with(&h.ctx, "chk2".into(), selected_of(&h, &ws2))
-        .await
-        .expect("no RUN_BUSY for another workspace");
+    let second = begin(&h, "chk2", &ws2, None).await.unwrap();
     assert_ne!(first.id, second.id);
     assert_eq!(h.ctx.runs.lock().unwrap().len(), 2);
+    // Each run holds its own ports until its teardown.
+    assert!(h.ctx.ports.lock().unwrap().len() >= 2);
     set_workers(&h, ALL);
     assert_eq!(ended(&h, "chk").await.status, RunStatus::Passed);
     assert_eq!(ended(&h, "chk2").await.status, RunStatus::Passed);
     assert!(ws.exists());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(h.ctx.ports.lock().unwrap().is_empty(), "given back");
+}
+
+/// `start_with` on `ws` as the environment's check `id`, with a reuse key and a 20 s deadline.
+async fn begin(
+    h: &support::Harness,
+    id: &str,
+    ws: &std::path::Path,
+    key: Option<&str>,
+) -> Result<Run, iii_cloud::error::CloudError> {
+    let until = Instant::now() + Duration::from_secs(20);
+    iii_cloud::run::start_with(
+        &h.ctx,
+        id.into(),
+        selected_of(h, ws),
+        key.map(Into::into),
+        until,
+    )
+    .await
 }
 
 #[tokio::test]
@@ -486,7 +586,7 @@ async fn a_new_commit_of_the_workspace_replaces_the_running_run() {
 }
 
 #[tokio::test]
-async fn the_same_commit_attaches_to_the_running_run() {
+async fn the_same_key_attaches_a_second_check_to_the_running_run() {
     let server = MockServer::start().await;
     let (h, ws) = with_check(&server, TWO_WORKERS).await;
     let bin = fake_iii(&h, "");
@@ -497,19 +597,198 @@ async fn the_same_commit_attaches_to_the_running_run() {
         "*.iii-cloud-run.*\n.iii\nconfig\n",
     )
     .unwrap();
-    let first = start(&h.ctx, "chk".into()).await.unwrap();
-    let ctx = h.ctx.clone();
-    let attached = tokio::spawn(async move { start(&ctx, "chk".into()).await });
+    add_check(&h, &ws, "chk2");
+    let first = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    // Another check of the same commit, environment and key.
+    let (hh, ws2) = (h.ctx.clone(), ws.clone());
+    let sel = selected_of(&h, &ws2);
+    let attached = tokio::spawn(async move {
+        let until = Instant::now() + Duration::from_secs(20);
+        iii_cloud::run::start_with(&hh, "chk2".into(), sel, Some("k".into()), until).await
+    });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!attached.is_finished(), "it waits for the run");
+    // The run is in the second check too, as it goes.
+    assert_eq!(run_of(&h, "chk2").unwrap().id, first.id);
     set_workers(&h, ALL);
     let run = attached.await.unwrap().unwrap();
     assert_eq!(
         (run.id.as_str(), run.status),
         (first.id.as_str(), RunStatus::Passed)
     );
+    // Its end reached the attached check; the owner's own is the same run.
+    assert_eq!(run_of(&h, "chk2").unwrap().status, RunStatus::Passed);
+    assert!(h.ctx.store.read(|s| s.find_check("chk2").unwrap().ready));
     let runs = std::fs::read_dir(h.dir.path().join("data/runs"))
         .unwrap()
         .count();
     assert_eq!(runs, 1, "no second run");
+}
+
+#[tokio::test]
+async fn an_attached_call_returns_at_its_deadline_and_the_run_still_reaches_the_check() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, TWO_WORKERS).await;
+    let bin = fake_iii(&h, "");
+    use_iii(&h, &server, &bin).await;
+    add_check(&h, &ws, "chk2");
+    let first = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    // The call's deadline is shared: 400 ms here, whatever the run does.
+    let until = Instant::now() + Duration::from_millis(400);
+    let begun = Instant::now();
+    let run = iii_cloud::run::start_with(
+        &h.ctx,
+        "chk2".into(),
+        selected_of(&h, &ws),
+        Some("k".into()),
+        until,
+    )
+    .await
+    .unwrap();
+    assert!(begun.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        (run.id.as_str(), run.status),
+        (first.id.as_str(), RunStatus::Running)
+    );
+    // Later the owner still publishes the end into the attached check.
+    set_workers(&h, ALL);
+    assert_eq!(ended(&h, "chk2").await.status, RunStatus::Passed);
+}
+
+#[tokio::test]
+async fn an_attached_call_returns_when_the_run_says_who_it_waits_on() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    let bin = fake_iii(&h, BETA_LOG);
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    add_check(&h, &ws, "chk2");
+    begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    let run = begin(&h, "chk2", &ws, Some("k")).await.unwrap();
+    assert_eq!(run.status, RunStatus::Running);
+    assert_eq!(run.waiting_on.unwrap().containers, vec!["beta"]);
+}
+
+#[tokio::test]
+async fn another_environment_or_another_key_replaces_instead_of_attaching() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, TWO_WORKERS).await;
+    let bin = fake_iii(&h, "");
+    use_iii(&h, &server, &bin).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/teams/{TEAM}/environments/33333333-3333-4333-8333-333333333333"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"id": "33333333-3333-4333-8333-333333333333", "project_id": "p", "name": "staging", "production": false, "branch": "main", "manifest": "worker-compose.yaml", "url": null, "settings": {}}),
+        ))
+        .mount(&server)
+        .await;
+    add_check(&h, &ws, "chk2");
+    add_check(&h, &ws, "chk3");
+    let a = begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    // The same commit and key, another environment (two environments share a checkout path).
+    let mut other_env = selected_of(&h, &ws);
+    other_env.env.id = "33333333-3333-4333-8333-333333333333".into();
+    let until = Instant::now() + Duration::from_secs(20);
+    let b = iii_cloud::run::start_with(
+        &h.ctx,
+        "chk2".into(),
+        other_env.clone(),
+        Some("k".into()),
+        until,
+    )
+    .await
+    .unwrap();
+    assert_ne!(a.id, b.id);
+    assert_eq!(
+        run_of(&h, "chk").unwrap().error.unwrap().code,
+        "RUN_REPLACED"
+    );
+    // The same environment but not the same key (say, other uncommitted values).
+    let c = iii_cloud::run::start_with(&h.ctx, "chk3".into(), other_env, Some("k2".into()), until)
+        .await
+        .unwrap();
+    assert_ne!(b.id, c.id);
+    assert_eq!(
+        run_of(&h, "chk2").unwrap().error.unwrap().code,
+        "RUN_REPLACED"
+    );
+    // A call with no key never attaches either.
+    let d = begin(&h, "chk", &ws, None).await.unwrap();
+    assert_ne!(c.id, d.id);
+}
+
+#[tokio::test]
+async fn the_replacing_run_is_of_the_commit_the_workspace_has_when_it_takes_the_slot() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, TWO_WORKERS).await;
+    // The old run takes a second to stop: a commit made meanwhile must be the new run's.
+    let bin = fake_iii(&h, "trap 'sleep 1; exit 0' TERM; sleep 300 & wait;");
+    use_iii(&h, &server, &bin).await;
+    std::fs::write(
+        ws.join(".git/info/exclude"),
+        "*.iii-cloud-run.*\n.iii\nconfig\n",
+    )
+    .unwrap();
+    begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    add_check(&h, &ws, "chk2");
+    let (hh, sel) = (h.ctx.clone(), selected_of(&h, &ws));
+    let replacing = tokio::spawn(async move {
+        let until = Instant::now() + Duration::from_secs(20);
+        iii_cloud::run::start_with(&hh, "chk2".into(), sel, Some("k2".into()), until).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(ws.join("late.txt"), "late").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-m", "late"]);
+    let late = git(&ws, &["rev-parse", "HEAD"]);
+    let run = replacing.await.unwrap().unwrap();
+    assert_eq!(run.commit, late);
+}
+
+fn alive(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // A zombie is gone for our purposes: nothing runs.
+        Ok(stat) => !stat
+            .rsplit(')')
+            .next()
+            .unwrap_or("")
+            .trim_start()
+            .starts_with('Z'),
+        Err(_) => false,
+    }
+}
+
+#[tokio::test]
+async fn a_replaced_run_leaves_no_process_of_its_stage_behind() {
+    let server = MockServer::start().await;
+    let compose = "containers:\n  alpha:\n    worker: package://foo\ncloud:\n  build:\n    command: echo $$ > child.pid; sleep 300 & echo $! > grandchild.pid; wait\n";
+    let (h, ws) = with_check(&server, compose).await;
+    let bin = fake_iii(&h, "");
+    use_iii(&h, &server, &bin).await;
+    begin(&h, "chk", &ws, Some("k")).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let read = |name: &str| {
+        std::fs::read_to_string(ws.join(name))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+    };
+    let (child, grandchild) = loop {
+        if let (Some(c), Some(g)) = (read("child.pid"), read("grandchild.pid")) {
+            break (c, g);
+        }
+        assert!(Instant::now() < deadline, "the build never started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(alive(child) && alive(grandchild));
+    add_check(&h, &ws, "chk2");
+    // The replacement returns once the old run's teardown is over.
+    begin(&h, "chk2", &ws, Some("k2")).await.unwrap();
+    assert_eq!(
+        run_of(&h, "chk").unwrap().error.unwrap().code,
+        "RUN_REPLACED"
+    );
+    assert!(!alive(child), "the stage's shell is gone");
+    assert!(!alive(grandchild), "what it started is gone too");
 }
