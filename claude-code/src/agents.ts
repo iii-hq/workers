@@ -9,6 +9,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
+import { CONFIG_ID } from './configuration.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
@@ -72,9 +73,6 @@ export type ResolveOpen = (
   request?: OpenRequest,
   reserve?: boolean | ((plan: OpenSpec) => boolean),
 ) => Promise<OpenPlan>;
-
-// Match the effective entry ID used by the worker's configuration observer.
-const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || 'claude-code';
 
 const ListPayloadSchema = z.object({
   all: z

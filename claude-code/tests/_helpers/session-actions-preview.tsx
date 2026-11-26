@@ -44,6 +44,13 @@ const configId = 'fixture-claude';
 let allowed = true;
 let finishedPty: { id: string; confirmed: boolean } | undefined;
 let mismatchedDescribe = false;
+let backgroundFinished = false;
+const currentRow = (row: (typeof rows)[number]) =>
+  row === rows[2] && backgroundFinished ? { ...row, alive: false, status: 'done' } : row;
+
+// Loopback is usually a secure context. Simulate the crypto surface of plain HTTP LAN.
+if (new URLSearchParams(window.location.search).has('no-random-uuid'))
+  Object.defineProperty(crypto, 'randomUUID', { value: undefined });
 let sequence = 1;
 const reply = () => ({
   id: `reply-${sequence}`,
@@ -93,11 +100,12 @@ const host = {
     ) {
       if (fn === 'claude::agents::list') {
         return {
-          agents: allowed ? rows : [rows[1]],
+          agents: allowed ? rows.map(currentRow) : [rows[1]],
           ...(p.include_config_id ? { config_id: configId } : {}),
         };
       }
-      const row = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
+      const listed = rows.find((r) => r.id === (p.session ?? p.claude_session_id));
+      const row = listed && currentRow(listed);
       if (!row || (!allowed && (fn === 'claude::agents::get' || !row.pty_session_id)))
         throw new Error('Session unavailable');
       if (fn === 'claude::agents::get' || fn === 'claude::agents::follow-snapshot') {
@@ -132,7 +140,7 @@ const host = {
           return { pty_session_id: finishedPty.id, claude_session_id: row.id };
         }
         const args =
-          row.short_id && p.mode !== 'fork'
+          row.alive && row.short_id && p.mode !== 'fork'
             ? ['attach', row.short_id]
             : ['--resume', row.id, ...(p.mode === 'fork' ? ['--fork-session'] : [])];
         return {
@@ -175,6 +183,7 @@ function Preview() {
   const [screen, setScreen] = useState({ pty: '', key: '', text: 'No terminal selected' });
   const [narrow, setNarrow] = useState(false);
   const [count, setCount] = useState(0);
+  const nextPtyId = useRef(0);
   const firstPtys = useRef(new Map<string, string>());
   const [reopened, setReopened] = useState<{ text: string; reused: boolean } | null>(null);
   const [leases] = useState(() => new Map<string, typeof screen>());
@@ -200,13 +209,15 @@ function Preview() {
                 ? 'Original background terminal'
                 : args[0] === '--resume' && args[1] === rows[4].id
                   ? 'Finished original at workspace trust'
-                  : null));
+                  : args[0] === '--resume' && args[1] === rows[2].id
+                    ? 'Finished background original'
+                    : null));
       if (!text) {
         if (!pty && !spec) return false;
         throw new Error('No matching fixture terminal');
       }
       if (!pty && !held) setCount((n) => n + 1);
-      const next = { key, pty: pty ?? held?.pty ?? `fixture-${crypto.randomUUID()}`, text };
+      const next = { key, pty: pty ?? held?.pty ?? `fixture-${++nextPtyId.current}`, text };
       if (!held && text === 'Finished original at workspace trust')
         finishedPty = { id: next.pty, confirmed: false };
       if (
@@ -353,6 +364,14 @@ function Preview() {
               }}
             >
               Delay reply observer admission
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                backgroundFinished = true;
+              }}
+            >
+              Finish background without refreshing
             </button>
             <span>
               While following: Alt+S switches to an empty branch; Alt+B delivers 21 replies.

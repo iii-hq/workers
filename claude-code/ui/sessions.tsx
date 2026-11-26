@@ -38,7 +38,7 @@ import { useWorkerLive } from '@iii-dev/console-ui/hooks';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
 import { MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
 import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
-import { SessionDetail, STATUS, type Status } from './session-detail';
+import { SessionDetail, STATUS, type Status, sessionActionNonce } from './session-detail';
 
 /** The console injects an untyped host object; this is the boundary. */
 // biome-ignore lint/suspicious/noExplicitAny: the injected host is untyped
@@ -240,11 +240,11 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         throw new Error(
           'The original conversation could not be verified. Refresh the list and try again.',
         );
-      const key = `${mode}:${row.claude_session_id}:${crypto.randomUUID()}`;
       if (mode === 'original' && spec.follow) {
         setFollow(spec.claude_session_id);
         return;
       }
+      const key = `${mode}:${row.claude_session_id}:${sessionActionNonce()}`;
       let opened: boolean;
       if (mode === 'original' && spec.pty_session_id) {
         const take = terminal.open({ key, pty: spec.pty_session_id });
@@ -260,11 +260,20 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           opened = await take;
         }
       } else {
+        // Describe revalidated inventory; the rail may still show a finished session as live.
+        const args = Array.isArray(spec.args) ? spec.args : null;
+        const originalArgs =
+          args &&
+          (args[0] === 'attach'
+            ? args.length === 2 && /^[0-9a-f]{8}$/.test(args[1])
+            : args.at(-2) === '--resume' &&
+              args.at(-1) === row.claude_session_id &&
+              !args.includes('--fork-session'));
         if (
           !spec.program ||
-          !Array.isArray(spec.args) ||
+          !args ||
           Boolean(spec.copy) !== (mode === 'fork') ||
-          (mode === 'original' && row.alive && spec.args[0] !== 'attach')
+          (mode === 'original' && !originalArgs)
         ) {
           throw new Error(
             'The original session changed or has no available terminal. Refresh the list and try again.',

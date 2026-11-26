@@ -10,6 +10,13 @@ import {
 } from '@iii-dev/console-ui';
 import { type RefObject, useEffect, useRef, useState } from 'react';
 
+// Web Crypto provides random bytes even on plain HTTP LAN origins.
+export function sessionActionNonce(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+}
+
 export type Status = 'busy' | 'idle' | 'waiting' | 'done' | 'error' | 'stopped' | 'unknown';
 
 export const STATUS: Record<
@@ -43,7 +50,7 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
   useEffect(() => {
     // Unique per mount: a delivery already queued for a previous selection must
     // not address the new viewer, even when the same conversation is reopened.
-    const base = `iii::claude-ui::follow-${crypto.randomUUID()}`;
+    const base = `iii::claude-ui::follow-${sessionActionNonce()}`;
     let active = true;
     let reading = false;
     let again = false;

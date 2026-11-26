@@ -18,7 +18,7 @@ import {
 } from './config.js';
 
 const DEFAULT_CONFIG_ID = 'claude-code';
-const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
+export const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'claude::on-config-change';
 const ON_UPDATED_FN = 'configuration::on-updated';
 const TIMEOUT_MS = 5_000;

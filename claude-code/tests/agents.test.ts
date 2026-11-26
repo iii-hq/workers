@@ -1,6 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
+import { observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
   record as transcriptRecord,
@@ -303,8 +304,16 @@ describe('claude::agents::list', () => {
   it('only returns the effective configuration entry ID when requested', async () => {
     const fake = host(ok([]), { external: true });
     expect(await list(fake)).not.toHaveProperty('config_id');
-    expect((await list(fake, { include_config_id: true })).config_id).toBe(
-      process.env.III_CONFIG_NAME?.trim() || 'claude-code',
+    const { config_id } = await list(fake, { include_config_id: true });
+    expect(config_id).toBe(process.env.III_CONFIG_NAME?.trim() || 'claude-code');
+    await observeConfigChanges(fake.iii, async () => {});
+    expect(fake.observed).toContainEqual(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          function_id: 'configuration::on-updated',
+          filters: expect.objectContaining({ 'input.id': { $eq: config_id } }),
+        }),
+      }),
     );
   });
 

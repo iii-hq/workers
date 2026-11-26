@@ -104,9 +104,9 @@ async function testSessionActions(code) {
   const { default: assert } = await import('node:assert/strict');
   const { test } = await import('node:test');
   const { JSDOM } = require('jsdom');
-  function setup(t, { heartbeat = true } = {}) {
+  function setup(t, { heartbeat = true, plainHttp = false } = {}) {
     const { window } = new JSDOM('<div id="root"></div>', {
-      url: 'http://127.0.0.1/',
+      url: plainHttp ? 'http://127.0.0.1/?no-random-uuid' : 'http://127.0.0.1/',
       pretendToBeVisual: true,
       runScripts: 'outside-only',
     });
@@ -234,10 +234,29 @@ async function testSessionActions(code) {
     assert.doesNotMatch(document.body.textContent, /That did not go through/);
   });
 
-  await test('keeps the read-only original and native background attach distinct from a fork', async (t) => {
-    const { click, follow, text, document } = setup(t);
+  await test('opens the fresh finished original on the first click of a stale working row', async (t) => {
+    const { click, text, document } = setup(t);
+    await text('Working · Background');
+    await click('Finish background without refreshing');
+    assert.match(document.body.textContent, /Working · Background/);
+    await click('Open original: Background indexing');
+    await text('Finished background original');
+    const terminal = document.querySelector('main').textContent;
+    assert.match(terminal, /Terminal open calls:\s*1/);
+    assert.match(terminal, /Terminals created:\s*1/);
+    assert.doesNotMatch(document.body.textContent, /That did not go through/);
+  });
+
+  await test('keeps follow, native background attach and fork distinct without randomUUID', async (t) => {
+    const { click, follow, shortcut, text, document } = setup(t, {
+      plainHttp: true,
+      heartbeat: false,
+    });
+    assert.equal(typeof document.defaultView.crypto.randomUUID, 'undefined');
     const terminal = () => document.querySelector('main').textContent;
     await follow();
+    shortcut('KeyU');
+    await text('Review update 2:');
     assert.match(terminal(), /Terminal open calls:\s*0/);
     await click('Close');
     await click('Fork Design review');
@@ -246,12 +265,16 @@ async function testSessionActions(code) {
     await click('Fork Design review');
     await click('Create fork');
     await text('Separate fork terminal');
-    await follow();
+    await click('Open original: Design review');
+    await text('Review update 2:');
     assert.match(terminal(), /Terminal open calls:\s*1/);
     await click('Close');
     await click('Open original: Background indexing');
     await text('Original background terminal');
     assert.match(terminal(), /Terminal open calls:\s*2/);
+    await click('Open original: Console original');
+    await text('Original console PTY');
+    assert.match(terminal(), /Terminal open calls:\s*3/);
   });
 
   await test('refuses an unconfirmed original transport before any terminal operation', async (t) => {
