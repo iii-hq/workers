@@ -3799,3 +3799,15 @@ async fn a_run_the_persons_newer_run_replaced_sends_the_agent_nothing_from_any_p
     let e = c.run.unwrap().error.unwrap();
     assert_eq!((e.owner, e.withheld), (Some(RunOwner::Replaced), false));
 }
+
+#[tokio::test]
+async fn asking_again_for_a_check_already_told_answers_that_something_went() {
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    let first = create(&h.ctx, ready_req()).await.unwrap();
+    assert_eq!(first.sent, Some(true));
+    let before = continues(&h).len();
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(true), "{again:?}");
+    assert_eq!(continues(&h).len(), before, "no second message");
+}

@@ -1520,9 +1520,13 @@ impl Exec {
         if let Some(e) = run.error.as_mut() {
             e.message = self.redact(&e.message);
         }
-        update_check(&self.ctx, &self.check_id, |c| c.run = Some(run.clone()));
-        put_in_followers(&self.ctx, &self.followers, &self.check_id, &run);
-        emit_run(&self.ctx, &run);
+        // The stored check stamps `owner` and `withheld` on the run: the event carries the stamped one,
+        // or the page would apply a run with neither over the check.
+        let stamped = update_check(&self.ctx, &self.check_id, |c| c.run = Some(run.clone()))
+            .and_then(|c| c.run)
+            .unwrap_or(run);
+        put_in_followers(&self.ctx, &self.followers, &self.check_id, &stamped);
+        emit_run(&self.ctx, &stamped);
     }
 
     fn set(&mut self, name: StageName, status: StageStatus, detail: Option<String>) {

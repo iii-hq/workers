@@ -1432,3 +1432,24 @@ async fn a_kept_copy_never_holds_a_secret_and_an_older_run_is_not_readable() {
     .unwrap_err();
     assert_eq!(err.code, "NOT_AVAILABLE");
 }
+
+#[tokio::test]
+async fn the_run_event_carries_the_owner_the_stored_check_says() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, "containers: {}\nengine: nope\n").await;
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    let stored = run.error.clone().unwrap();
+    assert!(stored.owner.is_some(), "the stored check says whose it is");
+    let events = h.fake.events.lock().unwrap().clone();
+    let last = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == EventKind::Run && e.terminal)
+        .expect("a terminal run event");
+    assert_eq!(
+        last.record["error"]["owner"],
+        serde_json::to_value(stored.owner).unwrap()
+    );
+    assert_eq!(last.record["error"]["withheld"], stored.withheld);
+}

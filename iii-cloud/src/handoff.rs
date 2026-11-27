@@ -1538,9 +1538,10 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
     }) else {
         return false;
     };
-    // That check was already told (the poll, or this button a moment ago): not twice.
+    // That check was already told (the poll, or this button a moment ago): not twice. Something did
+    // go to the agent for it, so the answer is yes.
     if h.person_check_told.as_deref() == Some(check_id.as_str()) {
-        return false;
+        return true;
     }
     let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
         return false;
@@ -1858,7 +1859,6 @@ pub fn run_code_owner(code: &str) -> RunOwner {
         "INSTALL_FAILED"
         | "BUILD_FAILED"
         | "RELEASE_FAILED"
-        | "PORT_IN_USE"
         | "COMPOSE_FAILED"
         | "WORKERS_NOT_READY"
         | "NO_ROUTE"
