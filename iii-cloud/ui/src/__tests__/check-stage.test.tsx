@@ -2159,25 +2159,64 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
-  it("the button waits six seconds from the run's end, only where an idle hand-off exists on this environment", async () => {
-    const justNow = (st: Status) =>
-      ({ ...st, check: { ...st.check!, run: { ...st.check!.run!, finished_at: new Date().toISOString() } } }) as Status
+  it('the button waits six seconds from when the page saw the run end, only for an agent the worker continues', async () => {
     const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
-    // an idle agent on this environment, the run just ended
-    await stage(justNow(release(note)), {}, { openScreen: vi.fn() })
+    const envOf = (st: Status) => st.check!.environment_id
+    const callEnded = async (h: { host: never }, env: string) =>
+      act(async () => {
+        hubOf(h.host).checking(1)
+        hubOf(h.host).checking(-1, env)
+      })
+    // a waiting agent on this environment, a check of the page just ended
+    const w = release(note)
+    const h = await stage(w, {}, { openScreen: vi.fn() })
+    await callEnded(h as never, envOf(w))
     expect(first().disabled).toBe(true)
     expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+    // a stopped hand-off, a stalled one, and a retired done one are never continued: no wait
+    for (const agent of [
+      { ...note, state: 'stopped' as const },
+      { ...note, state: 'stalled' as const, question_source: undefined },
+      { ...note, state: 'done' as const, question_source: undefined },
+    ]) {
+      const base = release(agent as never)
+      // a done hand-off is continued only while it is still the environment's current one
+      const st = (
+        agent.state === 'done' ? { ...base, handoff_brief: { ...base.handoff_brief!, handoff_id: 'retired' } } : base
+      ) as Status
+      const h2 = await stage(st, {}, { openScreen: vi.fn() })
+      await callEnded(h2 as never, envOf(st))
+      expect(first().disabled, agent.state).toBe(false)
+    }
     // no hand-off at all (the first check from Setup): nobody can take it, so no wait
-    await stage({ ...justNow(release(note)), agent: null, handoff_brief: null })
+    const none = { ...w, agent: null, handoff_brief: null } as Status
+    const h3 = await stage(none)
+    await callEnded(h3 as never, envOf(none))
     expect(first().disabled).toBe(false)
-    expect(stop()?.textContent).not.toContain('Checking whether your agent took it…')
     // a check that ended on another environment is not this one's wait
-    const h = await stage(release(note), {}, { openScreen: vi.fn() })
-    await act(async () => {
-      hubOf(h.host).checking(1)
-      hubOf(h.host).checking(-1, 'another-environment')
-    })
+    const h4 = await stage(release(note), {}, { openScreen: vi.fn() })
+    await callEnded(h4 as never, 'another-environment')
     expect(first().disabled).toBe(false)
+  })
+
+  it("a run the page saw end counts too, from the page's own clock", async () => {
+    const w = release(note)
+    const running = {
+      ...w,
+      check: { ...w.check!, run: { ...w.check!.run!, status: 'running' as const, error: null, finished_at: null } },
+    } as Status
+    const h = await stage(running, {}, { openScreen: vi.fn() })
+    await fire(h, {
+      kind: 'run',
+      id: w.check!.run!.id,
+      terminal: true,
+      summary: '',
+      record: { ...w.check!.run!, finished_at: '2001-01-01T00:00:00.000Z' },
+    } as ChangeEvent)
+    await flush()
+    const first = [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    expect(first?.disabled).toBe(true)
+    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
   })
 
   it("with a hand-off open the call carries no text (the worker's continue is the one message); without one it does", async () => {

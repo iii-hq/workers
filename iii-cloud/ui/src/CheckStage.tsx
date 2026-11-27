@@ -1020,6 +1020,8 @@ export function CheckStage(props: CheckStageProps) {
   const { error, busy, call, setError } = useActions(host)
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
   const launch = useLaunch()
+  // When this page saw the run end (a run that outlives the check call has no call end to count from).
+  const seenRun = useRef<{ id: string; running: boolean; endedAt: number } | null>(null)
   const launching = launch?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
   // The check the production name dialog was opened for: it deploys that one, only while it is still the ready one.
@@ -1232,10 +1234,23 @@ export function CheckStage(props: CheckStageProps) {
   const past = historyOf(s, c, envId)
 
   // The seconds after a page check ends, while the worker may still be sending the agent on.
-  // Only where an idle hand-off exists on this environment can the worker continue an agent; and the wait counts from
-  // the run's own end (it may outlive the call), else from the call's.
-  const idleAgent = !!s.agent && !['starting', 'working'].includes(s.agent.state)
-  const endedMs = run?.finished_at ? Date.parse(run.finished_at) : hubOf(host).checkEndedAt(envId)
+  // Only an agent the worker continues can take it: waiting, a check-noted one, or a done hand-off that is still the
+  // environment's current one. A stopped one is never continued, nor a retired done one. The wait counts from when this
+  // page saw the run end (its own clock, not the worker's).
+  const ag = s.agent
+  const idleAgent =
+    !!ag &&
+    (ag.state === 'waiting' ||
+      (ag.state === 'waiting_for_you' && ag.question_source === 'check') ||
+      (ag.state === 'done' && s.handoff_brief?.handoff_id === ag.handoff_id))
+  if (run) {
+    if (seenRun.current?.id !== run.id) seenRun.current = { id: run.id, running: run.status === 'running', endedAt: 0 }
+    else if (seenRun.current.running && run.status !== 'running') {
+      seenRun.current.running = false
+      seenRun.current.endedAt = Date.now()
+    }
+  }
+  const endedMs = Math.max(hubOf(host).checkEndedAt(envId), seenRun.current?.endedAt ?? 0)
   const settling = idleAgent && endedMs > 0 && now - endedMs < 6000
   const stops: Stop[] = []
   if (c) {
