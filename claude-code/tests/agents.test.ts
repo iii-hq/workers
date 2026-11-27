@@ -960,6 +960,64 @@ describe('claude::agents::follow-snapshot', () => {
     });
   });
 
+  it('returns the latest reply before the viewer deadline with slow successful host RPCs', async () => {
+    await withSyntheticHost(async (s) => {
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        s.host.config = async () => {
+          await delay(4_500);
+          return { external_sessions: true };
+        };
+        s.host.beforeInventory = () => delay(22_000);
+        s.host.beforeRead = () => delay(4_500);
+        const response = s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id },
+        });
+        const viewer = Promise.race([
+          response,
+          delay(30_000).then(() => 'viewer deadline exceeded'),
+        ]);
+        await vi.advanceTimersByTimeAsync(31_200);
+        const expected = { last_reply: { id: recordId(1), text: 'fixture answer' } };
+        expect(await response).toMatchObject(expected);
+        expect(await viewer).toMatchObject(expected);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('does not disclose a viewer transcript when fresh inventory fails or permission changes', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = () =>
+        s.client.call({ function_id, payload: { claude_session_id: s.claude_session_id } });
+      s.host.inventoryOK = false;
+      await expect(snapshot()).rejects.toThrow(/^inventory unavailable$/);
+      s.host.inventoryOK = true;
+      s.host.cli.length = 0;
+      await expect(snapshot()).rejects.toThrow(/^session not listed$/);
+
+      s.host.cli.push(interactive(s.claude_session_id, 'idle'));
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      s.host.beforeInventory = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const denied = expect(snapshot()).rejects.toThrow(/^reply access disabled$/);
+      await entered.promise;
+      try {
+        s.host.config = async () => ({ external_sessions: false });
+        await s.refresh();
+      } finally {
+        release.resolve();
+        await denied;
+      }
+    });
+  });
+
   it('returns the newest bounded suffix and a tip cursor even when the burst needs several watch pages', async () => {
     await withSyntheticHost(async (s) => {
       const snapshot = (cursor?: string) =>

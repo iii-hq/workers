@@ -124,7 +124,7 @@ export function registerExternalReplies(
     }
   }
 
-  permission.onConfirmedRecovery(async (epoch) => {
+  async function recoverWatches(epoch: number) {
     const lease = replyLease(permission, epoch);
     const needsBaseline = (w: Watch) => w.active && w.epoch !== epoch;
     const checkpoints = [];
@@ -138,7 +138,8 @@ export function registerExternalReplies(
         .read(() => readTranscript(iii, recovery.env, id, 'baseline'))
         .then(
           ({ cursor }) => {
-            recovery.cursor = cursor;
+            // A validated viewer may already have captured an earlier tip.
+            recovery.cursor ??= cursor;
           },
           () => {},
         );
@@ -159,6 +160,11 @@ export function registerExternalReplies(
       });
     }
     await Promise.all(checkpoints);
+  }
+
+  permission.onConfirmedRecovery(recoverWatches, ({ id, epoch, env, cursor }) => {
+    const recovery = groups.get(id)?.recovery;
+    if (recovery?.epoch === epoch && recovery.env === env) recovery.cursor ??= cursor;
   });
 
   async function poll(id: string, g: Group, lease: ReturnType<typeof replyLease>) {

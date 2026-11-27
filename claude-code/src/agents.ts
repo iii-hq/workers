@@ -367,14 +367,28 @@ export function registerAgents(
       : createHmac('sha256', visibilityKey).update(String(epoch)).digest('base64url');
   const visibilitySchema = z.string().nullable();
   const visibilityArgs = z.object({ confirm_live_config: z.boolean().optional() });
+  async function confirmRailVisibility() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        access.confirm(),
+        new Promise<null>((resolve) => {
+          // Leave time to return a pending result within the rail's 5s RPC.
+          timer = setTimeout(() => resolve(null), 4_500);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   iii.registerFunction(
     'claude::agents::visibility',
     async (payload: unknown) => {
       const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
-      // Acknowledge an explicit confirmation after the retained-watch
-      // checkpoint, without waiting for its inventory lookup.
+      // An explicit probe can retry on the next rail heartbeat. Don't claim
+      // recovery while the retained-watch boundary is still being captured.
       const epoch = confirm_live_config
-        ? await access.confirm()
+        ? await confirmRailVisibility()
         : (access.epoch ?? (await access.confirm({ waitForWatchCheckpoint: false })));
       if (epoch === null || epoch !== access.epoch) return { external_visibility: null };
       return {
@@ -565,8 +579,7 @@ export function registerAgents(
     );
   };
 
-  const replyRow = async (id: string) => {
-    const host = current();
+  const replyRow = async (id: string, host = current()) => {
     const snapshot = await inventory(true, { host, replies: true }).catch(() => null);
     if (!snapshot || snapshot.detail) throw new Error('inventory unavailable');
     const row = snapshot
@@ -602,17 +615,28 @@ export function registerAgents(
           throw new Error('invalid follow cursor');
         boundary = parsed[1];
       }
-      const { row, env } = await lease.read(() => replyRow(id));
-      const since = boundary
-        ? await lease.read(() => readTranscript(iii, env, id, 'recent', boundary))
-        : undefined;
-      // A sibling may still have an older reply. Only combine results from
-      // the same snapshot; another event or heartbeat can retry a moving file.
-      const latest = since?.replies.length
-        ? since
-        : await lease.read(() => readTranscript(iii, env, id, 'last'));
+      const host = current();
+      const listed = lease.read(() => replyRow(id, host));
+      // The live grant permits a bounded read, but neither its result nor
+      // its error is published until fresh inventory confirms the exact ID.
+      const data = (async () => {
+        const since = boundary
+          ? await lease.read(() => readTranscript(iii, host.env, id, 'recent', boundary))
+          : undefined;
+        // An earlier reply may still be on the active branch. Only combine
+        // reads from the same snapshot; another heartbeat can retry a change.
+        const latest = since?.replies.length
+          ? since
+          : await lease.read(() => readTranscript(iii, host.env, id, 'last'));
+        return { since, latest };
+      })().catch(() => null);
+      const { row, env } = await listed;
+      const snapshot = await data;
       lease.check();
+      if (!snapshot) throw new Error('transcript unavailable');
+      const { since, latest } = snapshot;
       if (since && since.cursor !== latest.cursor) return { retry: true };
+      access.offerWatchBoundary?.({ id, epoch: generation, env, cursor: latest.cursor });
       return {
         claude_session_id: id,
         name: row.name ?? null,

@@ -104,10 +104,18 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
+export type WatchBoundary = {
+  id: string;
+  epoch: number;
+  env: Record<string, string>;
+  cursor: string;
+};
+
 type ConfirmOptions = { waitForWatchCheckpoint?: boolean };
 export type ReplyAccess = {
   readonly epoch: number | null;
   confirm(options?: ConfirmOptions): Promise<number | null>;
+  offerWatchBoundary?(boundary: WatchBoundary): void;
 };
 
 /** Bind a series of reads to one grant. Even a rejected inventory lookup can
@@ -141,6 +149,7 @@ export class ReplyPermission {
   private confirmation?: Promise<number | null>;
   private watchCheckpoint?: Promise<void>;
   private recoverWatches?: (epoch: number) => Promise<void>;
+  private acceptWatchBoundary?: (boundary: WatchBoundary) => void;
   private watch?: { iii: IIIClient; handle: ObserverHandle };
 
   trackWatch(iii: IIIClient, handle: ObserverHandle) {
@@ -184,8 +193,16 @@ export class ReplyPermission {
     this.watchCheckpoint = undefined;
   }
 
-  onConfirmedRecovery(recover: (epoch: number) => Promise<void>) {
+  onConfirmedRecovery(
+    recover: (epoch: number) => Promise<void>,
+    acceptBoundary: (boundary: WatchBoundary) => void,
+  ) {
     this.recoverWatches = recover;
+    this.acceptWatchBoundary = acceptBoundary;
+  }
+
+  offerWatchBoundary(boundary: WatchBoundary) {
+    if (boundary.epoch === this.epoch) this.acceptWatchBoundary?.(boundary);
   }
 
   // An explicit probe, admission or poll can recover on the same connection.

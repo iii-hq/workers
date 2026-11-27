@@ -809,6 +809,70 @@ describe('authorization', () => {
     });
   });
 
+  it('preserves the first reply after a fresh viewer returns during a pending watch checkpoint', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted === 1) await checkpoint.wait();
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer recovery')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after checkpoint')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'after viewer recovery' },
+        { id: recordId(4), text: 'after checkpoint' },
+      ]);
+    });
+  });
+
+  it('returns pending before the rail deadline rather than confirming an uncaptured watch boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        s.host.config = async () => {
+          await delay(2_000);
+          return { external_sessions: true };
+        };
+        s.host.beforeRead = () => delay(4_000);
+        const confirm = () =>
+          s.client.call({
+            function_id: 'claude::agents::visibility',
+            payload: { confirm_live_config: true },
+          });
+        const first = Promise.race([confirm(), delay(5_000).then(() => 'rail deadline exceeded')]);
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(await first).toEqual({ external_visibility: null });
+        const next = confirm();
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(await next).toMatchObject({ live_config_confirmed: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it.each([
     'lookup',
     'watch',
