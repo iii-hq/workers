@@ -535,6 +535,25 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
   })
 })
 
+describe('a picked compose file', () => {
+  it('is cleared by the next check of an environment that never had a move (a new environment)', async () => {
+    const s = boards['deploy-review'].status
+    const h = await mount(s, ctx({ ...route }))
+    hubOf(h.host).setPickedManifest(DEV.id, 'api/prod.yaml')
+    expect(hubOf(h.host).movedFrom(DEV.id)).toBeNull()
+    await act(async () =>
+      h.handlers.get('iii::iii-cloud-ui::events::console-test')?.({
+        kind: 'check',
+        id: 'chk-new',
+        terminal: true,
+        summary: '',
+        record: { ...s.check!, id: 'chk-new', environment_id: DEV.id },
+      }),
+    )
+    expect(hubOf(h.host).pickedManifest(DEV.id)).toBeNull()
+  })
+})
+
 describe('the review: Change, held deployments, who is serving, what a refusal says', () => {
   const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
   const withAgent: Status = {

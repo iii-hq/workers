@@ -1,6 +1,7 @@
 // Projects: the account, the projects on this machine, "Open" on every row and its guard.
 import { describe, expect, it, vi } from 'vitest'
 import { base, ENV, request, signedOut, TEAM } from '../fixtures/base'
+import { running6 } from '../fixtures/deploy'
 import { ACME, billing, startCloud, startStatus } from '../fixtures/start'
 import type { RecentProject, Status } from '../types'
 import type { Call } from './host'
@@ -79,6 +80,19 @@ describe('Projects (desktop)', () => {
     await showStart({ ...startStatus, secrets: [request('SESSION_SECRET', 'ask', 'waiting', '')] })
     expect(pill('registry')).toBe('Needs you')
     expect(lines('registry')[0]).toContain('1 secret is waiting')
+  })
+
+  it('a deploy going and something waiting: the row says what waits, not only that it deploys', async () => {
+    const env = startStatus.project!.environment!
+    const going = { ...running6, environment_id: env.id, from_console: false }
+    await showStart({
+      ...startStatus,
+      secrets: [request('SESSION_SECRET', 'ask', 'waiting', '')],
+      deploys: [going, ...startStatus.deploys],
+    })
+    expect(lines('registry')[0]).toContain('is running')
+    expect(lines('registry')[0]).toContain('1 secret is waiting')
+    expect(pill('registry')).toBe('Needs you')
   })
 
   it('at most nine rows', async () => {

@@ -167,6 +167,7 @@ export function deployLockReason(
   const other = s.deploys.find(
     (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(d),
   )
+  if (other && needsAction(other)) return `Deployment #${other.number} waits for you: confirm or cancel it first.`
   return other ? `Deployment #${other.number} is still going.` : null
 }
 
@@ -1203,7 +1204,12 @@ export function CheckStage(props: CheckStageProps) {
           { label: 'How to start Docker', href: DOCKER_DOCS },
         ],
       })
-    } else if (err && err.code !== 'RUN_REPLACED' && !open.some((x) => x.source === 'check_here')) {
+    } else if (
+      err &&
+      err.code !== 'RUN_REPLACED' &&
+      // The person's values count here too: a name the run lacks is why it failed, and the values card says so.
+      !openProblems(s, true).some((x) => x.source === 'check_here')
+    ) {
       stops.push({
         key: 'run',
         variant: 'alert',
@@ -1285,6 +1291,13 @@ export function CheckStage(props: CheckStageProps) {
     }
   }
   const lock = stops.find((x) => x.lock)?.lock
+  // Another environment follows the branch this deploy sends to: the worker refuses it, so Deploy says so up front.
+  const wayNow = p?.environment && !p.environment.production ? wayOf(s, p.environment) : null
+  const targetNow = wayNow?.way === 'assisted' && wayNow.own ? wayNow.own : p?.environment?.branch
+  const takenLock =
+    wayNow?.way === 'assisted' && wayNow.taken
+      ? `Deploy will refuse: ${p?.environments.find((e) => e.name !== p.environment?.name && e.branch === targetNow)?.name ?? 'another environment'} follows ${targetNow}.`
+      : undefined
   const prLock =
     !assisted && ready && (!pr || pr.main_moved)
       ? 'Open the pull request, and check again if the branch moved.'
@@ -1378,7 +1391,7 @@ export function CheckStage(props: CheckStageProps) {
   let barNote: ReactNode = null
   if (ready || runPending) {
     // The same lock reason as every other control that sends `iii-cloud::deploy` (`deployLock`), plus this action's own.
-    const off = ready ? (lock ?? prLock ?? deployLock) : undefined
+    const off = ready ? (lock ?? takenLock ?? prLock ?? deployLock) : undefined
     action = ready ? (
       <PageAction disabled={!!off} onClick={startDeploy}>
         {assisted
@@ -1529,11 +1542,19 @@ export function CheckStage(props: CheckStageProps) {
 
       {!replaced ? (
         <ValuesCard
+          runFailed={run?.status === 'failed'}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {
             const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip })
             if (out !== null) values.refetch()
+          }}
+          onRunWithout={async (names) => {
+            const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip: true })
+            if (out !== null) {
+              values.refetch()
+              checkAgain()
+            }
           }}
           onAll={() => go({ at: 'secrets', env: envId })}
         />
@@ -1721,7 +1742,7 @@ export function CheckStage(props: CheckStageProps) {
       {editing ? (
         <ValuesDialog
           only={editing}
-          describe="Set them from a file, type them, leave them empty on purpose, or skip the optional ones: iii cloud does not deploy without the required ones."
+          describe="Set them from a file, type them, leave them empty on purpose, or skip the optional ones: iii cloud does not deploy without the required ones. A name iii cloud already has is only fixed on this machine."
           host={host}
           status={s}
           narrow={narrow}
@@ -1750,7 +1771,7 @@ export function CheckStage(props: CheckStageProps) {
               ? 'The ready check changed while this was open. Close it and deploy the new one.'
               : !ready
                 ? 'This is no longer the check that was ready to deploy. Check again.'
-                : (lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false }))
+                : (lock ?? takenLock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false }))
           }
         />
       ) : null}

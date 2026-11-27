@@ -19,13 +19,19 @@ export function ValuesCard({
   read,
   onSet,
   onSkip,
+  onRunWithout,
   onAll,
+  runFailed,
 }: {
   read: ValuesRead
+  /** The check's local run failed: "deploy without them" is not a thing to say then. */
+  runFailed: boolean
   /** "Set values": the review editor over these names (required first, then asked, then optional). */
   onSet: (names: string[]) => void
   /** `values::skip` for these names; resolves when it went through. */
   onSkip: (names: string[], skip: boolean) => Promise<void>
+  /** "Run without them here": skip these names, then check (the check makes the title and the lock true again). */
+  onRunWithout: (names: string[]) => Promise<void>
   /** "All names": the Secrets and variables screen. */
   onAll: () => void
 }) {
@@ -37,7 +43,7 @@ export function ValuesCard({
   const file = v?.manifest ?? 'the compose file'
   const toSet = [...plan.required, ...plan.asked, ...plan.local, ...plan.optional]
   // What "Skip for now" may skip: never a required name; a name the run here lacks runs with an empty value.
-  const skippable = [...plan.local, ...plan.optional]
+  const skippable = plan.optional
   const noWrite = v && v.save !== 'ok' ? NO_WRITE[v.save] : null
   const skip = async (names: string[], on: boolean) => {
     setBusy(true)
@@ -48,7 +54,7 @@ export function ValuesCard({
   return (
     <SectionCard
       title="Secrets and variables"
-      count={v && !unreadable ? toSet.length : undefined}
+      count={v && !unreadable ? plan.required.length + plan.asked.length + plan.local.length : undefined}
       end={
         <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={onAll}>
           All names
@@ -111,6 +117,19 @@ export function ValuesCard({
                 <p className="iii-cloud-cs-sub">
                   The run here needs them in an env file of your folder, or skip them to run with an empty value.
                 </p>
+                <div className="iii-cloud-cs-acts">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true)
+                      void onRunWithout(plan.local.map((i) => i.name)).finally(() => setBusy(false))
+                    }}
+                  >
+                    Run without them here
+                  </Button>
+                </div>
               </div>
             ) : null}
             {plan.optional.length ? (
@@ -141,7 +160,12 @@ export function ValuesCard({
             {!toSet.length && !plan.skipped.length ? (
               <p className="iii-cloud-cs-sub">{`Every name ${file} reads is set.`}</p>
             ) : null}
-            {!plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
+            {runFailed && toSet.length ? (
+              <p className="iii-cloud-cs-sub">
+                The local run failed. If the application needs one of the names above, set it: the run's last lines say
+                which.
+              </p>
+            ) : !plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
               <p className="iii-cloud-cs-sub">Optional ones can wait: you can deploy without them.</p>
             ) : null}
             {noWrite ? <p className="iii-cloud-cs-sub">{noWrite}</p> : null}

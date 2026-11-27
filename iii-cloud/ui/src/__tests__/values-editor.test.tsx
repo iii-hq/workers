@@ -401,7 +401,7 @@ describe('the step', () => {
     expect(el.querySelector('.iii-cloud-val-foot button')).toBeNull()
   })
 
-  it('P3: what the local run lacks is Not set, "needed for the local run"; a from_file one says its file; never the database', async () => {
+  it('P3: a name set in iii cloud that the run lacks says so and is only fixed here; a from_file one says its file; never the database', async () => {
     const v = {
       ...rcValues,
       items: [
@@ -413,10 +413,13 @@ describe('the step', () => {
     await editor(v, {}, { mode: 'step' })
     // Set in iii cloud but not here: still to do, so it is listed and counted.
     expect(names()).toEqual(['SESSION_SECRET', 'GH_ORG'])
-    expect(rowOf('SESSION_SECRET')?.querySelector('.iii-cloud-val-state')?.textContent).toBe('Not set')
+    expect(rowOf('SESSION_SECRET')?.querySelector('.iii-cloud-val-state')?.textContent).toBe(
+      'Set in iii cloud · missing on this machine',
+    )
     expect(rowOf('SESSION_SECRET')?.textContent).toContain('needed for the local run')
-    // Keeping iii cloud's value would leave the local run without it: the field waits for one.
-    expect(input('SESSION_SECRET')).toBeTruthy()
+    // iii cloud has it: nothing to type or replace from here, only an env file of the folder or a skip.
+    expect(input('SESSION_SECRET')).toBeNull()
+    expect(rowOf('SESSION_SECRET')?.textContent).toContain('Skip it here')
     expect(rowOf('GH_ORG')?.textContent).toContain('the local run takes it from api/.env.test')
     expect(rowOf('GH_ORG')?.textContent).not.toContain('needed for the local run')
   })

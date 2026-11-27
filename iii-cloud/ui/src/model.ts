@@ -1016,22 +1016,25 @@ export function checklist(s: Status): { rows: CheckRow[]; fixed: number; counted
   const rows: CheckRow[] = [
     ...brief.agent_problems.map((b) => ({ b, owner: 'agent' })),
     ...brief.person_problems.map((b) => ({ b, owner: 'person' })),
-  ].map(({ b, owner }) => {
-    const key = briefKey(b.title, b.file, b.line)
-    const p = now.get(key)
-    now.delete(key)
-    return {
-      id: key,
-      pid: p?.id ?? null,
-      title: b.title,
-      code: p?.code ?? null,
-      owner,
-      fixed: !p,
-      file: p?.file ?? b.file,
-      line: p?.line ?? b.line,
-      detail: p?.detail ?? b.detail,
-    }
-  })
+  ]
+    // The person's values are the values card's, whatever became of them since: not rows to match, never "fixed".
+    .filter(({ b, owner }) => !(b.code && VALUE_CODES.has(b.code) && owner === 'person'))
+    .map(({ b, owner }) => {
+      const key = briefKey(b.title, b.file, b.line)
+      const p = now.get(key)
+      now.delete(key)
+      return {
+        id: key,
+        pid: p?.id ?? null,
+        title: b.title,
+        code: p?.code ?? null,
+        owner,
+        fixed: !p,
+        file: p?.file ?? b.file,
+        line: p?.line ?? b.line,
+        detail: p?.detail ?? b.detail,
+      }
+    })
   for (const [key, p] of now)
     if (!isPersonValue(p))
       rows.push({

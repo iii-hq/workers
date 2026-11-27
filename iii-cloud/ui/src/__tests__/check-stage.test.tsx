@@ -5,7 +5,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
-import { CheckStage, retryPayload } from '../CheckStage'
+import { CheckStage, deployLockReason, retryPayload } from '../CheckStage'
 import { findings } from '../findings'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
@@ -14,6 +14,7 @@ import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
 import { checklist, handoffMessage, openProblems, wayOf } from '../model'
+import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
@@ -896,7 +897,14 @@ describe('the check follows the canvas', () => {
       let skipped = false
       const items = () => names('OPT', 20).map((i) => ({ ...i, skipped }))
       const h = await stage(
-        { ...base, check: { ...base.check!, problems: rcVariables } },
+        {
+          ...base,
+          check: {
+            ...base.check!,
+            problems: rcVariables,
+            run: { ...base.check!.run!, status: 'passed' as const, error: null },
+          },
+        },
         {
           'iii-cloud::values': () => answer(items())(),
           'iii-cloud::values::skip': () => {
@@ -982,11 +990,16 @@ describe('the check follows the canvas', () => {
       expect(card()?.textContent).toContain('STRIPE_KEY')
       expect(card()?.textContent).toContain('skip them to run with an empty value')
       expect(card()?.textContent).not.toContain('Every name')
-      await click(btn('Skip for now'))
+      // "Skip for now" is for the optional names only: here there are none, so it is absent.
+      expect(btn('Skip for now')).toBeNull()
+      await click(btn('Run without them here'))
+      await flush()
       expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
         names: ['STRIPE_KEY'],
         skip: true,
       })
+      // then a check, which makes the title and the lock true again
+      expect(h.calls.map((c) => c.id)).toContain('iii-cloud::check')
       await click(btn('Set values'))
       expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
     })
@@ -1024,6 +1037,158 @@ describe('the check follows the canvas', () => {
       expect([...(dialog?.querySelectorAll('option') ?? [])].map((o) => o.textContent)).toContain('Leave empty')
       expect(dialog?.textContent).toContain('iii cloud does not deploy without the required ones')
       expect(dialog?.textContent).not.toContain('The local run needs')
+    })
+
+    it('a name set in iii cloud and missing here is never written to iii cloud: no Replace, no typing, no Leave empty, only Skip it here', async () => {
+      const items = [
+        valueItem('STRIPE_KEY', { need: 'optional', in_cloud: 'set', here: 'unset', updated_at: null }),
+        valueItem('OTHER_OPT', { need: 'optional', suggestions: [] }),
+      ]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::save': { environment_id: 'e', results: [] },
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      await click(btn('Set values'))
+      const dialog = el.querySelector('[role=dialog]')
+      const row = dialog?.querySelector('[data-name="STRIPE_KEY"]')
+      expect(row?.textContent).toContain('Set in iii cloud · missing on this machine')
+      expect(row?.textContent).toContain('Add it to an env file of your folder (the run reads .env.')
+      expect(row?.textContent).not.toMatch(/Replace|Leave empty|Type a value/)
+      expect(row?.querySelector('input, textarea')).toBeNull()
+      // Even choosing Leave empty for the other name and saving sends nothing about the local one.
+      const other = dialog?.querySelector('[data-name="OTHER_OPT"] select') as HTMLSelectElement
+      await act(async () => {
+        other.value = 'leave_empty'
+        other.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      await click([...(dialog?.querySelectorAll('button') ?? [])].find((b) => /^Save/.test(b.textContent ?? '')))
+      await flush()
+      const saves = h.calls.filter((c) => c.id === 'iii-cloud::values::save')
+      for (const c of saves) expect(JSON.stringify(c.payload)).not.toContain('STRIPE_KEY')
+      await click(btn('Skip it here'))
+      expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
+        names: ['STRIPE_KEY'],
+        skip: true,
+      })
+    })
+
+    it('Skip for now skips only the optional names; once the local ones are skipped the title stops counting them', async () => {
+      const local = names('LOC', 3, { need: 'required', default: null, in_cloud: 'set', here: 'unset' })
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer([...local, ...names('OPT', 12)]),
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      await click(btn('Skip for now'))
+      const sent = h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload as { names: string[] }
+      expect(sent.names).toHaveLength(12)
+      expect(sent.names.some((n) => n.startsWith('LOC'))).toBe(false)
+      const problem = {
+        ...rcVariables[0],
+        id: 'p-loc',
+        code: 'LOCAL_VARIABLE_UNSET',
+        source: 'check_here' as const,
+        severity: 'block' as const,
+        owner: 'person' as const,
+        title: 'LOC_0 has no value here',
+      }
+      const s = { ...base, check: { ...base.check!, problems: [problem] } }
+      await stage(s)
+      expect(title()).toMatch(/to set/)
+      await stage({ ...s, skipped_values: ['LOC_0'] })
+      expect(title() ?? '').not.toMatch(/to set/)
+    })
+
+    it('when the local run failed the card never says "you can deploy without them", and a missing value explains the stop', async () => {
+      await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 12)) })
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
+      expect(card()?.textContent).toContain(
+        "The local run failed. If the application needs one of the names above, set it: the run's last lines say which.",
+      )
+      expect(btn('Set values')).toBeTruthy()
+      const problem = {
+        ...rcVariables[0],
+        id: 'p-loc2',
+        code: 'LOCAL_VARIABLE_UNSET',
+        source: 'check_here' as const,
+        severity: 'block' as const,
+        owner: 'person' as const,
+        title: 'JWT_SECRET has no value here',
+      }
+      await stage({ ...base, check: { ...base.check!, problems: [problem] } })
+      // The run's own stop would only offer "Run again"; the values card is where it is fixed.
+      expect(text()).not.toContain('The local run stopped at')
+    })
+
+    it('a skipped value warning, or one on a ready check, is not "fixed" in a hand-off: the brief\'s own code drops it', async () => {
+      const b = rcFixing.handoff_brief!
+      const warn = (p: (typeof rcVariables)[number]) => ({
+        code: p.code,
+        owner: p.owner,
+        title: p.title,
+        file: p.file,
+        line: p.line,
+        detail: p.detail,
+        fix: p.fix,
+      })
+      const withVars = {
+        ...rcFixing,
+        handoff_brief: { ...b, person_problems: [...b.person_problems, ...rcVariables.map(warn)] },
+      }
+      const base2 = checklist(rcFixing)
+      // Skipped (info), and then gone from the open list altogether: the rows must not turn into "fixed" ones.
+      const skippedAll = {
+        ...withVars,
+        check: {
+          ...withVars.check!,
+          problems: withVars.check!.problems.map((p) =>
+            p.code === 'EMPTY_DEFAULT_VARIABLE' ? { ...p, skipped: true, severity: 'info' as const } : p,
+          ),
+        },
+      }
+      expect(checklist(skippedAll).fixed).toBe(base2.fixed)
+      const ready = { ...withVars, check: { ...withVars.check!, ready: true } }
+      expect(checklist(ready).rows.some((r) => r.title === rcVariables[0].title)).toBe(false)
+    })
+
+    it('the title counts what the card places: an outside-database ask, unreadable values, an ask for a name already set; the badge is the title number', async () => {
+      // a. the person chose a database outside iii cloud and the agent asks for its URL
+      const db = [
+        valueItem('DATABASE_URL', {
+          database: true,
+          need: 'required',
+          default: null,
+          asked: { request_id: 'r9', description: 'The database is outside iii cloud.' },
+          suggestions: [],
+        }),
+      ]
+      await stage(quiet, { 'iii-cloud::values': answer(db) })
+      expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(title()).toBe('1 value to set')
+      expect(countOf('Secrets and variables')).toBe('1')
+      // b. iii cloud's variables could not be read: nothing is known to be missing
+      const unknown = names('REQ', 3, { need: 'required', default: null, in_cloud: 'unknown' as const })
+      await stage(quiet, { 'iii-cloud::values': answer(unknown, { cloud: 'unreadable' }) })
+      expect(card()?.textContent).toContain('could not be read')
+      expect(title() ?? '').not.toMatch(/to set/)
+      // c. the agent asks for a name that is already set
+      const p = B('deploy-problems')
+      const asked = findings(p)
+        .values.map((i) => i.secret ?? i.name)
+        .filter((n): n is string => !!n)
+      expect(asked.length).toBeGreaterThan(0)
+      const set = asked.map((n) => valueItem(n, { in_cloud: 'set', suggestions: [] }))
+      await stage(
+        { ...p, check: { ...p.check!, problems: [] } },
+        { 'iii-cloud::values': () => ({ ...rcValues, environment_id: p.project?.environment?.id, items: set }) },
+      )
+      expect(title() ?? '').not.toMatch(/to set/)
+      // The badge counts the names that need the person; the optional ones have their own line.
+      await stage(quiet, {
+        'iii-cloud::values': answer([...names('REQ', 2, { need: 'required', default: null }), ...names('OPT', 5)]),
+      })
+      expect(countOf('Secrets and variables')).toBe('2')
+      expect(card()?.textContent).toContain('5 optional, not set')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
@@ -1098,5 +1263,41 @@ describe('a branch another environment follows', () => {
     await stage(s)
     expect(region('What this deploy does')?.textContent).toContain('staging follows')
     expect(region('What this deploy does')?.textContent).toContain('Deploy will refuse')
+    // ...and Deploy is off, with the reason beside it, before it is pressed.
+    expect((btn('Deploy 9c04e7f to dev') ?? deployButton()) as HTMLButtonElement).toHaveProperty('disabled', true)
+    expect(text()).toContain('Deploy will refuse: staging follows')
+  })
+})
+
+describe('small things the review found', () => {
+  it('a held deployment this page started says it waits for the person, not that it is going', () => {
+    const r = B('deploy-review')
+    const held = {
+      ...live6,
+      status: 'needs_action' as const,
+      outcome: 'running' as const,
+      check_id: 'chk-x',
+      approved_by_worker: true,
+    }
+    const s = { ...r, deploys: [held, serving5] }
+    expect(deployLockReason(s, DEV.id, { stale: false, sending: false })).toBe(
+      'Deployment #6 waits for you: confirm or cancel it first.',
+    )
+  })
+
+  it('the held dot is not shown on the record of that same deployment', () => {
+    const r = B('deploy-review')
+    const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
+    const s = { ...r, deploys: [held, serving5] }
+    expect(waitingElsewhere(s, { at: 'env', env: DEV.id })).toBe(false)
+    expect(waitingElsewhere(s, { at: 'secrets', env: DEV.id })).toBe(true)
+    expect(waitingElsewhere(s, { at: 'env', env: DEV.id, deploy: held.id })).toBe(false)
+  })
+
+  it('templates and public keys are not secrets', () => {
+    for (const f of ['.env.production.example', 'api/.env.local.sample', 'id_rsa.pub', '.env.example'])
+      expect(secretLike(f), f).toBe(false)
+    for (const f of ['.env', '.env.production', 'api/.env.local', 'id_rsa', 'deploy.key'])
+      expect(secretLike(f), f).toBe(true)
   })
 })

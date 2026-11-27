@@ -138,9 +138,9 @@ export const Mono = ({ children }: { children: ReactNode }) => <span className="
  * or a private key), so it counts as an ordinary change.
  */
 export const secretLike = (path: string) =>
-  /(^|\/)(\.env(\.(?!(example|sample|template|dist)$)[^/]+)?|[^/]*\.(key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$/i.test(
-    path,
-  )
+  // A template or a public key (`.env.production.example`, `id_rsa.pub`) is meant to be committed.
+  !/\.(example|sample|template|dist|pub)$/i.test(path) &&
+  /(^|\/)(\.env(\.[^/]+)?|[^/]*\.(key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$/i.test(path)
 
 /** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count and advise to commit. */
 export const uncommittedCount = (files: string[]) => files.filter((f) => !secretLike(f)).length
@@ -321,6 +321,8 @@ export function waitingElsewhere(s: Status, r?: Route): boolean {
     (m) =>
       needsAction(m.deploy) &&
       !(r?.at === 'deploy' && r.deploy === m.deploy.id) &&
+      // Its own record is where it is already said.
+      !(r?.at === 'env' && r.deploy === m.deploy.id) &&
       !(!m.other && home && m.deploy.environment_id === home),
   )
 }

@@ -232,7 +232,14 @@ export function findings(s: Status): Findings {
   // They come from the check's own problems (the hand-off's checklist leaves them out), and from what the agent asked for.
   const values = [
     ...c.problems
-      .filter((p) => VALUE_CODES.has(p.code) && p.severity === 'block' && p.owner === 'person' && !hiddenPerson(s, p))
+      .filter(
+        (p) =>
+          VALUE_CODES.has(p.code) &&
+          p.severity === 'block' &&
+          p.owner === 'person' &&
+          !hiddenPerson(s, p) &&
+          !skippedHere(s, p),
+      )
       .map((p) => ({ ...itemOf(p.id, p, { ...p, title: problemTitle(p) }, p.owner, false), secret: variableName(p) })),
     ...shown.filter((i) => !i.code && i.secret && !i.fixed),
   ]
@@ -244,6 +251,10 @@ export function findings(s: Status): Findings {
     skipped: [...aside, ...byCode].filter((i) => !isValue(i)),
   }
 }
+
+/** The run here lacks this name and the person skipped it: it runs with an empty value; the old problem waits for the next check. */
+const skippedHere = (s: Status, p: Problem) =>
+  p.code === 'LOCAL_VARIABLE_UNSET' && (s.skipped_values ?? []).includes(variableName(p) ?? '')
 
 /** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
@@ -260,9 +271,11 @@ export const preselected = (i: ValueItem): Suggestion[] =>
 
 /** The names the compose file reads that iii cloud does not fill in by itself, told apart for the values card. */
 export function valuesPlan(v: Values | null) {
-  const items = (v?.items ?? []).filter((i) => !i.database)
+  // The database is iii cloud's, unless the person chose one outside it and the agent asks for its URL.
+  const items = (v?.items ?? []).filter((i) => !i.database || i.asked)
   // An agent's ask is the agent's reason first: the worker marks it `required` too, though the file may not read it.
-  const unset = items.filter((i) => i.in_cloud !== 'set' && i.need !== 'has_default')
+  // `unknown`: iii cloud's variables could not be read, so nothing is known to be missing.
+  const unset = items.filter((i) => i.in_cloud === 'unset' && i.need !== 'has_default')
   const asked = unset.filter((i) => i.asked)
   const rest = unset.filter((i) => !i.asked)
   // Set in iii cloud, but the run here has no value (`LOCAL_VARIABLE_UNSET`, which blocks the check): an env file of
@@ -295,11 +308,17 @@ export function valuesPlan(v: Values | null) {
  */
 export function needsYou(s: Status, read: Values | null = null) {
   const plan = valuesPlan(read)
-  const names = new Set([
-    ...plan.required.map((i) => i.name),
-    ...plan.local.map((i) => i.name),
-    ...findings(s).values.map((i) => valueName(i) ?? i.key),
-  ])
+  // A name the read says is set (and the run has) is not missing, whatever the check's problems or the agent's waiting
+  // request still say.
+  const fine = new Set(plan.set.map((i) => i.name))
+  const names = new Set(
+    [
+      ...plan.required.map((i) => i.name),
+      ...plan.local.map((i) => i.name),
+      ...plan.asked.map((i) => i.name),
+      ...findings(s).values.map((i) => valueName(i) ?? i.key),
+    ].filter((n) => !fine.has(n)),
+  )
   const items = findings(s).person.filter((i) => !i.fixed && i.severity === 'block' && !configAction(i))
   const chosen = s.override_choices ?? {}
   const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
