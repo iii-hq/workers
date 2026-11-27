@@ -31,7 +31,8 @@ impl MergeMethod {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
-    /// The console. The API is `<cloud_url>/api/v1`, the device page
+    /// The console. Calls go to its functions over `<cloud_url>/_iii/ws`
+    /// (`<cloud_url>/api/v1` while that socket is down), the device page is
     /// `<cloud_url>/device`. A change signs out.
     pub cloud_url: String,
     /// The `iii` binary the run here uses. It must report the cloud's engine version.

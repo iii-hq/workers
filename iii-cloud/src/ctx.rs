@@ -175,6 +175,11 @@ pub struct Ctx {
     pub deploys_task: Mutex<Option<JoinHandle<()>>>,
     /// Values the person provided in this process: redacted even when no `.env` holds them.
     pub known_secrets: Mutex<Vec<String>>,
+    /// Where iii cloud's functions are called: off when waits are shrunk (the tests,
+    /// whose fake iii cloud is HTTP only); a test of the functions names an engine.
+    pub functions_at: Mutex<crate::cloud::FunctionsAt>,
+    /// The socket to those functions, for the credential in use.
+    pub link: Mutex<Option<crate::cloud::Link>>,
 }
 
 impl Ctx {
@@ -207,6 +212,12 @@ impl Ctx {
             poller: Mutex::new(None),
             deploys_task: Mutex::new(None),
             known_secrets: Mutex::new(Vec::new()),
+            functions_at: Mutex::new(if tick.is_some() {
+                crate::cloud::FunctionsAt::Off
+            } else {
+                crate::cloud::FunctionsAt::Cloud
+            }),
+            link: Mutex::new(None),
         })
     }
 
@@ -221,6 +232,7 @@ impl Ctx {
         });
         if stale {
             *self.cred.lock().unwrap() = None;
+            self.unlink();
             if let Some(handle) = self.poller.lock().unwrap().take() {
                 handle.abort();
             }
