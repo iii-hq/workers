@@ -1682,7 +1682,7 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         .and_then(crate::local::confined)
         .unwrap_or("worker-compose.yaml");
     // The environment's work file: its newest check's, as the checks use.
-    let work = env.and_then(|e| s.work_file(&e.id));
+    let work = env.and_then(|e| s.work_file(&e.id, e.manifest.as_deref()));
     let manifest = work
         .as_deref()
         .and_then(crate::local::confined)

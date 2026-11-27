@@ -977,7 +977,10 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let asked = request
         .manifest
         .clone()
-        .or_else(|| ctx.store.read(|s| s.work_file(&sel.env.id)))
+        .or_else(|| {
+            ctx.store
+                .read(|s| s.work_file(&sel.env.id, env_manifest.as_deref()))
+        })
         .filter(|m| env_manifest.as_deref() != Some(m.as_str()));
     // What this check is for: the file the cloud has now, not the cache.
     // Recorded whatever is selected: a hand-off's check of another environment still has its file.

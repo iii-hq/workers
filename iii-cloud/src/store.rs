@@ -147,12 +147,20 @@ impl State {
 
     /// The compose file `env_id`'s work is on: its newest check's, else none
     /// (the caller falls back to the environment's own). One answer for every
-    /// caller; naming a file in a request is how it changes.
-    pub fn work_file(&self, env_id: &str) -> Option<String> {
-        self.checks
-            .iter()
-            .find(|c| c.environment_id == env_id)
-            .and_then(|c| c.manifest.clone())
+    /// caller; naming a file in a request is how it changes. `current` is the
+    /// file iii cloud has for the environment now: when it is not the one the
+    /// environment had when that check was made, the file was changed in the
+    /// console, and the check's file is not kept (it would undo that change).
+    pub fn work_file(&self, env_id: &str, current: Option<&str>) -> Option<String> {
+        let c = self.checks.iter().find(|c| c.environment_id == env_id)?;
+        let at_check = self
+            .check_sources
+            .get(&c.id)
+            .and_then(|r| r.compose.as_deref());
+        if at_check.is_some() && current.is_some() && at_check != current {
+            return None;
+        }
+        c.manifest.clone()
     }
 
     /// Record `check` as the latest and keep it in the history.

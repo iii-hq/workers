@@ -63,7 +63,10 @@ async fn stored(ctx: &Ctx, team_id: &str, env_id: &str) -> Option<HashMap<String
 pub(crate) fn manifest_of(ctx: &Ctx, sel: &Selected, asked: Option<&str>) -> Res<String> {
     let manifest = asked
         .map(str::to_owned)
-        .or_else(|| ctx.store.read(|s| s.work_file(&sel.env.id)))
+        .or_else(|| {
+            ctx.store
+                .read(|s| s.work_file(&sel.env.id, sel.env.manifest.as_deref()))
+        })
         .or_else(|| sel.env.manifest.clone())
         .unwrap_or_else(|| "worker-compose.yaml".into());
     if !manifest_path(&manifest) || confined(&manifest).is_none() {

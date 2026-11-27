@@ -4451,3 +4451,45 @@ async fn when_the_environments_cannot_be_read_nothing_is_pushed() {
     assert!(origin_branch(&s, OWN).is_none());
     assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
 }
+
+#[tokio::test]
+async fn a_checks_file_is_kept_only_while_the_environment_still_has_the_file_it_had_then() {
+    let s = setup(plan(false)).await;
+    let check = |id: &str, env: &str, file: Option<&str>| Check {
+        id: id.into(),
+        environment_id: env.into(),
+        manifest: file.map(str::to_owned),
+        ..s.check.clone()
+    };
+    let at = |compose: &str| iii_cloud::store::CheckedFor {
+        source: None,
+        source_sha: None,
+        workspace: true,
+        compose: Some(compose.into()),
+    };
+    let mut st = iii_cloud::store::State::default();
+    // Newest first, two environments interleaved: A's work is on w.yaml (its environment had y.yaml
+    // then), B's on b.yaml, and A's older check named nothing.
+    st.checks = vec![
+        check("b1", "B", Some("b.yaml")),
+        check("a2", "A", Some("w.yaml")),
+        check("b0", "B", None),
+        check("a1", "A", None),
+    ];
+    st.check_sources.insert("b1".into(), at("main-b.yaml"));
+    st.check_sources.insert("a2".into(), at("y.yaml"));
+    // Unchanged in the console: the work stays on the check's file, each environment on its own.
+    assert_eq!(st.work_file("A", Some("y.yaml")).as_deref(), Some("w.yaml"));
+    assert_eq!(
+        st.work_file("B", Some("main-b.yaml")).as_deref(),
+        Some("b.yaml")
+    );
+    // Not known now: the check's file stays (nothing says it changed).
+    assert_eq!(st.work_file("A", None).as_deref(), Some("w.yaml"));
+    // The person set another file in the console: the check must not undo it.
+    assert_eq!(st.work_file("A", Some("x.yaml")), None);
+    // B's change does not touch A.
+    assert_eq!(st.work_file("A", Some("y.yaml")).as_deref(), Some("w.yaml"));
+    assert_eq!(st.work_file("B", Some("other.yaml")), None);
+    assert_eq!(st.work_file("C", Some("y.yaml")), None);
+}
