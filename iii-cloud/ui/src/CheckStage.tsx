@@ -30,6 +30,7 @@ import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom 
 import {
   ASSISTED,
   activeSameKind,
+  agentWorking,
   appFile,
   CHECK_AGAIN,
   cloudPending,
@@ -55,6 +56,7 @@ import {
   RESOURCE_KIND,
   recentDeployRange,
   roleOf,
+  runTail,
   sendLabel,
   servingNamed,
   settingWords,
@@ -66,7 +68,6 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
-  agentWorking,
   waitsFor,
   wayOf,
   workingOnIds,
@@ -1201,7 +1202,7 @@ export function CheckStage(props: CheckStageProps) {
     }
     const err = run?.status === 'failed' ? run.error : null
     // The last lines that say something (not blank, not a separator): what the generic line above does not.
-    const tail = (run?.log_tail ?? []).filter((l) => l.trim() && !/^[\s\-=_*#~.]+$/.test(l)).slice(-6)
+    const tail = runTail(run?.log_tail ?? [])
     if (err?.code === 'DOCKER_MISSING') {
       const cloudN = open.filter((x) => x.source === 'cloud_plan').length
       stops.push({
@@ -1227,7 +1228,7 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
-            {tail.length ? <TerminalStream label="Last lines of the local run" text={tail.join('\n')} /> : null}
+            {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
           </>
         ),
         acts: [{ label: 'Run again', onClick: checkAgain, disabled: running }],

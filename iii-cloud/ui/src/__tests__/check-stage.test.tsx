@@ -13,7 +13,7 @@ import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
-import { checklist, handoffMessage, openProblems, wayOf } from '../model'
+import { checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -1418,5 +1418,29 @@ describe('an agent that ended its turn waiting on a wake', () => {
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
+  })
+})
+
+describe("the run's last lines", () => {
+  it('keep the failure line and what follows it when a stack trace comes after, and see through prefixes, colours and box rules', () => {
+    const log = [
+      '[api] ────────────────',
+      '[api] \u001b[31mInvalid environment variables:\u001b[0m',
+      '[api]   JWT_SECRET: required',
+      '[api]   REDIS_URL: required',
+      ...Array.from({ length: 8 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      '',
+      'Node.js v20.1.0',
+      '[31m',
+    ]
+    const tail = runTail(log)
+    expect(tail.length).toBeLessThanOrEqual(6)
+    expect(tail.join('\n')).toContain('Invalid environment variables:')
+    expect(tail.join('\n')).toContain('JWT_SECRET: required')
+    expect(tail).toContain('…')
+    expect(tail.join('\n')).toContain('Node.js v20.1.0')
+    // the prefix stays in what is shown; a box rule and a codes-only line are not lines
+    expect(tail[0]).toMatch(/^\[api\] /)
+    expect(tail.some((l) => l.includes('────') || l.trim() === '[31m')).toBe(false)
   })
 })
