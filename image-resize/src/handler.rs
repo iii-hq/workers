@@ -106,12 +106,19 @@ async fn run(
         .acquire_owned()
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
-    let (out, result) = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        process_image(&bytes, &params)
-    })
-    .await
-    .map_err(|e| Error::Handler(format!("image processing panicked: {e}")))??;
+    let (done, processed) = tokio::sync::oneshot::channel();
+    // Not spawn_blocking: a runtime waits for its blocking tasks when it drops,
+    // so a resize a stop cuts off would hold the exit until it returns.
+    std::thread::Builder::new()
+        .name("image-resize".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = done.send(process_image(&bytes, &params));
+        })
+        .map_err(|e| Error::Handler(format!("could not start image processing: {e}")))?;
+    let (out, result) = processed
+        .await
+        .map_err(|_| Error::Handler("image processing panicked".into()))??;
 
     req.output_channel.send(&result).await?;
     req.output_channel.write(&out).await?;

@@ -118,9 +118,10 @@ page shows an error that tells you to update the ade worker.
 - One image per CPU core at a time; further calls queue.
 - On SIGTERM or Ctrl-C the worker unregisters `image_resize::resize`, so the
   engine routes it no new call, and waits up to 8 s for the calls in flight
-  to finish before it exits; calls still running then are cut off. A second
-  signal does not shorten the wait. iii compose waits 10 s by default before
-  its SIGKILL.
+  to finish before it exits; it exits once no call has run for 250 ms, so
+  their results go out. Calls still running at 8 s are cut off, and the exit
+  does not wait for a resize they started. A second signal does not shorten
+  the wait. iii compose waits 10 s by default before its SIGKILL.
 - WebP output is at most 16383 px per side, JPEG 65535.
 - EXIF orientation is applied; other metadata is dropped.
 - An embedded RGB colour profile, such as Display P3 or Adobe RGB, is

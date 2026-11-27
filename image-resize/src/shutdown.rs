@@ -10,6 +10,11 @@ use tokio::sync::Notify;
 /// waits by default between its SIGTERM and its SIGKILL.
 pub const DRAIN_DEADLINE: Duration = Duration::from_secs(8);
 
+/// How long no call must be in flight before a stop ends the connection: the
+/// SDK sends a call's result after its handler returns, and counts a call it
+/// took just before the unregister only from that call's first poll.
+const REPLY_GRACE: Duration = Duration::from_millis(250);
+
 /// Counts the `image_resize::resize` calls in flight.
 #[derive(Default)]
 pub struct InFlight {
@@ -30,17 +35,20 @@ impl InFlight {
         self.calls.load(Ordering::SeqCst)
     }
 
-    /// Waits until no call is in flight, or `deadline` passes, and returns
-    /// the number of calls still running.
+    /// Waits until no call has been in flight for [`REPLY_GRACE`], or
+    /// `deadline` passes, and returns the number of calls still running.
     pub async fn drain(&self, deadline: Duration) -> usize {
         let _ = tokio::time::timeout(deadline, async {
             loop {
                 // Created before the check, so a guard dropped in between still wakes it.
                 let idle = self.idle.notified();
-                if self.running() == 0 {
+                if self.running() > 0 {
+                    idle.await;
+                } else if tokio::time::timeout(REPLY_GRACE, idle).await.is_err()
+                    && self.running() == 0
+                {
                     return;
                 }
-                idle.await;
             }
         })
         .await;
@@ -72,8 +80,24 @@ mod tests {
         });
         let started = Instant::now();
         assert_eq!(calls.drain(Duration::from_secs(10)).await, 0);
-        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(started.elapsed() >= Duration::from_millis(200) + REPLY_GRACE);
         assert!(started.elapsed() < Duration::from_secs(10));
+        finish.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_waits_for_a_call_that_starts_and_ends_within_the_grace() {
+        let calls = Arc::new(InFlight::default());
+        let late = calls.clone();
+        let finish = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let call = late.enter();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(call);
+        });
+        let started = Instant::now();
+        assert_eq!(calls.drain(Duration::from_secs(10)).await, 0);
+        assert!(started.elapsed() >= Duration::from_millis(100) + REPLY_GRACE);
         finish.await.unwrap();
     }
 
@@ -87,11 +111,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_with_nothing_in_flight_returns_at_once() {
+    async fn drain_with_nothing_in_flight_returns_after_the_grace() {
         let calls = Arc::new(InFlight::default());
         drop(calls.enter());
         let started = Instant::now();
         assert_eq!(calls.drain(Duration::from_secs(10)).await, 0);
+        assert!(started.elapsed() >= REPLY_GRACE);
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
