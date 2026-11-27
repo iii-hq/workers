@@ -95,8 +95,9 @@ fn keyed(ctx: &Ctx, key: &str) -> String {
     format!("{key}:{attempt}")
 }
 
-/// The key has had its answer, a refusal or a create that was made: the next create of the same thing gets
-/// a new key. Only an answer that never arrived keeps the key, so a retry cannot make a second one.
+/// The key has had a refusal, or its answer was a replay of something deleted: the next create of the
+/// same thing gets a new key. An answer that never arrived, and a create that was made, keep the key: a
+/// retry replays that create (the cloud keeps a key's 2xx answer) and cannot make a second one.
 fn spent(ctx: &Ctx, key: &str) {
     ctx.store
         .update(|s| *s.create_attempts.entry(key.to_string()).or_insert(0) += 1);
@@ -108,7 +109,7 @@ fn spent(ctx: &Ctx, key: &str) {
 async fn deleted(ctx: &Ctx, path: String) -> bool {
     match ctx.raw(&Req::get(path)).await {
         Ok((404, _)) => true,
-        Ok((200, v)) => v.get("delete_after").is_some_and(|d| !d.is_null()),
+        Ok((200, v)) => crate::project::is_removed(&v),
         _ => false,
     }
 }
@@ -197,8 +198,24 @@ pub async fn create_project(ctx: &Arc<Ctx>, request: ProjectCreateRequest) -> Re
         post.idempotency_key = Some(keyed(ctx, &key));
         (status, body) = ctx.raw(&post).await?;
     }
-    spent(ctx, &key);
     if !(200..300).contains(&status) {
+        spent(ctx, &key);
+        // The repository has a project of the team already: not a name clash.
+        if status == 409 && lower_text(&body).contains("already a project") {
+            let team = project
+                .teams
+                .iter()
+                .find(|t| t.id == request.team_id)
+                .map_or("this team", |t| t.name.as_str());
+            return Err(CloudError::new(
+                "PROJECT_EXISTS",
+                format!(
+                    "{} already has a project in {team}: open it from Add a project \u{2192} Use a project already in iii cloud.",
+                    project.repository
+                ),
+            )
+            .with_status(409));
+        }
         return Err(create_error(status, &body, "PROJECT_NAME_TAKEN"));
     }
     let project_id = body
@@ -364,8 +381,8 @@ pub async fn create_environment(
         post.idempotency_key = Some(keyed(ctx, &key));
         (status, answer) = ctx.raw(&post).await?;
     }
-    spent(ctx, &key);
     if !(200..300).contains(&status) {
+        spent(ctx, &key);
         return Err(environment_error(status, &answer));
     }
     let environment_id = answer

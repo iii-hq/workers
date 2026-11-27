@@ -545,7 +545,7 @@ async fn a_create_that_is_answered_with_a_deleted_project_asks_again_with_a_new_
         h2.ctx
             .store
             .read(|s| s.create_attempts.values().copied().collect::<Vec<_>>()),
-        vec![2]
+        vec![1]
     );
 }
 
@@ -1790,4 +1790,109 @@ async fn a_restart_with_nothing_selected_resumes_a_running_deploy() {
     ready.store(true, Ordering::SeqCst);
     iii_cloud::watch::poll_once(&again).await;
     outcome_of_a(&again, Outcome::Ready).await;
+}
+
+async fn create_mocks(server: &MockServer) {
+    get_first(server, &format!("/teams/{TEAM}/github/repositories"), json!({"repositories": [{"id": 77, "full_name": "ada/hello-iii", "default_branch": "main", "private": true, "manifests": [{"path": "worker-compose.yaml", "lock": true, "workers": [], "choosable": true, "issue": null, "suggested_environment": "production"}]}]})).await;
+    get_first(
+        server,
+        &format!("/teams/{TEAM}/projects"),
+        json!({"projects": [project(P3, "hello-iii", "2026-11-26T00:00:00Z")]}),
+    )
+    .await;
+    get_first(
+        server,
+        &format!("/teams/{TEAM}/projects/{P3}/environments"),
+        json!({"environments": [env(E3, "production", true, "main")]}),
+    )
+    .await;
+    get_first(
+        server,
+        &format!("/teams/{TEAM}/projects/{P3}"),
+        json!({"id": P3}),
+    )
+    .await;
+    get_first(
+        server,
+        &format!("/teams/{TEAM}/environments/{E3}"),
+        env(E3, "production", true, "main"),
+    )
+    .await;
+    get_first(
+        server,
+        &format!("/teams/{TEAM}/environments/{E3}/deployments"),
+        json!({"deployments": [], "next_cursor": null}),
+    )
+    .await;
+}
+
+fn create_request(r: &Repo) -> ProjectCreateRequest {
+    ProjectCreateRequest {
+        path: r.checkout.to_string_lossy().into(),
+        team_id: TEAM.into(),
+        manifest: "worker-compose.yaml".into(),
+        environment_name: "production".into(),
+        production: None,
+    }
+}
+
+#[tokio::test]
+async fn a_create_made_once_is_replayed_by_a_retry_not_spent() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = cloud(&server, true).await;
+    create_mocks(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects")))
+        .and(wiremock::matchers::header_regex("idempotency-key", ":0$"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"project": project(P3, "hello-iii", "2026-11-26T00:00:00Z"), "environment": env(E3, "production", true, "main")})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    // The page lost the first answer and asks again: the same key, so the same project.
+    for _ in 0..2 {
+        let made = create_project(&h.ctx, create_request(&r)).await.unwrap();
+        assert_eq!(made.project_id.as_deref(), Some(P3));
+    }
+    assert!(h.ctx.store.read(|s| s.create_attempts.is_empty()));
+}
+
+#[tokio::test]
+async fn a_repository_that_already_has_a_project_is_not_a_name_clash() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = cloud(&server, true).await;
+    create_mocks(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects")))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({"code": "CONFLICT", "message": "ada/hello-iii is already a project of the team."})))
+        .mount(&server)
+        .await;
+    let err = create_project(&h.ctx, create_request(&r))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "PROJECT_EXISTS");
+    assert!(
+        err.message
+            .starts_with("ada/hello-iii already has a project in ")
+            && err.message.contains("Use a project already in iii cloud"),
+        "{}",
+        err.message
+    );
+    // A real name clash keeps its own code.
+    let server = MockServer::start().await;
+    let h = cloud(&server, true).await;
+    create_mocks(&server).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects")))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_json(json!({"code": "CONFLICT", "message": "name taken"})),
+        )
+        .mount(&server)
+        .await;
+    let err = create_project(&h.ctx, create_request(&r))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "PROJECT_NAME_TAKEN");
 }
