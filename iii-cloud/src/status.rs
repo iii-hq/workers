@@ -228,8 +228,31 @@ pub async fn refresh_environment(
         .ok()?;
     let fresh = crate::project::env_info(&body)?;
     let removed = crate::project::is_removed(&body);
-    // Only the selected environment's record: a secret request's may be another.
     ctx.store.update(|s| {
+        // The branch and name wherever the store copied them: a hand-off's brief
+        // and `selected_for` read these, not the selection.
+        for h in s.handoffs.iter_mut() {
+            if h.env.as_ref().is_some_and(|e| e.id == fresh.id) {
+                h.env = Some(fresh.clone());
+            }
+        }
+        if let Some(p) = s.project.as_mut() {
+            for e in p.environments.iter_mut().filter(|e| e.id == fresh.id) {
+                e.name = fresh.name.clone();
+                e.branch = fresh.branch.clone();
+            }
+            for e in p
+                .cloud_projects
+                .iter_mut()
+                .flat_map(|c| c.environments.iter_mut())
+                .filter(|e| e.id == fresh.id)
+            {
+                e.name = fresh.name.clone();
+                e.branch = fresh.branch.clone();
+                e.manifest = fresh.manifest.clone();
+            }
+        }
+        // Only the selected environment's record: a secret request's may be another.
         if let Some(p) = s
             .project
             .as_mut()
