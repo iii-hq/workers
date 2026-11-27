@@ -91,6 +91,13 @@ export function LaunchNote() {
       </div>
     )
   }
+  if (launch?.kind === 'told') {
+    return (
+      <div className="iii-cloud-body">
+        <span className="iii-cloud-psmall">Tell it in the chat.</span>
+      </div>
+    )
+  }
   if (launch?.kind === 'waiting') {
     return (
       <div className="iii-cloud-body">

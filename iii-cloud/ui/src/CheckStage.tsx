@@ -18,6 +18,7 @@ import {
   Skeleton,
   TerminalStream,
 } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { ChevronRight, CircleAlert, CircleDashed, Check as Done, Info, Loader2 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AgentControls } from './AgentRow'
@@ -113,6 +114,7 @@ type Row = {
   state: string
   detail?: string | null
   log?: string[]
+  logPath?: string | null
 }
 type Act = {
   label: string
@@ -581,6 +583,7 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
       state: st.status === 'pending' ? 'waiting' : st.status === 'running' ? 'running' : stageTime(r, st),
       detail: t.note,
       log: st.status === 'failed' ? r.log_tail : undefined,
+      logPath: st.status === 'failed' ? r.log_path : undefined,
     }
   })
   const start = Date.parse(r.started_at)
@@ -613,6 +616,20 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
   }
 }
 
+/** The run's whole log on this machine: one quiet line, selectable, with a copy button. */
+function LogPath({ path }: { path?: string | null }) {
+  const copy = useCopyFlash(path ?? '')
+  if (!path) return null
+  return (
+    <p className="iii-cloud-cs-foot iii-cloud-cs-logpath">
+      The whole log: <Mono>{path}</Mono>{' '}
+      <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={copy.copy}>
+        {copy.state === 'copied' ? 'Copied' : 'Copy'}
+      </button>
+    </p>
+  )
+}
+
 function Rows({ rows }: { rows: Row[] }) {
   return (
     <ul className="iii-cloud-cs-rows">
@@ -626,6 +643,7 @@ function Rows({ rows }: { rows: Row[] }) {
             <details className="iii-cloud-cs-log">
               <summary>{`Last lines of ${r.aria ?? 'the local run'}`}</summary>
               <pre>{r.log.join('\n')}</pre>
+              <LogPath path={r.logPath} />
             </details>
           ) : null}
         </li>
@@ -988,7 +1006,8 @@ export function CheckStage(props: CheckStageProps) {
   const now = useNow(1000)
   const { error, busy, call, setError } = useActions(host)
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
-  const launching = useLaunch()?.kind === 'launching'
+  const launch = useLaunch()
+  const launching = launch?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
   // The check the production name dialog was opened for: it deploys that one, only while it is still the ready one.
   const [confirmFor, setConfirmFor] = useState<string | null>(null)
@@ -1112,6 +1131,22 @@ export function CheckStage(props: CheckStageProps) {
         id: null,
       })),
   ]
+  // A failed local run is the agent's to fix unless it is Docker, a replaced run, or something the person's own values
+  // explain (an open problem of the run here, or a value still missing): the page has no owner for a run's failure, so
+  // it is told the way the run's stop is (`stops` below): by what else is open. It is one more row for the agent.
+  const runError = run?.status === 'failed' && !running ? run.error : null
+  const agentRun =
+    !!runError &&
+    !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
+    !openProblems(s, true).some((x) => x.source === 'check_here') &&
+    !missing.length
+  if (agentRun && runError)
+    lines.push({
+      key: 'run-failed',
+      title: `The local run stopped at ${stageLabel(runError.stage)}`,
+      detail: plainMessage(runError),
+      id: null,
+    })
   // The agent fixing a failed deployment: the passed check is the failed deployment's, not a go-ahead.
   const deployFix = agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix'
   const failedDeploy = deployFix ? s.deploys.find((d) => d.environment_id === envId && isFailedDeploy(d)) : undefined
@@ -1260,10 +1295,29 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
+            {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
+            {agentRun && launch?.kind === 'sent' ? " Sent to your agent's chat." : ''}
+            {agentRun && launch?.kind === 'told' ? ' Tell it in the chat.' : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
+            {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
         ),
-        acts: [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+        // The agent's to fix: its hand-off first (unless it is already on it); running again repeats the failure.
+        acts: agentRun
+          ? [
+              ...(agentWorking(s)
+                ? []
+                : [
+                    {
+                      label: sendLabel(s, 'ready', 'Fix with your agent'),
+                      // An agent that waits has a hand-off open: the worker puts what failed into its chat.
+                      onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
+                      disabled: !canAsk,
+                    },
+                  ]),
+              { label: 'Run again', onClick: checkAgain, disabled: running },
+            ]
+          : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
@@ -1628,7 +1682,11 @@ export function CheckStage(props: CheckStageProps) {
 
       {!replaced ? (
         <ValuesCard
-          runFailed={run?.status === 'failed'}
+          failedAt={
+            run?.status === 'failed' && run.error
+              ? { stage: run.error.stage, label: stageLabel(run.error.stage) }
+              : null
+          }
           linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? [], 6, missing).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}
@@ -1665,7 +1723,7 @@ export function CheckStage(props: CheckStageProps) {
           end={
             (engaged || asks) && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
-            ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
+            ) : lines.length && !running && !stops.some((x) => x.key === 'stopped' || (x.key === 'run' && agentRun)) ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
               </Button>

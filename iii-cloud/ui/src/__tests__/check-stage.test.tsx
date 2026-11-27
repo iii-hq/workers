@@ -1035,7 +1035,10 @@ describe('the check follows the canvas', () => {
         owner: 'agent' as const,
         title: 'DATABASE_URL has no value',
       }
-      const s = { ...base, check: { ...base.check!, problems: [db] } }
+      const s = {
+        ...base,
+        check: { ...base.check!, problems: [db], run: { ...base.check!.run!, status: 'passed' as const, error: null } },
+      }
       await stage(s)
       expect(title()).toBe('1 for your agent to fix')
       expect(region('Your agent')?.textContent).toContain('DATABASE_URL has no value')
@@ -1122,7 +1125,15 @@ describe('the check follows the canvas', () => {
     })
 
     it('when the local run failed the card never says "you can deploy without them", and a missing value explains the stop', async () => {
-      await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 12)) })
+      // the application starts at `workers`: a missing value can explain a failure there
+      const atWorkers = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: { ...quiet.check!.run!, error: { ...quiet.check!.run!.error!, stage: 'workers' as const } },
+        },
+      }
+      await stage(atWorkers, { 'iii-cloud::values': answer(names('OPT', 12)) })
       expect(card()?.textContent).not.toContain('Optional ones can wait')
       expect(card()?.textContent).toContain(
         "The local run failed. If the application needs one of the names above, set it: the run's last lines say which.",
@@ -1255,6 +1266,23 @@ describe('the check follows the canvas', () => {
       const bare = { ...agentNote, question_source: undefined }
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'SECRET_MISSING: 8 values' } })).toBe(false)
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
+    })
+
+    it('a run that failed at another stage says values are not the cause, and never "optional ones can wait"', async () => {
+      const atRelease = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: {
+            ...quiet.check!.run!,
+            error: { ...quiet.check!.run!.error!, stage: 'release' as const, code: 'RELEASE_FAILED' },
+          },
+        },
+      }
+      await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
+      expect(card()?.textContent).toContain('The local run failed at Release command; values are not the cause.')
+      expect(card()?.textContent).not.toContain('If the application needs')
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
@@ -1392,8 +1420,8 @@ describe('small things the review found', () => {
     )
     const restored = note(
       'RUN_FILES_RESTORED',
-      'The local run rewrote 3 tracked files; they are back as committed',
-      'api/a.ts, api/b.ts, api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
+      "The local run changed 3 files in the agent's copy; the copy is as it was before the run",
+      'Put back: api/a.ts, api/b.ts. Moved: api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
     )
     const withNotes = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left, restored] } }
     await stage(withNotes)
@@ -1401,6 +1429,7 @@ describe('small things the review found', () => {
     const lines = [...el.querySelectorAll('details.iii-cloud-cs-quiet')]
     expect(lines.map((l) => l.querySelector('summary')?.textContent)).toEqual([left.title, restored.title])
     expect(lines[0].textContent).toContain('pnpm-lock.yaml, tsconfig.tsbuildinfo')
+    expect(lines[1].textContent).toContain('Put back: api/a.ts, api/b.ts. Moved: api/c.ts.')
     expect(lines[1].textContent).toContain('run-leftovers')
     await stage(r)
     expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
@@ -1468,11 +1497,38 @@ describe('small things the review found', () => {
       question_source: 'agent' as const,
     }
     const w = { ...rcFixing, agent: ask }
-    const none = { ...w, check: { ...w.check!, problems: [] } }
+    const none = {
+      ...w,
+      check: { ...w.check!, problems: [], run: { ...w.check!.run!, status: 'passed' as const, error: null } },
+    }
     await stage(none)
     expect(title()).toBe('1 thing needs you')
     expect(region('Your agent')?.textContent).toContain(text)
     expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+  })
+
+  it('COMMAND_PRINTS_ENVIRONMENT is an ordinary agent-owned row', async () => {
+    const p = {
+      ...rcVariables[0],
+      id: 'p-env',
+      code: 'COMMAND_PRINTS_ENVIRONMENT',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'agent' as const,
+      title: 'The release command prints its whole environment',
+      detail: 'It would write every secret into the log.',
+      fix: 'Remove the `env` call from the script.',
+    }
+    const w = { ...rcFixing, agent: null, handoff_brief: null }
+    await stage({
+      ...w,
+      check: { ...w.check!, problems: [p], run: { ...w.check!.run!, status: 'passed' as const, error: null } },
+    })
+    expect(title()).toBe('1 for your agent to fix')
+    expect(region('Your agent')?.textContent).toContain('The release command prints its whole environment')
+    expect(region('Your agent')?.textContent).toContain('It would write every secret into the log.')
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
@@ -1494,6 +1550,11 @@ describe('small things the review found', () => {
 
 describe('an agent that ended its turn waiting on a wake', () => {
   const WAKE = 'test environment values/deploy'
+  // A failed run is itself one more thing for the agent: these tests want nothing open for it.
+  const passedRun = (st: Status) => ({
+    ...st,
+    check: { ...st.check!, run: { ...st.check!.run!, status: 'passed' as const, error: null } },
+  })
   const waiting = (none = false) => {
     const w = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'waiting' as const, waiting_for: WAKE } }
     return none ? { ...w, check: { ...w.check!, problems: [] } } : w
@@ -1509,7 +1570,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
   })
 
   it('with nothing for it to fix: "Your agent waits for …"', async () => {
-    await stage(waiting(true))
+    await stage(passedRun(waiting(true)))
     expect(title()).toBe(`Your agent waits: "${WAKE}"`)
     expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
   })
@@ -1608,7 +1669,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
   })
 
   it('the worker\'s own wake texts read "waits for …", a long label is cut at 80 characters', async () => {
-    const w = waiting(true)
+    const w = passedRun(waiting(true))
     await stage({ ...w, agent: { ...w.agent!, waiting_for: 'the check to end' } })
     expect(title()).toBe('Your agent waits for the check to end')
     await stage({ ...w, agent: { ...w.agent!, waiting_for: 'x'.repeat(200) } })
@@ -1627,11 +1688,19 @@ describe('an agent that ended its turn waiting on a wake', () => {
       owner: 'person' as const,
       title: 'JWT_SECRET has no value here',
     }
-    const items = [valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] })]
+    const items = [
+      valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] }),
+      valueItem('OPT_ONE', { suggestions: [] }),
+    ]
     const answers = {
       'iii-cloud::values': () => ({ ...rcValues, environment_id: base.project?.environment?.id, items }),
     }
-    const s = { ...base, agent: null, check: { ...base.check!, problems: [value] } }
+    const err = { ...base.check!.run!.error!, stage: 'workers' as const }
+    const s = {
+      ...base,
+      agent: null,
+      check: { ...base.check!, problems: [value], run: { ...base.check!.run!, error: err } },
+    }
     // the stop is suppressed while a check_here problem is open: the lines are behind the local run's row
     await stage(s, answers)
     expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")
@@ -1791,5 +1860,97 @@ describe("the run's last lines", () => {
   it('a colour code without its escape character is not shown', () => {
     const tail = runTail(['[31mInvalid environment variables:[0m', 'X_KEY: required'])
     expect(tail.join('\n')).toBe('Invalid environment variables:\nX_KEY: required')
+  })
+})
+
+describe("a local run that failed at the release stage is the agent's to fix", () => {
+  const note = {
+    ...rcFixing.agent!,
+    state: 'waiting_for_you' as const,
+    question: 'Your agent stopped before running it here like the cloud.',
+    question_source: 'check' as const,
+  }
+  const release = (agent: typeof note | NonNullable<Status['agent']>) => {
+    const r = rcFixing.check!
+    return {
+      ...rcFixing,
+      agent,
+      check: {
+        ...r,
+        problems: [],
+        run: {
+          ...r.run!,
+          error: { stage: 'release' as const, code: 'RELEASE_FAILED', message: 'pnpm db:migrate exited 1' },
+        },
+      },
+    } as Status
+  }
+  const stop = () =>
+    [...el.querySelectorAll('[role=status]')].find((p) => p.textContent?.includes('stopped at Release'))
+
+  it('the title counts it, the stop offers the agent first, and Run again stays second', async () => {
+    const openScreen = vi.fn()
+    const reused = (sent: boolean) => ({
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent, session_id: 'sess-1' },
+    })
+    const h = await stage(release(note), reused(true), { openScreen })
+    expect(title()).toBe('1 for your agent to fix')
+    const buttons = [...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)
+    expect(buttons).toEqual(['Fix with your agent', 'Run again'])
+    // The agent waits in its chat: the button calls the worker, which sends what failed into that chat, then the chat opens.
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(openScreen).toHaveBeenCalled()
+    expect(handoffs(h)).toHaveLength(1)
+    expect(handoffs(h)[0]).toMatchObject({ payload: { kind: 'ready' } })
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    // The worker could not put it in: the chat opens and the person is told to tell it.
+    const openScreen2 = vi.fn()
+    await stage(release(note), reused(false), { openScreen: openScreen2 })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(openScreen2).toHaveBeenCalled()
+    expect(stop()?.textContent).toContain('Tell it in the chat.')
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+    // No agent at all: the same button sends the hand-off.
+    const h2 = await stage({ ...release(note), agent: null, handoff_brief: null }, marker)
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(handoffs(h2)).toHaveLength(1)
+    // one row for the card, and not a second "Fix with your agent" beside the stop's
+    expect(region('Your agent')?.textContent).toContain('The local run stopped at Release')
+    expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Fix with your agent')).toHaveLength(1)
+  })
+
+  it('the title is never missing on the screen of the fifth run: a "done for now" note, no problem rows, a run failed at release', async () => {
+    await stage(release(note))
+    expect(title()).toBe('1 for your agent to fix')
+    expect(region('Your agent')?.textContent).toContain('done for now')
+    expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
+  })
+
+  it('an agent already on it: "Your agent is on it." and no button for it', async () => {
+    await stage(release({ ...rcFixing.agent!, state: 'working' as const }))
+    expect(stop()?.textContent).toContain('Your agent is on it.')
+    expect([...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Run again'])
+  })
+
+  it("the run's whole log is one quiet line with a copy button under its last lines", async () => {
+    const LOG = '/home/you/.iii-cloud/runs/run-1.log'
+    const r = rcFixing.check!
+    const w = {
+      ...rcFixing,
+      agent: null,
+      handoff_brief: null,
+      check: { ...r, problems: [], run: { ...r.run!, log_path: LOG } },
+    } as Status
+    await stage(w)
+    const stopBlock = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('The local run stopped at'),
+    )
+    expect(stopBlock?.textContent).toContain(`The whole log: ${LOG}`)
+    expect([...(stopBlock?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toContain('Copy')
+    await stage({ ...w, check: { ...w.check!, run: { ...w.check!.run!, log_path: null } } })
+    expect(text()).not.toContain('The whole log')
   })
 })

@@ -289,6 +289,8 @@ export type Run = {
   /** The commit's run had already passed and this answer is that run. A worker that does not send it: false. */
   reused?: boolean
   log_tail: string[]
+  /** Where the run's whole redacted log is, on this machine. */
+  log_path?: string | null
   error: { stage: Stage['name']; code: string; message: string } | null
 }
 
@@ -411,6 +413,8 @@ export type HandoffResult = {
   delivered?: boolean
   /** The worker already had this hand-off open: it delivered the text itself; never start another chat. */
   reused?: boolean
+  /** With `reused`: the worker put the latest check's problems and failed run into that chat (false: it could not, tell it there). */
+  sent?: boolean
   session_id?: string | null
 }
 
