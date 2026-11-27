@@ -17,6 +17,8 @@ iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
 iii-sdk = "=0.27.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# DCT-scaled JPEG decode, which zune-jpeg lacks; without rayon.
+jpeg-decoder = { version = "0.3.2", default-features = false }
 libwebp-sys = "0.14"
 moxcms = "0.8"
 # Must stay on the same schemars major as iii-sdk so the derived JsonSchema is the trait the SDK takes.

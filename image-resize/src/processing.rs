@@ -191,8 +191,22 @@ fn check_pixels(w: u32, h: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// The image, oriented, and its embedded ICC profile.
-fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec<u8>>), Error> {
+/// Whether `o` swaps width and height.
+fn swaps_sides(o: Orientation) -> bool {
+    use Orientation::{Rotate90, Rotate90FlipH, Rotate270, Rotate270FlipH};
+    matches!(o, Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH)
+}
+
+/// An image, oriented, its embedded ICC profile and the source's oriented size.
+type Decoded = (DynamicImage, Option<Vec<u8>>, (u32, u32));
+
+/// The image, decoded. `fit` maps an oriented size to the size the caller will shrink the
+/// image to, if any; a decoder may then return a smaller image that still covers the whole source.
+fn decode(
+    bytes: &[u8],
+    format: ImageFormat,
+    fit: impl Fn(u32, u32) -> Option<(u32, u32)>,
+) -> Result<Decoded, Error> {
     let undecodable =
         |e: image::ImageError| invalid(format!("could not decode the {format:?} image: {e}"));
     if format == ImageFormat::Jpeg && jpeg_truncated(bytes) {
@@ -200,12 +214,14 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec
             "the JPEG is truncated: its data ends before the end-of-image marker",
         ));
     }
-    let (mut img, orientation, icc) = if format == ImageFormat::WebP {
+    let (mut img, orientation, icc, (w, h)) = if format == ImageFormat::WebP {
         let orientation = webp_chunk(bytes, b"EXIF").and_then(Orientation::from_exif_chunk);
         let icc = webp_chunk(bytes, b"ICCP")
             .filter(|icc| icc.len() <= MAX_ICC_BYTES)
             .map(<[u8]>::to_vec);
-        (decode_webp(bytes)?, orientation, icc)
+        let img = decode_webp(bytes)?;
+        let size = (img.width(), img.height());
+        (img, orientation, icc, size)
     } else {
         let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
         let mut limits = Limits::default();
@@ -225,14 +241,63 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec
             .ok()
             .flatten()
             .filter(|icc| icc.len() <= MAX_ICC_BYTES);
-        (
-            DynamicImage::from_decoder(decoder).map_err(undecodable)?,
-            orientation,
-            icc,
-        )
+        // The output size on the stored axes, before orientation.
+        let target = if orientation.is_some_and(swaps_sides) {
+            fit(h, w).map(|(h, w)| (w, h))
+        } else {
+            fit(w, h)
+        };
+        let shrunk = match (format, target) {
+            (ImageFormat::Jpeg, Some(target)) => shrunk_jpeg(bytes, (w, h), target),
+            _ => None,
+        };
+        let img = match shrunk {
+            Some(img) => img,
+            None => DynamicImage::from_decoder(decoder).map_err(undecodable)?,
+        };
+        (img, orientation, icc, (w, h))
     };
-    img.apply_orientation(orientation.unwrap_or(Orientation::NoTransforms));
-    Ok((img, icc))
+    let orientation = orientation.unwrap_or(Orientation::NoTransforms);
+    img.apply_orientation(orientation);
+    let size = if swaps_sides(orientation) {
+        (h, w)
+    } else {
+        (w, h)
+    };
+    Ok((img, icc, size))
+}
+
+/// How many times the output size, at least, a JPEG may shrink to while decoding.
+const JPEG_SHRINK_MARGIN: u32 = 2;
+
+/// A baseline YCbCr JPEG of `size` decoded at a half or a quarter of it, the smallest that
+/// stays `JPEG_SHRINK_MARGIN` times `target` on both sides; None when none does, or on any
+/// error, which the full decode then reports.
+fn shrunk_jpeg(bytes: &[u8], (w, h): (u32, u32), (tw, th): (u32, u32)) -> Option<DynamicImage> {
+    use jpeg_decoder::{CodingProcess, Decoder, PixelFormat};
+    let m = JPEG_SHRINK_MARGIN;
+    // Not an eighth: it keeps only each block's average, a box that blurs the thumbnail.
+    // Whole blocks only, so the shrunk image covers the source exactly.
+    let d = [4, 2]
+        .into_iter()
+        .find(|&d| w % d == 0 && h % d == 0 && w / d >= tw * m && h / d >= th * m)?;
+    let mut decoder = Decoder::new(bytes);
+    decoder.read_info().ok()?;
+    let info = decoder.info()?;
+    // Progressive scans cost jpeg-decoder as much scaled as zune-jpeg's full decode.
+    // shortcut: grey and CMYK JPEGs decode at full size; shrink them too if they become common.
+    if info.coding_process != CodingProcess::DctSequential
+        || info.pixel_format != PixelFormat::RGB24
+    {
+        return None;
+    }
+    // JPEG sides fit in 16 bits.
+    let size = decoder.scale((w / d) as u16, (h / d) as u16).ok()?;
+    if size != ((w / d) as u16, (h / d) as u16) {
+        return None;
+    }
+    let px = decoder.decode().ok()?;
+    RgbImage::from_raw(w / d, h / d, px).map(DynamicImage::ImageRgb8)
 }
 
 /// Largest ICC profile applied; real RGB profiles take a few KiB.
@@ -554,20 +619,39 @@ pub fn resize_scale_to_fit(
     max_h: u32,
     max_pixels: Option<NonZeroU64>,
 ) -> DynamicImage {
+    let size = fit_size(img.width(), img.height(), max_w, max_h, max_pixels);
+    shrink_to(img, size)
+}
+
+/// The scale-to-fit output size of a `w`x`h` image, or None when it already fits.
+fn fit_size(
+    w: u32,
+    h: u32,
+    max_w: u32,
+    max_h: u32,
+    max_pixels: Option<NonZeroU64>,
+) -> Option<(u32, u32)> {
     // The pixel limit narrows the box, so the image is resized once.
-    let (pw, ph) = within_pixels(img.width(), img.height(), max_pixels);
+    let (pw, ph) = within_pixels(w, h, max_pixels);
     let (max_w, max_h) = (max_w.min(pw), max_h.min(ph));
-    if img.width() <= max_w && img.height() <= max_h {
-        return img;
+    if w <= max_w && h <= max_h {
+        return None;
     }
     // As image's resize: one scale for both sides, rounded, so sizes stay as they were.
     let scale = f64::min(
-        f64::from(max_w) / f64::from(img.width()),
-        f64::from(max_h) / f64::from(img.height()),
+        f64::from(max_w) / f64::from(w),
+        f64::from(max_h) / f64::from(h),
     );
     let fit = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
-    let (w, h) = (fit(img.width()), fit(img.height()));
-    premultiplied(Cow::Owned(img), |img| lanczos3(img, w, h))
+    Some((fit(w), fit(h)))
+}
+
+/// `img` resized to `size`, if any.
+fn shrink_to(img: DynamicImage, size: Option<(u32, u32)>) -> DynamicImage {
+    match size {
+        Some((w, h)) => premultiplied(Cow::Owned(img), |img| lanczos3(img, w, h)),
+        None => img,
+    }
 }
 
 pub fn resize_crop_to_fit(
@@ -604,17 +688,24 @@ pub fn process_image(
     bytes: &[u8],
     params: &ProcessingParams,
 ) -> Result<(Vec<u8>, ThumbnailMetadata), Error> {
-    let (mut img, icc) = decode(bytes, params.input_format.image_format())?;
-    let (source_width, source_height) = (img.width(), img.height());
+    let (box_w, box_h, max_pixels) = (params.target_width, params.target_height, params.max_pixels);
+    let fit = |w, h| match params.strategy {
+        ResizeStrategy::ScaleToFit => fit_size(w, h, box_w, box_h, max_pixels),
+        // shortcut: crop-to-fit decodes at full size, as its crop would land between the
+        // pixels of a shrunk decode; move it over if crop-to-fit calls become common.
+        ResizeStrategy::CropToFit => None,
+    };
+    let (mut img, icc, (source_width, source_height)) =
+        decode(bytes, params.input_format.image_format(), fit)?;
     // JPEG has no alpha. Flattening before the resize leaves it an opaque
     // image, which skips the premultiplication.
     if params.output_format == Format::Jpeg && img.color().has_alpha() {
         img = over_white(&img);
     }
 
-    let (box_w, box_h, max_pixels) = (params.target_width, params.target_height, params.max_pixels);
     let thumbnail = match params.strategy {
-        ResizeStrategy::ScaleToFit => resize_scale_to_fit(img, box_w, box_h, max_pixels),
+        // From the source's size, as the decode may have shrunk the image already.
+        ResizeStrategy::ScaleToFit => shrink_to(img, fit(source_width, source_height)),
         ResizeStrategy::CropToFit => resize_crop_to_fit(img, box_w, box_h, max_pixels),
     };
     // After the resize, so the conversion touches only the thumbnail's pixels.
@@ -782,6 +873,11 @@ mod tests {
 
     fn is_invalid_args(err: &Error) -> bool {
         matches!(err, Error::Remote { code, .. } if code == "INVALID_ARGS")
+    }
+
+    /// A `decode` fit that asks for no shrink, so the image decodes at full size.
+    fn no_fit(_: u32, _: u32) -> Option<(u32, u32)> {
+        None
     }
 
     fn default_config() -> ResizeConfig {
@@ -1029,7 +1125,7 @@ mod tests {
         // SOF0: length (2), precision (1), then height and width, big-endian.
         jpeg[p + 5..p + 9].copy_from_slice(&[0x32, 0xC8, 0x32, 0xC8]);
         // Not expect_err: it would Debug-print a 13000x13000 image.
-        let Err(err) = decode(&jpeg, ImageFormat::Jpeg) else {
+        let Err(err) = decode(&jpeg, ImageFormat::Jpeg, no_fit) else {
             panic!("a 13000x13000 header must be rejected");
         };
         assert!(is_invalid_args(&err), "{err}");
@@ -1050,7 +1146,7 @@ mod tests {
         DynamicImage::ImageRgba8(RgbaImage::new(w, h))
             .write_with_encoder(enc)
             .unwrap();
-        let img = decode(&png, ImageFormat::Png).unwrap().0;
+        let img = decode(&png, ImageFormat::Png, no_fit).unwrap().0;
         assert_eq!((img.width(), img.height()), (w, h));
     }
 
@@ -1114,7 +1210,7 @@ mod tests {
             max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
-        let decoded = decode(&output, ImageFormat::WebP).unwrap().0;
+        let decoded = decode(&output, ImageFormat::WebP, no_fit).unwrap().0;
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
     }
@@ -1145,7 +1241,7 @@ mod tests {
             let (out, _) = process_image(&png, &webp_params(256, 256, q, Format::Png)).unwrap();
             assert_eq!(&out[..4], b"RIFF", "q{q}");
             assert_eq!(&out[12..16], b"VP8 ", "q{q} must be lossy");
-            let decoded = decode(&out, ImageFormat::WebP).unwrap().0;
+            let decoded = decode(&out, ImageFormat::WebP, no_fit).unwrap().0;
             assert_eq!((decoded.width(), decoded.height()), (256, 256), "q{q}");
             out.len()
         });
@@ -1159,7 +1255,7 @@ mod tests {
         });
         let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
         let (out, _) = process_image(&png, &webp_params(64, 64, 80, Format::Png)).unwrap();
-        let decoded = decode(&out, ImageFormat::WebP).unwrap().0;
+        let decoded = decode(&out, ImageFormat::WebP, no_fit).unwrap().0;
         assert!(decoded.to_rgba8().pixels().any(|p| p.0[3] < 255));
     }
 
@@ -1366,6 +1462,70 @@ mod tests {
         assert_eq!((out.width(), out.height()), (1, 2));
     }
 
+    /// A `w`x600 gradient stored as a baseline JPEG that rotates to 600x`w`.
+    fn rotated_gradient_jpeg(w: u32) -> Vec<u8> {
+        // Each channel ramps along its own axis, so a stretch, shift or swapped side shows.
+        let src = RgbImage::from_fn(w, 600, |x, y| {
+            image::Rgb([(x / 4) as u8, (y / 3) as u8, ((x + y) / 6) as u8])
+        });
+        let mut jpeg = Vec::new();
+        let mut enc = JpegEncoder::new_with_quality(&mut jpeg, 90);
+        enc.set_exif_metadata(tiff_orientation(6)).unwrap();
+        src.write_with_encoder(enc).unwrap();
+        jpeg
+    }
+
+    #[test]
+    fn jpeg_shrinks_while_decoding_to_the_same_thumbnail() {
+        let jpeg = rotated_gradient_jpeg(800);
+        let fit = |w, h| fit_size(w, h, 100, 100, None);
+        let (img, _, size) = decode(&jpeg, ImageFormat::Jpeg, fit).unwrap();
+        assert_eq!(size, (600, 800));
+        // A quarter, twice the 75x100 output, on the rotated axes.
+        assert_eq!((img.width(), img.height()), (150, 200));
+
+        let params = ProcessingParams {
+            output_format: Format::Png,
+            ..webp_params(100, 100, 100, Format::Jpeg)
+        };
+        let (out, meta) = process_image(&jpeg, &params).unwrap();
+        assert_eq!((meta.source_width, meta.source_height), (600, 800));
+        assert_eq!((meta.width, meta.height), (75, 100));
+        let out = image::load_from_memory_with_format(&out, ImageFormat::Png)
+            .unwrap()
+            .to_rgb8();
+        let full = decode(&jpeg, ImageFormat::Jpeg, no_fit).unwrap().0;
+        let expected = resize_scale_to_fit(full, 100, 100, None).to_rgb8();
+        let diff = out
+            .as_raw()
+            .iter()
+            .zip(expected.as_raw())
+            .map(|(a, b)| a.abs_diff(*b))
+            .max();
+        assert!(diff <= Some(2), "max diff {diff:?}");
+    }
+
+    #[test]
+    fn jpeg_shrinks_only_by_whole_blocks_within_the_margin() {
+        let shrunk = |jpeg: &[u8], side| {
+            let fit = |w, h| fit_size(w, h, side, side, None);
+            let img = decode(jpeg, ImageFormat::Jpeg, fit).unwrap().0;
+            (img.width(), img.height())
+        };
+        let jpeg = rotated_gradient_jpeg(800);
+        // A 76x101 output takes a half; a 151x201 one keeps the full size.
+        assert_eq!(shrunk(&jpeg, 101), (300, 400));
+        assert_eq!(shrunk(&jpeg, 201), (600, 800));
+        // 802 takes a half instead of a quarter, and 801 nothing.
+        assert_eq!(shrunk(&rotated_gradient_jpeg(802), 100), (300, 401));
+        assert_eq!(shrunk(&rotated_gradient_jpeg(801), 100), (600, 801));
+        let mut grey = Vec::new();
+        DynamicImage::new_luma8(800, 600)
+            .write_with_encoder(JpegEncoder::new_with_quality(&mut grey, 85))
+            .unwrap();
+        assert_eq!(shrunk(&grey, 50), (800, 600));
+    }
+
     #[test]
     fn orientation_is_read_from_webp() {
         let still = encode_webp(&make_rgb_image(2, 1, 1, 2, 3), 90).unwrap();
@@ -1493,7 +1653,7 @@ mod tests {
     fn webp_frame_unlike_its_canvas_is_rejected_up_front() {
         let webp = riff(&[vp8x(0, 1, 1), webp_claiming(16_383)[12..].to_vec()]);
         largest_alloc::take();
-        let Err(err) = decode(&webp, ImageFormat::WebP) else {
+        let Err(err) = decode(&webp, ImageFormat::WebP, no_fit) else {
             panic!("a 16383x16383 frame on a 1x1 canvas must be rejected");
         };
         let largest = largest_alloc::take();
@@ -1508,7 +1668,7 @@ mod tests {
             webp_claiming(8000),
             animation(8000, 8000, &[anmf(16, 16, &frame[12..])]),
         ] {
-            let Err(err) = decode(&webp, ImageFormat::WebP) else {
+            let Err(err) = decode(&webp, ImageFormat::WebP, no_fit) else {
                 panic!("an 8000x8000 WebP must be rejected");
             };
             assert!(is_invalid_args(&err), "{err}");
@@ -1546,7 +1706,7 @@ mod tests {
         let blue = encode_webp(&make_rgba_image(16, 16, 0, 0, 255, 128), 90).unwrap();
         assert_eq!(&blue[30..34], b"ALPH", "VP8X, then ALPH and VP8");
         let webp = animation(16, 16, &[anmf(1, 1, &blue[30..])]);
-        let img = decode(&webp, ImageFormat::WebP).unwrap().0;
+        let img = decode(&webp, ImageFormat::WebP, no_fit).unwrap().0;
         assert_eq!((img.width(), img.height()), (16, 16));
         for p in img.to_rgba8().pixels() {
             assert!(p[2] > 200 && p[3] == 128, "{p:?}");
@@ -1889,7 +2049,7 @@ mod tests {
 
     /// Asserts that `tagged`, a Display P3 image, comes out as its pixels in sRGB.
     fn assert_p3_converted(tagged: &[u8], input_format: Format) {
-        let (raw, icc) = decode(tagged, input_format.image_format()).unwrap();
+        let (raw, icc, _) = decode(tagged, input_format.image_format(), no_fit).unwrap();
         assert_eq!(icc, Some(display_p3()));
         let out = untagged_png(tagged, input_format);
         assert_eq!(out.color(), raw.color());
@@ -1995,7 +2155,10 @@ mod tests {
         let img = make_rgb_image(16, 16, 200, 100, 50);
         let png = png_with_icc(&img, oversized.clone());
         assert_eq!(
-            decode(&png, ImageFormat::Png).unwrap().1.map(|p| p.len()),
+            decode(&png, ImageFormat::Png, no_fit)
+                .unwrap()
+                .1
+                .map(|p| p.len()),
             None
         );
         let still = encode_webp(&img, 90).unwrap();
@@ -2005,7 +2168,10 @@ mod tests {
             still[12..].to_vec(),
         ]);
         assert_eq!(
-            decode(&webp, ImageFormat::WebP).unwrap().1.map(|p| p.len()),
+            decode(&webp, ImageFormat::WebP, no_fit)
+                .unwrap()
+                .1
+                .map(|p| p.len()),
             None
         );
     }
