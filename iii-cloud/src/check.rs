@@ -1325,7 +1325,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         here_problems.push(info);
     }
     let here = HerePart {
-        problems: here_problems.len() as u32,
+        // Blocking ones: a note (an info line) is not a problem to count.
+        problems: here_problems
+            .iter()
+            .filter(|p| p.severity == Severity::Block)
+            .count() as u32,
         accepts_cloud_block: accepts_cloud_block(iii_version.as_deref()),
         iii_version: iii_version.clone(),
     };

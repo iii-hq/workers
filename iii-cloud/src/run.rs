@@ -648,10 +648,11 @@ const HASH_LIMIT: u64 = 4 * 1024 * 1024;
 /// Every changed path of the worktree (`status --porcelain -z --untracked-files=all`, so an
 /// untracked directory is its files) with a fingerprint of its content now: a hash (`-` when
 /// it is gone; a symlink by its target; a file over `HASH_LIMIT` by size and mtime). With
-/// `hash` false the fingerprints are empty (nothing is read). None when git can't say.
+/// `Fingerprints::None` they are empty (nothing is read); `Only(record)` only the paths the record
+/// holds are read (no other path can match it). None when git can't say.
 async fn dirty_entries(
     ws: &Path,
-    hash: bool,
+    which: Fingerprints<'_>,
 ) -> Option<std::collections::BTreeMap<String, String>> {
     let out = tool::git(
         ws,
@@ -671,21 +672,34 @@ async fn dirty_entries(
         }
         paths.push(e[3..].to_string());
     }
-    if !hash {
-        return Some(paths.into_iter().map(|p| (p, String::new())).collect());
-    }
+    let wanted: Option<std::collections::BTreeSet<String>> = match which {
+        Fingerprints::All => None,
+        Fingerprints::None => Some(Default::default()),
+        Fingerprints::Only(record) => Some(record.keys().cloned().collect()),
+    };
     let ws = ws.to_path_buf();
     tokio::task::spawn_blocking(move || {
         paths
             .into_iter()
             .map(|p| {
-                let h = fingerprint(&ws.join(&p));
+                let h = if wanted.as_ref().is_none_or(|w| w.contains(&p)) {
+                    fingerprint(&ws.join(&p))
+                } else {
+                    String::new()
+                };
                 (p, h)
             })
             .collect()
     })
     .await
     .ok()
+}
+
+/// Which changed paths `dirty_entries` reads.
+enum Fingerprints<'a> {
+    All,
+    None,
+    Only(&'a std::collections::BTreeMap<String, String>),
 }
 
 fn fingerprint(path: &Path) -> String {
@@ -716,7 +730,7 @@ fn fingerprint(path: &Path) -> String {
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    dirty_entries(ws, true).await
+    dirty_entries(ws, Fingerprints::All).await
 }
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
@@ -736,7 +750,7 @@ pub async fn set_aside(
     if is_persons_folder(ctx, ws) {
         return None;
     }
-    let Some(after) = dirty_entries(ws, true).await else {
+    let Some(after) = dirty_entries(ws, Fingerprints::All).await else {
         mark_unrecorded(ctx, ws);
         return None;
     };
@@ -805,8 +819,13 @@ pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<Strin
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
         .filter(|_| !is_persons_folder(ctx, ws));
-    // A worktree no run has left anything in: every changed path is the agent's, and nothing is read.
-    let now = dirty_entries(ws, left.is_some()).await?;
+    // A worktree no run has left anything in (an empty record is none): every changed path is the
+    // agent's, and nothing is read. With a record, only its paths are.
+    let left = left.filter(|l| !l.files.is_empty());
+    let now = match &left {
+        Some(l) => dirty_entries(ws, Fingerprints::Only(&l.files)).await?,
+        None => dirty_entries(ws, Fingerprints::None).await?,
+    };
     if now.is_empty() && unrecorded(ctx, ws) {
         ctx.store
             .update(|s| s.run_unrecorded.remove(&ws.to_string_lossy().into_owned()));
