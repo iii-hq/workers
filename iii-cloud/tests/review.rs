@@ -685,3 +685,31 @@ async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
         .expect("it was dirty before the run, and not the run's");
     assert!(p.detail.as_deref().unwrap().starts_with("README.md. "));
 }
+
+#[tokio::test]
+async fn the_check_names_the_files_a_run_left_in_one_info_line() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let before = a_run_left_files(&ws).await;
+    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_LEFT_FILES")
+        .expect("the set-aside files are named");
+    assert_eq!((p.owner, p.severity), (Owner::None, Severity::Info));
+    let d = p.detail.as_deref().unwrap();
+    assert!(
+        d.contains("3 files")
+            && d.contains("README.md")
+            && d.ends_with("If one of them is your own edit, commit it."),
+        "{d}"
+    );
+    // None set aside, none named.
+    std::fs::remove_dir_all(ws.join("api/data")).unwrap();
+    std::fs::remove_file(ws.join("README.md")).ok();
+    git(&ws, &["checkout", "--", "README.md"]);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
+}

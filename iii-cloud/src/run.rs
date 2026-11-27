@@ -673,8 +673,10 @@ pub async fn dirty_snapshot(ws: &Path) -> std::collections::BTreeMap<String, Str
 /// content stays what it left; what an earlier run left and is still there with that content stays
 /// the run's (a run that writes nothing, or the same bytes again, drops nothing). A path that was
 /// dirty before the run with content that was not the run's stays the agent's, even if the run
-/// rewrote it. Nothing is deleted or restored. More than `MAX_WROTE` paths keep none, and the run
-/// says so.
+/// rewrote it. Nothing is deleted or restored. A file the agent edited WHILE the run went is
+/// set aside too (the run can't tell it from its own): the check names every set-aside path
+/// (`RUN_LEFT_FILES`) so one that is the agent's own work is seen. More than `MAX_WROTE` paths
+/// keep none, and the run says so.
 pub async fn set_aside(
     ctx: &Ctx,
     check_id: &str,
@@ -718,17 +720,23 @@ pub async fn set_aside(
 /// there (a path counts again once its content is not what the run left). None when git
 /// can't say: that counts as dirty.
 pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
+    dirty_split(ctx, ws).await.map(|(agent, _)| agent)
+}
+
+/// `(the agent's changed paths, the paths set aside as the last run's)`; None when git can't say.
+pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let left = ctx
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
         .unwrap_or_default();
     let now = dirty_entries(ws).await?;
-    Some(
-        now.into_iter()
-            .filter(|(p, h)| left.files.get(p) != Some(h))
-            .map(|(p, _)| p)
-            .collect(),
-    )
+    let (aside, agent): (Vec<_>, Vec<_>) = now
+        .into_iter()
+        .partition(|(p, h)| left.files.get(p) == Some(h));
+    Some((
+        agent.into_iter().map(|(p, _)| p).collect(),
+        aside.into_iter().map(|(p, _)| p).collect(),
+    ))
 }
 
 /// What the run proves: HEAD, and `+dirty` when the agent has anything uncommitted. Ready

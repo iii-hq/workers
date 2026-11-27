@@ -1230,7 +1230,9 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     // As the run reads it: unreadable counts as dirty. What a local run left in the
     // worktree (rewritten seed files, data) is not the agent's: it counts again only
     // once its content is not what the run left.
-    let own_changes = crate::run::dirty_paths(ctx, &sel.workspace).await;
+    let split = crate::run::dirty_split(ctx, &sel.workspace).await;
+    let own_changes = split.as_ref().map(|(agent, _)| agent.clone());
+    let set_aside = split.map(|(_, aside)| aside).unwrap_or_default();
     let dirty = own_changes.as_ref().is_none_or(|p| !p.is_empty());
     let folder = ctx.store.read(|s| {
         s.project
@@ -1275,6 +1277,32 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             Owner::Agent,
             None,
         ));
+    }
+    // What a local run left is not counted; one of those could still be the agent's own edit.
+    if !set_aside.is_empty() {
+        let mut info = crate::local::here(
+            "RUN_LEFT_FILES",
+            "The local run left files changed in the worktree".into(),
+            Some(format!(
+                "The local run left {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
+                format!(
+                    "{} file{}",
+                    set_aside.len(),
+                    if set_aside.len() == 1 { "" } else { "s" }
+                ),
+                set_aside
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if set_aside.len() > 5 { " and more" } else { "" }
+            )),
+            Owner::None,
+            None,
+        );
+        info.severity = Severity::Info;
+        here_problems.push(info);
     }
     let here = HerePart {
         problems: here_problems.len() as u32,
