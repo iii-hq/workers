@@ -548,55 +548,165 @@ describe('no folder known yet, and adding a project', () => {
     environments: [{ id: 'e-b', name: 'production', production: true, branch: 'main' }],
     environment: null,
   }
-  const adding: Status = { ...base, candidate }
-  const add = ctx({ at: 'setup', step: 'confirm', adding: true })
+  const stale: Status = { ...base, candidate }
+  const add = ctx({ at: 'setup', adding: true })
+  const projectsOf = (t: string) => `/teams/${t}/projects`
+  const listed = [
+    { id: 'p-billing', name: 'billing', repository: { full_name: 'iii-hq/billing' } },
+    { id: 'p-docs', name: 'docs-site', repository: { full_name: 'iii-hq/docs-site' } },
+  ]
+  const cloud = cloudAnswers({ [projectsOf(TEAM.id)]: { projects: listed } })
+  const pick = async (label: string) => {
+    const r = [...el.querySelectorAll('.iii-cloud-add-choices [role=row]')].find((x) => x.textContent?.startsWith(label))
+    await click(r ?? null)
+  }
+  const folder = async (dir: string) => {
+    await type(el.querySelector('[data-directory-picker]'), dir)
+    await flush()
+  }
 
-  it('reads the candidate on arrival; the project in use stays as it is until the button', async () => {
-    const h = await mount(adding, add, cloudAnswers({}))
+  it('starts clean: both ways in, nothing read, even with the chat folder and an earlier candidate', async () => {
+    const h = await mount(stale, { ...add, workingDir: '/home/you/workspaces/billing' }, cloud)
     expect(path()).toBe('Projects / Add a project')
-    expect(of(h, 'iii-cloud::project::resolve')).toEqual([{ path: '/home/you/workspaces/billing' }])
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Add a project')
+    expect([...el.querySelectorAll('.iii-cloud-add-choices [role=row]')].map((r) => r.textContent)).toEqual([
+      'Use a project already in iii cloudPick the project, then its folder on this machine. Add an environment or deploy from here.',
+      'Create a new project in iii cloudPick a folder on this machine. The page reads its repository and creates the project with its first environment.',
+    ])
+    expect(text()).toContain(
+      'Either way you confirm the folder, the environment and the compose file, then the check starts. Nothing changes in iii cloud before that.',
+    )
+    expect(of(h, 'iii-cloud::project::resolve')).toEqual([])
+    expect(detail('Folder')).toBeNull()
+    await click(btn('Cancel'))
+    expect(path()).toBe('Projects')
+  })
+
+  it('option 1 is off, with the reason, when the account has no project in iii cloud', async () => {
+    await mount(stale, add, cloudAnswers({ [projectsOf(TEAM.id)]: { projects: [] } }))
+    const first = el.querySelector('.iii-cloud-add-choices [role=row]')
+    expect(first?.getAttribute('aria-disabled')).toBe('true')
+    expect(first?.textContent).toContain('You have no project in iii cloud yet.')
+  })
+
+  it('option 1: the list, the folder of that repository, then the confirmation with the project fixed; both paths end in the same check', async () => {
+    const h = await mount(stale, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': () => candidate,
+    })
+    await pick('Use a project already in iii cloud')
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Which project?')
+    expect([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')].map((r) => r.textContent)).toEqual([
+      'billingBuilt from iii-hq/billing',
+      'docs-siteBuilt from iii-hq/docs-site',
+    ])
+    expect(el.querySelector('input[aria-label="Filter projects"]')).toBeNull()
+    await click([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')][0])
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Where is it on this machine?')
+    expect(el.querySelector('[data-directory-picker]')?.getAttribute('placeholder')).toBe('Choose folder')
+    expect(of(h, 'iii-cloud::project::resolve')).toEqual([])
+    await folder('/home/you/workspaces/billing')
+    expect(of(h, 'iii-cloud::project::resolve')).toEqual([
+      { path: '/home/you/workspaces/billing', cloud_project_id: 'p-billing' },
+    ])
     expect(detail('Folder')?.value).toBe('~/workspaces/billing')
     expect(detail('Project')?.value).toBe('billing')
+    // Change on the Project row goes back to the list.
+    await click(changeOf('Project') ?? null)
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Which project?')
+    await click([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')][0])
+    await folder('/home/you/workspaces/billing')
     expect(of(h, 'iii-cloud::project::use')).toEqual([])
     await click(primary())
     expect(of(h, 'iii-cloud::project::use')).toEqual([
-      {
-        path: '/home/you/workspaces/billing',
-        cloud_project_id: 'p-billing',
-        environment_id: 'e-b',
-        mode: 'worktree',
-      },
+      { path: '/home/you/workspaces/billing', cloud_project_id: 'p-billing', environment_id: 'e-b', mode: 'worktree' },
     ])
     expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(path()).toContain('Deploy')
   })
 
-  it('Cancel goes back to Projects with no call', async () => {
-    const h = await mount(adding, add, cloudAnswers({}))
-    const before = sent(h).length
-    await click(btn('Cancel'))
-    expect(path()).toBe('Projects')
-    expect(sent(h).slice(before)).toEqual([])
-    expect(of(h, 'iii-cloud::project::use')).toEqual([])
+  it('a folder of another repository: the sentence in place, the picker stays', async () => {
+    const mismatch = Object.assign(
+      new Error('This folder is iii-hq/notes. billing is built from iii-hq/billing: pick a folder of that repository.'),
+      { code: 'REPOSITORY_MISMATCH' },
+    )
+    await mount(stale, add, { ...cloud, 'iii-cloud::project::resolve': () => { throw mismatch } })
+    await pick('Use a project already in iii cloud')
+    await click([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')][0])
+    await folder('/home/you/workspaces/notes')
+    expect(text()).toContain(
+      'This folder is iii-hq/notes. billing is built from iii-hq/billing: pick a folder of that repository.',
+    )
+    expect(el.querySelector('[data-directory-picker]')).not.toBeNull()
+    expect(detail('Folder')).toBeNull()
+    expect(primary()).toBeNull()
   })
 
-  it('a folder that fails to resolve shows no earlier candidate: no rows, no button, no use', async () => {
-    const refused = Object.assign(new Error('No GitHub remote in this folder.'), { code: 'NO_GITHUB_REMOTE' })
-    let n = 0
-    const h = await mount(adding, add, {
-      // The arrival read of billing succeeds; the folder typed next fails.
-      'iii-cloud::project::resolve': () => {
-        if (n++ > 0) throw refused
-        return {}
+  it('option 2 with a repository that already has a project: two actions, "Use" continues as option 1', async () => {
+    const h = await mount(stale, add, { ...cloud, 'iii-cloud::project::resolve': () => candidate })
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing')
+    expect(text()).toContain('iii-hq/billing is already billing in iii cloud.')
+    expect(btn('Create another project')).toBeTruthy()
+    await click(btn('Use billing'))
+    expect(detail('Project')?.value).toBe('billing')
+    expect(of(h, 'iii-cloud::project::resolve')).toEqual([{ path: '/home/you/workspaces/billing' }])
+  })
+
+  it('option 2, "Create another project": the confirmation with a new project', async () => {
+    await mount(stale, add, { ...cloud, 'iii-cloud::project::resolve': () => candidate })
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing')
+    await click(btn('Create another project'))
+    expect(detail('Project')?.value).toBe('New project: billing')
+  })
+
+  it('option 2 with a repository iii cloud does not have: straight to the confirmation, ending in the same check', async () => {
+    const fresh = { ...candidate, cloud_project: null, cloud_projects: [], environments: [] }
+    const h = await mount({ ...base, candidate: fresh }, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': () => fresh,
+      'iii-cloud::project::create': () => ({ project_id: 'p-new', environment_id: 'e-new', cloud_projects: [] }),
+    })
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing')
+    expect(detail('Project')?.value).toBe('New project: billing')
+    expect(btn('Create another project')).toBeNull()
+  })
+
+  it("the agent's copy is refused in place, with the main checkout offered", async () => {
+    const copy = Object.assign(
+      new Error('This is the copy your agent works in. Pick your own folder: /home/you/workspaces/billing'),
+      { code: 'AGENT_COPY', fix: '/home/you/workspaces/billing' },
+    )
+    const h = await mount(stale, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': (p: { path: string }) => {
+        if (p.path.endsWith('-iii-cloud')) throw copy
+        return candidate
       },
     })
-    expect(detail('Folder')?.value).toBe('~/workspaces/billing')
-    await click(changeOf('Folder') ?? null)
-    await type(el.querySelector('[data-directory-picker]'), '/home/you/workspaces/notes')
-    await flush()
-    expect(text()).toContain('No GitHub remote in this folder.')
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing-iii-cloud')
+    expect(text()).toContain('This is the copy your agent works in. Pick your own folder: /home/you/workspaces/billing')
     expect(detail('Folder')).toBeNull()
-    expect(text()).not.toContain('iii-hq/billing')
-    expect(primary()).toBeNull()
-    expect(of(h, 'iii-cloud::project::use')).toEqual([])
+    await click(btn('Use /home/you/workspaces/billing'))
+    expect(of(h, 'iii-cloud::project::resolve').at(-1)).toEqual({ path: '/home/you/workspaces/billing' })
+  })
+
+  it('more than eight projects: a filter', async () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `p${i}`, name: `app-${i}`, repository: { full_name: `o/r${i}` } }))
+    await mount(stale, add, cloudAnswers({ [projectsOf(TEAM.id)]: { projects: many } }))
+    await pick('Use a project already in iii cloud')
+    const input = el.querySelector('input[aria-label="Filter projects"]')
+    expect(input).not.toBeNull()
+    await type(input, 'app-3')
+    expect(el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')).toHaveLength(1)
+  })
+
+  it('the old context with newProject lands on option 2\'s folder step', async () => {
+    const h = await mount(stale, ctx({ at: 'setup', newProject: true }), cloud)
+    expect(el.querySelector('[data-directory-picker]')).not.toBeNull()
+    expect(of(h, 'iii-cloud::project::resolve')).toEqual([])
   })
 })

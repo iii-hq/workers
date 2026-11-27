@@ -148,7 +148,7 @@ describe('Manage', () => {
       { at: 'deploy', env: ENV.id },
       { at: 'secrets', env: ENV.id },
       { at: 'setup' },
-      { at: 'setup', step: 'confirm', adding: true },
+      { at: 'setup', adding: true },
     ]
     for (const [i, at] of places.entries()) {
       await mount(live, ctx(at, i + 1))
@@ -215,7 +215,7 @@ describe('Manage', () => {
     await click(btn('Add a project'))
     expect(el.querySelector('aside[aria-label="Setup steps"]')).toBeNull()
     expect(path()).toBe('Projects / Add a project')
-    expect(text()).toContain('Pick the folder of your project.')
+    expect(text()).toContain('Use a project already in iii cloud')
     await click(btn('Cancel'))
     expect(path()).toBe('Projects')
     expect(uses(h)).toEqual([])
