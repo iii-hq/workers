@@ -351,6 +351,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     sessions.data?.generation === visibility &&
     !sessions.error;
   const listed = sessions.data?.agents ?? [];
+  // What an action that awaits reads to learn whether its row is still shown and authorized.
+  const latest = useRef({ visible: false, visibility: 0, listed: [] as AgentRow[] });
+  latest.current = { visible: currentVisibility, visibility, listed };
   const noticeVisible = (externalId?: string) =>
     !externalId || (currentVisibility && listed.some((row) => row.id === externalId));
   const liveAnnouncement = noticeVisible(announcement?.externalId) ? announcement : null;
@@ -407,14 +410,27 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const name = nameOf(row);
     setFailure(null);
     setOpening(row.id);
-    const stillVisible = () => !row.external_only || visibility === generation.current;
+    // An external row forks only while the permission that showed it holds and it is still listed.
+    const stillCurrent = () => {
+      if (!row.external_only) return true;
+      const now = latest.current;
+      return (
+        now.visible &&
+        now.visibility === visibility &&
+        visibility === generation.current &&
+        now.listed.some(
+          (listedRow) =>
+            listedRow.id === row.id && listedRow.claude_session_id === row.claude_session_id,
+        )
+      );
+    };
     try {
       const spec = await host.iii.call(
         'claude::terminal::describe',
         { session: row.id, mode: 'fork', claude_session_id: row.claude_session_id },
         { timeoutMs: DESCRIBE_TIMEOUT_MS },
       );
-      if (!stillVisible()) return;
+      if (!stillCurrent()) return;
       if (
         spec.claude_session_id !== row.claude_session_id ||
         spec.copy !== true ||
@@ -426,6 +442,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       )
         throw new Error('The fork could not be verified. Refresh the list and try again.');
       const key = `fork:${row.claude_session_id}:${sessionActionNonce()}`;
+      if (!stillCurrent()) return;
       if (!(await terminal.open({ key, spec })))
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
       setFollow(null);
@@ -525,26 +542,33 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           aria-selected={undefined}
           leading={<StatusDot tone={status.tone} pulse={status.pulse} aria-hidden />}
           label={
-            <button
-              type="button"
-              className="claude-sessions-open"
-              aria-label={openLabel}
-              aria-current={row.id === onScreen ? 'true' : undefined}
-              title={[openLabel, row.cwd, row.id].filter(Boolean).join('\n')}
-              aria-disabled={!!opening}
-              onClick={(event) => {
-                if (opening) return;
-                setFailure(null);
-                if (!row.claude_session_id) {
-                  reportFailure(row, 'The original conversation is not available yet.');
-                  return;
-                }
-                followOpener.current = event.currentTarget;
-                setFollow(row.claude_session_id);
-              }}
-            >
-              {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
-            </button>
+            // A headless run has no conversation to follow: its name is just text.
+            row.kind === 'headless' ? (
+              <span title={[name, row.cwd, row.id].filter(Boolean).join('\n')}>
+                {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="claude-sessions-open"
+                aria-label={openLabel}
+                aria-current={row.id === onScreen ? 'true' : undefined}
+                title={[openLabel, row.cwd, row.id].filter(Boolean).join('\n')}
+                aria-disabled={!!opening}
+                onClick={(event) => {
+                  if (opening) return;
+                  setFailure(null);
+                  if (!row.claude_session_id) {
+                    reportFailure(row, 'The original conversation is not available yet.');
+                    return;
+                  }
+                  followOpener.current = event.currentTarget;
+                  setFollow(row.claude_session_id);
+                }}
+              >
+                {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
+              </button>
+            )
           }
           description={opening === row.id ? 'Opening…' : isStopping ? 'Stopping…' : describe(row)}
           trailing={
