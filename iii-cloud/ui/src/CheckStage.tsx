@@ -86,7 +86,7 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
+import type { AgentRun, AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
 import { ValuesCard } from './ValuesCard'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
@@ -166,8 +166,17 @@ export function deployLockReason(
 ): string | null {
   if (o.stale) return 'The page is out of date or signed out. Sign in or refresh first.'
   if (o.sending) return 'A deploy is being sent.'
-  if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix')
-    return 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
+  if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix') {
+    // Said by what the agent is really doing: only a working one is "fixing"; the rest say what moves it on.
+    const st = s.agent?.state
+    return st === 'waiting'
+      ? `Your agent's fix of a failed deployment waits${waitsFor(s.agent as AgentRun)}. Tell it in its chat, or check again; its fix goes through the check first.`
+      : st === 'stalled'
+        ? "Your agent's fix of a failed deployment stopped making progress. Open its chat, or stop it; its fix goes through the check first."
+        : st === 'waiting_for_you'
+          ? 'Your agent asks about the fix of a failed deployment. Answer it in its chat; its fix goes through the check first.'
+          : 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
+  }
   const other = s.deploys.find(
     (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(d),
   )
@@ -1064,7 +1073,13 @@ export function CheckStage(props: CheckStageProps) {
   // A variable or a secret is never a row of the check: the names the deploy cannot go without are one row ("N values
   // need you"), opened in the values review. Optional ones are listed on Secrets and variables, where they are set.
   const read = values.data
-  const { items: needItems, decide, values: missing, count: needN } = needsYou(s, c?.ready ? null : read)
+  const {
+    items: needItems,
+    decide,
+    values: missing,
+    asks: needsAsk,
+    count: needN,
+  } = needsYou(s, c?.ready ? null : read)
   const decisions = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] !== 'file') : []
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
   const agentItems = f.agent.filter((i) => !i.fixed && i.severity === 'block')
@@ -1106,7 +1121,8 @@ export function CheckStage(props: CheckStageProps) {
   const engaged = fixing(s) && !ready
   const waits = engaged && s.agent?.state === 'waiting'
   const stalled = engaged && s.agent?.state === 'stalled'
-  const asks = engaged && s.agent?.state === 'waiting_for_you'
+  // Its question stays on screen on a ready check too.
+  const asks = fixing(s) && s.agent?.state === 'waiting_for_you'
   const working = engaged && agentWorking(s)
   const a = s.agent
 
@@ -1134,9 +1150,12 @@ export function CheckStage(props: CheckStageProps) {
   const warnings: Item[] = [
     ...f.person.filter((i) => !i.fixed && !needItems.includes(i)),
     ...f.agent.filter((i) => !i.fixed && !agentItems.includes(i)),
-    ...f.notes,
+    ...f.notes.filter((i) => i.code !== 'RUN_LEFT_FILES'),
     ...f.skipped,
   ]
+  // What the run left in the agent's copy is a quiet note, not a warning: nothing for the person to do or to commit.
+  const leftFiles = f.notes.find((i) => i.code === 'RUN_LEFT_FILES')
+  const leftN = Number(leftFiles?.title.match(/\d+/)?.[0] ?? 0)
   const fixed = [...f.person, ...f.agent].filter((i) => i.fixed)
   const past = historyOf(s, c, envId)
 
@@ -1331,7 +1350,7 @@ export function CheckStage(props: CheckStageProps) {
   const runPending = !!c && !running && c.plan.status === 'clean' && !run && !agentItems.length && !needN && !c.ready
 
   const youN = needItems.length + decide.length
-  const secretsOnly = missing.length > 0 && !youN
+  const secretsOnly = missing.length > 0 && !youN && !needsAsk
   // The header: the next thing to do, said with the lists' own lengths.
   const title = replaced
     ? `Check ${source} for ${env}`
@@ -1344,10 +1363,10 @@ export function CheckStage(props: CheckStageProps) {
           : needN || lines.length || engaged
             ? [
                 // The agent's question is something the person must answer: it counts as one more thing.
-                needN + (asks ? 1 : 0)
-                  ? secretsOnly && !asks
+                needN
+                  ? secretsOnly && !needsAsk
                     ? `${plural(missing.length, 'value')} to set`
-                    : `${plural(needN + (asks ? 1 : 0), 'thing')} ${needN + (asks ? 1 : 0) === 1 ? 'needs' : 'need'} you`
+                    : `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
                   : null,
                 lines.length
                   ? working
@@ -1502,11 +1521,12 @@ export function CheckStage(props: CheckStageProps) {
   const nudge: { line: string; chat: boolean } | null =
     !stuck || !(lines.length > 0 || run?.status === 'failed')
       ? null
-      : running
+      : // Only a waiting agent is continued when a check ends; a stalled one has no wake armed.
+        running && a?.state === 'waiting'
         ? { line: 'Your agent goes on when the check ends.', chat: false }
         : !lines.length && missing.length
           ? {
-              line: 'The local run failed on a value only you can set: set it in Secrets and variables above.',
+              line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
               chat: false,
             }
           : a?.session_id && canOpenChat(host)
@@ -1604,7 +1624,7 @@ export function CheckStage(props: CheckStageProps) {
         />
       ) : null}
 
-      {!replaced && (lines.length || (a && engaged)) ? (
+      {!replaced && (lines.length || (a && (engaged || asks))) ? (
         <SectionCard
           title="Your agent"
           count={lines.length}
@@ -1618,7 +1638,7 @@ export function CheckStage(props: CheckStageProps) {
                   : null
           }
           end={
-            engaged && a ? (
+            (engaged || asks) && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
@@ -1628,12 +1648,13 @@ export function CheckStage(props: CheckStageProps) {
           }
           flush
         >
-          {a && engaged && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
+          {a && (engaged || asks) && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
             <p className="iii-cloud-cs-agentnote">
               {a.state === 'waiting_for_you'
                 ? (a.question ?? 'Your agent has a question in its chat.')
                 : a.state === 'stalled'
-                  ? (a.question ?? `No progress for ${minutesLabel(idle)}. It may be stuck: open its chat, or stop it.`)
+                  ? (a.question ??
+                    `${a.last_activity_at ? `No progress for ${minutesLabel(idle)}.` : 'No progress.'} It may be stuck: ${a.session_id && canOpenChat(host) ? 'open its chat, or stop it' : 'stop it, or check again'}.`)
                   : folder}
             </p>
           ) : null}
@@ -1781,6 +1802,14 @@ export function CheckStage(props: CheckStageProps) {
           ]
             .filter(Boolean)
             .join(' ')}
+        </p>
+      ) : null}
+
+      {leftFiles ? (
+        <p className="iii-cloud-cs-foot">
+          {leftN
+            ? `The local run left ${plural(leftN, 'file')} in your agent's copy; they are not part of the commit.`
+            : "The local run left files in your agent's copy; they are not part of the commit."}
         </p>
       ) : null}
 

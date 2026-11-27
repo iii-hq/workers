@@ -463,6 +463,8 @@ describe('the step', () => {
   it('an `only` list that matches none of the read names shows no names, never the full list', async () => {
     await editor(rcValues, {}, { mode: 'dialog', only: ['LEFT_THE_READ'] })
     expect(names()).toEqual([])
+    expect(text()).toContain('Nothing left to set here.')
+    expect(text()).not.toContain('reads no names')
   })
 
   it("a name iii cloud can't store: no source, no field, the reason faint; never saved", async () => {

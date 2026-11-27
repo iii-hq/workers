@@ -178,7 +178,9 @@ export function nextAction(
       you.items[0]?.title ??
       (you.decide[0]
         ? `${name}'s ${you.decide[0].setting} was changed in iii cloud's console`
-        : `Set ${plural(you.values.length, 'value')} for ${name}`)
+        : you.values.length
+          ? `Set ${plural(you.values.length, 'value')} for ${name}`
+          : (s.agent?.question ?? 'Your agent has a question in its chat.'))
     // A first deploy's count needs the values read (it groups what a .env can fill): without it, no number.
     const title = opts.valuesPending
       ? `Things need you before ${name} can get ${branch ?? 'your changes'}`

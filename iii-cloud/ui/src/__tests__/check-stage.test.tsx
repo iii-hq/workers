@@ -1308,6 +1308,46 @@ describe('small things the review found', () => {
     )
   })
 
+  it('the deploy lock says what a deploy-fix agent does: works, waits, stalls or asks', () => {
+    const r = B('deploy-review')
+    const lock = (state: 'working' | 'waiting' | 'stalled' | 'waiting_for_you') =>
+      deployLockReason(
+        {
+          ...r,
+          agent: { ...agent(state), kind: 'deploy_fix' as const, waiting_for: 'the deploy to end' },
+          deploys: [serving5],
+        },
+        DEV.id,
+        { stale: false, sending: false },
+      )
+    expect(lock('working')).toContain('is fixing a failed deployment')
+    expect(lock('waiting')).toContain('waits for the deploy to end')
+    expect(lock('stalled')).toContain('stopped making progress')
+    expect(lock('waiting_for_you')).toContain('asks about the fix')
+    for (const st of ['waiting', 'stalled', 'waiting_for_you'] as const) expect(lock(st)).not.toContain('is fixing')
+  })
+
+  it("files the run left in the agent's copy are one quiet line, not a warning, and ask nothing of the person", async () => {
+    const r = B('deploy-passed')
+    const left = {
+      ...rcVariables[0],
+      id: 'p-left',
+      code: 'RUN_LEFT_FILES',
+      source: 'check_here' as const,
+      severity: 'info' as const,
+      owner: 'none' as const,
+      title: "The local run left 2 files changed in the agent's copy; they do not count as uncommitted",
+      detail: 'If one of them is your own edit, commit it.',
+    }
+    const withLeft = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left] } }
+    await stage(withLeft)
+    expect(region('Details')?.textContent).toMatch(/Warnings 0/)
+    expect(text()).toContain("The local run left 2 files in your agent's copy; they are not part of the commit.")
+    expect(text()).not.toContain('commit it')
+    await stage(r)
+    expect(text()).not.toContain('The local run left')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
@@ -1426,7 +1466,9 @@ describe('an agent that ended its turn waiting on a wake', () => {
     }
     const none = waiting(true)
     await stage({ ...none, check: { ...none.check!, problems: [value] } }, {}, { openScreen })
-    expect(region('Your agent')?.textContent).toContain('set it in Secrets and variables above')
+    expect(region('Your agent')?.textContent).toContain(
+      'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
+    )
     expect(el.querySelector('.iii-cloud-cs-nudge button')).toBeNull()
     // c. no chat session: "Check again" alone
     await stage({ ...w, agent: { ...w.agent!, session_id: null } }, {}, { openScreen })
@@ -1468,6 +1510,35 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")
   })
 
+  it('a stalled agent is not told it goes on by itself, says no minutes it cannot know, and names the chat only when one opens', async () => {
+    const openScreen = vi.fn()
+    const st = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'stalled' as const, question: null } }
+    // a check running: a stalled agent has no wake, so no "goes on"
+    await stage(
+      { ...st, check: { ...st.check!, run: { ...st.check!.run!, status: 'running' as const } } },
+      {},
+      { openScreen },
+    )
+    expect(region('Your agent')?.textContent).not.toContain('goes on when the check ends')
+    expect(region('Your agent')?.textContent).toContain('open its chat, or stop it')
+    // no activity time: no number
+    await stage({ ...st, agent: { ...st.agent!, last_activity_at: null } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('No progress. It may be stuck')
+    expect(region('Your agent')?.textContent).not.toMatch(/No progress for/)
+    // no chat to open: the card does not send the person there
+    await stage({ ...st, agent: { ...st.agent!, session_id: null } })
+    expect(region('Your agent')?.textContent).toContain('stop it, or check again')
+    expect(region('Your agent')?.textContent).not.toContain('open its chat')
+  })
+
+  it('a question stays on screen on a ready check', async () => {
+    const r = B('deploy-passed')
+    const asking = { ...agent('waiting_for_you'), question: 'Keep path:// for http and storage?' }
+    await stage({ ...r, agent: asking })
+    expect(title()).toBe('Ready to deploy to dev')
+    expect(region('Your agent')?.textContent).toContain('Keep path:// for http and storage?')
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
@@ -1475,7 +1546,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
 })
 
 describe("the run's last lines", () => {
-  it('keep the failure line and what follows it when a stack trace comes after, and see through prefixes, colours and box rules', () => {
+  it('start at the failure line even when a stack trace comes after, and see through prefixes, colours and box rules', () => {
     const log = [
       '[api] ────────────────',
       '[api] \u001b[31mInvalid environment variables:\u001b[0m',
@@ -1490,10 +1561,52 @@ describe("the run's last lines", () => {
     expect(tail.length).toBeLessThanOrEqual(6)
     expect(tail.join('\n')).toContain('Invalid environment variables:')
     expect(tail.join('\n')).toContain('JWT_SECRET: required')
-    expect(tail).toContain('…')
-    expect(tail.join('\n')).toContain('Node.js v20.1.0')
+    expect(tail).toHaveLength(6)
     // the prefix stays in what is shown; a box rule and a codes-only line are not lines
     expect(tail[0]).toMatch(/^\[api\] /)
     expect(tail.some((l) => l.includes('────') || l.trim() === '[31m')).toBe(false)
+  })
+
+  const P = '[worker-release-control] '
+  const real = (vars: string[]) => [
+    `${P}────────────`,
+    `${P}Invalid environment variables:`,
+    ...vars.map((v) => `${P}  ${v}: required`),
+    `${P}────────────`,
+    '',
+    `${P}Exiting with error code 1`,
+    '!! Workers failed: release-control',
+  ]
+  const noise = [
+    ...Array.from({ length: 10 }, (_, i) => `${P}step ${i}`),
+    'WARN missing peer dependency react@18',
+    'Registering error handlers',
+    'WARN a required option was ignored',
+    ...Array.from({ length: 17 }, (_, i) => `${P}more ${i}`),
+  ]
+
+  it('the real tail after thirty noisy lines keeps the message and the names', () => {
+    const tail = runTail([...noise, ...real(['JWT_SECRET', 'REDIS_URL'])])
+    expect(tail.join('\n')).toContain('Invalid environment variables:')
+    expect(tail.join('\n')).toContain('JWT_SECRET: required')
+    expect(tail.join('\n')).toContain('Exiting with error code 1')
+    expect(tail.length).toBeLessThanOrEqual(6)
+  })
+
+  it('four missing variables: the message and all four names, six lines, no wasted slot', () => {
+    const tail = runTail(real(['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']))
+    expect(tail).toHaveLength(6)
+    for (const n of ['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']) expect(tail.join('\n')).toContain(n)
+    expect(tail).not.toContain('…')
+  })
+
+  it('no matching line: the last six', () => {
+    const tail = runTail(Array.from({ length: 12 }, (_, i) => `plain ${i}`))
+    expect(tail).toEqual(Array.from({ length: 6 }, (_, i) => `plain ${i + 6}`))
+  })
+
+  it('a colour code without its escape character is not shown', () => {
+    const tail = runTail(['[31mInvalid environment variables:[0m', 'X_KEY: required'])
+    expect(tail.join('\n')).toBe('Invalid environment variables:\nX_KEY: required')
   })
 })

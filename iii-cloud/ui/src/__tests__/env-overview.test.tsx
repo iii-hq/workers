@@ -251,6 +251,20 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(n.detail).not.toContain('Working')
   })
 
+  it("the agent's question is counted once, in the list both screens use; a question that names a counted value is that value", () => {
+    const ask = { ...agent('waiting_for_you'), question: 'Keep path:// for http?' }
+    const base = dev({ check: needsYou })
+    const before = youOf(base).count
+    expect(youOf(dev({ check: needsYou, agent: ask })).count).toBe(before + 1)
+    expect(next(dev({ check: needsYou, agent: ask })).title).toMatch(new RegExp(`^${before + 1} things? `))
+    // the same name asked through iii-cloud::secret and in the chat: one thing
+    const names = youOf(base).values
+    if (names.length) {
+      const named = { ...ask, question: `What is the value of ${names[0]}?` }
+      expect(youOf(dev({ check: needsYou, agent: named })).count).toBe(before)
+    }
+  })
+
   it('"Your agent is fixing N problems meanwhile" only while it works, not while it waits, stalls or asks', () => {
     const needs = { ...needsYou }
     for (const state of ['waiting', 'stalled', 'waiting_for_you'] as const) {
