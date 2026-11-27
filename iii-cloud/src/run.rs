@@ -1704,17 +1704,29 @@ impl Exec {
             }
             if !done.restored.is_empty() || !done.moved.is_empty() {
                 // A path can carry a secret (a vault named after a key): said redacted.
-                let restored: Vec<String> = done.restored.iter().map(|p| self.redact(p)).collect();
-                let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
+                // Two paths that redact to one name get distinct names (` (2)`), so each is read.
+                let mut taken = std::collections::BTreeSet::new();
+                let mut shown = |p: &String| {
+                    let base = self.redact(p);
+                    let mut name = base.clone();
+                    let mut n = 1;
+                    while !taken.insert(name.clone()) {
+                        n += 1;
+                        name = format!("{base} ({n})");
+                    }
+                    name
+                };
+                let restored: Vec<String> = done.restored.iter().map(&mut shown).collect();
+                let moved: Vec<String> = done.moved.iter().map(&mut shown).collect();
                 // A path shown redacted is read by that name, and one kept as bytes is marked: the
                 // index sits beside the run's private `left/` folder, not in it.
-                let index: std::collections::BTreeMap<String, LeftEntry> = done
-                    .restored
+                let index: std::collections::BTreeMap<String, LeftEntry> = restored
                     .iter()
-                    .chain(done.moved.iter())
-                    .map(|p| {
+                    .chain(moved.iter())
+                    .zip(done.restored.iter().chain(done.moved.iter()))
+                    .map(|(shown, p)| {
                         (
-                            self.redact(p),
+                            shown.clone(),
                             LeftEntry {
                                 path: p.clone(),
                                 text: !done.binary.contains(p),
@@ -3185,7 +3197,7 @@ pub fn redact_named(text: &str, secrets: &[(Option<&str>, &str)]) -> String {
             }
         }
     }
-    needles.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    needles.sort_by_key(|n| std::cmp::Reverse(n.0.len()));
     needles
         .into_iter()
         .fold(text.to_string(), |acc, (n, m)| acc.replace(&n, &m))

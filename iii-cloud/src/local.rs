@@ -578,16 +578,24 @@ fn command_parts(command: &str) -> Vec<Vec<&str>> {
             continue;
         }
         code.push(line);
-        if let Some(at) = line.find("<<") {
-            let word: String = line[at + 2..]
-                .trim_start_matches('-')
+        // `<<<` (a here-string) and `$((1<<2))` start no heredoc: its word begins with a letter,
+        // `_` or a quote.
+        for (at, _) in line.match_indices("<<") {
+            let raw = &line[at + 2..];
+            let rest = raw.trim_start_matches('-').trim_start();
+            let word = rest
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
-                .trim_matches(|c| c == '\'' || c == '"')
-                .to_string();
-            if !word.is_empty() {
-                end = Some(word);
+                .trim_matches(['\'', '"']);
+            if !raw.starts_with('<')
+                && rest
+                    .trim_start_matches(['\'', '"'])
+                    .starts_with(|c: char| c.is_alphabetic() || c == '_')
+                && !word.is_empty()
+            {
+                end = Some(word.to_string());
+                break;
             }
         }
     }

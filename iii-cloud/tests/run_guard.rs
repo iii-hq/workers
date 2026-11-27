@@ -1562,3 +1562,61 @@ async fn a_runs_binary_data_leaves_the_copy_and_a_tracked_binary_is_put_back() {
     .unwrap_err();
     assert!(err.message.contains("kept, not text"), "{}", err.message);
 }
+
+#[tokio::test]
+async fn two_paths_that_redact_to_one_name_are_each_read_and_a_root_index_name_is_a_file() {
+    use iii_cloud::check::read;
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    for f in ["cfg/a-sec111.yaml", "cfg/a-sec222.yaml", ".paths.json"] {
+        std::fs::create_dir_all(ws.join(f).parent().unwrap()).unwrap();
+        std::fs::write(ws.join(f), "committed\n").unwrap();
+    }
+    git(&ws, &["add", "-f", "."]);
+    git(&ws, &["commit", "-qm", "cfg"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx
+        .known_secrets
+        .lock()
+        .unwrap()
+        .extend(["sec111".to_string(), "sec222".to_string()]);
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    let bin = fake_iii(
+        &h,
+        "printf 'one\\n' > cfg/a-sec111.yaml; printf 'two\\n' > cfg/a-sec222.yaml; printf 'root\\n' > .paths.json;",
+    );
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.restored.len(), 3, "{:?}", run.restored);
+    let mut names = run.restored.clone();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 3, "distinct names: {:?}", run.restored);
+    let mut got: Vec<String> = run
+        .restored
+        .iter()
+        .map(|n| {
+            read(
+                &h.ctx,
+                iii_cloud::types::CheckReadRequest {
+                    id: "chk".into(),
+                    log: None,
+                    left: Some(n.clone()),
+                },
+            )
+            .unwrap()
+            .left
+            .unwrap()
+            .content
+        })
+        .collect();
+    got.sort();
+    assert_eq!(got, ["one\n", "root\n", "two\n"]);
+}

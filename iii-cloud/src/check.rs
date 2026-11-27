@@ -1035,7 +1035,8 @@ fn plan_may_come(status: u16, body: &Value) -> bool {
 /// it can't read yet AND for a suspended installation (one code, "Try again in a moment": they can't
 /// be told apart), so the retry is rationed: one run of up to 3 tries, 2 s apart, per environment per
 /// minute, and a try starts only if it can end inside the check's own `deadline` (a request is given
-/// 30 s). The worst this adds is 4 s, once a minute per environment.
+/// `REQUEST_TIMEOUT_SECS`), and the minute is spent only by a retry that goes. The worst this
+/// adds is 4 s, once a minute per environment.
 async fn fetch_plan_again(
     ctx: &Ctx,
     sel: &Selected,
@@ -1050,9 +1051,14 @@ async fn fetch_plan_again(
     loop {
         let answer = fetch_plan(ctx, sel, commit, manifest).await;
         let again = match &answer {
-            Ok((status, body)) if plan_may_come(*status, body) && tries < 3 => {
-                // Asked of the environment's minute once, on the first refusal.
-                let allowed = *allowed.get_or_insert_with(|| {
+            Ok((status, body))
+                if plan_may_come(*status, body)
+                    && tries < 3
+                    && Instant::now() + ctx.secs(2 + crate::ctx::REQUEST_TIMEOUT_SECS)
+                        < deadline =>
+            {
+                // Asked of the environment's minute once, on the first refusal that can retry.
+                *allowed.get_or_insert_with(|| {
                     let mut last = LAST.get_or_init(Default::default).lock().unwrap();
                     let now = Instant::now();
                     let free = last
@@ -1062,8 +1068,7 @@ async fn fetch_plan_again(
                         last.insert(sel.env.id.clone(), now);
                     }
                     free
-                });
-                allowed && Instant::now() + ctx.secs(2 + 30) < deadline
+                })
             }
             _ => false,
         };
@@ -1809,10 +1814,7 @@ pub fn update_check(ctx: &Ctx, id: &str, f: impl FnOnce(&mut Check)) -> Option<C
         f(&mut found);
         // The page must not guess whose a failed run is: the worker says (and whether it is held
         // back because the person has something open first).
-        let persons_open = found
-            .problems
-            .iter()
-            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
+        let persons_open = crate::handoff::person_blocks(&found);
         if let Some(run) = found.run.as_mut()
             && let Some(ask) = crate::handoff::run_ask(run, persons_open)
             && let Some(e) = run.error.as_mut()
