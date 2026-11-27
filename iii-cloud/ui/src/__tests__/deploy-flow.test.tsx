@@ -83,7 +83,7 @@ describe('one screen, no step rail', () => {
     await click(btn('Check'))
     expect(lastCall(h.calls)).toEqual({
       id: 'iii-cloud::check',
-      payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
+      payload: { run: true, from_page: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
     })
   })
 
@@ -165,7 +165,12 @@ describe('Change', () => {
       mode: 'worktree',
       from: 'checkout',
     })
-    expect(calls[1].payload).toEqual({ run: true, push: true, manifest: 'api/worker-compose.staging.yaml' })
+    expect(calls[1].payload).toEqual({
+      run: true,
+      from_page: true,
+      push: true,
+      manifest: 'api/worker-compose.staging.yaml',
+    })
     expect(region('What goes to dev')).toBeNull()
   })
 
@@ -674,7 +679,7 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     await click(btn('Check again'))
     expect(lastCall(h.calls)).toMatchObject({
       id: 'iii-cloud::check',
-      payload: { run: true, manifest: 'api/worker-compose.staging.yaml' },
+      payload: { run: true, from_page: true, manifest: 'api/worker-compose.staging.yaml' },
     })
   })
 

@@ -86,7 +86,7 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, Deploy, Status, WorkerError } from './types'
+import type { AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
 import { ValuesCard } from './ValuesCard'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
@@ -186,16 +186,17 @@ export const heldElsewhere = (d: Deploy) =>
   needsAction(d) && !(d.check_id || d.approved_by_worker || d.from_console === false)
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
-export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
+export function checkPayload(s: Status, manifest = appFile(s).path): CheckRequest {
   // Always named: a check with none stays on the newest check's file, so going back to the environment's own is an ask too.
-  return { run: true, ...(fixBranch(s) ? { push: true } : {}), manifest }
+  // `from_page`: the person asked for it here (the worker wakes a waiting agent only for such a check).
+  return { run: true, from_page: true, ...(fixBranch(s) ? { push: true } : {}), manifest }
 }
 
 /**
  * `check` again: the compose file the person picked with a change that has no newer check yet, else the shown
  * check's own. (After a refused check the shown one is of the replaced source, so its file is not what to retry.)
  */
-export function retryPayload(host: Host, s: Status): Record<string, unknown> {
+export function retryPayload(host: Host, s: Status): CheckRequest {
   const envId = s.project?.environment?.id ?? ''
   const hub = hubOf(host)
   // The pick is the person's ask for the check that replaces the one they moved from. Once any newer check of the

@@ -82,7 +82,7 @@ describe('opening the screen', () => {
     await click(btn('Check'))
     expect(lastCall(h.calls)).toEqual({
       id: 'iii-cloud::check',
-      payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
+      payload: { run: true, from_page: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
     })
   })
 })
@@ -419,7 +419,8 @@ describe('when the check cannot finish', () => {
     expect(stopPanel("Docker isn't running on this machine")).toBeTruthy()
     expect(text()).toContain('The local run starts a database and your workers in containers.')
     await click(btn('Run again'))
-    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    // The person asked for it here: the worker may wake a waiting agent for it.
+    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check', payload: { from_page: true } })
   })
 
   it('out of date: the source moved after the check; the deploy stays locked', async () => {
@@ -484,7 +485,7 @@ describe('the review: what a check that is not ready still offers', () => {
     const quiet = await stage(noAgent({ ...B('deploy-passed'), check: { ...passed, ready: false } }))
     expect(btn('Check again')?.getAttribute('data-variant')).toBe('primary')
     await click(btn('Check again'))
-    expect(lastCall(quiet.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    expect(lastCall(quiet.calls)).toMatchObject({ id: 'iii-cloud::check', payload: { from_page: true } })
     await stage(B('deploy-problems'))
     expect(btn('Check again')?.getAttribute('data-variant')).toBe('secondary')
     expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
@@ -563,7 +564,7 @@ describe('the review: what a check that is not ready still offers', () => {
     await click(btn('Check again'))
     expect(lastCall(h.calls)).toMatchObject({
       id: 'iii-cloud::check',
-      payload: { run: true, manifest: 'api/worker-compose.staging.yaml' },
+      payload: { run: true, from_page: true, manifest: 'api/worker-compose.staging.yaml' },
     })
   })
 
@@ -999,7 +1000,7 @@ describe('the check follows the canvas', () => {
         skip: true,
       })
       // then a check, which makes the title and the lock true again
-      expect(h.calls.map((c) => c.id)).toContain('iii-cloud::check')
+      expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ from_page: true })
       await click(btn('Set values'))
       expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
     })
@@ -1189,6 +1190,28 @@ describe('the check follows the canvas', () => {
       })
       expect(countOf('Secrets and variables')).toBe('2')
       expect(card()?.textContent).toContain('5 optional, not set')
+    })
+
+    it('"Save N values and check again" asks for the check from the page', async () => {
+      const items = [
+        valueItem('FROM_FILE', {
+          need: 'required',
+          default: null,
+          suggestions: [{ source: 'env_file', file: '.env', preselect: true, local: false }],
+        }),
+      ]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'FROM_FILE', ok: true }] },
+      })
+      await click(btn('Set values'))
+      await click(
+        [...el.querySelectorAll('[role=dialog] button')].find((b) =>
+          /^Save \d+ values? and check again/.test(b.textContent ?? ''),
+        ),
+      )
+      await flush()
+      expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({ from_page: true })
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

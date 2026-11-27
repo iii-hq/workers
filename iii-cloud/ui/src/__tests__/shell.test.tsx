@@ -203,7 +203,7 @@ describe('Manage', () => {
     // With nothing the check is holding the person for, the folder's commits are the next action.
     const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, from_page: true })
     expect(path()).toBe('Projects / registry · production / Deploy')
     // One screen, no step rail: the header says the next thing to do.
     expect(rail('Deploy steps')).toEqual([])
@@ -451,7 +451,7 @@ describe('the hand-over between places, end to end', () => {
     const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
     expect(calls(h, 'iii-cloud::check')).toEqual(['iii-cloud::check'])
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, from_page: true })
     expect(path()).toBe('Projects / registry · production / Deploy')
   })
 

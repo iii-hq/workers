@@ -341,7 +341,7 @@ export function NextCard({
     void call(
       'check',
       'iii-cloud::check',
-      withAppFile(status, { run: true, ...(fixBranch(status) ? { push: true } : {}) }),
+      withAppFile(status, { run: true, from_page: true, ...(fixBranch(status) ? { push: true } : {}) }),
     )
     go({ at: 'deploy', env: envId })
   }

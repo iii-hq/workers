@@ -201,6 +201,9 @@ export type Problem = {
   skipped?: boolean
 }
 
+/** `iii-cloud::check`'s request. `from_page`: the person asked for it on this page (the worker wakes a waiting agent only for such a check). */
+export type CheckRequest = { run?: boolean; push?: boolean; manifest?: string | null; from_page?: boolean }
+
 export type Check = {
   id: string
   environment_id: string
