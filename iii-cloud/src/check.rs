@@ -1453,6 +1453,50 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             }
             tokio::time::sleep(ctx.secs(1).min(Duration::from_millis(500))).await;
         }
+    } else if !dirty
+        && !check
+            .problems
+            .iter()
+            .any(|p| p.code == "LOCAL_ENGINE_VERSION")
+        && ctx.store.read(|s| {
+            s.checks.iter().any(|c| {
+                c.run
+                    .as_ref()
+                    .is_some_and(|r| r.status == RunStatus::Passed)
+            })
+        })
+    {
+        // No run asked for: the passed run of the same commit and inputs still stands (the
+        // worker's fast check after a turn, a "Check again" on nothing new). Never starts one.
+        let key = run_key(
+            &ctx.config().await.postgres_image,
+            &sel.workspace,
+            manifest.as_ref(),
+            iii_version.as_deref(),
+            &sel.env.id,
+            &settings,
+            &from_files,
+            &cloud_set,
+            &skipped,
+        )
+        .await;
+        let head = git(&sel.workspace, &["rev-parse", "HEAD"])
+            .await
+            .map(|h| h.trim().to_string())
+            .unwrap_or_default();
+        if let Some(old) = key.and_then(|k| passed_run(ctx, &k, &head)) {
+            let id = check.id.clone();
+            let kept = update_check(ctx, &id, |c| {
+                c.run = Some(Run {
+                    check_id: id.clone(),
+                    reused: true,
+                    ..old
+                })
+            });
+            if let Some(c) = kept {
+                check = c;
+            }
+        }
     }
     // A check the person started on a hand-off's worktree: an agent that waits on a wake hears of it.
     if request.from_page && request.handoff_id.is_none() {

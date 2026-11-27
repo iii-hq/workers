@@ -1564,3 +1564,53 @@ async fn a_hand_offs_check_of_another_environment_still_records_its_compose_file
     assert_eq!(rec.compose.as_deref(), Some("worker-compose.yaml"));
     assert!(!rec.workspace);
 }
+
+#[tokio::test]
+async fn a_check_that_asks_for_no_run_takes_over_the_passed_run_and_never_starts_one() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    with_fast_runs(&h).await;
+    // No passed run yet: a plain check carries none, and starts none.
+    let plain = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(plain.run.is_none());
+    check(&h.ctx, run_req()).await.unwrap();
+    pass_stored_runs(&h);
+    let id = h.ctx.store.read(|s| {
+        s.checks
+            .iter()
+            .find_map(|c| c.run.as_ref().map(|r| r.id.clone()))
+            .unwrap()
+    });
+    // The worker's fast check after a turn: same commit and inputs, no run asked.
+    let fast = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let r = running(fast.run.as_ref());
+    assert!(r.reused && r.id == id && r.status == RunStatus::Passed);
+    assert_eq!(r.check_id, fast.id);
+    // A changed folder value: nothing is attached.
+    std::fs::write(ws.join(".env"), "A=a-new-value-0042\n").unwrap();
+    assert!(
+        check(&h.ctx, CheckRequest::default())
+            .await
+            .unwrap()
+            .run
+            .is_none()
+    );
+    std::fs::remove_file(ws.join(".env")).unwrap();
+    // A dirty tree: nothing is attached.
+    std::fs::write(ws.join("scratch.txt"), "x").unwrap();
+    assert!(
+        check(&h.ctx, CheckRequest::default())
+            .await
+            .unwrap()
+            .run
+            .is_none()
+    );
+    std::fs::remove_file(ws.join("scratch.txt")).unwrap();
+    assert!(
+        check(&h.ctx, CheckRequest::default())
+            .await
+            .unwrap()
+            .run
+            .is_some()
+    );
+}
