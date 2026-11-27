@@ -198,7 +198,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
           return { exit_code: 0, stdout: `${payload.cwd}\n`, stderr: '' };
         }
         const env = payload.env as Record<string, string>;
-        if (env?.CLAUDE_CONFIG_DIR !== root) {
+        if (!roots.has(env?.CLAUDE_CONFIG_DIR)) {
           throw new Error('missing synthetic configuration directory');
         }
         if (
@@ -261,7 +261,10 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   const permission = new ReplyPermission();
   const refresh = () => permission.refresh(iii);
   let external = true;
-  const env = { CLAUDE_CONFIG_DIR: root };
+  // Replaceable, like a host prepared again; `roots` lists the configuration
+  // directories the synthetic host serves reads for.
+  let env: Record<string, string> = { CLAUDE_CONFIG_DIR: root };
+  const roots = new Set<string | undefined>([root]);
   // An enabled legacy setting never authorizes live inventory or reply disclosure.
   const agents = registerAgents(
     iii,
@@ -369,6 +372,11 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
       }
     },
     timers,
+    /** Replace the prepared host env with `next`, serving reads for its root. */
+    setEnv(next: Record<string, string>) {
+      roots.add(next.CLAUDE_CONFIG_DIR);
+      env = next;
+    },
   };
 }
 export type SyntheticHost = Awaited<ReturnType<typeof makeHost>>;

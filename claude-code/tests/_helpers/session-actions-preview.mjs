@@ -111,12 +111,16 @@ async function testSessionActions(code) {
       plainHttp = false,
       missingForkDirectory = false,
       refuseConfigWatch = false,
+      retryFollowOnce = false,
+      forkFails = false,
     } = {},
   ) {
     const url = new URL('http://127.0.0.1/');
     if (plainHttp) url.searchParams.set('no-random-uuid', '');
     if (missingForkDirectory) url.searchParams.set('missing-fork-directory', '');
     if (refuseConfigWatch) url.searchParams.set('refuse-config-watch', '');
+    if (retryFollowOnce) url.searchParams.set('retry-follow-once', '');
+    if (forkFails) url.searchParams.set('fork-fails', '');
     const { window } = new JSDOM('<div id="root"></div>', {
       url: url.href,
       pretendToBeVisual: true,
@@ -682,6 +686,152 @@ async function testSessionActions(code) {
     await settle(document);
     assert.equal(openCalls(document), '0');
     assert.doesNotMatch(document.body.textContent, /Separate fork terminal/);
+  });
+
+  const followReads = (document) => Number(document.documentElement.dataset.followReads ?? 0);
+  const rejections = (document) => Number(document.documentElement.dataset.followRejections ?? 0);
+  const wait = (document, ms) =>
+    new Promise((resolve) => document.defaultView.setTimeout(resolve, ms));
+  // The read counters live on <html>, outside what `until` observes: poll them.
+  const reach = async (document, count) => {
+    for (let i = 0; i < 60 && rejections(document) < count; i++) await wait(document, 50);
+    assert.equal(rejections(document), count);
+  };
+
+  await test('retries a rejected follow snapshot without a heartbeat', async (t) => {
+    const { click, document, text } = setup(t, { heartbeat: false, retryFollowOnce: true });
+    await click('Open original: Design review');
+    await text('First reply');
+    await text('Second reply');
+    assert.equal(rejections(document), 1);
+    assert.doesNotMatch(document.body.textContent, /Replies unavailable/);
+  });
+
+  await test('stops retrying after the viewer closes', async (t) => {
+    const { click, document, follow, shortcut, until } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyX');
+    shortcut('KeyU');
+    await reach(document, 1);
+    const before = followReads(document);
+    await click('Close');
+    await until(() => !document.querySelector('[role="dialog"]'));
+    await wait(document, 1500);
+    assert.equal(followReads(document), before);
+  });
+
+  await test('keeps the last snapshot after three rejections', async (t) => {
+    const { document, follow, shortcut, text, until } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyZ');
+    shortcut('KeyU');
+    await reach(document, 2);
+    await reach(document, 3);
+    const reads = followReads(document);
+    await wait(document, 1500);
+    assert.equal(followReads(document), reads);
+    assert.equal(rejections(document), 3);
+    assert.equal(document.querySelector('[role="log"]').textContent, 'The layout review is ready.');
+    assert.doesNotMatch(document.body.textContent, /Replies unavailable/);
+    // The next wakeup reads again.
+    shortcut('KeyU');
+    await text('Review update 3:');
+    assert.equal(followReads(document), reads + 1);
+  });
+
+  await test('a wakeup during a scheduled retry reads once', async (t) => {
+    const { document, follow, shortcut, text, until } = setup(t, { heartbeat: false });
+    await follow();
+    shortcut('KeyX');
+    shortcut('KeyU');
+    await reach(document, 1);
+    const reads = followReads(document);
+    shortcut('KeyU');
+    await text('Review update 3:');
+    assert.equal(document.documentElement.dataset.followCursor, '1');
+    await wait(document, 1500);
+    assert.equal(followReads(document), reads + 1);
+  });
+
+  // Opens the message box of `name` and types `value` into it.
+  const box = (document, name) => document.querySelector(`textarea[aria-label="Message ${name}"]`);
+  async function draft({ click, document, until }, name, value) {
+    await click(`Message ${name}`);
+    const area = await until(() => box(document, name));
+    const window = document.defaultView;
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(
+      area,
+      value,
+    );
+    area.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await until(() => box(document, name)?.value === value);
+  }
+  const confirmDialog = (document) => document.querySelector('[role="alertdialog"]');
+  async function confirmFork({ click, document, until }, name) {
+    await click(`Fork ${name}`);
+    await until(() => confirmDialog(document));
+  }
+  const dialogButton = (ui, label) =>
+    ui.until(() =>
+      Array.from(confirmDialog(ui.document)?.querySelectorAll('button') ?? []).find(
+        (el) => el.textContent === label,
+      ),
+    );
+
+  await test('cancelling a fork confirmation keeps the message draft', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, text, until } = ui;
+    await text('Draft A');
+    await draft(ui, 'Draft A', 'keep me');
+    await confirmFork(ui, 'Draft A');
+    (await dialogButton(ui, 'Cancel')).click();
+    await until(() => !confirmDialog(document));
+    await settle(document);
+    assert.equal(box(document, 'Draft A')?.value, 'keep me');
+  });
+
+  await test('dismissing a fork confirmation with Escape keeps the message draft', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, text, until } = ui;
+    await text('Draft A');
+    await draft(ui, 'Draft A', 'keep me');
+    await confirmFork(ui, 'Draft A');
+    await until(() => confirmDialog(document)?.contains(document.activeElement));
+    document.activeElement.dispatchEvent(
+      new document.defaultView.KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await until(() => !confirmDialog(document));
+    await settle(document);
+    assert.equal(box(document, 'Draft A')?.value, 'keep me');
+  });
+
+  await test('a failed fork keeps the message draft', async (t) => {
+    const ui = setup(t, { heartbeat: false, forkFails: true });
+    const { document, text, until } = ui;
+    await text('Draft A');
+    await draft(ui, 'Draft A', 'keep me');
+    await confirmFork(ui, 'Draft A');
+    (await dialogButton(ui, 'Create fork')).click();
+    await until(() => !confirmDialog(document) && !document.body.textContent.includes('Opening…'));
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.equal(box(document, 'Draft A')?.value, 'keep me');
+  });
+
+  await test("a completed fork keeps another row's draft", async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, text } = ui;
+    await text('Draft B');
+    await draft(ui, 'Draft B', 'other draft');
+    await confirmFork(ui, 'Draft A');
+    (await dialogButton(ui, 'Create fork')).click();
+    await text('Separate fork terminal · copy-1');
+    await settle(document);
+    assert.equal(box(document, 'Draft B')?.value, 'other draft');
   });
 
   const workerRun = async (t) => {

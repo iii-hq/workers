@@ -30,6 +30,20 @@ const rows = [
     ...(i === 2 ? { short_id: id.slice(0, 8) } : {}),
   };
 });
+// Headless, finished rows with a conversation: both Message and Fork show.
+for (const [i, name] of ['Draft A', 'Draft B'].entries()) {
+  const id = `1234567${rows.length + i}-1234-4321-8123-000000000001`;
+  rows.push({
+    id,
+    claude_session_id: id,
+    name,
+    external_only: false,
+    kind: 'headless',
+    alive: false,
+    status: 'done',
+    cwd: '/fixture/workspace',
+  });
+}
 type Source = {
   function_id: string;
   args?: { claude_session_id?: string };
@@ -70,6 +84,16 @@ const refuseConfigWatch = new URLSearchParams(window.location.search).has('refus
 const missingForkDirectory = new URLSearchParams(window.location.search).has(
   'missing-fork-directory',
 );
+const forkFails = new URLSearchParams(window.location.search).has('fork-fails');
+// After the first snapshot shows 'First reply', a second reply is written and
+// the next cursor read is rejected once.
+const retryFollowOnce = new URLSearchParams(window.location.search).has('retry-follow-once');
+// Cursor reads of the followed session still to answer with `{retry: true}`.
+let rejectCursorReads = 0;
+const count = (key: 'followReads' | 'followRejections') => {
+  const data = document.documentElement.dataset;
+  data[key] = String(Number(data[key] ?? 0) + 1);
+};
 
 // Loopback is usually a secure context. Simulate the crypto surface of plain HTTP LAN.
 if (new URLSearchParams(window.location.search).has('no-random-uuid'))
@@ -83,7 +107,7 @@ const reply = () => ({
       : `Review update ${sequence}: the changes are ready to check.`,
 });
 type Reply = ReturnType<typeof reply>;
-let lastReply: Reply | null = reply();
+let lastReply: Reply | null = retryFollowOnce ? { id: 'first', text: 'First reply' } : reply();
 let offset = 1;
 let activeReplies = [{ offset, reply: lastReply }];
 let delayAdmission = false;
@@ -211,6 +235,21 @@ const host = {
             replies: [],
           };
         }
+        count('followReads');
+        document.documentElement.dataset.followCursor = p.cursor ?? '';
+        if (p.cursor !== undefined && rejectCursorReads > 0) {
+          rejectCursorReads--;
+          count('followRejections');
+          return { retry: true };
+        }
+        if (retryFollowOnce && p.cursor === undefined && lastReply?.id === 'first') {
+          window.setTimeout(() => {
+            lastReply = { id: 'second', text: 'Second reply' };
+            activeReplies.push({ offset: ++offset, reply: lastReply });
+            rejectCursorReads = 1;
+            emit('claude::agents::on-reply', { claude_session_id: rows[0].id, reply: lastReply });
+          }, 50);
+        }
         const snapshot = {
           ...row,
           last_reply: lastReply,
@@ -231,6 +270,7 @@ const host = {
         holdDescribe = undefined;
         if (held) await held;
         if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
+        if (forkFails) throw new Error('the terminal host refused the fork');
         if (missingForkDirectory)
           throw new Error(`the folder ${row.cwd} is not reachable on the terminal host`);
         return {
@@ -406,6 +446,9 @@ function Preview() {
         snapshotGates.push(new Promise<void>((resolve) => snapshotReleases.push(resolve)));
     }
     if (e.code === 'KeyQ') snapshotReleases.shift()?.();
+    // Reject the next cursor read of the followed session (X), or the next three (Z).
+    if (e.code === 'KeyX') rejectCursorReads += 1;
+    if (e.code === 'KeyZ') rejectCursorReads += 3;
     if (e.code === 'KeyD') {
       holdDescribe = new Promise<void>((resolve) => {
         releaseDescribe = resolve;

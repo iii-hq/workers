@@ -550,10 +550,10 @@ describe('large transcripts and new CLI records', () => {
       if (mutation === 'truncate') {
         await truncate(s.file, Buffer.byteLength(baseline + first + second));
       } else {
-        // Same size and the same parsed window: only the hashed prefix changes.
+        // Same size and the same parsed window: only the hashed final bytes change.
         const handle = await open(s.file, 'r+');
         try {
-          await handle.write('g', 100);
+          await handle.write('g', Buffer.byteLength(baseline) - 1000);
         } finally {
           await handle.close();
         }
@@ -568,6 +568,179 @@ describe('large transcripts and new CLI records', () => {
         { id: recordId(2), text: large },
         { id: recordId(5), text: 'after reset' },
       ]);
+    });
+  });
+
+  // A watch on a 9 MiB transcript whose byte `at(observed)` is rewritten (same
+  // size and inode) while a reply is appended; `observed` is the size at the
+  // watch's cursor. The rewritten byte is filler text, so the JSON stays valid.
+  async function rewriteBeforeCursor(s: SyntheticHost, at: (observed: number) => number) {
+    await writeFile(s.file, filler(9 * MiB) + lines(answer(1, null, 'fixture answer')));
+    const observed = (await stat(s.file)).size;
+    await observe(s, 'large');
+    const handle = await open(s.file, 'r+');
+    try {
+      const byte = Buffer.alloc(1);
+      await handle.read(byte, 0, 1, at(observed));
+      expect(byte.toString()).toBe('f');
+      await handle.write('g', at(observed));
+    } finally {
+      await handle.close();
+    }
+    expect((await stat(s.file)).size).toBe(observed);
+    await appendFile(s.file, lines(answer(2, 1, 'after rewrite')));
+    await s.poll();
+    return observed;
+  }
+
+  it('keeps delivering after a rewrite before the final bytes of a large transcript', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, () => 100);
+      expect(seen(s, 'large')).toEqual([{ id: recordId(2), text: 'after rewrite' }]);
+    });
+  });
+
+  it('rebaselines when the bytes just before the cursor change', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, (observed) => observed - 65536);
+      expect(seen(s, 'large')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after new baseline')));
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([{ id: recordId(3), text: 'after new baseline' }]);
+    });
+  });
+
+  it('delivers after a rewrite one byte before the hashed tail', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, (observed) => observed - 65537);
+      expect(seen(s, 'large')).toEqual([{ id: recordId(2), text: 'after rewrite' }]);
+    });
+  });
+
+  it('accepts a parent before the window that exists in the file', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'late answer' });
+    });
+  });
+
+  it('rejects a parent missing from the whole file of a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('rejects a parent named only inside another record', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          record(1, null, 'user', recordId(2)),
+          record(5, 2, 'user', 'names the parent in parentUuid'),
+          compactBoundary(6, 2),
+        ) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('does not acknowledge a pending reply that falls before the window', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, large), answer(3, 2, large)));
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+      // The window now starts after the undelivered reply 3.
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(4, 3, 'after gap')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(3), text: large },
+        { id: recordId(4), text: 'after gap' },
+      ]);
+    });
+  });
+
+  it('advances a full-page cursor across a gap over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'large');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, 'in gap')) + filler(9 * MiB) + lines(answer(3, 2, 'after gap')),
+      );
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'next')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(3), text: 'after gap' },
+        { id: recordId(4), text: 'next' },
+      ]);
+    });
+  });
+
+  it('delivers an oversized reply truncated, then the reply after it', async () => {
+    await withSyntheticHost(async (s) => {
+      const big = 'x'.repeat(100 * 1024);
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, big), answer(3, 2, 'short after')));
+      await s.poll();
+      await s.poll();
+      const got = seen(s, 'large');
+      expect(got.map((r) => r.id)).toEqual([recordId(2), recordId(3)]);
+      expect(got[0].text).toMatch(/\n\[reply truncated\]$/);
+      expect(got[0].text.length).toBeLessThan(big.length);
+      expect(big.startsWith(got[0].text.slice(0, -'\n[reply truncated]'.length))).toBe(true);
+      expect(got[1]).toEqual({ id: recordId(3), text: 'short after' });
+    });
+  });
+
+  it('truncates an oversized non-ASCII reply on a code-point boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      const big = 'é😀'.repeat(20000); // About 117 KiB of UTF-8.
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, big)));
+      await s.poll();
+      const [reply] = seen(s, 'large');
+      expect(reply.id).toBe(recordId(2));
+      expect(reply.text).toMatch(/\n\[reply truncated\]$/);
+      expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(48 * 1024);
+      const kept = reply.text.slice(0, -'\n[reply truncated]'.length);
+      expect(kept.length).toBeGreaterThan(0);
+      expect(big.startsWith(kept)).toBe(true);
+      // Never half a surrogate pair.
+      // A lone surrogate would not survive a UTF-8 round trip.
+      expect(Buffer.from(kept, 'utf8').toString('utf8')).toBe(kept);
+    });
+  });
+
+  it('reports an oversized reply in a recent read as unavailable', async () => {
+    await withSyntheticHost(async (s) => {
+      const follow = (cursor?: string) =>
+        s.client.call({
+          function_id: 'claude::agents::follow-snapshot',
+          payload: { claude_session_id: id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<unknown> as Promise<{ cursor: string }>;
+      const { cursor } = await follow();
+      expect(await follow(cursor)).toMatchObject({ replies: [] });
+      await appendFile(s.file, lines(answer(2, 1, 'x'.repeat(100 * 1024))));
+      await expect(follow(cursor)).rejects.toThrow(/^transcript unavailable$/);
     });
   });
 
@@ -948,7 +1121,11 @@ describe('observation', () => {
       await s.poll();
       await s.poll();
       expect(seen(s, 'later')).toEqual([{ id: recordId(3), text: 'after admission' }]);
-      expect(seen(s, 'first')).toEqual([]); // Never skip its unread reply.
+      // Its unread reply is never skipped: it arrives cut, then the next one.
+      const first = seen(s, 'first');
+      expect(first.map((r) => r.id)).toEqual([recordId(2), recordId(3)]);
+      expect(first[0].text).toMatch(/\n\[reply truncated\]$/);
+      expect(first[1]).toEqual({ id: recordId(3), text: 'after admission' });
     });
   });
 
@@ -1265,6 +1442,38 @@ describe('authorization', () => {
         { id: recordId(3), text: 'after viewer recovery' },
         { id: recordId(4), text: 'after checkpoint' },
       ]);
+    });
+  });
+
+  it('accepts a viewer boundary offered with an equal-valued env', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted !== 1) return;
+        // The viewer reads under a re-prepared host: same values, new object.
+        s.setEnv({ CLAUDE_CONFIG_DIR: s.root });
+        await checkpoint.wait();
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer recovery')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after viewer recovery' }]);
     });
   });
 
@@ -1677,6 +1886,79 @@ describe('authorization', () => {
       expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
       await s.poll();
       expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  // Denies access, then grants it again; `next` replaces the host env while the
+  // checkpoint's baseline read runs, after recovery captured its env and before
+  // the recovery inventory.
+  async function regrantWithEnv(s: SyntheticHost, next: () => Record<string, string>) {
+    await observe(s, 'retained');
+    await setPermission(s, false);
+    await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+    let replaced = false;
+    s.host.beforeRead = async () => {
+      if (replaced) return;
+      replaced = true;
+      s.setEnv(next());
+    };
+    await setPermission(s, true);
+    await s.permission.watchCheckpointSettled();
+    expect(replaced).toBe(true);
+    s.host.beforeRead = async () => {};
+  }
+
+  it('keeps a retained-watch checkpoint across an equivalent host preparation', async () => {
+    await withSyntheticHost(async (s) => {
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  it('keeps the checkpoint when equal env keys come in another order', async () => {
+    await withSyntheticHost(async (s) => {
+      s.setEnv({ CLAUDE_CONFIG_DIR: s.root, SYNTHETIC_FLAG: 'on' });
+      await regrantWithEnv(s, () => ({ SYNTHETIC_FLAG: 'on', CLAUDE_CONFIG_DIR: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  it('recaptures the checkpoint when the transcript root changes', async () => {
+    await withSyntheticHost(async (s) => {
+      const other = join(s.root, 'other');
+      const moved = join(other, 'projects', 'synthetic', `${id}.jsonl`);
+      await mkdir(join(other, 'projects', 'synthetic'), { recursive: true });
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: other }));
+      await writeFile(
+        moved,
+        lines(answer(1, null, 'fixture answer'), answer(2, 1, 'before new baseline')),
+      );
+      await appendFile(s.file, lines(answer(3, 2, 'old root after grant')));
+      await s.poll(); // Takes the new baseline under the new root.
+      expect(seen(s, 'retained')).toEqual([]);
+      await appendFile(moved, lines(answer(4, 2, 'after new baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(4), text: 'after new baseline' }]);
+    });
+  });
+
+  it('drops the checkpoint when an env key is added', async () => {
+    await withSyntheticHost(async (s) => {
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: s.root, HOME: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'before new baseline')));
+      await s.poll(); // The dropped checkpoint leaves only a new baseline.
+      expect(seen(s, 'retained')).toEqual([]);
+      await appendFile(s.file, lines(answer(4, 3, 'after new baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(4), text: 'after new baseline' }]);
     });
   });
 
