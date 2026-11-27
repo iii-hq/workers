@@ -721,9 +721,51 @@ fn codes(out: &ValuesSaved) -> Vec<(&str, Option<&str>)> {
 }
 
 #[tokio::test]
-async fn a_refusal_of_the_session_leaves_the_rest_untried() {
+async fn names_are_written_four_at_a_time_and_answered_in_the_requests_order() {
     let w = world(false, "developer").await;
-    for (name, status) in [("FIRST", 200), ("SECOND", 422), ("THIRD", 403)] {
+    for (name, status) in [("ONE", 200), ("TWO", 422), ("THREE", 200)] {
+        Mock::given(method("PUT"))
+            .and(path(format!("/api/v1{}/{name}", vars(ENV))))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_delay(std::time::Duration::from_millis(400))
+                    .set_body_json(json!({"code": "REFUSED"})),
+            )
+            .mount(&w.server)
+            .await;
+    }
+    let started = std::time::Instant::now();
+    let out = save(
+        &w.h.ctx,
+        request(json!([
+            {"name": "ONE", "from": "typed", "type": "variable", "value": "one"},
+            {"name": "TWO", "from": "typed", "type": "variable", "value": "two"},
+            {"name": "THREE", "from": "typed", "type": "variable", "value": "three"}
+        ])),
+    )
+    .await
+    .unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1100),
+        "three 400 ms writes ran one after the other"
+    );
+    assert_eq!(
+        codes(&out),
+        vec![("ONE", None), ("TWO", Some("NOT_SAVED")), ("THREE", None)],
+        "the failing name in the middle is its own result; the others are written"
+    );
+    assert_eq!(sent(&w.server, "PUT").await.len(), 3);
+}
+
+#[tokio::test]
+async fn a_refusal_of_the_session_leaves_the_later_chunks_untried() {
+    let w = world(false, "developer").await;
+    for (name, status) in [
+        ("FIRST", 200),
+        ("SECOND", 422),
+        ("THIRD", 403),
+        ("FOURTH", 200),
+    ] {
         Mock::given(method("PUT"))
             .and(path(format!("/api/v1{}/{name}", vars(ENV))))
             .respond_with(
@@ -739,7 +781,8 @@ async fn a_refusal_of_the_session_leaves_the_rest_untried() {
             {"name": "FIRST", "from": "typed", "type": "variable", "value": "one"},
             {"name": "SECOND", "from": "typed", "type": "variable", "value": "two"},
             {"name": "THIRD", "from": "typed", "type": "variable", "value": "three"},
-            {"name": "FOURTH", "from": "typed", "type": "variable", "value": "four"}
+            {"name": "FOURTH", "from": "typed", "type": "variable", "value": "four"},
+            {"name": "FIFTH", "from": "typed", "type": "variable", "value": "five"}
         ])),
     )
     .await
@@ -750,14 +793,15 @@ async fn a_refusal_of_the_session_leaves_the_rest_untried() {
             ("FIRST", None),
             ("SECOND", Some("NOT_SAVED")),
             ("THIRD", Some("NOT_SAVED")),
-            ("FOURTH", Some("NOT_TRIED")),
+            ("FOURTH", None),
+            ("FIFTH", Some("NOT_TRIED")),
         ],
-        "a 422 lets the next one run; a 403 stops the rest"
+        "a 422 lets the rest run; a 403 stops the chunks after its own"
     );
-    for r in &out.results[1..] {
+    for r in &out.results[1..3] {
         assert!(!r.error.as_ref().unwrap().message.contains("own text"));
     }
-    assert_eq!(sent(&w.server, "PUT").await.len(), 3, "FOURTH was not sent");
+    assert_eq!(sent(&w.server, "PUT").await.len(), 4, "FIFTH was not sent");
 
     // A copy refused with a 403 stops the puts after it.
     let w = world(false, "developer").await;

@@ -629,6 +629,9 @@ fn may_save(conn: &Connection, sel: &Selected) -> SaveAllowed {
     }
 }
 
+/// How many names `save` writes to iii cloud at once (it has no batch write).
+const WRITE_AT_A_TIME: usize = 4;
+
 /// `iii-cloud::values::save`: the page's own.
 pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
     let conn = ctx.conn().await;
@@ -774,101 +777,119 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             stopped = Some(e.code.clone());
         }
     }
-    // Every other item: one PUT each, in order.
+    // Every other item: one PUT each, WRITE_AT_A_TIME at once. A refusal of the
+    // session stops the chunks after the one it came in.
     let mut saved_values: Vec<String> = vec![];
     let mut set_names: Vec<(String, LocalOutcome)> = vec![];
     for (i, item) in request.items.iter().enumerate() {
-        if matches!(item, SaveItem::Copy { .. }) {
-            if results[i].as_ref().is_some_and(|r| r.ok) {
-                set_names.push((item.name().to_string(), LocalOutcome::Skipped));
-            }
-            continue;
+        if matches!(item, SaveItem::Copy { .. }) && results[i].as_ref().is_some_and(|r| r.ok) {
+            set_names.push((item.name().to_string(), LocalOutcome::Skipped));
         }
-        if results[i].is_some() {
-            continue;
-        }
+    }
+    let pending: Vec<usize> = (0..request.items.len())
+        .filter(|&i| results[i].is_none() && !matches!(request.items[i], SaveItem::Copy { .. }))
+        .collect();
+    for chunk in pending.chunks(WRITE_AT_A_TIME) {
         if let Some(code) = &stopped {
-            results[i] = Some(result(item, Err(not_tried(code))));
+            for &i in chunk {
+                results[i] = Some(result(&request.items[i], Err(not_tried(code))));
+            }
             continue;
         }
-        let name = item.name();
-        let chosen: Result<(ValueKind, String), WorkerError> = match item {
-            SaveItem::Typed { kind, value, .. } => Ok((*kind, value.clone())),
-            SaveItem::EnvFile { kind, file, .. } => {
-                // Read again now: the file may have changed since the page listed it.
-                match read_env(Path::new(&project.path), file)
-                    .and_then(|lines| lines.into_iter().find(|(n, _)| n == name))
-                {
-                    None => Err(failed(
-                        "FILE_CHANGED",
-                        format!("{name} is no longer in {file}."),
-                        None,
-                    )),
-                    Some((_, value)) if value.len() > MAX_VALUE || value.contains('\0') => {
-                        Err(failed(
-                            "INVALID_REQUEST",
-                            format!("{name} in {file} is over 64 KiB or holds a NUL."),
-                            None,
-                        ))
+        let done = futures_util::future::join_all(chunk.iter().map(|&i| {
+            let (ctx, sel, project, manifest) = (ctx, &sel, &project, &manifest);
+            let item = &request.items[i];
+            async move {
+                let name = item.name();
+                let chosen: Result<(ValueKind, String), WorkerError> = match item {
+                    SaveItem::Typed { kind, value, .. } => Ok((*kind, value.clone())),
+                    SaveItem::EnvFile { kind, file, .. } => {
+                        // Read again now: the file may have changed since the page listed it.
+                        match read_env(Path::new(&project.path), file)
+                            .and_then(|lines| lines.into_iter().find(|(n, _)| n == name))
+                        {
+                            None => Err(failed(
+                                "FILE_CHANGED",
+                                format!("{name} is no longer in {file}."),
+                                None,
+                            )),
+                            Some((_, value)) if value.len() > MAX_VALUE || value.contains('\0') => {
+                                Err(failed(
+                                    "INVALID_REQUEST",
+                                    format!("{name} in {file} is over 64 KiB or holds a NUL."),
+                                    None,
+                                ))
+                            }
+                            Some((_, value)) => Ok((*kind, value)),
+                        }
                     }
-                    Some((_, value)) => Ok((*kind, value)),
+                    SaveItem::EnvUrl { .. } => sel
+                        .env
+                        .url
+                        .clone()
+                        .map(|url| (ValueKind::Variable, url))
+                        .ok_or_else(|| {
+                            failed(
+                                "NO_URL",
+                                format!("{} has no address yet.", sel.env.name),
+                                None,
+                            )
+                        }),
+                    SaveItem::LeaveEmpty { .. } => Ok((ValueKind::Variable, String::new())),
+                    SaveItem::Copy { .. } => unreachable!("copies are above"),
+                };
+                match chosen {
+                    Err(e) => (i, Err(e)),
+                    Ok((kind, value)) => {
+                        let written = crate::secret::write_value(
+                            ctx,
+                            sel,
+                            name,
+                            kind.as_str(),
+                            &value,
+                            Some(manifest.as_str()),
+                            false,
+                        )
+                        .await;
+                        (i, Ok((value, written)))
+                    }
                 }
             }
-            SaveItem::EnvUrl { .. } => sel
-                .env
-                .url
-                .clone()
-                .map(|url| (ValueKind::Variable, url))
-                .ok_or_else(|| {
-                    failed(
-                        "NO_URL",
-                        format!("{} has no address yet.", sel.env.name),
-                        None,
-                    )
-                }),
-            SaveItem::LeaveEmpty { .. } => Ok((ValueKind::Variable, String::new())),
-            SaveItem::Copy { .. } => unreachable!("copies are above"),
-        };
-        let (kind, value) = match chosen {
-            Ok(v) => v,
-            Err(e) => {
-                results[i] = Some(result(item, Err(e)));
-                continue;
-            }
-        };
-        let written = crate::secret::write_value(
-            ctx,
-            &sel,
-            name,
-            kind.as_str(),
-            &value,
-            Some(&manifest),
-            false,
-        )
+        }))
         .await;
-        let outcome = match &written.cloud_error {
-            None => {
-                if value.len() >= 3 {
-                    saved_values.push(value);
+        for (i, outcome) in done {
+            let item = &request.items[i];
+            let (value, written) = match outcome {
+                Ok(v) => v,
+                Err(e) => {
+                    results[i] = Some(result(item, Err(e)));
+                    continue;
                 }
-                set_names.push((name.to_string(), written.local));
-                Ok(())
-            }
-            Some(e) => {
-                if stops(e) {
-                    stopped = Some(e.code.clone());
+            };
+            let outcome = match &written.cloud_error {
+                None => {
+                    if value.len() >= 3 {
+                        saved_values.push(value);
+                    }
+                    set_names.push((item.name().to_string(), written.local));
+                    Ok(())
                 }
-                Err(refused(e))
+                Some(e) => {
+                    if stops(e) && stopped.is_none() {
+                        stopped = Some(e.code.clone());
+                    }
+                    Err(refused(e))
+                }
+            };
+            let mut r = result(item, outcome);
+            if r.ok
+                && let Some(local) = written.local_error
+            {
+                // Saved in iii cloud; only the run here's `.env` could not be written.
+                r.error = Some(failed("LOCAL_NOT_SAVED", local.message, None));
             }
-        };
-        let mut r = result(item, outcome);
-        if r.ok
-            && let Some(local) = written.local_error
-        {
-            // Saved in iii cloud; only the run here's `.env` could not be written.
-            r.error = Some(failed("LOCAL_NOT_SAVED", local.message, None));
+            results[i] = Some(r);
         }
-        results[i] = Some(r);
     }
     ctx.known_secrets.lock().unwrap().extend(saved_values);
     // The agent's asks for these names are answered.
