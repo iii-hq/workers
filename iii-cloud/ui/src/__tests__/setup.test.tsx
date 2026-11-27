@@ -163,7 +163,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
     ])
     expect(detail('Folder')).toMatchObject({
       value: '~/workspaces/registry',
-      note: 'iii-hq/registry on GitHub · you are on main, up to date',
+      note: 'iii-hq/registry on GitHub · you are on main',
     })
     expect(detail('Project')).toMatchObject({
       value: 'New project: registry',
@@ -391,10 +391,10 @@ describe('the button: the calls in order, then the Deploy place', () => {
     expect(path()).toBe('Projects / registry · dev / Deploy')
   })
 
-  it('the recommended file is not sent: the check plans the environment’s own', async () => {
+  it('the check always names the file the row shows, the environment’s own included', async () => {
     const h = await board('setup-existing')
     await click(primary())
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: FILE }])
   })
 
   it('a new project: create, use the made ids, check; its first environment is the one checked', async () => {
@@ -431,7 +431,7 @@ describe('the button: the calls in order, then the Deploy place', () => {
         mode: 'worktree',
       },
     ])
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: FILE }])
   })
 
   it('a new environment in the project: create_environment copies a trial environment, then use, then check', async () => {
@@ -501,6 +501,13 @@ describe('the button: the calls in order, then the Deploy place', () => {
     await mount({ ...base, project: clean, check: null }, ctx({ at: 'setup', step: 'confirm' }))
     expect(text()).toContain('Your agent works in a clean copy of what is committed, so your folder stays as it is.')
     expect(text()).not.toContain('uncommitted change')
+  })
+
+  it('only secret-like files uncommitted: they are not counted and never advised to be committed', async () => {
+    const secrets = { ...notImported, checkout: { ...notImported.checkout, changed_files: ['.env', '.env.local'] } }
+    await mount({ ...base, project: secrets, check: null }, ctx({ at: 'setup', step: 'confirm' }))
+    expect(text()).not.toContain('uncommitted change')
+    expect(text()).not.toContain('commit them')
   })
 
   it('iii cloud cannot see the repository on GitHub: the button waits and says why; the agent imports it', async () => {
@@ -647,7 +654,7 @@ describe('no folder known yet, and adding a project', () => {
     expect(of(h, 'iii-cloud::project::use')).toEqual([
       { path: '/home/you/workspaces/billing', cloud_project_id: 'p-billing', environment_id: 'e-b', mode: 'worktree' },
     ])
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: 'worker-compose.yaml' }])
     expect(path()).toContain('Deploy')
   })
 
@@ -725,6 +732,29 @@ describe('no folder known yet, and adding a project', () => {
     expect(of(h, 'iii-cloud::project::resolve').at(-1)).toEqual({ path: '/home/you/workspaces/billing' })
   })
 
+  it('a failed read of the projects is not "no project": the failure and Try again on the start screen', async () => {
+    await mount(stale, add, cloudAnswers({}))
+    expect(text()).toContain("iii cloud's projects could not be read")
+    expect(text()).not.toContain('You have no project in iii cloud yet.')
+    expect(btn('Try again')).toBeTruthy()
+  })
+
+  it('Back during a folder read drops its answer', async () => {
+    let answer: (p: unknown) => void = () => {}
+    await mount(stale, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': () => new Promise((r) => (answer = r)),
+    })
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing')
+    await click(btn('Back'))
+    await act(async () => answer(candidate))
+    await flush()
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Add a project')
+    expect(detail('Folder')).toBeNull()
+    expect(text()).not.toContain('is already billing')
+  })
+
   it('more than eight projects: a filter', async () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       id: `p${i}`,
@@ -737,6 +767,9 @@ describe('no folder known yet, and adding a project', () => {
     expect(input).not.toBeNull()
     await type(input, 'app-3')
     expect(el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')).toHaveLength(1)
+    expect(text()).not.toContain('No project matches')
+    await type(input, 'zzz')
+    expect(text()).toContain('No project matches “zzz”.')
   })
 
   it("the old context with newProject lands on option 2's folder step", async () => {

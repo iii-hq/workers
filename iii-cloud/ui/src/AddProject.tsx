@@ -4,7 +4,7 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { Button, DirectoryPicker, Input, List, ListItem } from '@iii-dev/console-ui'
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useCloud } from './api'
 import { hubOf, useActions } from './hub'
 import { plural } from './model'
@@ -37,13 +37,20 @@ function TeamReader({
   status,
   team,
   onRead,
+  retry,
 }: {
   host: Host
   status: Status
   team: { id: string; name: string }
   onRead: (id: string, r: Read) => void
+  /** Moves when the person presses "Try again". */
+  retry: number
 }) {
   const c = useCloud<{ projects: Raw[] }>(host, status, null, `/teams/${team.id}/projects`)
+  const again = c.refetch
+  useEffect(() => {
+    if (retry) again()
+  }, [retry])
   useEffect(() => {
     const projects = c.data
       ? c.data.projects
@@ -61,17 +68,55 @@ function TeamReader({
   return null
 }
 
-/** The projects of every team the person is in, once all have answered (`loaded`). */
+/** The projects of every team the person is in; a team whose read failed is in `failed`, never counted as empty. */
 export function useAccountProjects(status: Status) {
   const [reads, setReads] = useState<Record<string, Read>>({})
+  const [retry, setRetry] = useState(0)
   const teams = status.connection.teams
   const onRead = useCallback((id: string, r: Read) => setReads((o) => ({ ...o, [id]: r })), [])
-  const loaded = teams.every((t) => reads[t.id] && (reads[t.id].projects || reads[t.id].error))
+  const answered = (id: string) => !!(reads[id]?.projects || reads[id]?.error)
+  const loaded = teams.every((t) => answered(t.id))
   const projects = teams.flatMap((t) => reads[t.id]?.projects ?? [])
-  const error = teams.map((t) => reads[t.id]?.error).find(Boolean) ?? null
+  const failed = teams.filter((t) => !reads[t.id]?.projects && reads[t.id]?.error)
   const readers = (host: Host) =>
-    teams.map((t) => <TeamReader key={t.id} host={host} status={status} team={t} onRead={onRead} />)
-  return { projects, loaded, error, readers }
+    teams.map((t) => <TeamReader key={t.id} host={host} status={status} team={t} onRead={onRead} retry={retry} />)
+  return {
+    projects,
+    loaded,
+    failed,
+    error: failed.length ? (reads[failed[0].id]?.error ?? null) : null,
+    teams: teams.length,
+    retry: () => setRetry(retry + 1),
+    readers,
+  }
+}
+
+/** What went wrong reading the projects, as a notice with "Try again" (null when every team answered). */
+export function ReadFailure({
+  failed,
+  teams,
+  error,
+  retry,
+}: {
+  failed: { name: string }[]
+  teams: number
+  error: WorkerError | null
+  retry: () => void
+}) {
+  if (!failed.length || !error) return null
+  const who = teams > 1 ? failed.map((t) => `${t.name}'s`).join(' and ') : "iii cloud's"
+  return (
+    <Notice
+      variant="warn"
+      headline={`${who} projects could not be read`}
+      detail={error.message}
+      action={
+        <Button size="sm" variant="secondary" onClick={retry}>
+          Try again
+        </Button>
+      }
+    />
+  )
 }
 
 function Head({ title, lead }: { title: string; lead: ReactNode }) {
@@ -86,12 +131,15 @@ function Head({ title, lead }: { title: string; lead: ReactNode }) {
 /** The two ways in, as framed choices, and the way back to Projects. */
 export function AddStart({
   existing,
+  failure,
   onExisting,
   onNew,
   cancel,
 }: {
   /** Why option 1 is off, else null. */
   existing: string | null
+  /** The read of iii cloud's projects failed: what, and "Try again". */
+  failure?: ReactNode
   onExisting: () => void
   onNew: () => void
   cancel: () => void
@@ -116,6 +164,7 @@ export function AddStart({
           onClick={onNew}
         />
       </List>
+      {failure}
       <p className="iii-cloud-desc">
         Either way you confirm the folder, the environment and the compose file, then the check starts. Nothing changes
         in iii cloud before that.
@@ -133,13 +182,14 @@ const MANY = 8
 export function ProjectList({
   projects,
   loaded,
-  error,
+  failure,
   onPick,
   onBack,
 }: {
   projects: Listed[]
   loaded: boolean
-  error: WorkerError | null
+  /** A team whose projects could not be read, with "Try again". */
+  failure?: ReactNode
   onPick: (p: Listed) => void
   onBack: () => void
 }) {
@@ -153,9 +203,7 @@ export function ProjectList({
         title="Which project?"
         lead="The projects of your teams in iii cloud. Next you pick its folder on this machine."
       />
-      {error && !projects.length ? (
-        <Notice variant="alert" headline="iii cloud's projects could not be read" detail={error.message} />
-      ) : null}
+      {failure}
       {projects.length > MANY ? (
         <Input aria-label="Filter projects" placeholder="Filter by name or repository" value={q} onChange={setQ} />
       ) : null}
@@ -180,7 +228,7 @@ export function ProjectList({
           ))}
         </List>
       )}
-      {loaded && !shown.length ? <p className="iii-cloud-desc">No project matches “{q}”.</p> : null}
+      {loaded && needle && !shown.length ? <p className="iii-cloud-desc">No project matches “{q}”.</p> : null}
       <div className="iii-cloud-row">
         <StepLink onClick={onBack}>Back</StepLink>
       </div>
@@ -229,8 +277,12 @@ export function FolderStep({
 }) {
   const actions = useActions(host)
   const [path, setPath] = useState<string | null>(null)
+  // The folder being read: an answer for any other (after Back, another pick, or leaving) is dropped.
+  const reading = useRef<string | null>(null)
+  useEffect(() => () => void (reading.current = null), [])
   const err = actions.error
   const read = (dir: string) => {
+    reading.current = dir
     setPath(dir)
     void actions
       .call<Project>('resolve', 'iii-cloud::project::resolve', {
@@ -238,9 +290,9 @@ export function FolderStep({
         ...(projectId ? { cloud_project_id: projectId } : {}),
       })
       .then(async (out) => {
-        if (!out) return
+        if (!out || reading.current !== dir) return
         await hubOf(host).refresh(false)
-        onRead(out)
+        if (reading.current === dir) onRead(out)
       })
   }
   const shown = err && ['AGENT_COPY', 'REPOSITORY_MISMATCH'].includes(err.code) ? err : null
@@ -256,7 +308,14 @@ export function FolderStep({
       </div>
       {shown ? <Refusal error={shown} onPath={read} /> : err ? <Notice variant="alert" headline={err.message} /> : null}
       <div className="iii-cloud-row">
-        <StepLink onClick={onBack}>Back</StepLink>
+        <StepLink
+          onClick={() => {
+            reading.current = null
+            onBack()
+          }}
+        >
+          Back
+        </StepLink>
       </div>
     </>
   )

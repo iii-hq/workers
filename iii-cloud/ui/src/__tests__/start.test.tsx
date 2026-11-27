@@ -163,9 +163,18 @@ describe('Projects (desktop)', () => {
     expect(lines('old')[0]).toBe('restorable until 3 Dec')
     expect(place('old')?.querySelector('a')?.textContent).toBe('Open in iii cloud')
     expect(place('old')?.querySelector('a')?.getAttribute('href')).toMatch(
-      /^https:\/\/cloud\.iii\.dev\/[^/]+\/deletions$/,
+      /^https:\/\/cloud\.iii\.dev\/iii\/deletions$/,
     )
     expect(openOf('old')).toBeNull()
+  })
+
+  it('deleted, in a team the person is no longer in: no link to the console (never another team’s)', async () => {
+    const left = startStatus.recent_projects!.map((r) =>
+      r.cloud_project_id === 'p-old' ? { ...r, team_id: 't-left' } : r,
+    )
+    await showStart({ ...startStatus, recent_projects: left })
+    expect(lines('old')[0]).toBe('deleted in iii cloud')
+    expect(place('old')?.querySelector('a')).toBeNull()
   })
 
   it('a read that fails is said once for the list, with Try again; the row waits and Open stays; the read works after', async () => {
@@ -286,7 +295,7 @@ describe('Projects (phone)', () => {
     const h = await board('start')
     await settle()
     expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('Projects')
-    expect(text()).toContain('On this computer · ana@iii.dev · teams iii, acme')
+    expect(text()).toContain('Signed in as ana@iii.dev · teams iii, acme')
     expect(el.querySelector('[role=toolbar]')?.textContent).toMatch(/as of \d/)
     expect(el.querySelector('.iii-cloud-start-card [aria-label="Projects on this machine"]')).not.toBeNull()
     expect(place('registry')?.querySelector('.iii-cloud-start-name .iii-cloud-state')?.textContent).toBe('Live')
@@ -299,7 +308,7 @@ describe('Projects (phone)', () => {
     expect(place('billing')?.querySelector('button button')).toBeNull()
     expect(lines('billing')[1]).toBe('~/workspaces/billing · team acme')
     expect(text()).toContain(
-      'The whole row opens the project. Checks, deploys and your agent run on the computer; this phone follows them and answers what needs you.',
+      'The whole row opens the project. A check, a deploy and your agent keep going on this machine, and the row says what they are doing.',
     )
     expect([...el.querySelectorAll('.iii-cloud-start-adds button')].map((b) => b.textContent)).toEqual([
       'Add a project',

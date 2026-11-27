@@ -6,7 +6,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { Button, ConfirmDialog, DirectoryPicker, List, ListItem, PageMain, Select, Skeleton } from '@iii-dev/console-ui'
 import { Circle, CircleDot } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { AddStart, Already, FolderStep, type Listed, ProjectList, useAccountProjects } from './AddProject'
+import { AddStart, Already, FolderStep, type Listed, ProjectList, ReadFailure, useAccountProjects } from './AddProject'
 import { useCloud } from './api'
 import { useLaunch } from './asked'
 import { ConnectView } from './ConnectView'
@@ -36,7 +36,7 @@ import {
   signInRequired,
   tilde,
 } from './model'
-import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink } from './parts'
+import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink, uncommittedCount } from './parts'
 import { type AreaProps, pathOf, type Route, type RouteAt } from './route'
 import type { CloudProjectChoice, ComposeFile, DeploymentList, Project, Status } from './types'
 
@@ -82,6 +82,8 @@ export function SetupArea(props: AreaProps<RouteAt<'setup'>>) {
     <PageMain className="iii-cloud-main">
       <PathBar
         path={pathOf(route, status)}
+        status={status}
+        route={route}
         go={go}
         narrow={narrow}
         rule
@@ -121,7 +123,16 @@ function AddFlow(props: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) 
   if (flow.at === 'start')
     step = (
       <AddStart
-        existing={account.loaded && !account.projects.length ? 'You have no project in iii cloud yet.' : null}
+        existing={
+          !account.loaded || account.projects.length
+            ? null
+            : account.failed.length
+              ? "iii cloud's projects could not be read."
+              : 'You have no project in iii cloud yet.'
+        }
+        failure={
+          <ReadFailure failed={account.failed} teams={account.teams} error={account.error} retry={account.retry} />
+        }
         onExisting={() => setFlow({ at: 'list' })}
         onNew={() => setFlow({ at: 'folder' })}
         cancel={back}
@@ -132,7 +143,9 @@ function AddFlow(props: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) 
       <ProjectList
         projects={account.projects}
         loaded={account.loaded}
-        error={account.error}
+        failure={
+          <ReadFailure failed={account.failed} teams={account.teams} error={account.error} retry={account.retry} />
+        }
         onPick={(cp) => setFlow({ at: 'folder', cp })}
         onBack={() => setFlow({ at: 'start' })}
       />
@@ -437,7 +450,7 @@ function Confirm({
   const envName = creatingProject ? np.env.trim() : creatingEnv ? ne.name.trim() : (env?.name ?? '')
   const base = project?.default_branch ?? 'main'
   const newEnv: NewEnv = { ...ne, branch: ne.branch || base }
-  const changed = project?.checkout.changed_files.length ?? 0
+  const changed = uncommittedCount(project?.checkout.changed_files ?? [])
   const manifestOf = (e: typeof env) =>
     e && 'manifest' in e && e.manifest
       ? e.manifest
@@ -526,14 +539,13 @@ function Confirm({
       { changesSource: true },
     )
     if (used === null) return
-    // A compose file picked here that isn't the environment's: the check plans that one.
-    const picked =
-      manifest && manifest !== composeFile(manifestOf(env)) && !creatingProject && !creatingEnv ? { manifest } : {}
-    // ...and a retry after a refusal checks what this Confirm picked, always: an older pick (a refused Change) never
-    // outlives it.
-    hubOf(host).setPickedManifest(envId, manifest || null)
+    // The check names the compose file the row shows, always: with none, the worker takes the one the
+    // environment's newest check used, which can be another. A retry after a refusal checks it too, and an
+    // older pick (a refused Change) never outlives it.
+    const shown = fileValue || null
+    hubOf(host).setPickedManifest(envId, shown)
     // The Deploy screen follows the check and shows a refusal: the local run can take minutes, so nothing waits here.
-    void actions.call('check', 'iii-cloud::check', { run: true, ...picked })
+    void actions.call('check', 'iii-cloud::check', { run: true, ...(shown ? { manifest: shown } : {}) })
     go({ at: 'deploy', env: envId })
   }
 
@@ -759,7 +771,7 @@ function Confirm({
             <DetailRow
               label="Folder"
               onChange={toggle('folder')}
-              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : project.checkout.branch ? ', up to date' : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
+              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
             >
               <Mono>{tilde(project.path)}</Mono>
             </DetailRow>

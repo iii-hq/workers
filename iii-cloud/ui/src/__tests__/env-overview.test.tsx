@@ -171,11 +171,19 @@ describe('the next-action card: one state for each combination of Env2', () => {
     expect(n.detail).toBe('A push to GitHub, not checked. dev still serves #6.')
   })
 
+  it('files that look like secrets are not counted and never advised: with only those left, nothing is said', () => {
+    const n = (files: string[]) => next(dev({}, { not_served: [], changed_files: files }), {})
+    expect(n(['.env', 'api/id_rsa', 'a.ts']).detail).toBe(
+      'feat/search-rank at 2be71d0, 1 uncommitted change stays in your folder.',
+    )
+    expect(n(['.env', 'certs/app.key']).detail).toBe('feat/search-rank at 2be71d0.')
+  })
+
   it('up to date: no action', () => {
     const n = next(dev({}, clean))
     expect(n).toMatchObject({ state: 'current', wait: false })
     expect(n.action).toBeUndefined()
-    expect(n.title).toBe('dev serves everything in your folder')
+    expect(n.title).toBe('dev serves every commit of feat/search-rank')
     expect(n.detail).toBe('feat/search-rank at 2be71d0, nothing uncommitted.')
   })
 

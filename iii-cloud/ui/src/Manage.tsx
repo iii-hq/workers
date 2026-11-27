@@ -82,18 +82,20 @@ export function Deleted({ host, status, problem }: { host: Host; status: Status;
     rec?.restorable && rec.restorable_until
       ? `It can be restored until ${shortDate(rec.restorable_until)} in the iii cloud console. `
       : ''
-  const url = deletionsUrl(status)
+  const url = deletionsUrl(status, p?.team?.slug)
   return (
     <Notice
       variant="alert"
       headline={`${name} was deleted in iii cloud`}
       detail={`${until}Nothing can deploy to it.`}
       action={
-        <Button asChild variant="secondary" size="sm">
-          <a href={url} target="_blank" rel="noreferrer">
-            Open in iii cloud
-          </a>
-        </Button>
+        url ? (
+          <Button asChild variant="secondary" size="sm">
+            <a href={url} target="_blank" rel="noreferrer">
+              Open in iii cloud
+            </a>
+          </Button>
+        ) : undefined
       }
     />
   )
@@ -252,6 +254,8 @@ function EnvPage(props: ManageProps) {
     <>
       <PathBar
         path={pathOf(route, status)}
+        status={status}
+        route={route}
         go={go}
         narrow={narrow}
         rule={!tabs}

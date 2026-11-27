@@ -276,3 +276,22 @@
     min-height: 44px;
   }
 }
+
+/* The warn dot on the "Projects" crumb: a deployment waits for the person elsewhere. */
+[data-iii-ui='iii-cloud'] .iii-cloud-crumbs-up {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumb-back {
+  position: relative;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-crumb-back .iii-cloud-crumb-dot {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+/* "as of 12:20" in the bar stays on one line, on a phone too. */
+[data-iii-ui='iii-cloud'] .iii-cloud-envhead .iii-cloud-desc {
+  white-space: nowrap;
+}
