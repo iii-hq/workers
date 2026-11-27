@@ -496,8 +496,45 @@ export function deployOrigin(
   return { by, from, checked, pr, origin, line: `${origin}${checked ? ' · checked' : ', not checked'}` }
 }
 
-/** " for <what it waits for>" when its wake says so. */
-export const waitsFor = (a: { waiting_for?: string | null }) => (a.waiting_for ? ` for ${a.waiting_for}` : '')
+// Colour codes (with or without their escape character), and the lines that are only drawing.
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]|\\[[0-9;]*m`, 'g')
+const DRAWING = /^[\s\-=_*#~.\u2500-\u257f]+$/
+const FAILURE = /invalid|missing|required|not set|error/i
+
+/**
+ * The run's last lines that say something, for a stop: no blanks or separators (`[worker] ` prefixes and colour codes
+ * do not hide them), at most `max`. The first line that names the failure and the ones right after it are kept, so
+ * a stack trace after the message does not push it out; a "…" line stands between parts that are not adjacent.
+ */
+export function runTail(log: string[], max = 6): string[] {
+  const kept = log
+    .map((raw) => ({ raw, plain: raw.replace(ANSI, '').replace(/^\s*\[[^\]]+\]\s*/, '') }))
+    .filter((l) => l.plain.trim() && !DRAWING.test(l.plain))
+  if (kept.length <= max) return kept.map((l) => l.raw)
+  const f = kept.findIndex((l) => FAILURE.test(l.plain))
+  if (f < 0 || f >= kept.length - max) return kept.slice(-max).map((l) => l.raw)
+  const at = new Set([f, f + 1, f + 2, kept.length - 2, kept.length - 1])
+  const out: string[] = []
+  let last = -1
+  for (const i of [...at].sort((x, y) => x - y)) {
+    if (last >= 0 && i > last + 1) out.push('…')
+    out.push(kept[i].raw)
+    last = i
+  }
+  return out
+}
+
+/** The agent is actually working: `starting` or `working`. Not `waiting` (a wake), `stalled` (no progress) or `waiting_for_you` (its question). */
+export const agentWorking = (s: Status) => !!s.agent && ['starting', 'working'].includes(s.agent.state)
+
+const WORKER_WAKES = new Set(['the run here to end', 'the check to end', 'the deploy to end'])
+/** What the agent waits for, after "waits": " for the check to end" for the worker's own texts, else the agent's label quoted (cut at 80). */
+export const waitsFor = (a: { waiting_for?: string | null }) => {
+  const w = a.waiting_for?.trim()
+  if (!w) return ''
+  const cut = w.length > 80 ? `${w.slice(0, 79)}…` : w
+  return WORKER_WAKES.has(w) ? ` for ${w}` : `: "${cut}"`
+}
 
 /** The agent is mid-run on another kind of hand-off: a new request goes to it as a follow-up, not into a new chat. */
 export function followUp(s: Status, kind: HandoffKind): boolean {

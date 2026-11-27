@@ -30,6 +30,7 @@ import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom 
 import {
   ASSISTED,
   activeSameKind,
+  agentWorking,
   appFile,
   CHECK_AGAIN,
   cloudPending,
@@ -55,6 +56,7 @@ import {
   RESOURCE_KIND,
   recentDeployRange,
   roleOf,
+  runTail,
   sendLabel,
   servingNamed,
   settingWords,
@@ -84,7 +86,7 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, Deploy, Status, WorkerError } from './types'
+import type { AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
 import { ValuesCard } from './ValuesCard'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
@@ -184,16 +186,17 @@ export const heldElsewhere = (d: Deploy) =>
   needsAction(d) && !(d.check_id || d.approved_by_worker || d.from_console === false)
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
-export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
+export function checkPayload(s: Status, manifest = appFile(s).path): CheckRequest {
   // Always named: a check with none stays on the newest check's file, so going back to the environment's own is an ask too.
-  return { run: true, ...(fixBranch(s) ? { push: true } : {}), manifest }
+  // `from_page`: the person asked for it here (the worker wakes a waiting agent only for such a check).
+  return { run: true, from_page: true, ...(fixBranch(s) ? { push: true } : {}), manifest }
 }
 
 /**
  * `check` again: the compose file the person picked with a change that has no newer check yet, else the shown
  * check's own. (After a refused check the shown one is of the replaced source, so its file is not what to retry.)
  */
-export function retryPayload(host: Host, s: Status): Record<string, unknown> {
+export function retryPayload(host: Host, s: Status): CheckRequest {
   const envId = s.project?.environment?.id ?? ''
   const hub = hubOf(host)
   // The pick is the person's ask for the check that replaces the one they moved from. Once any newer check of the
@@ -1102,7 +1105,9 @@ export function CheckStage(props: CheckStageProps) {
   // A hand-off exists (`engaged`); the agent works only while `starting` or `working`, else it waits for something.
   const engaged = fixing(s) && !ready
   const waits = engaged && s.agent?.state === 'waiting'
-  const working = engaged && !waits
+  const stalled = engaged && s.agent?.state === 'stalled'
+  const asks = engaged && s.agent?.state === 'waiting_for_you'
+  const working = engaged && agentWorking(s)
   const a = s.agent
 
   const assisted = !!p?.environment && !p.environment.production
@@ -1198,7 +1203,7 @@ export function CheckStage(props: CheckStageProps) {
     }
     const err = run?.status === 'failed' ? run.error : null
     // The last lines that say something (not blank, not a separator): what the generic line above does not.
-    const tail = (run?.log_tail ?? []).filter((l) => l.trim() && !/^[\s\-=_*#~.]+$/.test(l)).slice(-6)
+    const tail = runTail(run?.log_tail ?? [])
     if (err?.code === 'DOCKER_MISSING') {
       const cloudN = open.filter((x) => x.source === 'cloud_plan').length
       stops.push({
@@ -1224,7 +1229,7 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
-            {tail.length ? <TerminalStream label="Last lines of the local run" text={tail.join('\n')} /> : null}
+            {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
           </>
         ),
         acts: [{ label: 'Run again', onClick: checkAgain, disabled: running }],
@@ -1338,22 +1343,27 @@ export function CheckStage(props: CheckStageProps) {
           ? `iii cloud's plan accepts ${sha7(c?.commit ?? '')}; the local run is left`
           : needN || lines.length || engaged
             ? [
-                needN
-                  ? secretsOnly
+                // The agent's question is something the person must answer: it counts as one more thing.
+                needN + (asks ? 1 : 0)
+                  ? secretsOnly && !asks
                     ? `${plural(missing.length, 'value')} to set`
-                    : `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
+                    : `${plural(needN + (asks ? 1 : 0), 'thing')} ${needN + (asks ? 1 : 0) === 1 ? 'needs' : 'need'} you`
                   : null,
                 lines.length
                   ? working
                     ? `your agent is fixing ${lines.length}`
                     : waits && s.agent
                       ? `${lines.length} for your agent to fix · it waits${waitsFor(s.agent)}`
-                      : `${lines.length} for your agent to fix`
+                      : stalled
+                        ? `${lines.length} for your agent to fix · it stopped making progress`
+                        : `${lines.length} for your agent to fix`
                   : working
                     ? 'your agent is checking its fix'
                     : waits && s.agent
                       ? `your agent waits${waitsFor(s.agent)}`
-                      : null,
+                      : stalled
+                        ? 'your agent stopped making progress'
+                        : null,
               ]
                 .filter(Boolean)
                 .join(' · ')
@@ -1485,13 +1495,23 @@ export function CheckStage(props: CheckStageProps) {
   const current = new Set(workingOnIds(s))
   if (working && !lines.some((l) => l.id && current.has(l.id))) current.clear()
   const leader = working ? (lines.find((l) => l.id && current.has(l.id)) ?? lines[0]) : null
-  // The agent is not working and something is open for it: the next step is the chat, said beside the sentence.
-  const nudge =
-    !!a &&
-    (a.state === 'waiting' || a.state === 'stalled') &&
-    (lines.length > 0 || run?.status === 'failed') &&
-    !!a.session_id &&
-    canOpenChat(host)
+  // The agent is not working and something is open for it: the next step, said beside the sentence, follows what it
+  // waits for. A check going on makes it go on by itself; the person's own missing value is the values card's; the chat
+  // only where there is one to open.
+  const stuck = !!a && (a.state === 'waiting' || a.state === 'stalled')
+  const nudge: { line: string; chat: boolean } | null =
+    !stuck || !(lines.length > 0 || run?.status === 'failed')
+      ? null
+      : running
+        ? { line: 'Your agent goes on when the check ends.', chat: false }
+        : !lines.length && missing.length
+          ? {
+              line: 'The local run failed on a value only you can set: set it in Secrets and variables above.',
+              chat: false,
+            }
+          : a?.session_id && canOpenChat(host)
+            ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
+            : { line: 'Your agent is not working on this: check again.', chat: false }
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)
@@ -1566,6 +1586,7 @@ export function CheckStage(props: CheckStageProps) {
       {!replaced ? (
         <ValuesCard
           runFailed={run?.status === 'failed'}
+          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? []).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {
@@ -1591,12 +1612,14 @@ export function CheckStage(props: CheckStageProps) {
             working && a
               ? `working ${minutesLabel(now - Date.parse(a.started_at))}, ${p?.workspace?.mode === 'checkout' ? 'in your folder' : 'in a separate copy'}`
               : waits && a
-                ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at ?? a.started_at))}${waitsFor(a)}`
-                : null
+                ? `${a.last_activity_at ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at))}` : 'waiting'}${waitsFor(a)}`
+                : asks
+                  ? 'waiting for your answer'
+                  : null
           }
           end={
             engaged && a ? (
-              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge} />
+              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
@@ -1616,10 +1639,12 @@ export function CheckStage(props: CheckStageProps) {
           ) : null}
           {nudge ? (
             <div className="iii-cloud-cs-agentnote iii-cloud-cs-nudge">
-              <span>Your agent is not working on this. Tell it in the chat, or check again.</span>
-              <Button size="sm" variant="secondary" onClick={() => void openAgentChat(host, s)}>
-                Open chat
-              </Button>
+              <span>{nudge.line}</span>
+              {nudge.chat ? (
+                <Button size="sm" variant="secondary" onClick={() => void openAgentChat(host, s)}>
+                  Open chat
+                </Button>
+              ) : null}
             </div>
           ) : null}
           <ul className="iii-cloud-cs-rows">

@@ -6,6 +6,7 @@ import { failedLine } from './FailureCard'
 import { needsYou } from './findings'
 import { useActions, useLocked } from './hub'
 import {
+  agentWorking,
   deployOrigin,
   deployRows,
   fixBranch,
@@ -23,6 +24,7 @@ import {
   wayOf,
   when,
   withAppFile,
+  workingOnIds,
 } from './model'
 import {
   Dot,
@@ -167,8 +169,10 @@ export function nextAction(
   // The same list the Deploy screen's title counts.
   const you = c && !c.ready && c.run?.status !== 'running' ? needsYou(s, opts.values ?? null) : null
   const n = you?.count ?? 0
-  const a = s.agent && ['starting', 'working', 'waiting'].includes(s.agent.state) ? s.agent : null
-  const fixing = a?.working_on?.length ?? 0
+  // Only an agent that works is "fixing": a waiting, stalled or asking one still keeps its `working_on` ids.
+  const a = agentWorking(s) ? s.agent : null
+  const waiting = s.agent?.state === 'waiting' ? s.agent : null
+  const fixing = workingOnIds(s).size
   if (you && n) {
     const first =
       you.items[0]?.title ??
@@ -203,14 +207,14 @@ export function nextAction(
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }
-  if (a?.state === 'waiting') {
+  if (waiting) {
     // An ended turn that armed a wake is not work: say what it waits for, and that the chat or a new check moves it.
     return {
       state: 'agent',
       wait: false,
       primary: false,
-      title: `Your agent waits${waitsFor(a)}`,
-      detail: `Waiting ${minutesLabel(now - Date.parse(a.last_activity_at ?? a.started_at))}. Open the check: tell it in the chat, or check again.`,
+      title: `Your agent waits${waitsFor(waiting)}`,
+      detail: `${waiting.last_activity_at ? `Waiting ${minutesLabel(now - Date.parse(waiting.last_activity_at))}.` : 'Waiting.'} ${c?.run?.status === 'running' ? 'Your agent goes on when the check ends.' : 'Open the check: tell it in the chat, or check again.'}`,
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }
@@ -337,7 +341,7 @@ export function NextCard({
     void call(
       'check',
       'iii-cloud::check',
-      withAppFile(status, { run: true, ...(fixBranch(status) ? { push: true } : {}) }),
+      withAppFile(status, { run: true, from_page: true, ...(fixBranch(status) ? { push: true } : {}) }),
     )
     go({ at: 'deploy', env: envId })
   }

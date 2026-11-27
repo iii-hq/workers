@@ -546,7 +546,11 @@ function Confirm({
     const shown = fileValue || null
     hubOf(host).setPickedManifest(envId, shown)
     // The Deploy screen follows the check and shows a refusal: the local run can take minutes, so nothing waits here.
-    void actions.call('check', 'iii-cloud::check', { run: true, ...(shown ? { manifest: shown } : {}) })
+    void actions.call('check', 'iii-cloud::check', {
+      run: true,
+      from_page: true,
+      ...(shown ? { manifest: shown } : {}),
+    })
     go({ at: 'deploy', env: envId })
   }
 

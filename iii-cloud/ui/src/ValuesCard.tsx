@@ -22,10 +22,13 @@ export function ValuesCard({
   onRunWithout,
   onAll,
   runFailed,
+  linesShown,
 }: {
   read: ValuesRead
   /** The check's local run failed: "deploy without them" is not a thing to say then. */
   runFailed: boolean
+  /** The run's last lines are on this screen (its stop shows them): otherwise they are behind the local run's row. */
+  linesShown: boolean
   /** "Set values": the review editor over these names (required first, then asked, then optional). */
   onSet: (names: string[]) => void
   /** `values::skip` for these names; resolves when it went through. */
@@ -162,8 +165,8 @@ export function ValuesCard({
             ) : null}
             {runFailed && toSet.length ? (
               <p className="iii-cloud-cs-sub">
-                The local run failed. If the application needs one of the names above, set it: the run's last lines say
-                which.
+                The local run failed. If the application needs one of the names above, set it:{' '}
+                {linesShown ? "the run's last lines say which." : "open the local run's row below."}
               </p>
             ) : !plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
               <p className="iii-cloud-cs-sub">Optional ones can wait: you can deploy without them.</p>

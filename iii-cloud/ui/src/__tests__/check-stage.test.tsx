@@ -13,7 +13,7 @@ import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
-import { checklist, handoffMessage, openProblems, wayOf } from '../model'
+import { checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -82,7 +82,7 @@ describe('opening the screen', () => {
     await click(btn('Check'))
     expect(lastCall(h.calls)).toEqual({
       id: 'iii-cloud::check',
-      payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
+      payload: { run: true, from_page: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
     })
   })
 })
@@ -419,7 +419,8 @@ describe('when the check cannot finish', () => {
     expect(stopPanel("Docker isn't running on this machine")).toBeTruthy()
     expect(text()).toContain('The local run starts a database and your workers in containers.')
     await click(btn('Run again'))
-    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    // The person asked for it here: the worker may wake a waiting agent for it.
+    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check', payload: { from_page: true } })
   })
 
   it('out of date: the source moved after the check; the deploy stays locked', async () => {
@@ -484,7 +485,7 @@ describe('the review: what a check that is not ready still offers', () => {
     const quiet = await stage(noAgent({ ...B('deploy-passed'), check: { ...passed, ready: false } }))
     expect(btn('Check again')?.getAttribute('data-variant')).toBe('primary')
     await click(btn('Check again'))
-    expect(lastCall(quiet.calls)).toMatchObject({ id: 'iii-cloud::check' })
+    expect(lastCall(quiet.calls)).toMatchObject({ id: 'iii-cloud::check', payload: { from_page: true } })
     await stage(B('deploy-problems'))
     expect(btn('Check again')?.getAttribute('data-variant')).toBe('secondary')
     expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
@@ -563,7 +564,7 @@ describe('the review: what a check that is not ready still offers', () => {
     await click(btn('Check again'))
     expect(lastCall(h.calls)).toMatchObject({
       id: 'iii-cloud::check',
-      payload: { run: true, manifest: 'api/worker-compose.staging.yaml' },
+      payload: { run: true, from_page: true, manifest: 'api/worker-compose.staging.yaml' },
     })
   })
 
@@ -999,7 +1000,7 @@ describe('the check follows the canvas', () => {
         skip: true,
       })
       // then a check, which makes the title and the lock true again
-      expect(h.calls.map((c) => c.id)).toContain('iii-cloud::check')
+      expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ from_page: true })
       await click(btn('Set values'))
       expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
     })
@@ -1191,6 +1192,28 @@ describe('the check follows the canvas', () => {
       expect(card()?.textContent).toContain('5 optional, not set')
     })
 
+    it('"Save N values and check again" asks for the check from the page', async () => {
+      const items = [
+        valueItem('FROM_FILE', {
+          need: 'required',
+          default: null,
+          suggestions: [{ source: 'env_file', file: '.env', preselect: true, local: false }],
+        }),
+      ]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'FROM_FILE', ok: true }] },
+      })
+      await click(btn('Set values'))
+      await click(
+        [...el.querySelectorAll('[role=dialog] button')].find((b) =>
+          /^Save \d+ values? and check again/.test(b.textContent ?? ''),
+        ),
+      )
+      await flush()
+      expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({ from_page: true })
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
@@ -1311,16 +1334,16 @@ describe('an agent that ended its turn waiting on a wake', () => {
 
   it('is not "working": the title, the card and the footer say it waits', async () => {
     await stage(waiting())
-    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits for ${WAKE}$`))
+    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits: "${WAKE}"$`))
     expect(title()).not.toMatch(/is fixing|checking its fix/)
     const note = region('Your agent')?.textContent ?? ''
-    expect(note).toMatch(new RegExp(`waiting \\d+ min for ${WAKE}`))
-    expect(note).not.toContain('working')
+    expect(note).toMatch(new RegExp(`waiting \\d+ min: "${WAKE}"`))
+    expect(note).not.toMatch(/working \d+ min/)
   })
 
   it('with nothing for it to fix: "Your agent waits for …"', async () => {
     await stage(waiting(true))
-    expect(title()).toBe(`Your agent waits for ${WAKE}`)
+    expect(title()).toBe(`Your agent waits: "${WAKE}"`)
     expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
   })
 
@@ -1362,8 +1385,115 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect((t.match(/line \d/g) ?? []).length + 2).toBeLessThanOrEqual(6)
   })
 
+  it('a stalled agent is not "fixing", and one with a question is something that needs the person', async () => {
+    const st = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'stalled' as const, question: null } }
+    await stage(st)
+    expect(title()).toMatch(/for your agent to fix · it stopped making progress$/)
+    expect(title()).not.toMatch(/is fixing/)
+    expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
+    expect(region('Your agent')?.textContent).toContain('No progress for')
+    const q = {
+      ...rcFixing,
+      agent: { ...rcFixing.agent!, state: 'waiting_for_you' as const, question: 'Keep path://?' },
+    }
+    await stage(q)
+    expect(title()).toMatch(/^\d+ things? needs? you · \d+ for your agent to fix$/)
+    expect(title()).not.toMatch(/is fixing/)
+    expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+    expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
+  })
+
+  it("the line follows what the agent waits for: a running check goes on by itself, a missing value is the values card's, no chat means check again", async () => {
+    const openScreen = vi.fn()
+    const w = waiting()
+    // a. a check is running: the wake fires by itself
+    await stage(
+      { ...w, check: { ...w.check!, run: { ...w.check!.run!, status: 'running' as const } } },
+      {},
+      { openScreen },
+    )
+    expect(region('Your agent')?.textContent).toContain('Your agent goes on when the check ends.')
+    expect(region('Your agent')?.textContent).not.toContain('Tell it in the chat')
+    // b. nothing open for the agent, the run failed on the person's own value
+    const value = {
+      ...rcVariables[0],
+      id: 'p-own',
+      code: 'LOCAL_VARIABLE_UNSET',
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'JWT_SECRET has no value here',
+    }
+    const none = waiting(true)
+    await stage({ ...none, check: { ...none.check!, problems: [value] } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('set it in Secrets and variables above')
+    expect(el.querySelector('.iii-cloud-cs-nudge button')).toBeNull()
+    // c. no chat session: "Check again" alone
+    await stage({ ...w, agent: { ...w.agent!, session_id: null } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('Your agent is not working on this: check again.')
+    expect(btn('Open chat')).toBeNull()
+    // no activity time: no invented number
+    await stage({ ...w, agent: { ...w.agent!, last_activity_at: null } })
+    expect(region('Your agent')?.textContent).toMatch(/waiting: "test environment/)
+    expect(region('Your agent')?.textContent).not.toMatch(/waiting \d+ min/)
+  })
+
+  it('the worker\'s own wake texts read "waits for …", a long label is cut at 80 characters', async () => {
+    const w = waiting(true)
+    await stage({ ...w, agent: { ...w.agent!, waiting_for: 'the check to end' } })
+    expect(title()).toBe('Your agent waits for the check to end')
+    await stage({ ...w, agent: { ...w.agent!, waiting_for: 'x'.repeat(200) } })
+    expect(title()?.length).toBeLessThan(130)
+    expect(title()).toContain('…')
+  })
+
+  it("the values card names the run's lines only where they are on screen", async () => {
+    const base = waiting(true)
+    const value = {
+      ...rcVariables[0],
+      id: 'p-v',
+      code: 'LOCAL_VARIABLE_UNSET',
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'JWT_SECRET has no value here',
+    }
+    const items = [valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] })]
+    const answers = {
+      'iii-cloud::values': () => ({ ...rcValues, environment_id: base.project?.environment?.id, items }),
+    }
+    const s = { ...base, agent: null, check: { ...base.check!, problems: [value] } }
+    // the stop is suppressed while a check_here problem is open: the lines are behind the local run's row
+    await stage(s, answers)
+    expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
+  })
+})
+
+describe("the run's last lines", () => {
+  it('keep the failure line and what follows it when a stack trace comes after, and see through prefixes, colours and box rules', () => {
+    const log = [
+      '[api] ────────────────',
+      '[api] \u001b[31mInvalid environment variables:\u001b[0m',
+      '[api]   JWT_SECRET: required',
+      '[api]   REDIS_URL: required',
+      ...Array.from({ length: 8 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      '',
+      'Node.js v20.1.0',
+      '[31m',
+    ]
+    const tail = runTail(log)
+    expect(tail.length).toBeLessThanOrEqual(6)
+    expect(tail.join('\n')).toContain('Invalid environment variables:')
+    expect(tail.join('\n')).toContain('JWT_SECRET: required')
+    expect(tail).toContain('…')
+    expect(tail.join('\n')).toContain('Node.js v20.1.0')
+    // the prefix stays in what is shown; a box rule and a codes-only line are not lines
+    expect(tail[0]).toMatch(/^\[api\] /)
+    expect(tail.some((l) => l.includes('────') || l.trim() === '[31m')).toBe(false)
   })
 })

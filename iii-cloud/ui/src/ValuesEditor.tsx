@@ -210,7 +210,7 @@ function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
         : i.in_cloud === 'set'
           ? ['success', 'ok', `Set in iii cloud${i.updated_at ? ` · ${ago(i.updated_at)}` : ''}`]
           : i.in_cloud === 'unknown'
-            ? ['danger', 'alert', "Couldn't read iii cloud"]
+            ? ['danger', 'alert', "iii cloud's value could not be read"]
             : ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
   return (
     <Chip tone={tone} className="iii-cloud-val-state">
@@ -304,7 +304,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
   const env = v?.environment ?? status.project?.environment?.name ?? 'this environment'
   const every = v?.items ?? []
   const some = props.only ? every.filter((i) => props.only?.includes(i.name)) : []
-  const items = some.length ? some : every
+  // With `only` given, names that left the read leave nothing to set: never the full list.
+  const items = props.only ? some : every
   const readOnly = !!v && v.save !== 'ok'
   const unset = items.filter(notSet).length
   const saved = (i: ValueItem) => rows[i.name]?.s === 'saved'
