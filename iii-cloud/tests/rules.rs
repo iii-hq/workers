@@ -1695,4 +1695,19 @@ fn a_command_the_runtimes_image_does_not_have_is_found_in_the_run_and_release_co
     assert!(found("bun@1", "bun x", None).is_empty());
     assert!(found("mystery@1", "bun x", None).is_empty());
     assert!(found("node@24", "echo bun is nice", None).is_empty());
+    // An unpushed commit (no plan) of a bun project with no `cloud.runtimes`: the guess from the
+    // folder's language is not the cloud's runtime, so nothing is raised.
+    let ws = tempfile::tempdir().unwrap();
+    write(
+        ws.path(),
+        "workers/api/iii.worker.yaml",
+        "language: typescript\n",
+    );
+    write(ws.path(), "package-lock.json", "{}");
+    let compose = "containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: bun run dist/index.js\n";
+    assert!(
+        local(ws.path(), compose, None)
+            .iter()
+            .all(|p| p.code != "RUN_COMMAND_NOT_IN_IMAGE")
+    );
 }

@@ -652,6 +652,8 @@ pub fn follow(ctx: &Arc<Ctx>, id: String) {
                     let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
                     h.agent.state = AgentPhase::Stalled;
                     h.agent.question = Some(NO_PROGRESS_TEXT.to_string());
+                    // The chat never started: the person acts in the chat.
+                    h.agent.question_source = Some(QuestionSource::Agent);
                     Some(h.agent.clone())
                 });
                 if let Some(agent) = agent {
@@ -793,10 +795,12 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 {
                     agent.state = AgentPhase::WaitingForYou;
                     agent.question = Some(NO_CHAT_TEXT.to_string());
+                    agent.question_source = Some(QuestionSource::Agent);
                     ctx.store.update(|s| {
                         if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                             h.agent.state = agent.state;
                             h.agent.question = agent.question.clone();
+                            h.agent.question_source = agent.question_source;
                         }
                     });
                     emit(ctx, &agent);
@@ -1096,6 +1100,8 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                                     }
                                     h.agent.state = AgentPhase::Stalled;
                                     h.agent.question = Some(message);
+                                    // The worker's own words about a check that keeps failing.
+                                    h.agent.question_source = Some(QuestionSource::Check);
                                     Some(h.agent.clone())
                                 });
                                 if let Some(a) = stalled
@@ -1165,7 +1171,10 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             } else if !theirs.is_empty() {
                 // Nothing left for the agent: these wait for the person.
                 phase = AgentPhase::WaitingForYou;
-                question = Some(waits_for_person_text(&theirs));
+                question = Some(waits_for_person_text(
+                    &theirs,
+                    &open_value_names(ctx, &handoff),
+                ));
             } else if !passed_run_here(ctx, &handoff) {
                 // Done is a ready check and a run here that passed for its commit.
                 phase = AgentPhase::WaitingForYou;
@@ -1182,8 +1191,10 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         current
     };
     agent.current = current.map(|c| crate::run::redact(&c, &secrets));
+    // "agent": the person must answer in the chat (the agent's own ask, the folder to confirm, a
+    // chat that stopped). "check": the page already lists what waits (the values, the run missing).
     agent.question_source = question.as_ref().map(|q| {
-        if obs.question.as_ref() == Some(q) {
+        if obs.question.as_ref() == Some(q) || q == CONFIRM_TEXT || q == STOPPED_TEXT {
             QuestionSource::Agent
         } else {
             QuestionSource::Check
@@ -1466,6 +1477,38 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
     })
 }
 
+/// The distinct variable names of the person's open value problems in the hand-off's newest check
+/// (a database URL is the agent's, so never here).
+fn open_value_names(ctx: &Ctx, handoff: &Handoff) -> Vec<String> {
+    ctx.store.read(|s| {
+        let mut names: Vec<String> = vec![];
+        let Some(c) = own_checks(s, handoff).next().filter(|c| !c.ready) else {
+            return names;
+        };
+        for p in c.problems.iter().filter(|p| {
+            p.owner == Owner::Person
+                && p.severity == Severity::Block
+                && VALUE_CODES.contains(&p.code.as_str())
+        }) {
+            // `LOCAL_VARIABLE_UNSET` names it in the title, the plan's issues in the message.
+            let text = if p.code == "LOCAL_VARIABLE_UNSET" {
+                Some(p.title.as_str())
+            } else {
+                p.detail.as_deref()
+            };
+            if let Some(name) = text
+                .and_then(|t| t.split_whitespace().next())
+                .map(|w| w.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
+                .filter(|w| !w.is_empty())
+                && !names.iter().any(|n| n == name)
+            {
+                names.push(name.to_string());
+            }
+        }
+        names
+    })
+}
+
 /// The codes of problems that are a value only the person can give (the page's `VALUE_CODES`).
 const VALUE_CODES: [&str; 3] = [
     "EMPTY_DEFAULT_VARIABLE",
@@ -1476,12 +1519,17 @@ const VALUE_CODES: [&str; 3] = [
 /// What waits for the person, in the person's voice: no codes, no repeats. Values only: one
 /// sentence with their number. Anything else: one line per distinct title (a count in front when
 /// it repeats), at most four lines and "and N more".
-pub fn waits_for_person_text(theirs: &[(String, String)]) -> String {
+pub fn waits_for_person_text(theirs: &[(String, String)], value_names: &[String]) -> String {
     if theirs
         .iter()
         .all(|(code, _)| VALUE_CODES.contains(&code.as_str()))
     {
-        let n = theirs.len();
+        // Names, not problems: one unset `${NAME}` is a problem of the plan and one of the local check.
+        let n = if value_names.is_empty() {
+            theirs.len()
+        } else {
+            value_names.len()
+        };
         return format!(
             "Your agent's part is done for now. It waits for {n} value{}: set {} in Secrets and variables.",
             if n == 1 { "" } else { "s" },

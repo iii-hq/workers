@@ -649,6 +649,9 @@ impl Drop for ActiveGuard {
 /// The most paths a run's leftovers are kept for; beyond that none are, and the run says so.
 const MAX_WROTE: usize = 500;
 
+/// The most bytes one run's `left/` holds; beyond it the remaining files stay set aside.
+const LEFT_BYTES_MAX: u64 = 64 * 1024 * 1024;
+
 /// Over this size a file is compared by size and mtime, not read.
 const HASH_LIMIT: u64 = 4 * 1024 * 1024;
 
@@ -744,7 +747,7 @@ pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
             if restored.len() == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it.",
+            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
             restored
                 .iter()
                 .take(5)
@@ -752,6 +755,7 @@ pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
                 .collect::<Vec<_>>()
                 .join(", "),
             if restored.len() > 5 { " and more" } else { "" },
+            dir.display(),
             dir.display()
         )),
         Owner::None,
@@ -798,8 +802,9 @@ pub struct SetAside {
 /// that it rewrote or deleted is saved under `<run folder>/left/<path>` (0600, folders 0700) and
 /// put back with `git checkout -- <path>`, only once the save worked. Never in the person's own
 /// folder; a file over `HASH_LIMIT`, or more than `MAX_WROTE` files, stay set aside as they are;
-/// a path dirty before the run is never touched; untracked files are not deleted. What an older
-/// run kept in its `left/` goes when this one ends.
+/// a path dirty before the run is never touched; untracked files are not deleted. What a run kept in
+/// its `left/` goes with its folder (the prune of old run folders), not before: the agent's next run
+/// must not take away a version it has not looked at yet.
 pub async fn set_aside_run(
     ctx: &Ctx,
     ws: &Path,
@@ -840,19 +845,30 @@ pub async fn set_aside_run(
         if !candidates.is_empty() && candidates.len() <= MAX_WROTE {
             let dir = run_dir.join("left");
             let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
+            // Save each file, then check again that it still is what was saved: what is put back
+            // is exactly what `left/` holds. (Blocking work, off the runtime.)
             let saved: Vec<String> = tokio::task::spawn_blocking(move || {
-                candidates
-                    .into_iter()
-                    .filter(|p| save_left(&ws2, &dir2, p))
-                    .collect()
+                let mut total = 0u64;
+                let mut kept: Vec<(String, String)> = vec![];
+                for p in candidates {
+                    let Some((hash, len)) = save_left(&ws2, &dir2, &p) else {
+                        continue;
+                    };
+                    if total + len > LEFT_BYTES_MAX {
+                        // Over the cap: not put back, stays set aside.
+                        let _ = std::fs::remove_file(dir2.join(&p));
+                        continue;
+                    }
+                    total += len;
+                    kept.push((p, hash));
+                }
+                recheck(&ws2, &dir2, kept)
             })
             .await
             .unwrap_or_default();
-            for p in saved {
-                if tool::git(ws, &["checkout", "--", &p]).await.is_ok() {
-                    after.remove(&p);
-                    restored.push(p);
-                }
+            restored = put_back(ws, &saved).await;
+            for p in &restored {
+                after.remove(p);
             }
             if !restored.is_empty() {
                 left_dir = Some(dir);
@@ -875,12 +891,6 @@ pub async fn set_aside_run(
     if note.is_some() {
         files.clear();
     }
-    // Only the newest run of a worktree keeps its rewritten versions.
-    if let Some(old) = previous.left_dir.as_deref()
-        && left_dir.as_deref().is_none_or(|n| n != Path::new(old))
-    {
-        let _ = std::fs::remove_dir_all(old);
-    }
     ctx.store.update(|s| {
         // A record of a worktree that is gone goes with it.
         s.run_wrote.retain(|p, _| Path::new(p).exists());
@@ -901,33 +911,103 @@ pub async fn set_aside_run(
     }
 }
 
-/// Keep what the run left of one tracked file under `dir` (0600, folders 0700). A deletion has
-/// nothing to keep. False when it can't be kept: the file then stays as the run left it.
-fn save_left(ws: &Path, dir: &Path, rel: &str) -> bool {
+/// Right before the checkout: each saved file is hashed again. One whose content changed since its
+/// save is saved again, and put back only if it holds still: `left/` always has the bytes that
+/// the checkout replaces.
+fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>) -> Vec<String> {
+    kept.into_iter()
+        .filter_map(|(p, hash)| {
+            if fingerprint(&ws.join(&p)) == hash {
+                return Some(p);
+            }
+            let (again, _) = save_left(ws, dir, &p)?;
+            (fingerprint(&ws.join(&p)) == again).then_some(p)
+        })
+        .collect()
+}
+
+/// Put the saved files back as committed: ONE `git checkout` with literal pathspecs (a name with
+/// `[`, `*`, `?` or a leading `:` is a name, not a pattern), the paths on stdin. An old git without
+/// `--pathspec-from-file`, or a refusal of the batch, falls back to one literal checkout per file.
+/// The paths that are back.
+async fn put_back(ws: &Path, paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return vec![];
+    }
+    let mut list = paths.join("\0").into_bytes();
+    list.push(0);
+    let batch = tool::run(
+        "git",
+        &[
+            "--literal-pathspecs",
+            "checkout",
+            "--pathspec-from-file=-",
+            "--pathspec-file-nul",
+        ],
+        Some(ws),
+        Some(&list),
+        "TOOL_MISSING",
+    )
+    .await;
+    if batch.is_ok_and(|o| o.ok()) {
+        return paths.to_vec();
+    }
+    let mut back = vec![];
+    for p in paths {
+        if tool::git(ws, &["--literal-pathspecs", "checkout", "--", p])
+            .await
+            .is_ok()
+        {
+            back.push(p.clone());
+        }
+    }
+    back
+}
+
+/// Every parent of `rel` that exists in `ws` is a real directory (not a file, not a symlink).
+fn parents_are_directories(ws: &Path, rel: &str) -> bool {
+    let mut at = ws.to_path_buf();
+    let parts: Vec<&str> = rel.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return false,
+            // A parent that is gone too: the whole directory was deleted.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// Keep what the run left of one tracked file under `dir` (0600, folders 0700): the hash of what was
+/// kept (`-` for a deletion: nothing to keep) and its size. None when it can't be kept: the file
+/// then stays as the run left it.
+fn save_left(ws: &Path, dir: &Path, rel: &str) -> Option<(String, u64)> {
+    use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let from = ws.join(rel);
-    let Ok(meta) = std::fs::symlink_metadata(&from) else {
-        return true; // deleted
+    let meta = match std::fs::symlink_metadata(&from) {
+        Ok(m) => m,
+        // Deleted: only when it is NotFound and no parent that exists is a file or a link (a file
+        // where a directory was is the run's own data: it is not for a checkout to remove).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && parents_are_directories(ws, rel) => {
+            return Some(("-".to_string(), 0));
+        }
+        Err(_) => return None,
     };
     if !meta.is_file() || meta.len() > HASH_LIMIT {
-        return false;
+        return None;
     }
     let to = dir.join(rel);
-    let Some(parent) = to.parent() else {
-        return false;
-    };
-    if std::fs::DirBuilder::new()
+    std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(parent)
-        .is_err()
-    {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(&from) else {
-        return false;
-    };
+        .create(to.parent()?)
+        .ok()?;
+    let bytes = std::fs::read(&from).ok()?;
     std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -935,7 +1015,8 @@ fn save_left(ws: &Path, dir: &Path, rel: &str) -> bool {
         .mode(0o600)
         .open(&to)
         .and_then(|mut f| f.write_all(&bytes))
-        .is_ok()
+        .ok()?;
+    Some((hex::encode(Sha256::digest(&bytes)), bytes.len() as u64))
 }
 
 /// The changed paths of the worktree that are the agent's: not what the last local run left
@@ -1307,10 +1388,10 @@ impl Exec {
                     ids.sort();
                     ids.dedup();
                     for id in ids {
+                        // This run's notice replaces the one a check carried from the run before.
                         update_check(&self.ctx, &id, |c| {
-                            if !c.problems.iter().any(|p| p.code == problem.code) {
-                                c.problems.push(problem.clone());
-                            }
+                            c.problems.retain(|p| p.code != problem.code);
+                            c.problems.push(problem.clone());
                         });
                     }
                 }
@@ -2749,5 +2830,36 @@ pub async fn prune(runs: &Path, keep: usize) {
             }
         }
         let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{recheck, save_left};
+
+    #[test]
+    fn a_file_changed_between_its_save_and_the_checkout_is_saved_again() {
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join("a.yaml"), "as the run left it\n").unwrap();
+        std::fs::write(ws.path().join("b.yaml"), "unchanged\n").unwrap();
+        let kept: Vec<(String, String)> = ["a.yaml", "b.yaml"]
+            .iter()
+            .map(|p| {
+                (
+                    p.to_string(),
+                    save_left(ws.path(), left.path(), p).unwrap().0,
+                )
+            })
+            .collect();
+        // The agent edits one of them after it was saved.
+        std::fs::write(ws.path().join("a.yaml"), "the agent's edit\n").unwrap();
+        let back = recheck(ws.path(), left.path(), kept);
+        assert_eq!(back, vec!["a.yaml", "b.yaml"]);
+        // What the checkout will replace is what `left/` holds.
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("a.yaml")).unwrap(),
+            "the agent's edit\n"
+        );
     }
 }

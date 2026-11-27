@@ -1181,3 +1181,44 @@ async fn a_run_that_rewrites_a_tracked_file_leaves_it_as_committed_and_keeps_the
         1
     );
 }
+
+#[tokio::test]
+async fn a_second_run_names_its_own_restore_not_the_one_before() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    for f in ["a.yaml", "b.yaml"] {
+        std::fs::write(ws.join(f), "committed\n").unwrap();
+    }
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "seeds"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    let mut notices = vec![];
+    for file in ["a.yaml", "b.yaml"] {
+        let bin = fake_iii(&h, &format!("printf 'rewritten\\n' > {file};"));
+        use_iii(&h, &server, &bin).await;
+        set_workers(&h, ONLY_ALPHA);
+        start(&h.ctx, "chk".into()).await.unwrap();
+        let run = ended(&h, "chk").await;
+        assert_eq!(run.restored, vec![file.to_string()]);
+        let c = h.ctx.store.read(|s| s.find_check("chk").cloned()).unwrap();
+        let n: Vec<_> = c
+            .problems
+            .iter()
+            .filter(|p| p.code == "RUN_FILES_RESTORED")
+            .collect();
+        assert_eq!(n.len(), 1);
+        notices.push((n[0].detail.clone().unwrap(), run.id));
+    }
+    assert!(
+        notices[1].0.starts_with("b.yaml") && notices[1].0.contains(&notices[1].1),
+        "{}",
+        notices[1].0
+    );
+    assert!(!notices[1].0.contains("a.yaml"));
+}

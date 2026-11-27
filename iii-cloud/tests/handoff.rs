@@ -899,6 +899,8 @@ async fn a_turn_that_ends_on_a_folder_proposal_is_waiting_for_the_person_not_don
         a.question.as_deref(),
         Some("Confirm the worktree folder in the chat (Use for chat), then the agent continues.")
     );
+    // The person answers in the chat: the page must count it as theirs.
+    assert_eq!(a.question_source, Some(QuestionSource::Agent));
     assert!(
         h.fake.kinds().iter().all(|k| k != "agent:true"),
         "not a terminal event: {:?}",
@@ -1149,6 +1151,11 @@ async fn a_refused_continue_is_not_counted_and_is_tried_again_after_the_window()
     assert_eq!(
         a.question.as_deref(),
         Some("Your agent stopped; open the chat to see what it needs.")
+    );
+    assert_eq!(
+        a.question_source,
+        Some(QuestionSource::Agent),
+        "the chat is where to look"
     );
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(sent(&h).len(), 1, "one try inside the window");
@@ -1978,6 +1985,16 @@ async fn a_turn_that_ended_on_an_armed_wake_waits_for_the_event_not_the_person()
             Some("Your agent stopped before running it here like the cloud."),
             None
         )
+    );
+    assert_eq!(
+        iii_cloud::status::status(&h.ctx, StatusRequest::default())
+            .await
+            .unwrap()
+            .agent
+            .unwrap()
+            .question_source,
+        Some(QuestionSource::Check),
+        "the page lists the missing run itself"
     );
 }
 
@@ -3486,7 +3503,7 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
         .map(|_| p("SECRET_MISSING", "A secret has no value"))
         .collect();
     assert_eq!(
-        waits_for_person_text(&values),
+        waits_for_person_text(&values, &[]),
         "Your agent's part is done for now. It waits for 8 values: set them in Secrets and variables."
     );
     // Not only values: one line per distinct title, a count when it repeats, four lines at most.
@@ -3500,7 +3517,16 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
         p("D", "d"),
     ];
     assert_eq!(
-        waits_for_person_text(&mixed),
+        waits_for_person_text(&mixed, &[]),
         "2 × A secret has no value\nDocker is not running\na\nb\nand 2 more"
+    );
+    // Names, not problems: two problems about one unset name are one value.
+    let two = vec![
+        p("SECRET_MISSING", "A secret has no value"),
+        p("LOCAL_VARIABLE_UNSET", "STRIPE_KEY has no value here"),
+    ];
+    assert_eq!(
+        waits_for_person_text(&two, &["STRIPE_KEY".to_string()]),
+        "Your agent's part is done for now. It waits for 1 value: set it in Secrets and variables."
     );
 }
