@@ -1477,6 +1477,13 @@ export function CheckStage(props: CheckStageProps) {
   const current = new Set(workingOnIds(s))
   if (working && !lines.some((l) => l.id && current.has(l.id))) current.clear()
   const leader = working ? (lines.find((l) => l.id && current.has(l.id)) ?? lines[0]) : null
+  // The agent is not working and something is open for it: the next step is the chat, said beside the sentence.
+  const nudge =
+    !!a &&
+    (a.state === 'waiting' || a.state === 'stalled') &&
+    (lines.length > 0 || run?.status === 'failed') &&
+    !!a.session_id &&
+    canOpenChat(host)
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)
@@ -1581,7 +1588,7 @@ export function CheckStage(props: CheckStageProps) {
           }
           end={
             engaged && a ? (
-              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} />
+              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
@@ -1598,6 +1605,14 @@ export function CheckStage(props: CheckStageProps) {
                   ? (a.question ?? `No progress for ${minutesLabel(idle)}. It may be stuck: open its chat, or stop it.`)
                   : folder}
             </p>
+          ) : null}
+          {nudge ? (
+            <div className="iii-cloud-cs-agentnote iii-cloud-cs-nudge">
+              <span>Your agent is not working on this. Tell it in the chat, or check again.</span>
+              <Button size="sm" variant="secondary" onClick={() => void openAgentChat(host, s)}>
+                Open chat
+              </Button>
+            </div>
           ) : null}
           <ul className="iii-cloud-cs-rows">
             {lines.map((l) => {

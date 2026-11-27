@@ -1324,6 +1324,20 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
   })
 
+  it('offers the next step beside the sentence: Open chat as a button, with one line', async () => {
+    const openScreen = vi.fn()
+    await stage(waiting(), {}, { openScreen })
+    const t = region('Your agent')?.textContent ?? ''
+    expect(t).toContain('Your agent is not working on this. Tell it in the chat, or check again.')
+    const open = [...el.querySelectorAll('button')].filter((b) => b.textContent === 'Open chat')
+    expect(open).toHaveLength(1)
+    await click(open[0])
+    expect(openScreen).toHaveBeenCalled()
+    // A working agent has no such line.
+    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).not.toContain('is not working on this')
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
