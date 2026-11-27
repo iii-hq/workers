@@ -7,7 +7,6 @@ import {
   stopTurn,
   toSkillOptions,
   toSystemPromptOptions,
-  turnRest,
 } from './harness-send'
 
 function fakeClient(impl?: (fn: string, payload: unknown) => unknown) {
@@ -106,45 +105,6 @@ describe('isTurnActive', () => {
     expect(isTurnActive('completed')).toBe(false)
     expect(isTurnActive('cancelled')).toBe(false)
     expect(isTurnActive('failed')).toBe(false)
-  })
-})
-
-describe('turnRest', () => {
-  const ended = {
-    status: 'completed' as const,
-    expects_wake: false,
-    open_asks: 0,
-  }
-
-  it('tells a completed turn that waits for a wake from one that ended', () => {
-    expect(turnRest(ended)).toBe('ended')
-    expect(turnRest({ ...ended, expects_wake: true })).toBe('waiting')
-  })
-
-  it('is null for a turn that did not complete', () => {
-    for (const status of [
-      'running',
-      'awaiting_functions',
-      'cancelled',
-      'failed',
-    ] as const) {
-      expect(turnRest({ ...ended, status })).toBeNull()
-      expect(turnRest({ ...ended, status, expects_wake: true })).toBeNull()
-    }
-  })
-
-  it('is null while a question card is up, whether or not a wake is armed', () => {
-    expect(turnRest({ ...ended, open_asks: 1 })).toBeNull()
-    expect(turnRest({ ...ended, open_asks: 2 })).toBeNull()
-    expect(turnRest({ ...ended, open_asks: 1, expects_wake: true })).toBeNull()
-  })
-
-  it('is null for an older harness without open_asks, and with no turn', () => {
-    expect(turnRest({ ...ended, open_asks: undefined })).toBeNull()
-    expect(
-      turnRest({ ...ended, open_asks: undefined, expects_wake: true }),
-    ).toBeNull()
-    expect(turnRest(null)).toBeNull()
   })
 })
 

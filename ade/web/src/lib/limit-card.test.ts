@@ -3,7 +3,6 @@ import { usageFixture } from '@/stories/fixtures/claude-accounts-fixtures'
 import type { Message, SystemMessage } from '@/types/chat'
 import type { ClaudeAccount } from './backend/claude-accounts'
 import {
-  accountFailure,
   dismissLimit,
   lastTurnFailure,
   limitCardModel,
@@ -96,19 +95,6 @@ describe('limitCardModel', () => {
     })
     // Personal's reading still says 100 %, but its window reset since.
     expect(limitCardModel({ ...later, failure: null })).toBeNull()
-  })
-
-  it('names the last turn failing on its account', () => {
-    expect(
-      accountFailure(
-        failure({
-          usageLimit: { window: null, resetsAtMs: null, account: null },
-        }),
-      ),
-    ).toBe(true)
-    expect(accountFailure(failure({ unknownAccount: 'gone' }))).toBe(true)
-    expect(accountFailure(failure({ summary: 'billing' }))).toBe(false)
-    expect(accountFailure(null)).toBe(false)
   })
 
   it("fills a failure's missing window from the account's reading", () => {

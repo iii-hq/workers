@@ -64,8 +64,8 @@ export interface LimitCardProps {
 type Outcome = 'retried' | 'done'
 
 /**
- * The limit card (§4.3.4, D135), in place of "Turn ended · Continue" while
- * it shows: "Personal reached its 5-hour limit", when it resets, "Continue
+ * The limit card (§4.3.4, D135), above the composer while it shows:
+ * "Personal reached its 5-hour limit", when it resets, "Continue
  * in Work" (the account with the most room, when one has room), "Other…"
  * (the accounts with their use), and "Make Work the global" when the
  * conversation follows the global. Once the window has reset: "The limit
