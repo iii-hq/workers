@@ -959,11 +959,19 @@ impl Exec {
             .store
             .read(|s| s.project.as_ref().map(|p| PathBuf::from(&p.path)))
             .unwrap_or_else(|| self.workspace.clone());
+        // The same plan the check read, saved with it: what iii cloud will resolve.
+        let cloud_set =
+            std::fs::read_to_string(crate::deploy::plan_file(&self.ctx, &self.check_id))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .map(|p| crate::values::cloud_set_in(&p))
+                .unwrap_or_default();
         let filled = crate::values::here_values(
             &checkout,
             &self.workspace,
             self.manifest_rel.as_deref(),
             &self.env,
+            &cloud_set,
         );
         {
             let mut known = self.ctx.known_secrets.lock().unwrap();

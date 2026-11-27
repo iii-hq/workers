@@ -429,6 +429,22 @@ pub fn worktree_env(workspace: &Path, m: &Manifest) -> Vec<(String, String)> {
     out
 }
 
+/// Names the compose file reads with an empty default (`${NAME:-}`) and no read without a default.
+/// iii cloud gives them their saved value when it has one, so the run here must too.
+pub fn empty_default_variables(m: &Manifest) -> Vec<String> {
+    let uses = m.variable_uses().0;
+    let mut found: Vec<String> = vec![];
+    for u in &uses {
+        if u.default.as_deref() == Some("")
+            && !found.contains(&u.name)
+            && !uses.iter().any(|x| x.name == u.name && x.default.is_none())
+        {
+            found.push(u.name.clone());
+        }
+    }
+    found
+}
+
 /// Names the compose file reads with no default (`${NAME}`), in order, without repeats.
 pub fn required_variables(m: &Manifest) -> Vec<String> {
     let mut found: Vec<String> = vec![];
@@ -631,6 +647,8 @@ pub struct LocalInput<'a> {
     /// Names the run here takes from the person's folder's env files
     /// (`values::here_values`): they have a value here.
     pub filled: &'a [String],
+    /// Names iii cloud has a value for in this environment (the plan's variables with status `set`).
+    pub cloud_set: &'a [String],
     /// `settings` of the environment (`GET .../environments/{e}`).
     pub settings: &'a Value,
     /// `GET /support-matrix`, when it answered.
@@ -1006,7 +1024,11 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 out.push(problem);
                 continue;
             }
-            if of_name().any(|x| x.default.is_none()) {
+            // `${NAME:-}` that iii cloud has a value for: the cloud gives it that value, so the run needs it too.
+            if of_name().any(|x| x.default.is_none())
+                || (i.cloud_set.iter().any(|n| n == name)
+                    && empty_default_variables(m).iter().any(|n| n == name))
+            {
                 seen.push(name);
                 if !env.iter().any(|e| e == name) {
                     out.push(here(
@@ -1155,6 +1177,7 @@ mod tests {
             workspace: Path::new("/r"),
             manifest: Some(&m),
             filled: &[],
+            cloud_set: &[],
             settings: &serde_json::json!({}),
             matrix: None,
             local_iii: None,

@@ -1021,3 +1021,32 @@ async fn more_than_four_names_with_uneven_delays_never_run_more_than_four_at_onc
         .unwrap();
     assert!((2..=4).contains(&most), "{most} in flight at once");
 }
+
+/// A `${NAME:-}` that iii cloud has a value for is resolved here like the cloud will: from the folder's env files,
+/// or `unset` (a skip runs it empty); one the cloud lacks stays `not_needed`.
+#[tokio::test]
+async fn an_empty_default_set_in_iii_cloud_needs_its_value_here() {
+    let w = world(false, "developer").await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1{}", vars(ENV))))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"variables": [
+            {"name": "OPTIONAL_FLAG", "type": "variable", "value": "x", "status": "set", "required_by": ["api"], "applies": null, "updated_at": null}
+        ]})))
+        .with_priority(1)
+        .mount(&w.server)
+        .await;
+    let here_of = |v: &Values, n: &str| (item(v, n).here, item(v, n).here_file.clone());
+    let v = read(&w).await;
+    assert_eq!(here_of(&v, "OPTIONAL_FLAG"), (Here::Unset, None));
+    assert_eq!(
+        here_of(&v, "RELEASE_SHA"),
+        (Here::NotNeeded, None),
+        "a non-empty default is untouched"
+    );
+    std::fs::write(w.checkout.join("api/.env.test"), "OPTIONAL_FLAG=on\n").unwrap();
+    let v = read(&w).await;
+    assert_eq!(
+        here_of(&v, "OPTIONAL_FLAG"),
+        (Here::FromFile, Some("api/.env.test".into()))
+    );
+}
