@@ -265,7 +265,7 @@ export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
  * env files", the values card's count and the review dialog's own choices, so the three cannot disagree.
  */
 export const preselected = (i: ValueItem): Suggestion[] =>
-  i.need === 'has_default' || i.in_cloud === 'set' || i.skipped || i.database || i.invalid_name
+  i.need === 'has_default' || i.in_cloud !== 'unset' || i.skipped || i.database || i.invalid_name
     ? []
     : i.suggestions.filter((x) => x.preselect)
 

@@ -210,7 +210,7 @@ function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
         : i.in_cloud === 'set'
           ? ['success', 'ok', `Set in iii cloud${i.updated_at ? ` · ${ago(i.updated_at)}` : ''}`]
           : i.in_cloud === 'unknown'
-            ? ['danger', 'alert', "Couldn't read iii cloud"]
+            ? ['danger', 'alert', "iii cloud's value could not be read"]
             : ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
   return (
     <Chip tone={tone} className="iii-cloud-val-state">
