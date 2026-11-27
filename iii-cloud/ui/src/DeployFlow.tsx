@@ -90,16 +90,18 @@ const DONE: Record<string, string> = {
 }
 const DOING: Record<string, string> = { ...DONE, build: 'Building the image', workers: 'Starting the workers' }
 /** A stage row's words, as the canvas has them: done in the past tense, the one going or stopped in the present. */
-function stageSays(r: StageRow, d: Deploy, env: string): ReactNode {
+function stageSays(r: StageRow, d: Deploy, env: string, machine: boolean): ReactNode {
   const sha = sha7(d.commit.sha)
   if (r.key === 'plan') {
-    return r.tone === 'ok' ? (
+    // "Pushed" only when this page started it; a redeploy or a rollback made in the console pushed nothing.
+    return machine && r.tone === 'ok' ? (
       <>
         Pushed <Mono>{sha}</Mono> {`to ${env}'s branch and started #${d.number}`}
       </>
     ) : (
       <>
-        Pushing <Mono>{sha}</Mono> {`to ${env}'s branch`}
+        {`Deployment #${d.number} of `}
+        <Mono>{sha}</Mono> started
       </>
     )
   }
@@ -755,7 +757,9 @@ function Follow({
           {stageRows(d).map((r) => (
             <li key={r.key} className="iii-cloud-cs-stage" data-tone={r.tone}>
               <span className="iii-cloud-stagedot" aria-hidden />
-              <span className="iii-cloud-cs-slabel">{stageSays(r, d, env.name)}</span>
+              <span className="iii-cloud-cs-slabel">
+                {stageSays(r, d, env.name, deployOrigin(status, d).from === 'machine')}
+              </span>
               {held && r.tone === 'alert' && d.error && stageKeyOf(d.error.stage) === r.key ? (
                 <span className="iii-cloud-cs-sreason">{d.error.hint || failureWords(d.error)}</span>
               ) : null}

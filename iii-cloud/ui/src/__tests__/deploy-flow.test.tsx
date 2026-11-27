@@ -375,6 +375,18 @@ describe('the deployment', () => {
     })
   })
 
+  it('the first stage says "pushed" only when this page started the deployment', async () => {
+    await board('deploy-follow-running')
+    const first = () => el.querySelector('[aria-label="Deployment stages"] li')?.textContent ?? ''
+    expect(first()).toContain("Pushed 9c04e7f to dev's branch and started #6")
+    // A deployment made in the console (no mark of this page) pushed nothing.
+    const s = boards['deploy-follow-running'].status
+    const hand = { ...s.deploys[0], check_id: null, approved_by_worker: false, from_console: true, type: 'redeploy' }
+    await mount({ ...s, deploys: [hand, ...s.deploys.slice(1)] }, ctx({ ...route, deploy: hand.id }))
+    expect(first()).toContain('Deployment #6 of 9c04e7f started')
+    expect(first()).not.toContain('Pushed')
+  })
+
   it('the stages say Deployments, never Deploys', async () => {
     await board('deploy-follow-live')
     expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)

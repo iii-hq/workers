@@ -988,7 +988,7 @@ describe('the check follows the canvas', () => {
     expect(el.querySelector('a.iii-cloud-link')?.textContent).toBe('See changes')
     expect(byLink('See the file')?.getAttribute('href')).toContain('/blob/')
     expect(el.querySelectorAll('.iii-cloud-stephead-sub p')).toHaveLength(1)
-    expect(text()).toContain('A new commit before you confirm runs the check again.')
+    expect(text()).toContain('A new commit before you confirm needs a new check.')
     expect(text()).not.toContain('Pinned to the plan')
     expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
     await stage(B('deploy-passed'))
