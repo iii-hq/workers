@@ -440,11 +440,26 @@ async fn another_compose_file_is_planned_and_checked_here_and_kept_on_the_check(
         "{:?}",
         codes(&c)
     );
-    // The environment's own file is no ask: nothing extra goes to the cloud.
+    // A check that names no file stays on the newest check's.
     let c = check(
         &h.ctx,
         CheckRequest {
-            commit: Some(head),
+            commit: Some(head.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.manifest.as_deref(), Some("worker-compose-next.yaml"));
+    assert_eq!(
+        asked_manifests(&server).await.last(),
+        Some(&Some("worker-compose-next.yaml".to_string()))
+    );
+    // The environment's own file, named, is the way back: no ask to the cloud.
+    let c = check(
+        &h.ctx,
+        CheckRequest {
+            commit: Some(head.clone()),
             manifest: Some("worker-compose.yaml".into()),
             ..Default::default()
         },
@@ -454,6 +469,18 @@ async fn another_compose_file_is_planned_and_checked_here_and_kept_on_the_check(
     assert_eq!(c.manifest.as_deref(), Some("worker-compose.yaml"));
     assert_eq!(asked_manifests(&server).await.last(), Some(&None));
     assert!(!c.problems.iter().any(|p| p.title.contains("ONLY_IN_NEXT")));
+    // And a plain check after it stays there.
+    let c = check(
+        &h.ctx,
+        CheckRequest {
+            commit: Some(head),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.manifest.as_deref(), Some("worker-compose.yaml"));
+    assert_eq!(asked_manifests(&server).await.last(), Some(&None));
 }
 
 #[tokio::test]

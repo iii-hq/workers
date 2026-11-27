@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { clock } from '../asked'
 import { type Next, nextAction } from '../EnvOverview'
+import { appFile, withAppFile } from '../model'
 import { valueName, needsYou as youOf } from '../findings'
 import { agent, apiPath, base, check, DEPLOY_BASE, ENV, pr, problems, ready, T } from '../fixtures/base'
 import { DEV, devDeploys } from '../fixtures/deploys'
@@ -413,5 +414,17 @@ describe('a page that is out of date', () => {
     down = true
     await click(btn('Refresh'))
     expect((btn('Deploy to dev') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe("the compose file of an environment's work is its newest check's", () => {
+  it("Next and a page check name the newest check's file, and the environment's own when it has none", () => {
+    const x = 'api/worker-compose-cloud.yaml'
+    const s = dev({ check: { ...passed, manifest: x } })
+    expect(appFile(s)).toMatchObject({ path: x, switches: true })
+    expect(withAppFile(s, { run: true })).toEqual({ run: true, manifest: x })
+    const own = dev({ check: { ...passed, manifest: null } })
+    expect(withAppFile(own).manifest).toBe(appFile(own).path)
+    expect(appFile(own).switches).toBe(false)
   })
 })

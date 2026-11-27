@@ -40,7 +40,7 @@
       },
       "manifest": {
         "default": null,
-        "description": "A `worker-compose*.yaml` from the repository root. Default: the latest check's file when it is of this environment, else the environment's.",
+        "description": "A `worker-compose*.yaml` from the repository root. Default: the newest check's file when it is of this environment, else the environment's.",
         "type": [
           "string",
           "null"

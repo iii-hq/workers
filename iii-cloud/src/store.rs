@@ -145,6 +145,16 @@ impl State {
             .find(|c| c.id == id)
     }
 
+    /// The compose file `env_id`'s work is on: its newest check's, else none
+    /// (the caller falls back to the environment's own). One answer for every
+    /// caller; naming a file in a request is how it changes.
+    pub fn work_file(&self, env_id: &str) -> Option<String> {
+        self.checks
+            .iter()
+            .find(|c| c.environment_id == env_id)
+            .and_then(|c| c.manifest.clone())
+    }
+
     /// Record `check` as the latest and keep it in the history.
     pub fn put_check(&mut self, check: Check) {
         self.put_check_for(check, true);

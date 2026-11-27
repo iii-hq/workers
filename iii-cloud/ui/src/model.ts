@@ -729,10 +729,9 @@ export function appFile(s: Status): { path: string; switches: boolean; note: str
   }
 }
 
-/** A page check keeps to the chosen file: without it, a check is of the environment's. */
+/** A page check names its file (the page's own), so it can also go back to the environment's. */
 export function withAppFile(s: Status, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  const f = appFile(s)
-  return f.switches ? { ...payload, manifest: f.path } : payload
+  return { ...payload, manifest: appFile(s).path }
 }
 
 /** Why the picker can't take a file. */

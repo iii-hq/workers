@@ -839,7 +839,6 @@ async fn the_brief_names_the_environments_compose_file_and_the_others() {
     // No manifest on the hand-off's environment: the root file.
     h.ctx.store.update(|s| {
         s.handoffs[0].env.as_mut().unwrap().manifest = None;
-        s.handoffs[0].manifest = None;
     });
     let brief = iii_cloud::status::status(&h.ctx, StatusRequest::default())
         .await
@@ -2194,12 +2193,6 @@ async fn a_hand_off_from_a_check_of_another_file_keeps_the_agents_checks_on_it()
         .mount(&server)
         .await;
     let a = create(&h.ctx, ready_req()).await.unwrap();
-    let stored = h
-        .ctx
-        .store
-        .read(|s| s.handoffs.iter().find(|x| x.id == a.id).cloned())
-        .unwrap();
-    assert_eq!(stored.manifest.as_deref(), Some("worker-compose-next.yaml"));
     // The brief names the chosen file, and the environment's is one of the others.
     let brief = iii_cloud::status::status(&h.ctx, StatusRequest::default())
         .await
@@ -2250,27 +2243,96 @@ async fn a_hand_off_from_a_check_of_another_file_keeps_the_agents_checks_on_it()
     );
 }
 
+const OTHER: &str = "worker-compose-cloud.yaml";
+
+/// A second compose file next to the environment's, committed; `healthcheck` makes it clean.
+fn commit_other_file(ws: &std::path::Path, healthcheck: bool) {
+    let text = if healthcheck {
+        "containers: {}\ncloud:\n  healthcheck:\n    path: /health\n"
+    } else {
+        "containers: {}\n"
+    };
+    std::fs::write(ws.join(OTHER), text).unwrap();
+    std::fs::write(ws.join("worker-compose-cloud.lock"), "").unwrap();
+    git(ws, &["add", "-A"]);
+    git(ws, &["commit", "-m", "cloud file"]);
+}
+
+/// The agent checked another file than the environment's (which is left with problems): the
+/// worker's own check after the turn stays on it, and the agent is told only that file's problems.
 #[tokio::test]
-async fn a_hand_off_from_a_check_of_the_environments_file_carries_none() {
-    let (h, _s, _r, _ws) = setup().await;
+async fn the_continue_lists_the_problems_of_the_newest_checks_file_only() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    // The environment's own file is clean; the other one has no healthcheck.
+    clean_manifest(&ws);
+    commit_other_file(&ws, false);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    iii_cloud::check::check(
+        &h.ctx,
+        CheckRequest {
+            handoff_id: Some(created.id.clone()),
+            manifest: Some(OTHER.into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    for _ in 0..200 {
+        if !sent(&h).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let messages = sent(&h);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("HEALTHCHECK_MISSING"),
+        "{}",
+        messages[0]
+    );
+    let newest = h.ctx.store.read(|s| s.checks[0].manifest.clone());
+    assert_eq!(newest.as_deref(), Some(OTHER));
+}
+
+/// The real case: the newest check is the ready one of another file, and the environment's own
+/// file still has problems. Nothing is sent and the agent is not stalled.
+#[tokio::test]
+async fn a_ready_check_of_another_file_sends_no_continue_and_is_not_stalled() {
+    let (h, _s, _r, ws) = setup().await;
+    accept_sends(&h);
+    // The environment's own file keeps its problems; the other one is clean.
+    commit_other_file(&ws, true);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    seed_passed_run(&h, &ws);
     h.ctx.store.update(|s| {
-        s.check.as_mut().unwrap().manifest = Some("worker-compose.yaml".into());
-        s.checks[0].manifest = Some("worker-compose.yaml".into());
-        s.project
-            .as_mut()
+        s.checks
+            .iter_mut()
+            .find(|c| c.id == "agent-check")
             .unwrap()
-            .environment
-            .as_mut()
-            .unwrap()
-            .manifest = Some("worker-compose.yaml".into());
+            .manifest = Some(OTHER.into());
     });
-    let a = create(&h.ctx, ready_req()).await.unwrap();
-    let stored = h
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "done", |a| a.state == AgentPhase::Done).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(sent(&h).is_empty(), "{:?}", sent(&h));
+    let (newest, state) = h
         .ctx
         .store
-        .read(|s| s.handoffs.iter().find(|x| x.id == a.id).cloned())
-        .unwrap();
-    assert_eq!(stored.manifest, None);
+        .read(|s| (s.checks[0].manifest.clone(), s.handoffs[0].agent.state));
+    assert_eq!(
+        newest.as_deref(),
+        Some(OTHER),
+        "the worker's check stayed on it"
+    );
+    assert_eq!(state, AgentPhase::Done);
 }
 
 #[tokio::test]
