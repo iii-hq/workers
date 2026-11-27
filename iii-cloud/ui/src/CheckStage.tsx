@@ -25,7 +25,7 @@ import { AgentControls } from './AgentRow'
 import { useDeployments } from './api'
 import { askedAt, clock, FOLDER_NOTE, useFolderNote, useLaunch } from './asked'
 import { ConfigImportDialog } from './ConfigImport'
-import { configAction, findings, type Item, location, needsYou } from './findings'
+import { configAction, findings, type Item, location, needsYou, valuesPlan } from './findings'
 import { canOpenChat, handOff, openAgentChat } from './handoff'
 import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom } from './hub'
 import {
@@ -70,6 +70,8 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
+  VALUE_CODES,
+  variableName,
   waitsFor,
   wayOf,
   workingOnIds,
@@ -1043,6 +1045,8 @@ export function CheckStage(props: CheckStageProps) {
     watch.current = null
     // Not for the check of the source the person replaced: its problems are of what they left.
     if (movedFrom === c.id) return
+    // A check whose plan could not be read is partial: the agent starts on the next one that has a plan.
+    if (c.plan.status === 'unavailable') return
     if (!auto || c.ready || c.handoff_id || agentOn(s) || askedAt(c.id) || hubOf(host).stopped(envId)) return
     if (openProblems(s).some((x) => x.owner === 'agent')) void handOff(host, s, 'ready')
   })
@@ -1231,6 +1235,15 @@ export function CheckStage(props: CheckStageProps) {
           { label: 'Sign in again', onClick: () => void call('connect', 'iii-cloud::connect', { method: 'browser' }) },
         ],
         lock: 'Sign in again first.',
+      })
+    }
+    if (c.plan.status === 'unavailable' && !running && !replaced) {
+      stops.push({
+        key: 'plan',
+        variant: 'warn',
+        headline: "iii cloud's plan could not be read",
+        detail: c.plan.message ?? "iii cloud couldn't check this commit just now. Check again in a moment.",
+        acts: [{ label: 'Check again', onClick: checkAgain }],
       })
     }
     if (staleSource && !running) {
@@ -1583,7 +1596,7 @@ export function CheckStage(props: CheckStageProps) {
           here: c && fresh ? runPart(s, c, now, running, runItAgain) : skeleton('next', 5),
         }
       : null
-  const pending = c && !running && !ready && !replaced ? cloudPendingNote(s) : null
+  const pending = c && !running && !ready && !replaced && c.plan.status !== 'unavailable' ? cloudPendingNote(s) : null
   // " · 14 s so far, about 20 s left": while it runs; the time left is the median of this environment's earlier checks.
   const took = (s.checks ?? [])
     .filter((x) => x.environment_id === envId && x.id !== c?.id && x.duration_ms > 0)
@@ -1642,8 +1655,18 @@ export function CheckStage(props: CheckStageProps) {
   const doneN = fixed.length + fromFile.length
   // Passed: who did what is the news ("You did 2 · your agent fixed 2"); before that, one count of what is done.
   const agentFixed = fixed.filter((i) => i.owner === 'agent').length
+  // The values you set since the hand-off began: names its brief listed as the person's to set that the values read
+  // now reports as set. Without a brief or a read there is nothing to count, so "You did" is left out, never 0.
+  const setNow = new Set(valuesPlan(read).set.map((i) => i.name))
+  const valuesYouSet = (s.handoff_brief?.person_problems ?? [])
+    .filter((b) => b.code && VALUE_CODES.has(b.code))
+    .map((b) => variableName({ title: b.title, detail: b.detail, code: b.code ?? null }))
+    .filter((n): n is string => !!n && setNow.has(n))
+  const youDid = doneN - agentFixed + new Set(valuesYouSet).size
   const summary = [
-    ready ? `You did ${doneN - agentFixed} · your agent fixed ${agentFixed}` : `Done ${doneN}`,
+    ready
+      ? [youDid > 0 ? `You did ${youDid}` : null, `your agent fixed ${agentFixed}`].filter(Boolean).join(' · ')
+      : `Done ${doneN}`,
     `Warnings ${warnings.length}`,
     `Checks ${past.length}${lastCheck && !ready ? ` (last ${clock(lastCheck.checked_at)}, ${duration(lastCheck.duration_ms)})` : ''}`,
   ].join(' · ')
@@ -1824,7 +1847,7 @@ export function CheckStage(props: CheckStageProps) {
 
       {ready && c && !runPending ? <Ready s={s} c={c} host={host} /> : null}
 
-      {c && (replaced || doneN || warnings.length || past.length) ? (
+      {c && (replaced || doneN || youDid || warnings.length || past.length) ? (
         <Details summary={replaced ? `Check of the replaced source · ${summary}` : summary}>
           {replaced ? (
             <Group title="The check before you changed the source" count={1}>

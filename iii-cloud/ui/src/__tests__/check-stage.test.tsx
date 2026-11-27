@@ -1347,7 +1347,9 @@ describe('the check follows the canvas', () => {
     expect(text()).not.toContain('Pinned to the plan')
     expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
     await stage(B('deploy-passed'))
-    expect(region('Details')?.textContent).toMatch(/You did \d+ · your agent fixed \d+/)
+    expect(region('Details')?.textContent).toMatch(/your agent fixed \d+/)
+    // nothing the person did can be counted here: no "You did 0"
+    expect(region('Details')?.textContent).not.toContain('You did 0')
   })
 
   it('"Your agent" items are rings, not spinners', async () => {
@@ -1547,6 +1549,59 @@ describe('small things the review found', () => {
     expect(title()).toBe('1 for your agent to fix')
     expect(region('Your agent')?.textContent).toContain('The release command prints its whole environment')
     expect(region('Your agent')?.textContent).toContain('It would write every secret into the log.')
+  })
+
+  it('the values you set since the hand-off began count in "You did N"', async () => {
+    const r = B('deploy-passed')
+    const names8 = Array.from({ length: 8 }, (_, i) => `SET_${i}_KEY`)
+    const brief = {
+      ...(rcFixing.handoff_brief ?? ({} as NonNullable<Status['handoff_brief']>)),
+      kind: 'ready' as const,
+      agent_problems: [],
+      person_problems: names8.map((n) => ({
+        code: 'SECRET_MISSING',
+        owner: 'person' as const,
+        title: `${n} has no value`,
+        file: null,
+        line: null,
+        detail: null,
+        fix: null,
+      })),
+    }
+    const items = names8.map((n) => valueItem(n, { need: 'required', default: null, in_cloud: 'set', suggestions: [] }))
+    const answers = { 'iii-cloud::values': () => ({ ...rcValues, environment_id: r.project?.environment?.id, items }) }
+    await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
+    expect(region('Details')?.textContent).toMatch(/You did 8/)
+    // without the read nothing is invented
+    await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } })
+    expect(text()).not.toContain('You did')
+  })
+
+  it('a plan that could not be read is said where the plan is, with Check again, and the agent does not start on it', async () => {
+    const r = B('deploy-problems')
+    const partial = {
+      ...r,
+      agent: null,
+      handoff_brief: null,
+      check: {
+        ...r.check!,
+        plan: { ...r.check!.plan, status: 'unavailable' as const, message: 'The cloud answered 503.' },
+      },
+    }
+    const h = await stage(partial)
+    const stopBlock = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes("iii cloud's plan could not be read"),
+    )
+    expect(stopBlock?.textContent).toContain('The cloud answered 503.')
+    expect([...(stopBlock?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Check again'])
+    expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Check again')).toHaveLength(1)
+    // the first-time flow: a check that ends with agent problems but no plan does not start the agent
+    await act(async () => hubOf(h.host).checking(1))
+    await act(async () => hubOf(h.host).checking(-1))
+    const ended = { ...partial.check, id: 'chk-partial' }
+    await fire(h, { kind: 'check', id: 'chk-partial', terminal: true, summary: '', record: ended } as ChangeEvent)
+    await flush()
+    expect(handoffs(h)).toHaveLength(0)
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
