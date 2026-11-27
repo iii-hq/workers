@@ -28,8 +28,12 @@ pub fn valid_name(name: &str) -> bool {
 /// twice returns the open request.
 pub async fn ask(ctx: &Arc<Ctx>, request: SecretAsk) -> Res<SecretRequest> {
     if !valid_name(&request.name) {
-        return Err(CloudError::invalid(
-            "name must match ^[A-Z_][A-Z0-9_]*$ and not start with III_",
+        return Err(CloudError::new(
+            "NOT_A_SECRET",
+            format!(
+                "`iii-cloud::secret` asks the person for the value of one secret the compose file reads. `{}` is not a variable name. A decision goes to the person with `harness::ask`.",
+                request.name
+            ),
         ));
     }
     // A database URL is never the person's to give: iii cloud makes the database.
@@ -45,6 +49,21 @@ pub async fn ask(ctx: &Arc<Ctx>, request: SecretAsk) -> Res<SecretRequest> {
     }
     let sel = crate::check::selected_for(ctx, request.handoff_id.as_deref()).await?;
     let mode = request.mode.unwrap_or_default();
+    // Asking for a value is for a name the compose file reads. A note (not needed, decide) may name
+    // one the file no longer reads, so only an ask is checked. No readable file: nothing to check.
+    if mode == SecretMode::Ask
+        && let Ok(manifest) = crate::values::manifest_of(ctx, &sel, None)
+        && let Some(m) = crate::local::Manifest::load(&sel.workspace, Some(&manifest))
+        && !m.variable_uses().0.iter().any(|u| u.name == request.name)
+    {
+        return Err(CloudError::new(
+            "NOT_READ_BY_FILE",
+            format!(
+                "`{}` is not read by {manifest}. Add `${{{}}}` where it is used first, or ask the person with `harness::ask`.",
+                request.name, request.name
+            ),
+        ));
+    }
     let existing = ctx.store.read(|s| {
         s.secrets
             .iter()
