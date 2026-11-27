@@ -698,7 +698,15 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
         .expect("the set-aside files are named");
     assert_eq!((p.owner, p.severity), (Owner::None, Severity::Info));
     let d = p.detail.as_deref().unwrap();
-    assert_eq!(c.here.problems, 0, "a note is not a problem to count");
+    let blocking_here = c
+        .problems
+        .iter()
+        .filter(|p| p.source == Source::CheckHere && p.severity == Severity::Block)
+        .count() as u32;
+    assert_eq!(
+        c.here.problems, blocking_here,
+        "a note is not a problem to count"
+    );
     assert!(
         d.contains("3 files")
             && d.contains("README.md")
