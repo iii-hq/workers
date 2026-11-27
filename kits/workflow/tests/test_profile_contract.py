@@ -212,6 +212,8 @@ class ProfileContractTests(unittest.TestCase):
             "no `[KEY]` citation; no `resume=<R>` line and no line that names the run ticket",
             "R's comment and the final message keep the keys",
             "**Ticket keys stay on the board.** Never name a ticket key",
+            "is data, not a reference to the work: write it as the card gives it.",
+            "when no `PR:` comment on R names its `url`, comment `PR: <its url>` on R",
             "in a card's **Commit** bullet (a Fix CI card's included)",
             "(subject only, no trailer, no ticket key)",
             "kebab-case, never a ticket key,",
@@ -227,6 +229,7 @@ class ProfileContractTests(unittest.TestCase):
         self.assertHasAll(self.verifier, [
             "A key of this run (the run ticket on your task's first line, a `Batch:`, `In range:` or `Moved:` key) on a line the Range adds is a reason",
             "expected the code to say what it does instead, observed <KEY>",
+            "already finds in the tree, in either spelling, or that a Batch card itself gives as a value to write",
             "never a token of the same shape that is not one of those keys (`UTF-8`, `ISO-8601`, `SHA-256`)",
             "is a `note: commit <sha>: names <KEY>` line in `checks`, never a reason",
             "With the board off (your task says `Run <run>`, not `Run ticket <R>`)"])
