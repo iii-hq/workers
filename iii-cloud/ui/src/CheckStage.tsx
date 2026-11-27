@@ -1131,15 +1131,25 @@ export function CheckStage(props: CheckStageProps) {
         id: null,
       })),
   ]
-  // A failed local run is the agent's to fix unless it is Docker, a replaced run, or something the person's own values
-  // explain (an open problem of the run here, or a value still missing): the page has no owner for a run's failure, so
-  // it is told the way the run's stop is (`stops` below): by what else is open. It is one more row for the agent.
+  // A failed local run: the worker says whose it is (`owner`, and `withheld` when the person's own open thing comes
+  // first). An older shape without it is told the way the run's stop is: the agent's unless it is Docker, a replaced
+  // run, or something the person's values explain. The agent's is one more row for it.
   const runError = run?.status === 'failed' && !running ? run.error : null
   const agentRun =
     !!runError &&
-    !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
-    !openProblems(s, true).some((x) => x.source === 'check_here') &&
-    !missing.length
+    (runError.owner
+      ? runError.owner === 'agent' && !runError.withheld
+      : !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
+        !openProblems(s, true).some((x) => x.source === 'check_here') &&
+        !missing.length)
+  // What the person owes first, said for a withheld failure.
+  const yours =
+    needItems[0]?.title ??
+    (missing.length
+      ? `${plural(missing.length, 'value')} to set`
+      : decide[0]
+        ? `${decide[0].setting} to decide`
+        : 'what waits for you above')
   if (agentRun && runError)
     lines.push({
       key: 'run-failed',
@@ -1295,6 +1305,9 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
+            {err.owner === 'person' ? " This one is yours to fix here, not your agent's." : ''}
+            {err.owner === 'interrupted' ? ' The run was interrupted: run it again.' : ''}
+            {err.owner === 'agent' && err.withheld ? ` Your part comes first: ${yours}.` : ''}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
             {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
             {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}

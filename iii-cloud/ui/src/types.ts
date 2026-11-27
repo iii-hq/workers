@@ -291,7 +291,15 @@ export type Run = {
   log_tail: string[]
   /** Where the run's whole redacted log is, on this machine. */
   log_path?: string | null
-  error: { stage: Stage['name']; code: string; message: string } | null
+  error: {
+    stage: Stage['name']
+    code: string
+    message: string
+    /** Whose the failure is, as the worker judges it (absent from an older shape). */
+    owner?: 'agent' | 'person' | 'interrupted'
+    /** A person-owned blocking problem is open: the worker would not send this failure to the agent. */
+    withheld?: boolean
+  } | null
 }
 
 export type SecretRequest = {
