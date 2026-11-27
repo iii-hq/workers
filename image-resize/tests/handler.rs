@@ -268,15 +268,18 @@ async fn unknown_metadata_keys_are_invalid_args_naming_the_key() {
 }
 
 #[tokio::test]
-async fn deprecated_metadata_keys_are_accepted_and_ignored() {
-    let old = json!({ "format": "jpeg", "width": 50, "height": 50, "target_width": 100 });
-    let call = call(png(400, 300), Some(old)).await;
-    assert!(call.output.contains("closed"), "{}", call.output);
-    let result = call.result.unwrap();
-    // `format` does not set the output format and `width`/`height` do not set the box.
-    assert_eq!(result.format, Format::Png);
-    assert_eq!((result.width, result.height), (100, 75));
-    assert_eq!(decoded_dims(&call.bytes), (100, 75));
+async fn removed_metadata_keys_are_invalid_args_naming_the_key() {
+    for (key, value) in [
+        ("format", json!("jpeg")),
+        ("width", json!(50)),
+        ("height", json!(50)),
+    ] {
+        let message = rejected(call(png(4, 4), Some(json!({ key: value }))).await);
+        assert!(
+            message.contains(&format!("unknown field `{key}`")),
+            "{key}: {message}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -406,19 +409,13 @@ async fn registered_schema_matches_types() {
     assert_eq!(
         keys,
         BTreeSet::from([
-            "format",
-            "height",
             "output_format",
             "quality",
             "strategy",
             "target_height",
             "target_width",
-            "width"
         ])
     );
-    for key in ["format", "width", "height"] {
-        assert_eq!(props[key]["deprecated"], json!(true), "{key}");
-    }
     assert_eq!(props["quality"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(props["quality"]["maximum"].as_f64(), Some(100.0));
     assert_eq!(props["target_width"]["minimum"].as_f64(), Some(1.0));

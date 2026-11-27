@@ -43,9 +43,8 @@ Every `metadata` key is optional:
 | `strategy` | `scale-to-fit` fits the image inside the box; `crop-to-fit` centre-crops it to the box's aspect ratio, then shrinks it to the box | the configured strategy (`scale-to-fit`) |
 | `quality` | 1-100; ignored for `png` | the configured quality (jpeg 85, webp 80) |
 
-`format`, `width` and `height` are deprecated: they are accepted and ignored,
-the worker logs a warning, and they will be removed in the next version. Any
-other key, in `metadata` or beside it, is rejected with `INVALID_ARGS`.
+Any other key, in `metadata` or beside it, is rejected with `INVALID_ARGS`,
+including `format`, `width` and `height` (deprecated in 0.3.0, now removed).
 The input format is detected from the bytes. `output_channel` also carries the
 result as one JSON text frame before the image bytes; byte readers and sinks
 such as `OutputStream.to` never see it.
@@ -124,11 +123,10 @@ page shows an error that tells you to update the ade worker.
 
 - Options sent as a text frame on `input_channel` are rejected; pass them in
   `metadata`.
-- `format`, `width` and `height` in `metadata` are deprecated and ignored,
-  with a warning in the worker log; they will be removed in the next
-  version. Remove them: the input format is detected from the bytes and the
-  source size is in the result. Any other unknown `metadata` key is
-  rejected with `INVALID_ARGS`.
+- `format`, `width` and `height` in `metadata` were deprecated in 0.3.0 and
+  are now removed: like any unknown `metadata` key they are rejected with
+  `INVALID_ARGS` naming the key. Drop them: the input format is detected from
+  the bytes and the source size is in the result.
 - `output_format: 'jpg'` is rejected; use `jpeg`.
 - Images are never enlarged, so crop-to-fit can return less than the box.
 - WebP output is lossy and honours `quality`.

@@ -10,8 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::config::{ResizeConfig, check_quality};
 use crate::processing::{
-    ImageMetadata, ThumbnailMetadata, deprecated_keys, invalid, process_image, resolve_params,
-    sniff,
+    ImageMetadata, ThumbnailMetadata, invalid, process_image, resolve_params, sniff,
 };
 
 /// Largest input read from `input_channel`.
@@ -88,18 +87,8 @@ async fn run(
     let meta = match &req.metadata {
         None | Some(Value::Null) => ImageMetadata::default(),
         // Serde would also take the struct as a positional array.
-        Some(value @ Value::Object(fields)) => {
-            let meta = ImageMetadata::deserialize(value)
-                .map_err(|e| invalid(format!("invalid metadata: {e}")))?;
-            let deprecated = deprecated_keys(fields);
-            if !deprecated.is_empty() {
-                tracing::warn!(
-                    keys = ?deprecated,
-                    "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
-                );
-            }
-            meta
-        }
+        Some(value @ Value::Object(_)) => ImageMetadata::deserialize(value)
+            .map_err(|e| invalid(format!("invalid metadata: {e}")))?,
         Some(_) => return Err(invalid("invalid metadata: expected an object")),
     };
     // Fail a bad override before waiting on the input stream.
