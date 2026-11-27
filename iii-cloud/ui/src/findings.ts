@@ -2,7 +2,7 @@
 // split by owner, then grouped by code and file ("21 variables have no value in iii cloud").
 
 import { checklist, hiddenPerson, isDatabaseVar, problemDetail, problemTitle, VALUE_CODES, variableName } from './model'
-import type { Problem, SecretRequest, Status, Values } from './types'
+import type { Problem, SecretRequest, Status, Suggestion, ValueItem, Values } from './types'
 
 export type Item = {
   key: string
@@ -248,6 +248,16 @@ export function findings(s: Status): Findings {
 /** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
 
+/**
+ * The sources the worker preselects for a name iii cloud has no value for: none for a name with a default, a set,
+ * skipped, database or invalid one (a copy is never preselected). The one rule behind the Secrets screen's "can come from your
+ * env files", the values card's count and the review dialog's own choices, so the three cannot disagree.
+ */
+export const preselected = (i: ValueItem): Suggestion[] =>
+  i.need === 'has_default' || i.in_cloud === 'set' || i.skipped || i.database || i.invalid_name
+    ? []
+    : i.suggestions.filter((x) => x.preselect)
+
 /** The names the compose file reads that iii cloud does not fill in by itself, told apart for the values card. */
 export function valuesPlan(v: Values | null) {
   const items = (v?.items ?? []).filter((i) => !i.database)
@@ -264,13 +274,7 @@ export function valuesPlan(v: Values | null) {
     skipped: rest.filter((i) => !i.asked && i.skipped),
     set: items.filter((i) => i.in_cloud === 'set'),
     /** Not set, and an env file or this environment's address can give the value: the Secrets screen's "can come from your env files". */
-    offered: items.filter(
-      (i) =>
-        i.in_cloud === 'unset' &&
-        !i.invalid_name &&
-        !i.skipped &&
-        i.suggestions.some((x) => x.source === 'env_file' || x.source === 'env_url'),
-    ),
+    offered: items.filter((i) => preselected(i).length > 0),
   }
 }
 
