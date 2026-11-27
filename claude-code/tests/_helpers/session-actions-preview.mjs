@@ -266,6 +266,34 @@ async function testSessionActions(code) {
       Array.from({ length: 21 }, (_, i) => `Burst reply ${i + 1}`),
     );
   });
+  await test('shows the first snapshot when a reply arrives during its read', async (t) => {
+    const { click, shortcut, until, document } = setup(t, { heartbeat: false });
+    const log = () =>
+      Array.from(document.querySelectorAll('[role="log"] p'), (p) => p.textContent).join('\n');
+    const seen = [];
+    const record = new document.defaultView.MutationObserver(() => {
+      const current = log();
+      if (current && seen.at(-1) !== current) seen.push(current);
+    });
+    record.observe(document.body, { childList: true, subtree: true, characterData: true });
+    t.after(() => record.disconnect());
+    // The fixture's shortcuts exist only once the preview has rendered.
+    await until(() => document.querySelector('[aria-label="Open original: Design review"]'));
+    // Hold the first read and the re-read after they read the snapshot.
+    shortcut('KeyP');
+    await click('Open original: Design review');
+    await until(() => document.documentElement.dataset.replyWatches === '1');
+    // A wakeup arrives while the first read is still pending.
+    shortcut('KeyU');
+    shortcut('KeyQ');
+    await until(() => log() === 'The layout review is ready.');
+    shortcut('KeyQ');
+    await until(() => /^Review update 2:/.test(log()));
+    assert.deepEqual(seen, [
+      'The layout review is ready.',
+      'Review update 2: the changes are ready to check.',
+    ]);
+  });
 
   await test('follows console, background and finished originals without a terminal', async (t) => {
     const { click, text, document, focus } = setup(t);
@@ -584,6 +612,8 @@ async function testSessionActions(code) {
 
   // Starts a fork of `name` whose describe stays pending until `release` runs.
   async function pendingFork({ click, shortcut, text }, name) {
+    // The fixture's shortcuts exist only once the preview has rendered.
+    await text(name);
     shortcut('KeyD');
     await click(`Fork ${name}`);
     await click('Create fork');
@@ -614,6 +644,44 @@ async function testSessionActions(code) {
     shortcut('KeyE');
     await text('Separate fork terminal · copy-1');
     assert.equal(openCalls(document), '1');
+  });
+
+  await test('abandons a fork when access is lost while describe is pending', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, shortcut, until } = ui;
+    await pendingFork(ui, 'Design review');
+    shortcut('KeyR');
+    await until(() => !document.querySelector('[aria-label="Open original: Design review"]'));
+    shortcut('KeyE');
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|Design review/);
+  });
+
+  await test('abandons a fork whose row left the list while describe is pending', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, shortcut, until } = ui;
+    await pendingFork(ui, 'Design review');
+    shortcut('KeyO');
+    await until(() => !document.querySelector('[aria-label="Open original: Design review"]'));
+    shortcut('KeyE');
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal/);
+  });
+
+  await test('a config event during describe abandons the fork', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, shortcut, until } = ui;
+    await pendingFork(ui, 'Design review');
+    shortcut('KeyM');
+    await settle(document);
+    // The same grant is confirmed again: the row is listed once more.
+    await until(() => document.querySelector('[aria-label="Open original: Design review"]'));
+    shortcut('KeyE');
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal/);
   });
 
   const workerRun = async (t) => {
