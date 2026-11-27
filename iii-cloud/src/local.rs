@@ -1031,13 +1031,18 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
             {
                 seen.push(name);
                 if !env.iter().any(|e| e == name) {
+                    // Only an empty default that iii cloud has a value for is needed for that reason.
+                    let because_cloud_has_it = of_name().all(|x| x.default.is_some());
                     out.push(here(
                         "LOCAL_VARIABLE_UNSET",
                         format!("{name} has no value here"),
-                        Some(
+                        Some(if because_cloud_has_it {
+                            "iii cloud has a value for it, so the run here needs one too: add it to an env file of your folder, or skip it to run it empty."
+                                .into()
+                        } else {
                             "The run here needs it: it is not in the run's .env, nor in your folder's .env files."
-                                .into(),
-                        ),
+                                .into()
+                        }),
                         Owner::Person,
                         None,
                     ));

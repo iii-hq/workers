@@ -1631,11 +1631,17 @@ fn an_empty_default_the_cloud_has_a_value_for_needs_one_here() {
         })
         .into_iter()
         .filter(|p| p.code == "LOCAL_VARIABLE_UNSET")
-        .map(|p| p.title)
+        .map(|p| (p.title, p.detail.unwrap_or_default()))
         .collect::<Vec<_>>()
     };
     let both = ["FLAG".to_string(), "PORT".to_string()];
-    assert_eq!(unset(&[], &both), vec!["FLAG has no value here"]);
+    let said = unset(&[], &both);
+    assert_eq!(said.len(), 1);
+    assert_eq!(said[0].0, "FLAG has no value here");
+    assert_eq!(
+        said[0].1,
+        "iii cloud has a value for it, so the run here needs one too: add it to an env file of your folder, or skip it to run it empty."
+    );
     assert!(
         unset(&["FLAG".into()], &both).is_empty(),
         "filled or skipped"
