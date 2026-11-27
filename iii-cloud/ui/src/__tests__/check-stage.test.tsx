@@ -1301,3 +1301,31 @@ describe('small things the review found', () => {
       expect(secretLike(f), f).toBe(true)
   })
 })
+
+describe('an agent that ended its turn waiting on a wake', () => {
+  const WAKE = 'test environment values/deploy'
+  const waiting = (none = false) => {
+    const w = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'waiting' as const, waiting_for: WAKE } }
+    return none ? { ...w, check: { ...w.check!, problems: [] } } : w
+  }
+
+  it('is not "working": the title, the card and the footer say it waits', async () => {
+    await stage(waiting())
+    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits for ${WAKE}$`))
+    expect(title()).not.toMatch(/is fixing|checking its fix/)
+    const note = region('Your agent')?.textContent ?? ''
+    expect(note).toMatch(new RegExp(`waiting \\d+ min for ${WAKE}`))
+    expect(note).not.toContain('working')
+  })
+
+  it('with nothing for it to fix: "Your agent waits for …"', async () => {
+    await stage(waiting(true))
+    expect(title()).toBe(`Your agent waits for ${WAKE}`)
+    expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
+  })
+
+  it('an agent that works still says it works', async () => {
+    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
+    expect(title()).toMatch(/your agent is fixing/)
+  })
+})

@@ -65,6 +65,7 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
+  waitsFor,
   wayOf,
   workingOnIds,
 } from './model'
@@ -1097,7 +1098,10 @@ export function CheckStage(props: CheckStageProps) {
   // are folded under Details (closed) and the screen asks for a new check.
   const replaced = staleSource && !running
   const ready = !!c?.ready && !running && !deployFix && !staleSource
-  const working = fixing(s) && !ready
+  // A hand-off exists (`engaged`); the agent works only while `starting` or `working`, else it waits for something.
+  const engaged = fixing(s) && !ready
+  const waits = engaged && s.agent?.state === 'waiting'
+  const working = engaged && !waits
   const a = s.agent
 
   const assisted = !!p?.environment && !p.environment.production
@@ -1324,7 +1328,7 @@ export function CheckStage(props: CheckStageProps) {
         ? `Ready to deploy to ${env}`
         : runPending
           ? `iii cloud's plan accepts ${sha7(c?.commit ?? '')}; the local run is left`
-          : needN || lines.length || working
+          : needN || lines.length || engaged
             ? [
                 needN
                   ? secretsOnly
@@ -1334,10 +1338,14 @@ export function CheckStage(props: CheckStageProps) {
                 lines.length
                   ? working
                     ? `your agent is fixing ${lines.length}`
-                    : `${lines.length} for your agent to fix`
+                    : waits && s.agent
+                      ? `${lines.length} for your agent to fix · it waits${waitsFor(s.agent)}`
+                      : `${lines.length} for your agent to fix`
                   : working
                     ? 'your agent is checking its fix'
-                    : null,
+                    : waits && s.agent
+                      ? `your agent waits${waitsFor(s.agent)}`
+                      : null,
               ]
                 .filter(Boolean)
                 .join(' · ')
@@ -1409,7 +1417,7 @@ export function CheckStage(props: CheckStageProps) {
     // Not ready and no check in flight: checking again is always on screen. With nothing else for the person to do
     // (the agent has nothing, no list for them) it is the primary action; otherwise it sits beside the locked Deploy.
     const idle = !running && !hubChecking
-    const nothingElse = replaced || (!needN && !lines.length && !working)
+    const nothingElse = replaced || (!needN && !lines.length && !engaged)
     const deployOff = <PageAction onClick={() => undefined} disabled>{`Deploy to ${env}`}</PageAction>
     // A panel below that checks again is the one place for it: the header does not say it twice.
     const panelChecks = shownStops.some((x) => x.key === 'outdated' || x.acts.some((a) => a.onClick === checkAgain))
@@ -1560,17 +1568,19 @@ export function CheckStage(props: CheckStageProps) {
         />
       ) : null}
 
-      {!replaced && (lines.length || (a && working)) ? (
+      {!replaced && (lines.length || (a && engaged)) ? (
         <SectionCard
           title="Your agent"
           count={lines.length}
           note={
             working && a
               ? `working ${minutesLabel(now - Date.parse(a.started_at))}, ${p?.workspace?.mode === 'checkout' ? 'in your folder' : 'in a separate copy'}`
-              : null
+              : waits && a
+                ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at ?? a.started_at))}${waitsFor(a)}`
+                : null
           }
           end={
-            working && a ? (
+            engaged && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
@@ -1580,7 +1590,7 @@ export function CheckStage(props: CheckStageProps) {
           }
           flush
         >
-          {a && working && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
+          {a && engaged && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
             <p className="iii-cloud-cs-agentnote">
               {a.state === 'waiting_for_you'
                 ? (a.question ?? 'Your agent has a question in its chat.')
@@ -1718,7 +1728,7 @@ export function CheckStage(props: CheckStageProps) {
               ? 'Your agent starts on what it can fix as soon as the check finds it, in a separate copy of your code.'
               : null,
             'Deploy unlocks when a check passes.',
-            !running && (working || lines.length > 0) ? 'Every fix by your agent runs the check again.' : null,
+            !running && (engaged || lines.length > 0) ? 'Every fix by your agent runs the check again.' : null,
             'You can leave this page; the console tells you when something needs you.',
           ]
             .filter(Boolean)

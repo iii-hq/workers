@@ -496,6 +496,9 @@ export function deployOrigin(
   return { by, from, checked, pr, origin, line: `${origin}${checked ? ' · checked' : ', not checked'}` }
 }
 
+/** " for <what it waits for>" when its wake says so. */
+export const waitsFor = (a: { waiting_for?: string | null }) => (a.waiting_for ? ` for ${a.waiting_for}` : '')
+
 /** The agent is mid-run on another kind of hand-off: a new request goes to it as a follow-up, not into a new chat. */
 export function followUp(s: Status, kind: HandoffKind): boolean {
   const a = s.agent
