@@ -131,8 +131,8 @@ export const StatusBar = ({ end, children }: P) => (
 )
 export const Eyebrow = passthrough('span')
 export const Skeleton = passthrough('span')
-export const StatusPanel = ({ variant, headline, detail, action }: P) => (
-  <div role="status" data-variant={variant as string}>
+export const StatusPanel = ({ variant, headline, detail, action, className }: P) => (
+  <div role="status" data-variant={variant as string} className={className as string}>
     <b>{headline as ReactNode}</b>
     <span>{detail as ReactNode}</span>
     {action as ReactNode}

@@ -634,6 +634,7 @@ function Follow({
       ) : null}
       {blocked ? (
         <Notice
+          className="iii-cloud-cs-stop"
           variant="warn"
           headline={`iii cloud's plan for ${sha} has blocking problems`}
           detail={`${
@@ -679,6 +680,7 @@ function Follow({
         />
       ) : held && confirmable ? (
         <Notice
+          className="iii-cloud-cs-stop"
           variant="warn"
           headline="Needs your action"
           detail={`iii cloud holds this deployment until you approve what it creates and changes${approves.length ? `: ${approves.join(', ')}` : ''}.`}
@@ -701,6 +703,7 @@ function Follow({
         />
       ) : held ? (
         <Notice
+          className="iii-cloud-cs-stop"
           variant="warn"
           headline={startedHere ? 'No passed check matches it' : 'iii cloud holds it for your approval'}
           detail={

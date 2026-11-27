@@ -411,6 +411,8 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
       'iii-cloud::api::write': { status: 202, body: {} },
       'iii-cloud::check': {},
     })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe("Deployment #6 can't start as it is")
     const t = text()
     expect(t).toContain(`iii cloud's plan for ${sha(blocked)} has blocking problems`)
@@ -450,6 +452,8 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
 
   it('2. held and a passed check of that commit: Confirm deploy is the one primary, with Cancel and the console link', async () => {
     await mount(status(heldBase), at, { 'iii-cloud::deploy': {} })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe('Deployment #6 needs your action')
     expect(primaries()).toEqual(['Confirm deploy'])
     expect(btn('Cancel deployment #6')).toBeTruthy()
@@ -500,6 +504,8 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
       commit: { sha: 'a'.repeat(40), message: null },
     }
     const h = await mount(status(other), at, { 'iii-cloud::check': {} })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe('Deployment #6 waits for your approval')
     expect(text()).toContain(
       'It was not started from this page, so nothing here has checked aaaaaaa. Check dev first: when a check of aaaaaaa passes, you confirm here.',
