@@ -381,6 +381,93 @@ describe('the deployment', () => {
   })
 })
 
+describe('a deployment iii cloud holds says why and what to do next', () => {
+  const heldBase = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
+  const sha = (d: { commit: { sha: string } }) => d.commit.sha.slice(0, 7)
+  const blocked = {
+    ...heldBase,
+    check_id: null,
+    approved_by_worker: false,
+    checked_ready: false,
+    from_console: false,
+    stages: [{ name: 'validation', status: 'failed', detail: null, started_at: null, finished_at: null }],
+    error: {
+      code: 'LOCK_MISSING',
+      stage: 'validation',
+      worker: null,
+      action: null,
+      hint: 'The plan has 3 blocking issues: LOCK_MISSING, INVALID_COMPOSE_FILE. Resolve them on the plan, or push a fix and re-scan.',
+    },
+  }
+  const at = ctx({ ...route, deploy: 'dep-6' })
+  const status = (d: object) => ({ ...boards['deploy-review'].status, agent: null, deploys: [d, serving5] }) as Status
+  const links = () => [...el.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
+  const primaries = () => [...el.querySelectorAll('button[data-variant=primary]')].map((b) => b.textContent)
+
+  it("1. a plan with blocking problems: can't start, fix or check, no Confirm, cancel with the confirm", async () => {
+    const h = await mount(status(blocked), at, {
+      'iii-cloud::handoff': { id: 'ho-5', marker: '[iii-cloud handoff ho-5]', delivered: false },
+      'iii-cloud::api::write': { status: 202, body: {} },
+      'iii-cloud::check': {},
+    })
+    expect(title()).toBe("Deployment #6 can't start as it is")
+    const t = text()
+    expect(t).toContain(`iii cloud's plan for ${sha(blocked)} has blocking problems`)
+    expect(t).toContain('Lock missing; Invalid compose file.')
+    expect(t).toContain(
+      'A deployment like this is never started: it waits until you cancel it or a fixed commit replaces it.',
+    )
+    expect(t).toContain(
+      `Your agent checks ${sha(blocked)} for dev in a clean copy, fixes what is its to fix and tells you what is yours.`,
+    )
+    expect(t).toContain('Lists every problem with its file and line. Nothing is deployed.')
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(primaries()).toEqual(['Fix with your agent'])
+    // The failed stage says why beside it.
+    expect(region('Deployment stages')?.textContent).toContain('The plan has 3 blocking issues')
+    expect(links()).toContainEqual(['Open it in iii cloud', blocked.console_url])
+    await click(btn(`Check ${sha(blocked)} here`))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    await click(btn('Cancel deployment #6'))
+    expect(text()).toContain('dev keeps serving #5.')
+    await click([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Cancel deployment #6').at(-1))
+    await flush()
+    expect(h.calls.find((c) => c.id === 'iii-cloud::api::write')?.payload).toMatchObject({
+      method: 'POST',
+      path: expect.stringContaining('/deployments/dep-6/cancel'),
+    })
+    await click(btn('Fix with your agent'))
+    await flush()
+    expect(h.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toMatchObject({
+      kind: 'deploy_fix',
+      deployment_id: 'dep-6',
+    })
+  })
+
+  it('2. held and a passed check of that commit: Confirm deploy is the one primary, with Cancel and the console link', async () => {
+    await mount(status(heldBase), at, { 'iii-cloud::deploy': {} })
+    expect(title()).toBe('Deployment #6 needs your action')
+    expect(primaries()).toEqual(['Confirm deploy'])
+    expect(btn('Cancel deployment #6')).toBeTruthy()
+    expect(links()).toContainEqual(['Open it in iii cloud', heldBase.console_url])
+  })
+
+  it('3. held with no passed check of that commit: check it first, no Confirm, approve or cancel in the links', async () => {
+    const other = { ...heldBase, check_id: null, from_console: false, commit: { sha: 'a'.repeat(40), message: null } }
+    const h = await mount(status(other), at, { 'iii-cloud::check': {} })
+    expect(title()).toBe('Deployment #6 waits for your approval')
+    expect(text()).toContain(
+      'It was not started from this page, so nothing here has checked aaaaaaa. Check it first: when it passes, you confirm here.',
+    )
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(primaries()).toEqual(['Check aaaaaaa here'])
+    expect(links()).toContainEqual(['Approve it in iii cloud', other.console_url])
+    expect(btn('Cancel deployment #6')).toBeTruthy()
+    await click(btn('Check aaaaaaa here'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+  })
+})
+
 describe('the review: Change, held deployments, who is serving, what a refusal says', () => {
   const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
   const withAgent: Status = {

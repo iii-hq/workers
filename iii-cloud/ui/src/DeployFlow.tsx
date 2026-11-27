@@ -51,6 +51,7 @@ import {
   listMayHideServing,
   minutesLabel,
   needsAction,
+  planCodeWords,
   plural,
   RESOURCE_KIND,
   type StageRow,
@@ -58,6 +59,7 @@ import {
   servingId,
   servingNamed,
   sha7,
+  stageKeyOf,
   stageRows,
 } from './model'
 import { Dot, Fresh, LinkButton, Mono, Notice, PageAction, PathBar, SectionCard, StatePill, useNow } from './parts'
@@ -102,6 +104,16 @@ function stageSays(r: StageRow, d: Deploy, env: string): ReactNode {
     )
   }
   return (r.tone === 'ok' ? DONE : DOING)[r.key] ?? r.short
+}
+
+/** A choice: its action, and one line under it saying what it does. */
+function Choice({ line, children }: { line: string; children: ReactNode }) {
+  return (
+    <div className="iii-cloud-cs-choice">
+      {children}
+      <span className="iii-cloud-cs-sub">{line}</span>
+    </div>
+  )
 }
 
 /** Deploying from this machine: one header, then the body the state asks for. */
@@ -484,32 +496,40 @@ function Follow({
   const elsewhere = heldElsewhere(d)
   const ours = !!c && !elsewhere && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
   const confirmable = !!c?.ready && ours
+  // Held, and its plan has blocking problems (an error of the validation stage): it can never be confirmed.
+  const blocked = held && d.error?.stage === 'validation'
   const stage = d.failure?.stage ?? d.error?.stage ?? null
   const stageWords = stage ? `while ${WHILE[stage] ?? cloudStageLabel(stage).toLowerCase()}` : null
-  const title = elsewhere
-    ? `Deployment #${d.number} is waiting for confirmation in iii cloud`
-    : held
-      ? `Deployment #${d.number} needs your action`
-      : running
-        ? `Deploying ${sha} to ${env.name}`
-        : live
-          ? `${env.name} is serving ${sha}`
-          : failed
-            ? `Deployment #${d.number} stopped${stageWords ? ` ${stageWords}` : ''}`
-            : `Deployment #${d.number}: ${deployWord(d)}`
-  const sub = elsewhere
-    ? `Deployment #${d.number} · not started from this machine; deploying from the check replaces it`
-    : held
-      ? `Deployment #${d.number} · iii cloud holds it until you confirm`
-      : running
-        ? `Deployment #${d.number} · started ${clock(d.created_at)} · ${minutesLabel(now - Date.parse(d.created_at))} so far`
-        : live && d.finished_at
-          ? `Deployment #${d.number} · live at ${clock(d.finished_at)} · took ${minutesLabel(span(d.created_at, d.finished_at))}`
-          : failed
-            ? prev
-              ? `${env.name} still serves #${prev.number}. Nothing changed for your users.`
-              : `Nothing was live on ${env.name} before it.`
-            : `Deployment #${d.number} · ${ago(d.finished_at ?? d.created_at)}`
+  const title = blocked
+    ? `Deployment #${d.number} can't start as it is`
+    : elsewhere
+      ? `Deployment #${d.number} is waiting for confirmation in iii cloud`
+      : held
+        ? confirmable
+          ? `Deployment #${d.number} needs your action`
+          : `Deployment #${d.number} waits for your approval`
+        : running
+          ? `Deploying ${sha} to ${env.name}`
+          : live
+            ? `${env.name} is serving ${sha}`
+            : failed
+              ? `Deployment #${d.number} stopped${stageWords ? ` ${stageWords}` : ''}`
+              : `Deployment #${d.number}: ${deployWord(d)}`
+  const sub = blocked
+    ? `Deployment #${d.number} · iii cloud holds it, and the plan's problems keep it from starting`
+    : elsewhere
+      ? `Deployment #${d.number} · not started from this machine; deploying from the check replaces it`
+      : held
+        ? `Deployment #${d.number} · iii cloud holds it until you confirm`
+        : running
+          ? `Deployment #${d.number} · started ${clock(d.created_at)} · ${minutesLabel(now - Date.parse(d.created_at))} so far`
+          : live && d.finished_at
+            ? `Deployment #${d.number} · live at ${clock(d.finished_at)} · took ${minutesLabel(span(d.created_at, d.finished_at))}`
+            : failed
+              ? prev
+                ? `${env.name} still serves #${prev.number}. Nothing changed for your users.`
+                : `Nothing was live on ${env.name} before it.`
+              : `Deployment #${d.number} · ${ago(d.finished_at ?? d.created_at)}`
   const checkedSha = status.checks?.find((x) => x.id === d.check_id)?.commit ?? (ours ? c?.commit : null)
   const workers = health.data?.workers ?? []
   const { resources, overrides } = (ours ? c?.plan.confirmations : null) ?? { resources: [], overrides: [] }
@@ -534,6 +554,18 @@ function Follow({
     await cloudWrite(host, status, envId, 'POST', `/deployments/${d.id}/cancel`)
     void hubOf(host).refresh(true)
   }
+  const heldLinks = (
+    <span className="iii-cloud-row">
+      <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => setCanceling(true)}>
+        {`Cancel deployment #${d.number}`}
+      </button>
+      {d.console_url ? (
+        <a className="iii-cloud-link iii-cloud-small" href={d.console_url} target="_blank" rel="noreferrer">
+          {blocked || confirmable ? 'Open it in iii cloud' : 'Approve it in iii cloud'}
+        </a>
+      ) : null}
+    </span>
+  )
   const cloudLog = d.console_url || envPageUrl(status, 'deployments', env.name)
   const chatOpen = activeSameKind(status, 'deploy_fix')
 
@@ -587,7 +619,41 @@ function Follow({
           }
         />
       ) : null}
-      {held && elsewhere ? (
+      {blocked ? (
+        <Notice
+          variant="warn"
+          headline={`iii cloud's plan for ${sha} has blocking problems`}
+          detail={`${
+            planCodeWords(status, d.error?.hint ?? null).length
+              ? `${planCodeWords(status, d.error?.hint ?? null).join('; ')}.`
+              : (d.error?.hint ?? '')
+          } A deployment like this is never started: it waits until you cancel it or a fixed commit replaces it.`}
+          action={
+            <div className="iii-cloud-cs-decide">
+              <Choice
+                line={`Your agent checks ${sha} for ${env.name} in a clean copy, fixes what is its to fix and tells you what is yours.`}
+              >
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={launching || !host.chat?.compose}
+                  onClick={async () => {
+                    if (await handOff(host, status, 'deploy_fix', d)) go({ at: 'deploy', env: envId })
+                  }}
+                >
+                  {sendLabel(status, 'deploy_fix', 'Fix with your agent')}
+                </Button>
+              </Choice>
+              <Choice line="Lists every problem with its file and line. Nothing is deployed.">
+                <Button size="sm" variant="secondary" onClick={checkAgain}>
+                  {`Check ${sha} here`}
+                </Button>
+              </Choice>
+              {heldLinks}
+            </div>
+          }
+        />
+      ) : held && elsewhere ? (
         <Notice
           variant="info"
           headline={`Deployment #${d.number} was not started from this machine`}
@@ -598,28 +664,42 @@ function Follow({
             </Button>
           }
         />
-      ) : held ? (
+      ) : held && confirmable ? (
         <Notice
           variant="warn"
           headline="Needs your action"
-          detail={`iii cloud holds this deployment until you approve what it creates and changes${approves.length ? `: ${approves.join(', ')}` : ''}.${confirmable ? '' : ` No passed check matches deployment #${d.number}. Check again before you deploy.`}`}
+          detail={`iii cloud holds this deployment until you approve what it creates and changes${approves.length ? `: ${approves.join(', ')}` : ''}.`}
           action={
-            <span className="iii-cloud-row">
-              <Button
-                size="sm"
-                variant="primary"
-                disabled={!confirmable || !!deployLock}
-                title={deployLock ?? undefined}
-                onClick={() => (env.production ? setConfirming(true) : void confirm())}
-              >
-                Confirm deploy
-              </Button>
-              {confirmable ? null : (
-                <Button size="sm" variant="secondary" onClick={checkAgain}>
-                  Check again
+            <div className="iii-cloud-cs-decide">
+              <Choice line="Approves what it creates and changes, and lets it go on.">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={!!deployLock}
+                  title={deployLock ?? undefined}
+                  onClick={() => (env.production ? setConfirming(true) : void confirm())}
+                >
+                  Confirm deploy
                 </Button>
-              )}
-            </span>
+              </Choice>
+              {heldLinks}
+            </div>
+          }
+        />
+      ) : held ? (
+        <Notice
+          variant="warn"
+          headline="iii cloud holds it for your approval"
+          detail={`It was not started from this page, so nothing here has checked ${sha}. Check it first: when it passes, you confirm here.`}
+          action={
+            <div className="iii-cloud-cs-decide">
+              <Choice line="Runs iii cloud's plan and the local run on this environment. Nothing is deployed.">
+                <Button size="sm" variant="primary" onClick={checkAgain}>
+                  {`Check ${sha} here`}
+                </Button>
+              </Choice>
+              {heldLinks}
+            </div>
           }
         />
       ) : null}
@@ -656,6 +736,9 @@ function Follow({
             <li key={r.key} className="iii-cloud-cs-stage" data-tone={r.tone}>
               <span className="iii-cloud-stagedot" aria-hidden />
               <span className="iii-cloud-cs-slabel">{stageSays(r, d, env.name)}</span>
+              {held && r.tone === 'alert' && d.error && stageKeyOf(d.error.stage) === r.key ? (
+                <span className="iii-cloud-cs-sreason">{d.error.hint || failureWords(d.error)}</span>
+              ) : null}
               <span className="iii-cloud-cs-state">
                 {r.key === 'plan' && r.tone === 'ok' ? clock(d.created_at) : r.time}
               </span>
@@ -723,25 +806,29 @@ function Follow({
             gets its log lines.
           </p>
           {deployOrigin(status, d).from === 'machine' ? (
-            <>
-              <div className="iii-cloud-row">
-                <Button variant="secondary" size="sm" onClick={() => setCanceling(true)}>
-                  Cancel the deployment
-                </Button>
-              </div>
-              <ConfirmDialog
-                open={canceling}
-                onOpenChange={setCanceling}
-                title={`Cancel deployment #${d.number}?`}
-                description="iii cloud stops it at the stage it is in. Nothing is deleted."
-                confirmLabel={`Cancel deployment #${d.number}`}
-                cancelLabel="Keep deploying"
-                tone="danger"
-                onConfirm={cancel}
-              />
-            </>
+            <div className="iii-cloud-row">
+              <Button variant="secondary" size="sm" onClick={() => setCanceling(true)}>
+                Cancel the deployment
+              </Button>
+            </div>
           ) : null}
         </>
+      ) : null}
+      {running || held ? (
+        <ConfirmDialog
+          open={canceling}
+          onOpenChange={setCanceling}
+          title={`Cancel deployment #${d.number}?`}
+          description={
+            held
+              ? `iii cloud drops it. ${prev ? `${env.name} keeps serving #${prev.number}.` : `Nothing is live on ${env.name}, so nothing changes for your users.`} Nothing is deleted.`
+              : 'iii cloud stops it at the stage it is in. Nothing is deleted.'
+          }
+          confirmLabel={`Cancel deployment #${d.number}`}
+          cancelLabel={held ? 'Keep it' : 'Keep deploying'}
+          tone="danger"
+          onConfirm={cancel}
+        />
       ) : null}
       {live ? (
         <p className="iii-cloud-cs-foot">

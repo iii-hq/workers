@@ -298,11 +298,11 @@
   gap: 8px;
   min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts) {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts, > .iii-cloud-cs-decide) {
   max-width: 100%;
   min-width: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts) {
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts, > .iii-cloud-cs-decide) {
   flex: 1 1 100%;
   margin-left: 0;
 }
@@ -646,4 +646,32 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop {
   flex-wrap: wrap;
   row-gap: 10px;
+}
+
+/* A decision in a panel: each choice is its action with one line under it, then the links. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-decide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choice .iii-cloud-cs-sub {
+  font-size: 12px;
+}
+/* A stage that failed says why, under its words. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-sreason {
+  grid-column: 2 / -1;
+  padding-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
 }

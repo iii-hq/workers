@@ -731,6 +731,18 @@ export function problemTitle(p: Problem): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+/** A cloud plan's blocking codes named in a hint ("…issues: LOCK_MISSING, INVALID_COMPOSE_FILE."), in the page's words. */
+export function planCodeWords(s: Status, hint: string | null): string[] {
+  const codes = hint?.match(/issues?:\s*([A-Z][A-Z0-9_]*(?:,\s*[A-Z][A-Z0-9_]*)*)/)?.[1].split(/,\s*/) ?? []
+  return codes.map((code) => {
+    const p = s.check?.problems.find((x) => x.code === code)
+    return p ? problemTitle(p) : problemTitle({ code, title: code } as Problem)
+  })
+}
+
+/** The deployment row a cloud stage belongs to (`validation` is `plan`). */
+export const stageKeyOf = (name: string) => STAGE_GROUPS.find(([, , names]) => names.includes(name))?.[0] ?? name
+
 /** The variable a problem is about when its detail names a path (`…containers.api.environment.KEY`): `KEY`. */
 export const variableOf = (p: Problem | null): string | null =>
   p?.detail?.match(/\.environment\.([A-Za-z_]\w*)/)?.[1] ?? null
