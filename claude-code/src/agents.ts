@@ -10,6 +10,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import { CONFIG_ID, type ReplyAccess, replyLease } from './configuration.js';
+import { withoutCaller } from './external-replies.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
@@ -635,7 +636,7 @@ export function registerAgents(
       // A fresh live grant is enough for this independently validated read.
       const lease = replyLease(access, await access.confirm({ waitForWatchCheckpoint: false }));
       const generation = lease.epoch;
-      const { claude_session_id: id, cursor } = followArgs.parse(payload);
+      const { claude_session_id: id, cursor } = followArgs.parse(withoutCaller(payload));
       let boundary: string | undefined;
       if (cursor !== undefined) {
         const parsed = /^([0-9]+:[0-9]+:[0-9]+:[a-f0-9]{64})[.]([a-f0-9]{64})$/.exec(cursor);

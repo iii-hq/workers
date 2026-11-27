@@ -17,8 +17,15 @@ const schedulePoll: Schedule = (poll) => {
   return () => clearTimeout(timer);
 };
 
+/** The engine adds the caller's worker id to every invocation payload. It is
+ * routing metadata, not an argument, so strict validation never sees it. */
+export function withoutCaller(args: unknown): unknown {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  return Object.fromEntries(Object.entries(args).filter(([key]) => key !== '_caller_worker_id'));
+}
+
 function sessionId(args: unknown) {
-  const parsed = Args.safeParse(args);
+  const parsed = Args.safeParse(withoutCaller(args));
   if (!parsed.success) throw new Error('invalid Claude session id');
   return parsed.data.claude_session_id;
 }

@@ -918,6 +918,21 @@ describe('claude::agents::stop', () => {
 describe('claude::agents::follow-snapshot', () => {
   const function_id = 'claude::agents::follow-snapshot';
 
+  it('accepts the caller id the engine adds to the payload, and no other unknown key', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.config = async () => ({ external_sessions: true });
+      const call = (extra: Record<string, unknown>) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...extra },
+        });
+      expect(await call({ _caller_worker_id: 'console-client' })).toMatchObject({
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(call({ unexpected: true })).rejects.toThrow();
+    });
+  });
+
   it.each([
     0, 21_000,
   ])('returns the latest reply before the viewer deadline with a %ims retained checkpoint', async (checkpointDelay) => {

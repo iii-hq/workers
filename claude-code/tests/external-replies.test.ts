@@ -109,6 +109,18 @@ describe('lookup', () => {
     });
   });
 
+  it('accepts the caller id the engine adds to the payload, and no other unknown key', async () => {
+    await withSyntheticHost(async (s) => {
+      const call = (extra: Record<string, unknown>) =>
+        s.client.call({ function_id: GET, payload: { claude_session_id: id, ...extra } });
+      expect(await call({ _caller_worker_id: 'console-client' })).toMatchObject({
+        claude_session_id: id,
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(call({ unexpected: true })).rejects.toThrow('invalid Claude session id');
+    });
+  });
+
   it('uses an idle CLI row even when an old headless record shares its UUID', async () => {
     await withSyntheticHost(async (s) => {
       s.host.records.push({ session_id: recordId(9), claude_session_id: id, status: 'done' });
