@@ -2515,10 +2515,17 @@ async fn the_deploy_fix_brief_carries_the_failure_the_log_and_the_release_comman
 /// The environment is not production and deploys `main`, which is not the
 /// repository's default branch (`trunk`): an assisted deploy that pushes `main`.
 async fn direct(s: &Setup) {
-    s.h.ctx
-        .store
-        .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
+    set_default_branch(s, "trunk");
     not_production(s).await;
+}
+
+/// The repository's default branch on origin (what an assisted deploy reads live).
+fn set_default_branch(s: &Setup, name: &str) {
+    git(&s.repo.origin, &["branch", "-f", name, "main"]);
+    git(
+        &s.repo.origin,
+        &["symbolic-ref", "HEAD", &format!("refs/heads/{name}")],
+    );
 }
 
 /// The environment is not production, in the store and in iii cloud's answer
@@ -2538,7 +2545,23 @@ async fn not_production(s: &Setup) {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": false, "branch": "main", "manifest": "worker-compose.yaml", "url": null, "settings": {}})))
         .with_priority(2)
         .mount(&s.server)
-        .await; // The deployments list as it is before anything happens (an assisted deploy reads it first).
+        .await;
+    // The project's environments, live: the selected one and the store's others.
+    let ctx = s.h.ctx.clone();
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects/p/environments")))
+        .respond_with(move |_: &Request| {
+            let (me, others) = ctx.store.read(|st| {
+                let p = st.project.as_ref().unwrap();
+                (p.environment.clone().unwrap(), p.environments.clone())
+            });
+            let mut all = vec![json!({"id": me.id, "name": me.name, "production": false, "branch": me.branch, "manifest": me.manifest, "url": null})];
+            all.extend(others.iter().filter(|e| e.id != me.id).map(|e| json!({"id": e.id, "name": e.name, "production": e.production, "branch": e.branch, "manifest": null, "url": null})));
+            ResponseTemplate::new(200).set_body_json(json!({"environments": all}))
+        })
+        .mount(&s.server)
+        .await;
+    // The deployments list as it is before anything happens (an assisted deploy reads it first).
     Mock::given(method("GET"))
         .and(path(dep_base()))
         .respond_with(
@@ -4355,5 +4378,76 @@ async fn a_pull_request_is_refused_for_an_environment_that_is_not_production() {
         .unwrap_err();
     assert_eq!(err.code, "NO_PULL_REQUEST");
     assert!(!argv(&s).contains("pr merge") && !argv(&s).contains("pr view"));
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+}
+
+#[tokio::test]
+async fn the_push_decision_reads_the_environments_and_the_default_branch_live() {
+    // An environment made in the console after the folder was read follows `main` too.
+    let s = setup(plan(false)).await;
+    let _f = env_file(&s, "worker-compose.yaml", 201).await;
+    set_default_branch(&s, "trunk");
+    first_assisted(&s).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects/p/environments")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"environments": [
+            {"id": ENV, "name": "production", "production": false, "branch": "main", "manifest": null, "url": null},
+            {"id": "preview-id", "name": "preview", "production": false, "branch": "main", "manifest": null, "url": null}
+        ]})))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let before = git(&s.repo.origin, &["rev-parse", "main"]);
+    let _ = deploy(&s.h.ctx, req("chk", None, None)).await;
+    assert_eq!(
+        git(&s.repo.origin, &["rev-parse", "main"]),
+        before,
+        "the shared branch is not pushed"
+    );
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+
+    // A default branch renamed after the folder was read: the store still says `trunk`.
+    let s = setup(plan(false)).await;
+    let _f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    s.h.ctx
+        .store
+        .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
+    let before = git(&s.repo.origin, &["rev-parse", "main"]);
+    let _ = deploy(&s.h.ctx, req("chk", None, None)).await;
+    assert_eq!(
+        git(&s.repo.origin, &["rev-parse", "main"]),
+        before,
+        "main is the default now"
+    );
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+}
+
+#[tokio::test]
+async fn when_the_environments_cannot_be_read_nothing_is_pushed() {
+    let s = setup(plan(false)).await;
+    let _f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/teams/{TEAM}/projects/p/environments"
+        )))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert!(
+        err.message.contains("environments") && err.message.ends_with("Try again."),
+        "{}",
+        err.message
+    );
+    assert!(origin_branch(&s, OWN).is_none());
     assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
 }

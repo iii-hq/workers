@@ -92,10 +92,9 @@ pub fn env_info(v: &Value) -> Option<EnvironmentInfo> {
     Some(EnvironmentInfo {
         id: str_of(v, "id")?,
         name: str_of(v, "name")?,
-        production: v
-            .get("production")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        // An environment whose `production` can't be read counts as production: the
+        // worker pushes to a branch only for one it knows is not.
+        production: v.get("production").and_then(Value::as_bool).unwrap_or(true),
         branch: str_of(v, "branch")?,
         manifest: str_of(v, "manifest"),
         url: str_of(v, "url"),
@@ -254,6 +253,37 @@ async fn read_project(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
         project.default_branch = default_branch_of(&top, None).await;
     }
     Ok(project)
+}
+
+/// The environments of the selected environment's project as iii cloud has them
+/// now (the store's list may be older than a console edit).
+pub async fn live_environments(
+    ctx: &Ctx,
+    team_id: &str,
+    environment_id: &str,
+) -> Res<Vec<EnvironmentInfo>> {
+    let env = ctx
+        .call(&Req::get(format!(
+            "/teams/{team_id}/environments/{environment_id}"
+        )))
+        .await?;
+    let project_id = str_of(&env, "project_id").ok_or_else(|| {
+        CloudError::new(
+            "CLOUD_ERROR",
+            "iii cloud sent an environment without its project.",
+        )
+    })?;
+    read_environments(ctx, team_id, &project_id).await
+}
+
+/// The repository's default branch as origin has it now (`ls-remote --symref`).
+pub async fn live_default_branch(ws: &Path) -> Res<String> {
+    let out = git(ws, &["ls-remote", "--symref", "origin", "HEAD"]).await?;
+    out.lines()
+        .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_owned)
+        .ok_or_else(|| CloudError::new("GIT_FAILED", "origin did not name its default branch."))
 }
 
 /// The project's environments, as the cloud has them now.

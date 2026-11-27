@@ -856,9 +856,6 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
             target
         }
         (None, None) => {
-            let default = ctx
-                .store
-                .read(|s| s.project.as_ref().and_then(|p| p.default_branch.clone()));
             // Production deploys by pull request; any other environment gets an
             // assisted deploy. The environment is read live first: its branch may
             // have moved since the page last looked (a first deploy that failed
@@ -874,15 +871,31 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                             format!("Could not read {} from iii cloud. Try again.", sel.env.name),
                         )
                     })?;
-                let others: Vec<(String, String)> = ctx.store.read(|s| {
-                    s.project.as_ref().map_or(vec![], |p| {
-                        p.environments
-                            .iter()
-                            .filter(|e| e.id != sel.env.id)
-                            .map(|e| (e.name.clone(), e.branch.clone()))
-                            .collect()
-                    })
-                });
+                // Read live, not from the store: an environment made in the console
+                // or a renamed default branch after the folder was read changes
+                // where a push is safe.
+                let envs = crate::project::live_environments(ctx, &sel.team_id, &sel.env.id)
+                    .await
+                    .map_err(|_| {
+                        CloudError::new(
+                            "CLOUD_ERROR",
+                            "Could not read the project's environments from iii cloud, so nothing was pushed. Try again.",
+                        )
+                    })?;
+                let live_default = crate::project::live_default_branch(&sel.workspace)
+                    .await
+                    .map_err(|_| {
+                        CloudError::new(
+                            "GIT_FAILED",
+                            "Could not read the default branch from GitHub, so nothing was pushed. Try again.",
+                        )
+                    })?;
+                let default = Some(live_default);
+                let others: Vec<(String, String)> = envs
+                    .iter()
+                    .filter(|e| e.id != sel.env.id)
+                    .map(|e| (e.name.clone(), e.branch.clone()))
+                    .collect();
                 let branches: Vec<String> = others.iter().map(|(_, b)| b.clone()).collect();
                 let way = deploy_way(default.as_deref(), &sel.env, &branches);
                 // Another environment follows the branch this one would push: a push
