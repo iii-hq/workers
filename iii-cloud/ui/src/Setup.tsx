@@ -163,7 +163,7 @@ function Choices({
 /** "Live · 9c04e7f", "Failed" or "Not deployed yet": what iii cloud has in an environment. */
 function EnvLive({ host, status, envId, readable }: { host: Host; status: Status; envId: string; readable: boolean }) {
   const { data } = useCloud<DeploymentList>(host, status, envId, readable ? '/deployments' : null)
-  const live = liveOf(data?.deployments)
+  const live = liveOf(data?.deployments, data?.next_cursor)
   if (!live) return null
   const word =
     live.label === 'Nothing live yet'

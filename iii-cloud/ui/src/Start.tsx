@@ -197,7 +197,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
     (place.current && !!status.problems?.some((x) => x.code === 'PROJECT_DELETED'))
   const deletions = useCloud<Deletions>(host, status, null, gone && team ? `/teams/${team}/deletions` : null)
   const list = deploys.data?.deployments
-  const live = liveOf(list)
+  const live = liveOf(list, deploys.data?.next_cursor)
   // A read that failed over an answer we still hold keeps the answer; the list's notice says the rest.
   const readError = deploys.data ? null : ((envs.error && !gone ? envs.error : deploys.error) ?? null)
   const failure = readError ? readError.message : null

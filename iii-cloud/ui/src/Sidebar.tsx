@@ -37,7 +37,7 @@ function FeedReader({
 function stateLine(feed: Feed | undefined, s: Status, env: Env): { tone: Tone; text: string } {
   const run = s.deploys.find((d) => d.environment_id === env.id && d.outcome === 'running' && !needsAction(d))
   if (run) return { tone: 'live', text: `deploying #${run.number}` }
-  const live = liveOf(feed?.data?.deployments)
+  const live = liveOf(feed?.data?.deployments, feed?.data?.next_cursor)
   const pr = s.project?.environment?.id === env.id && s.pr?.state === 'OPEN' ? s.pr : null
   const label = live?.label === 'Nothing live yet' ? 'Not deployed yet' : live?.label
   const text = [label, live?.sha ? sha7(live.sha) : null, pr ? `PR #${pr.number}` : null].filter(Boolean).join(' · ')

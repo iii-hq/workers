@@ -165,7 +165,7 @@ export function deployLockReason(
   if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix')
     return 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
   const other = s.deploys.find(
-    (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(s, d),
+    (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(d),
   )
   return other ? `Deployment #${other.number} is still going.` : null
 }
@@ -177,7 +177,7 @@ export function deployLockReason(
  * that Confirm as MAIN_MOVED. A held one without the markers is "elsewhere": it locks nothing, and deploying from
  * the check replaces it. A held one that is ours is confirmed on its own screen.
  */
-export const heldElsewhere = (_s: Status, d: Deploy) =>
+export const heldElsewhere = (d: Deploy) =>
   needsAction(d) && !(d.check_id || d.approved_by_worker || d.from_console === false)
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
@@ -1262,7 +1262,7 @@ export function CheckStage(props: CheckStageProps) {
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
-    if (d && heldElsewhere(s, d)) {
+    if (d && heldElsewhere(d)) {
       // Waiting for confirmation in iii cloud, started elsewhere: nothing here can confirm it, and deploying replaces it.
       stops.push({
         key: 'held',

@@ -447,31 +447,35 @@ function Follow({
   // The deploy is of this check: its id when the deploy names one, else the same commit. A held one counts only when
   // the worker's own markers say this machine started it: a commit that matches proves nothing (a push by hand of the
   // checked commit makes the check's base the branch head, and the worker refuses its Confirm as MAIN_MOVED).
-  const elsewhere = heldElsewhere(status, d)
+  const elsewhere = heldElsewhere(d)
   const ours = !!c && !elsewhere && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
   const confirmable = !!c?.ready && ours
   const stage = d.failure?.stage ?? d.error?.stage ?? null
   const stageWords = stage ? `while ${WHILE[stage] ?? cloudStageLabel(stage).toLowerCase()}` : null
-  const title = held
-    ? `Deployment #${d.number} needs your action`
-    : running
-      ? `Deploying ${sha} to ${env.name}`
-      : live
-        ? `${env.name} is serving ${sha}`
-        : failed
-          ? `Deployment #${d.number} stopped${stageWords ? ` ${stageWords}` : ''}`
-          : `Deployment #${d.number}: ${deployWord(d)}`
-  const sub = held
-    ? `Deployment #${d.number} · iii cloud holds it until you confirm`
-    : running
-      ? `Deployment #${d.number} · started ${clock(d.created_at)} · ${minutesLabel(now - Date.parse(d.created_at))} so far`
-      : live && d.finished_at
-        ? `Deployment #${d.number} · live at ${clock(d.finished_at)} · took ${minutesLabel(span(d.created_at, d.finished_at))}`
-        : failed
-          ? prev
-            ? `${env.name} still serves #${prev.number}. Nothing changed for your users.`
-            : `Nothing was live on ${env.name} before it.`
-          : `Deployment #${d.number} · ${ago(d.finished_at ?? d.created_at)}`
+  const title = elsewhere
+    ? `Deployment #${d.number} is waiting for confirmation in iii cloud`
+    : held
+      ? `Deployment #${d.number} needs your action`
+      : running
+        ? `Deploying ${sha} to ${env.name}`
+        : live
+          ? `${env.name} is serving ${sha}`
+          : failed
+            ? `Deployment #${d.number} stopped${stageWords ? ` ${stageWords}` : ''}`
+            : `Deployment #${d.number}: ${deployWord(d)}`
+  const sub = elsewhere
+    ? `Deployment #${d.number} · not started from this machine; deploying from the check replaces it`
+    : held
+      ? `Deployment #${d.number} · iii cloud holds it until you confirm`
+      : running
+        ? `Deployment #${d.number} · started ${clock(d.created_at)} · ${minutesLabel(now - Date.parse(d.created_at))} so far`
+        : live && d.finished_at
+          ? `Deployment #${d.number} · live at ${clock(d.finished_at)} · took ${minutesLabel(span(d.created_at, d.finished_at))}`
+          : failed
+            ? prev
+              ? `${env.name} still serves #${prev.number}. Nothing changed for your users.`
+              : `Nothing was live on ${env.name} before it.`
+            : `Deployment #${d.number} · ${ago(d.finished_at ?? d.created_at)}`
   const checkedSha = status.checks?.find((x) => x.id === d.check_id)?.commit ?? (ours ? c?.commit : null)
   const workers = health.data?.workers ?? []
   const { resources, overrides } = (ours ? c?.plan.confirmations : null) ?? { resources: [], overrides: [] }

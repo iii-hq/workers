@@ -380,8 +380,11 @@ export function servingNamed(
 export const deployWord = (d: Deploy, serving: string | null = null) => deployState(d, serving).label
 
 export type Live = { label: string; tone: Tone; sha: string | null }
-/** An environment's state from iii cloud's deployments (newest first); null before they are read. */
-export function liveOf(list: CloudDeployment[] | null | undefined): Live | null {
+/**
+ * An environment's state from iii cloud's deployments (newest first); null before they are read. `nextCursor`: the
+ * list's next page, if it has one (a first page of waiting deployments can hide what serves).
+ */
+export function liveOf(list: CloudDeployment[] | null | undefined, nextCursor?: string | null): Live | null {
   if (!list) return null
   const newest = list[0]
   const current = list.find((d) => d.current)
@@ -394,9 +397,10 @@ export function liveOf(list: CloudDeployment[] | null | undefined): Live | null 
     }
   }
   if (current) return { label: 'Live', tone: 'ok', sha: current.commit.sha }
-  // No current row, but something was live (a rollback to a deployment beyond the list's first page): the same rule
-  // as `listMayHideServing`; it is live, and the list can't say which.
-  if (list.some((d) => d.status === 'ready')) return { label: 'Live', tone: 'ok', sha: null }
+  // No current row, but something may be live (a rollback to a deployment beyond the list's first page): the one rule
+  // of `listMayHideServing`, so this and the footer cannot disagree; it is live, and the list can't say which.
+  if (listMayHideServing({ deployments: list, next_cursor: nextCursor }))
+    return { label: 'Live', tone: 'ok', sha: null }
   return { label: 'Nothing live yet', tone: 'ghost', sha: null }
 }
 

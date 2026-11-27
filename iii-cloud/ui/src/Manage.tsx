@@ -213,7 +213,7 @@ function EnvPage(props: ManageProps) {
   if (state === 'unknown' || !project || !env) return <ElsewhereEnv {...props} />
   const selected = state === 'selected'
   const home = route.at === 'env' && !route.deploy
-  const live = liveOf(feed.data?.deployments)
+  const live = liveOf(feed.data?.deployments, feed.data?.next_cursor)
   const record =
     route.at === 'env' ? status.deploys.find((d) => d.id === route.deploy && d.environment_id === route.env) : undefined
   const url = selected ? project.environment?.url : null

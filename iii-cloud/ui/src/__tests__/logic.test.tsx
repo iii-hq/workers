@@ -12,6 +12,7 @@ import {
   configDir,
   deployOrigin,
   deployState,
+  listMayHideServing,
   liveOf,
   opensToPublic,
   plainMessage,
@@ -628,6 +629,18 @@ describe('the hub keeps what a page that is gone cannot', () => {
     expect(liveOf([row('failed')])).toMatchObject({ label: 'Last deployment failed' })
     expect(liveOf([row('canceled')])).toMatchObject({ label: 'Nothing live yet' })
     expect(liveOf([{ ...row('ready'), current: true }])).toMatchObject({ label: 'Live', sha: 'abc' })
+  })
+
+  it('liveOf and the footer share one rule: a first page of replaced rows with a next page may hide what serves', () => {
+    const row = (status: string) =>
+      ({ id: 'x', number: 1, status, current: false, commit: { sha: 'abc' } }) as unknown as CloudDeployment
+    const page = [row('canceled'), row('replaced'), row('replaced')]
+    // dev serves #3 beyond the first page: the screens say Live (no sha), as the footer says it serves something unseen
+    expect(liveOf(page, 'next-page')).toMatchObject({ label: 'Live', sha: null })
+    expect(listMayHideServing({ deployments: page, next_cursor: 'next-page' })).toBe(true)
+    // without a next page the same rows mean nothing was ever live, for both
+    expect(liveOf(page, null)).toMatchObject({ label: 'Nothing live yet' })
+    expect(listMayHideServing({ deployments: page, next_cursor: null })).toBe(false)
   })
 
   it('a newer check ends the move; the move and the stop survive a reload (only storage carries them)', async () => {
