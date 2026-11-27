@@ -1849,6 +1849,13 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Fix with your agent')).toHaveLength(1)
   })
 
+  it('the title is never missing on the screen of the fifth run: a "done for now" note, no problem rows, a run failed at release', async () => {
+    await stage(release(note))
+    expect(title()).toBe('1 for your agent to fix')
+    expect(region('Your agent')?.textContent).toContain('done for now')
+    expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
+  })
+
   it('an agent already on it: "Your agent is on it." and no button for it', async () => {
     await stage(release({ ...rcFixing.agent!, state: 'working' as const }))
     expect(stop()?.textContent).toContain('Your agent is on it.')
