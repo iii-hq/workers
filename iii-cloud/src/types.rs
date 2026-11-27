@@ -452,10 +452,6 @@ pub struct Handoff {
     pub team_id: String,
     #[serde(default)]
     pub env: Option<EnvironmentInfo>,
-    /// The compose file of the check it was made from, when that is not the
-    /// environment's: the agent's checks on this hand-off use it.
-    #[serde(default)]
-    pub manifest: Option<String>,
     /// Asked from the add-project steps: an import's brief is of `State.candidate`.
     #[serde(default)]
     pub candidate: bool,
@@ -1521,7 +1517,7 @@ pub enum ValuesFrom {
 /// `iii-cloud::values` input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ValuesRequest {
-    /// A `worker-compose*.yaml` from the repository root. Default: the latest
+    /// A `worker-compose*.yaml` from the repository root. Default: the newest
     /// check's file when it is of this environment, else the environment's.
     #[serde(default)]
     pub manifest: Option<String>,

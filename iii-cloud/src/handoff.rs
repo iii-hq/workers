@@ -224,19 +224,15 @@ pub async fn worktree(ctx: &Arc<Ctx>, request: HandoffWorktreeRequest) -> Res<Ha
 pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffResponse> {
     let sel = selected(ctx)?;
     // `import` is for a project iii cloud does not have yet: no check to point at.
-    let (check_id, manifest) = match (&request.check_id, request.kind) {
-        (None, HandoffKind::Import) => (None, None),
+    let check_id = match (&request.check_id, request.kind) {
+        (None, HandoffKind::Import) => None,
         (Some(id), _) => {
             let found = ctx
                 .store
                 .read(|s| s.find_check(id).cloned())
                 .filter(|c| c.environment_id == sel.env.id)
                 .ok_or_else(|| CloudError::invalid("no such check for the selected environment"))?;
-            // A check of another compose file: the agent's checks keep to it.
-            let other = found
-                .manifest
-                .filter(|m| sel.env.manifest.as_deref() != Some(m.as_str()));
-            (Some(found.id), other)
+            Some(found.id)
         }
         (None, _) => return Err(CloudError::invalid("check_id is required for this kind")),
     };
@@ -363,7 +359,6 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         branch,
         team_id: sel.team_id.clone(),
         env: Some(sel.env.clone()),
-        manifest,
         candidate: request.candidate == Some(true),
         worktree_note,
         continues: 0,
@@ -1687,9 +1682,9 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         .and_then(|e| e.manifest.as_deref())
         .and_then(crate::local::confined)
         .unwrap_or("worker-compose.yaml");
-    // The hand-off's own file when its check was of another one.
-    let manifest = h
-        .manifest
+    // The environment's work file: its newest check's, as the checks use.
+    let work = env.and_then(|e| s.work_file(&e.id));
+    let manifest = work
         .as_deref()
         .and_then(crate::local::confined)
         .unwrap_or(env_manifest)

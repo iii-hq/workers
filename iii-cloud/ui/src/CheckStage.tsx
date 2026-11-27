@@ -32,7 +32,6 @@ import {
   CHECK_AGAIN,
   cloudPending,
   cloudPendingNote,
-  composeFile,
   configDir,
   conflictFiles,
   deployBusy,
@@ -182,8 +181,8 @@ export const heldElsewhere = (d: Deploy) =>
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
 export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
-  const switches = manifest !== composeFile(s.project?.environment?.manifest)
-  return { run: true, ...(fixBranch(s) ? { push: true } : {}), ...(switches ? { manifest } : {}) }
+  // Always named: a check with none stays on the newest check's file, so going back to the environment's own is an ask too.
+  return { run: true, ...(fixBranch(s) ? { push: true } : {}), manifest }
 }
 
 /**

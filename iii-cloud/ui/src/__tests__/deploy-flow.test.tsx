@@ -65,7 +65,7 @@ describe('one screen, no step rail', () => {
     expect(worker(h.calls)).toEqual([])
     expect(btn('Deploy to dev')?.hasAttribute('disabled')).toBe(true)
     await click(btn('Check'))
-    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true } })
+    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' } })
   })
 
   it('Ready: Deploy, then the same screen follows the deployment', async () => {

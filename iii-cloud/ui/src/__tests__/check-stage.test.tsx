@@ -77,7 +77,7 @@ describe('opening the screen', () => {
     expect(text()).toContain('Unlocks when a check passes')
     expect(h.calls.filter((c) => c.id !== 'iii-cloud::status')).toEqual([])
     await click(btn('Check'))
-    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true } })
+    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' } })
   })
 })
 
