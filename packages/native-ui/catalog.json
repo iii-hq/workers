@@ -722,7 +722,7 @@
     "env": {
       "windowClass": ["compact", "wide"],
       "posture": ["flat", "tabletop", "book"],
-      "platform": ["android", "ios", "ipados", "macos"],
+      "platform": ["android", "ios", "ipados", "macos", "web"],
       "visible": "bool",
       "theme": ["dark", "light"],
       "locale": "string (BCP 47)",

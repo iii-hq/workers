@@ -5,7 +5,7 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export interface Env {
   windowClass: 'compact' | 'wide'
   posture: 'flat' | 'tabletop' | 'book'
-  platform: 'android' | 'ios' | 'ipados' | 'macos'
+  platform: 'android' | 'ios' | 'ipados' | 'macos' | 'web'
   visible: boolean
   theme: 'dark' | 'light'
   locale: string

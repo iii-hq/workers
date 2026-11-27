@@ -19,7 +19,8 @@ export interface Env {
   windowClass: 'compact' | 'wide'
   /** The hinge; `flat` when there is none. */
   posture: 'flat' | 'tabletop' | 'book'
-  platform: 'android' | 'ios' | 'ipados' | 'macos'
+  /** `web`: the docs site's preview host (catalogue 3). */
+  platform: 'android' | 'ios' | 'ipados' | 'macos' | 'web'
   /** Some page of the app is on the visible tab and the app is in the foreground. */
   visible: boolean
   /** Always `dark` for now. */
