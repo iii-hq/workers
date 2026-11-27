@@ -829,36 +829,63 @@ pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<Stri
     )
     .await
     {
-        for p in listed.split('\0').filter(|p| p.ends_with('/')) {
-            let dir = p.trim_end_matches('/');
-            dirs.insert(dir.to_string());
+        let tops: Vec<String> = listed
+            .split('\0')
+            .filter(|p| p.ends_with('/'))
+            .map(|p| p.trim_end_matches('/').to_string())
+            .collect();
+        for dir in &tops {
+            dirs.insert(dir.clone());
             parents(&mut dirs, dir);
-            // git collapses an untracked folder to its top: every folder under it was there too.
-            let (root, top) = (ws.to_path_buf(), dir.to_string());
-            let below = tokio::task::spawn_blocking(move || {
-                let mut found = vec![];
-                let mut todo = vec![top];
-                while let Some(d) = todo.pop() {
-                    if found.len() > 5000 {
-                        break;
-                    }
-                    let Ok(read) = std::fs::read_dir(root.join(&d)) else {
-                        continue;
-                    };
-                    for e in read.flatten() {
-                        if e.file_type().is_ok_and(|t| t.is_dir()) {
-                            let sub = format!("{d}/{}", e.file_name().to_string_lossy());
-                            found.push(sub.clone());
-                            todo.push(sub);
+        }
+        // git collapses an untracked folder to its top: every folder under it was there too. One
+        // bound for the whole walk, and the ignored folders (`node_modules`, build output) are not entered.
+        let ignored: std::collections::BTreeSet<String> = tool::git(
+            ws,
+            &[
+                "ls-files",
+                "-z",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+            ],
+        )
+        .await
+        .map(|o| {
+            o.split('\0')
+                .filter(|p| p.ends_with('/'))
+                .map(|p| p.trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+        let root = ws.to_path_buf();
+        let below = tokio::task::spawn_blocking(move || {
+            let mut found: Vec<String> = vec![];
+            let mut todo: Vec<String> = tops;
+            while let Some(d) = todo.pop() {
+                if found.len() > 5000 {
+                    break;
+                }
+                let Ok(read) = std::fs::read_dir(root.join(&d)) else {
+                    continue;
+                };
+                for e in read.flatten() {
+                    if e.file_type().is_ok_and(|t| t.is_dir()) {
+                        let sub = format!("{d}/{}", e.file_name().to_string_lossy());
+                        if ignored.contains(&sub) {
+                            continue;
                         }
+                        found.push(sub.clone());
+                        todo.push(sub);
                     }
                 }
-                found
-            })
-            .await
-            .unwrap_or_default();
-            dirs.extend(below);
-        }
+            }
+            found
+        })
+        .await
+        .unwrap_or_default();
+        dirs.extend(below);
     }
     snapshot.extend(
         dirs.into_iter()
@@ -1113,9 +1140,13 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
     let mut dir = Path::new(rel).parent();
     while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
         let prefix = format!("{}/", d.display());
-        // A folder that was there when the run began (even empty) stays.
+        // A folder that was there when the run began (even empty) stays. A range query: the first
+        // entry at or after the prefix is the only one that can start with it.
         if before.contains(d.to_string_lossy().as_ref())
-            || before.iter().any(|b| b.starts_with(&prefix))
+            || before
+                .range(prefix.clone()..)
+                .next()
+                .is_some_and(|b| b.starts_with(&prefix))
             || std::fs::remove_dir(ws.join(d)).is_err()
         {
             break;
@@ -1625,6 +1656,21 @@ impl Exec {
                 // A path can carry a secret (a vault named after a key): said redacted.
                 let restored: Vec<String> = done.restored.iter().map(|p| self.redact(p)).collect();
                 let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
+                // A path shown redacted is read by that name: the index (in the run's private
+                // `left/` folder) maps it back to the name on disk.
+                let index: std::collections::BTreeMap<String, String> = done
+                    .restored
+                    .iter()
+                    .chain(done.moved.iter())
+                    .map(|p| (self.redact(p), p.clone()))
+                    .filter(|(shown, real)| shown != real)
+                    .collect();
+                if !index.is_empty()
+                    && let Some(dir) = &done.saved_in
+                    && let Ok(text) = serde_json::to_string(&index)
+                {
+                    let _ = std::fs::write(dir.join(".paths.json"), text);
+                }
                 self.run.restored = restored.clone();
                 self.run.moved = moved.clone();
                 self.run.left_redacted = true;

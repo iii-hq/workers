@@ -1645,7 +1645,8 @@ async fn a_plan_the_cloud_cannot_read_yet_is_asked_again_up_to_three_times() {
     // Two waits of 2 s (a test second is 10 ms): the worst this adds is 4 s.
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
 
-    // Still unavailable after three tries: said as before, with no fourth.
+    // Rationed: the same environment a moment later gets no retry (a suspended installation answers
+    // the same code, and must not cost 4 s on every check).
     let server = MockServer::start().await;
     let (h, _repo, _ws) = ready(&server, 200).await;
     plan_mock(
@@ -1656,12 +1657,24 @@ async fn a_plan_the_cloud_cannot_read_yet_is_asked_again_up_to_three_times() {
     .await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert_eq!(c.plan.status, PlanStatus::Unavailable);
-    let asked = server
+    assert_eq!(
+        plan_requests(&server).await,
+        1,
+        "no retry inside the minute"
+    );
+    // A minute later (60 ticks of 10 ms): up to three tries again, and no fourth.
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(c.plan.status, PlanStatus::Unavailable);
+    assert_eq!(plan_requests(&server).await, 1 + 3);
+}
+
+async fn plan_requests(server: &MockServer) -> usize {
+    server
         .received_requests()
         .await
         .unwrap()
         .iter()
         .filter(|r| r.url.path().ends_with("/plan"))
-        .count();
-    assert_eq!(asked, 3);
+        .count()
 }
