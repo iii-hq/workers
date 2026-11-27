@@ -754,7 +754,7 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
     }
     if !moved.is_empty() {
         parts.push(format!(
-            "Moved out of the copy (the run created them): {}.",
+            "Moved out of the copy (created during the run): {}.",
             take(moved)
         ));
     }
@@ -784,9 +784,64 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
 
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
+///
+/// Besides the changed files, the snapshot lists the directories that exist then, under the key
+/// `DIR_KEY<dir>` (every folder with a tracked or visible untracked file in it, and every untracked
+/// folder, empty ones too): a file the run creates in a folder that was not there is the run's own data.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    dirty_entries(ws, Fingerprints::All).await
+    let mut snapshot = dirty_entries(ws, Fingerprints::All).await?;
+    let mut dirs: std::collections::BTreeSet<String> = Default::default();
+    // Every parent folder of a path.
+    fn parents(dirs: &mut std::collections::BTreeSet<String>, path: &str) {
+        let mut at = Path::new(path).parent();
+        while let Some(d) = at.filter(|d| !d.as_os_str().is_empty()) {
+            dirs.insert(d.to_string_lossy().into_owned());
+            at = d.parent();
+        }
+    }
+    if let Ok(listed) = tool::git(
+        ws,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )
+    .await
+    {
+        for p in listed.split('\0').filter(|p| !p.is_empty()) {
+            parents(&mut dirs, p);
+        }
+    }
+    if let Ok(listed) = tool::git(
+        ws,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--directory",
+            "--exclude-standard",
+        ],
+    )
+    .await
+    {
+        for p in listed.split('\0').filter(|p| p.ends_with('/')) {
+            let dir = p.trim_end_matches('/');
+            dirs.insert(dir.to_string());
+            parents(&mut dirs, dir);
+        }
+    }
+    snapshot.extend(
+        dirs.into_iter()
+            .map(|d| (format!("{DIR_KEY}{d}"), String::new())),
+    );
+    Some(snapshot)
 }
+
+/// The prefix of a snapshot entry that is a directory, not a changed file.
+const DIR_KEY: &str = "\0dir:";
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
 /// content stays what it left; what an earlier run left and is still there with that content stays
@@ -874,9 +929,23 @@ pub async fn set_aside_run(
                         .collect()
                 })
                 .unwrap_or_default();
+        let existing_dir = |d: &str| before.contains_key(&format!("{DIR_KEY}{d}"));
+        // Moved only when it is the run's own data: the file lies under a folder that was not there
+        // when the run began, or an earlier run of this worktree already moved or set aside that
+        // path. A new file beside existing ones (the agent's or a subagent's source) stays.
+        let is_runs = |p: &str| {
+            let mut at = Path::new(p).parent();
+            while let Some(d) = at.filter(|d| !d.as_os_str().is_empty()) {
+                if !existing_dir(&d.to_string_lossy()) {
+                    return true;
+                }
+                at = d.parent();
+            }
+            previous.files.contains_key(p) || previous.moved.iter().any(|m| m == p)
+        };
         let created: Vec<String> = after
             .keys()
-            .filter(|p| !before.contains_key(*p) && untracked.contains(*p))
+            .filter(|p| !before.contains_key(*p) && untracked.contains(*p) && is_runs(p))
             .cloned()
             .collect();
         let candidates = if candidates.len() <= MAX_WROTE {
@@ -892,7 +961,10 @@ pub async fn set_aside_run(
         if !candidates.is_empty() || !created.is_empty() {
             let dir = run_dir.join("left");
             let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
-            let before_dirs: std::collections::BTreeSet<String> = before.keys().cloned().collect();
+            let before_dirs: std::collections::BTreeSet<String> = before
+                .keys()
+                .map(|k| k.strip_prefix(DIR_KEY).unwrap_or(k).to_string())
+                .collect();
             // Save each file, then check again that it still is what was saved: what is put back or
             // taken away is exactly what `left/` holds. One byte budget for both. (Blocking work.)
             let (saved, saved_new): (Vec<String>, Vec<String>) =
@@ -985,7 +1057,10 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
     let mut dir = Path::new(rel).parent();
     while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
         let prefix = format!("{}/", d.display());
-        if before.iter().any(|b| b.starts_with(&prefix)) || std::fs::remove_dir(ws.join(d)).is_err()
+        // A folder that was there when the run began (even empty) stays.
+        if before.contains(d.to_string_lossy().as_ref())
+            || before.iter().any(|b| b.starts_with(&prefix))
+            || std::fs::remove_dir(ws.join(d)).is_err()
         {
             break;
         }

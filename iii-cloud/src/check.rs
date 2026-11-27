@@ -1312,7 +1312,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "RUN_LEFT_FILES",
             "The local run left files changed in the worktree".into(),
             Some(format!(
-                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. Created or edited during the run: if one is the run's own, delete it; if it is yours, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
                 set_aside.len(),
                 if set_aside.len() == 1 {
                     "file"
