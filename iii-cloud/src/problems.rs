@@ -98,6 +98,7 @@ pub fn title_for(code: &str) -> String {
         "UNCOMMITTED_CHANGES" => "There are changes that are not committed",
         "HTTP_WORKER_NOT_PACKAGE" => "The http worker is not package://http",
         "OLD_ATTEMPT_COMMITS" => "These commits come from an earlier try",
+        "BROUGHT_FILES_COMMIT" => "A commit holds files copied from your folder",
         "SIGN_IN_REQUIRED" => "Not signed in to iii cloud",
         _ => "",
     };

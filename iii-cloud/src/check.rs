@@ -1137,6 +1137,28 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             None,
         ));
     }
+    // A reused or resumed fix branch may hold what an older worker brought from the
+    // person's folder: a commit of copied uncommitted files. A deploy would push it.
+    if !base_head.is_empty()
+        && let Ok(subjects) = git(
+            &sel.workspace,
+            &["log", "--format=%s", &format!("{base_head}..{commit}")],
+        )
+        .await
+        && let Some(subject) = subjects
+            .lines()
+            .find(|l| l.starts_with("Uncommitted changes from "))
+    {
+        here_problems.push(crate::local::here(
+            "BROUGHT_FILES_COMMIT",
+            "A commit holds files copied from your folder".into(),
+            Some(format!(
+                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Start from the base (`git reset --hard {base_head}`) and redo only the fixes, or ask your agent to drop that commit."
+            )),
+            Owner::Agent,
+            None,
+        ));
+    }
     // As the run reads it: unreadable counts as dirty.
     let dirty = git(&sel.workspace, &["status", "--porcelain"])
         .await
