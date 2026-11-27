@@ -508,6 +508,7 @@ describe('the button: the calls in order, then the Deploy place', () => {
     await mount({ ...base, project: secrets, check: null }, ctx({ at: 'setup', step: 'confirm' }))
     expect(text()).not.toContain('uncommitted change')
     expect(text()).not.toContain('commit them')
+    expect(text()).toContain('2 look like secrets and stay on this machine.')
   })
 
   it('iii cloud cannot see the repository on GitHub: the button waits and says why; the agent imports it', async () => {

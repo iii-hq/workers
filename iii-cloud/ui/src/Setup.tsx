@@ -36,7 +36,7 @@ import {
   signInRequired,
   tilde,
 } from './model'
-import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink, uncommittedCount } from './parts'
+import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink, secretsNote, uncommittedCount } from './parts'
 import { type AreaProps, pathOf, type Route, type RouteAt } from './route'
 import type { CloudProjectChoice, ComposeFile, DeploymentList, Project, Status } from './types'
 
@@ -451,6 +451,7 @@ function Confirm({
   const base = project?.default_branch ?? 'main'
   const newEnv: NewEnv = { ...ne, branch: ne.branch || base }
   const changed = uncommittedCount(project?.checkout.changed_files ?? [])
+  const secrets = secretsNote(project?.checkout.changed_files ?? [])
   const manifestOf = (e: typeof env) =>
     e && 'manifest' in e && e.manifest
       ? e.manifest
@@ -600,6 +601,12 @@ function Confirm({
                 <dd>{plural(changed, 'uncommitted change')}; they stay in your folder</dd>
               </div>
             ) : null}
+            {secrets ? (
+              <div className="iii-cloud-fact">
+                <dt>Stays here</dt>
+                <dd>{secrets}</dd>
+              </div>
+            ) : null}
           </dl>
           <p className="iii-cloud-desc">
             Another folder reads again: its repository decides the project, the environment and the compose file below.
@@ -744,7 +751,7 @@ function Confirm({
   const agent =
     mode === 'checkout'
       ? 'Your agent changes the files in this folder directly, with no separate copy.'
-      : `Your agent works in a clean copy of what is committed, so your folder stays as it is.${changed ? ` The ${plural(changed, 'uncommitted change')} in your folder ${changed === 1 ? 'stays' : 'stay'} there: commit ${changed === 1 ? 'it' : 'them'} to include ${changed === 1 ? 'it' : 'them'}.` : ''}`
+      : `Your agent works in a clean copy of what is committed, so your folder stays as it is.${changed ? ` The ${plural(changed, 'uncommitted change')} in your folder ${changed === 1 ? 'stays' : 'stay'} there: commit ${changed === 1 ? 'it' : 'them'} to include ${changed === 1 ? 'it' : 'them'}.` : ''}${secrets ? ` ${secrets}` : ''}`
   const loading = resolving || (!project && !!path && !err)
 
   return (

@@ -132,14 +132,25 @@ export const Spinner = () => <Loader2 className="iii-ui-spin" aria-hidden />
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
 
 /**
- * A file that looks like a secret (`.env*`, private keys): it stays on this machine, so it is neither counted as
- * an uncommitted change the page talks about nor ever advised to be committed.
+ * A file that holds secrets and stays on this machine: an env file with values (`.env`, `.env.local`,
+ * `.env.<name>`, but not the templates `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, nor `.envrc`)
+ * or a private key (`*.key`, `*.p12`, `*.pfx`, `id_rsa` and the like). `*.pem` is ambiguous (a public CA bundle
+ * or a private key), so it counts as an ordinary change.
  */
 export const secretLike = (path: string) =>
-  /(^|\/)(\.env[^/]*|[^/]*\.(pem|key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)[^/]*)$/i.test(path)
+  /(^|\/)(\.env(\.(?!(example|sample|template|dist)$)[^/]+)?|[^/]*\.(key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$/i.test(
+    path,
+  )
 
-/** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count. */
+/** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count and advise to commit. */
 export const uncommittedCount = (files: string[]) => files.filter((f) => !secretLike(f)).length
+
+/** "2 look like secrets and stay on this machine." (a count, never names), or null when none does. */
+export function secretsNote(files: string[]): string | null {
+  const n = files.filter(secretLike).length
+  if (!n) return null
+  return `${n} ${n === 1 ? 'looks like a secret and stays' : 'look like secrets and stay'} on this machine.`
+}
 
 /** A sentence with each short commit sha (seven hex characters, at least one a digit) set in mono. */
 export function monoShas(text: string): ReactNode {

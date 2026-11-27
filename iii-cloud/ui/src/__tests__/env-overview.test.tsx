@@ -9,6 +9,7 @@ import { DEV, devDeploys } from '../fixtures/deploys'
 import { NEW_SHA } from '../fixtures/manage'
 import { envPageStatus } from '../fixtures/overview'
 import { appFile, withAppFile } from '../model'
+import { secretsNote } from '../parts'
 import type { Deploy, Status } from '../types'
 import { board, btn, byText, click, cloudAnswers, ctx, el, flush, mount, text, usePage } from './util'
 
@@ -171,12 +172,19 @@ describe('the next-action card: one state for each combination of Env2', () => {
     expect(n.detail).toBe('A push to GitHub, not checked. dev still serves #6.')
   })
 
-  it('files that look like secrets are not counted and never advised: with only those left, nothing is said', () => {
+  it('secret-like files are not counted and never advised, but said by number; templates and certificates count', () => {
     const n = (files: string[]) => next(dev({}, { not_served: [], changed_files: files }), {})
     expect(n(['.env', 'api/id_rsa', 'a.ts']).detail).toBe(
-      'feat/search-rank at 2be71d0, 1 uncommitted change stays in your folder.',
+      'feat/search-rank at 2be71d0, 1 uncommitted change stays in your folder. 2 look like secrets and stay on this machine.',
     )
-    expect(n(['.env', 'certs/app.key']).detail).toBe('feat/search-rank at 2be71d0.')
+    expect(n(['.env', 'certs/app.key']).detail).toBe(
+      'feat/search-rank at 2be71d0. 2 look like secrets and stay on this machine.',
+    )
+    expect(n(['.env.example', 'certs/rds-ca.pem', '.env.local', 'deploy.key', '.envrc']).detail).toBe(
+      'feat/search-rank at 2be71d0, 3 uncommitted changes stay in your folder. 2 look like secrets and stay on this machine.',
+    )
+    expect(secretsNote(['a.ts'])).toBeNull()
+    expect(secretsNote(['.env.production'])).toBe('1 looks like a secret and stays on this machine.')
   })
 
   it('up to date: no action', () => {

@@ -23,7 +23,16 @@ import {
   when,
   withAppFile,
 } from './model'
-import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill, uncommittedCount } from './parts'
+import {
+  Dot,
+  ErrorPanel,
+  Mono,
+  monoShas,
+  SectionCard as Section,
+  StatePill,
+  secretsNote,
+  uncommittedCount,
+} from './parts'
 import type { EnvTabProps, Route } from './route'
 import type { CloudDeployment, DeploymentList, Members, Status, Values, WorkerError } from './types'
 
@@ -227,8 +236,8 @@ export function nextAction(
   }
 
   const files = uncommittedCount(p?.checkout.changed_files ?? [])
-  // Only secret-like files left: the page says nothing about them.
-  const secretsOnly = !files && !!p?.checkout.changed_files.length
+  // Secret-like files stay on this machine: counted apart, by number only.
+  const secrets = secretsNote(p?.checkout.changed_files ?? [])
   const notServed = p?.checkout.not_served ?? []
   const folderMoved = notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha))
   if (failed && !folderMoved) {
@@ -258,7 +267,9 @@ export function nextAction(
 
   if (notServed.length > 0) {
     const top = notServed[0]
-    const rest = files ? stays(files) : secretsOnly ? null : 'nothing uncommitted in your folder'
+    const rest = [files ? stays(files) : secrets ? null : 'nothing uncommitted in your folder', secrets]
+      .filter(Boolean)
+      .join(' · ')
     return {
       state: 'deploy',
       wait: true,
@@ -286,7 +297,7 @@ export function nextAction(
     wait: false,
     primary: false,
     title: `${name} serves every commit of ${branch ?? 'your branch'}`,
-    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}${files ? `, ${stays(files)}` : secretsOnly ? '' : ', nothing uncommitted'}.`,
+    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}${files ? `, ${stays(files)}` : secrets ? '' : ', nothing uncommitted'}.${secrets ? ` ${secrets}` : ''}`,
   }
 }
 
