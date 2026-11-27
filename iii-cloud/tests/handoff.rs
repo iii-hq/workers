@@ -3303,3 +3303,30 @@ async fn a_ready_check_or_one_with_only_the_persons_things_open_sends_the_agent_
     let (_h, told) = person_check_while_waiting(vec![values], None, false, 1).await;
     assert!(told.is_empty(), "{told:?}");
 }
+
+#[tokio::test]
+async fn only_the_pages_own_check_marks_a_waiting_agents_hand_off() {
+    let (h, _s, _r, _ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Waiting);
+    let pending = |h: &Harness| h.ctx.store.read(|s| s.handoffs[0].person_check.clone());
+    // An agent's (or a subagent's) check carries no flag: nothing is marked.
+    let c = iii_cloud::check::check(&h.ctx, CheckRequest::default())
+        .await
+        .unwrap();
+    assert!(pending(&h).is_none());
+    // The page's own is.
+    let page = iii_cloud::check::check(
+        &h.ctx,
+        CheckRequest {
+            from_page: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_ne!(c.id, page.id);
+    assert_eq!(pending(&h).as_deref(), Some(page.id.as_str()));
+}

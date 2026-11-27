@@ -201,6 +201,10 @@ pub struct CheckRequest {
     /// file, engine and run environment exists.
     #[serde(default)]
     pub force: Option<bool>,
+    /// The page's own: a check the person started on the page. When the hand-off's agent
+    /// waits on a wake, it hears what is left for it. Agents never send it.
+    #[serde(default)]
+    pub from_page: bool,
 }
 
 /// `iii-cloud::check::get` input.

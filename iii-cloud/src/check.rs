@@ -1431,7 +1431,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         }
     }
     // A check the person started on a hand-off's worktree: an agent that waits on a wake hears of it.
-    if request.handoff_id.is_none() {
+    if request.from_page && request.handoff_id.is_none() {
         crate::handoff::person_check_ended(ctx, &check, &sel.workspace);
     }
     Ok(check)
