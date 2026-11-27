@@ -220,8 +220,9 @@ export class ReplyPermission {
   // Set the epoch and start the retained-watch checkpoint in one synchronous
   // step, so no reader sees a grant whose checkpoint is not yet pending. The
   // checkpoint runs apart from the live config read: a slow checkpoint must
-  // not cache a positive config probe. Without a captured boundary the grant
-  // is revoked unreported, and the next confirm or poll starts a new one.
+  // not cache a positive config probe. A session whose boundary cannot be
+  // read holds back only its own watches, which its next poll baselines; an
+  // unexpected recovery failure still revokes the grant unreported.
   private grant(generation: number) {
     this.currentEpoch = generation;
     if (this.watchCheckpoint || !this.recoverWatches) return;

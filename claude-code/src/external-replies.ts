@@ -138,6 +138,10 @@ export function registerExternalReplies(
     }
   }
 
+  /** Capture a per-session boundary for retained watches under a new grant.
+   * A session whose baseline cannot be read holds back only its own watches:
+   * they keep their old epoch and no cursor, and its next poll takes their
+   * baseline. The grant, other sessions and their recovery proceed. */
   async function recoverWatches(epoch: number) {
     const lease = replyLease(permission, epoch);
     const needsBaseline = (w: Watch) => w.active && w.epoch !== epoch;
@@ -155,13 +159,11 @@ export function registerExternalReplies(
             // A validated viewer may already have captured an earlier tip.
             recovery.cursor ??= cursor;
           },
-          (err: unknown) => {
-            // An accepted viewer boundary still completes this recovery.
-            if (recovery.cursor) return;
-            // Without a boundary the grant must not be reported: a reply
-            // written meanwhile would fall behind any later baseline.
-            if (g.recovery === recovery) g.recovery = undefined;
-            throw err;
+          () => {
+            // The recovery stays recorded for this epoch without a cursor, so a
+            // confirm does not read this transcript again: only a poll tick
+            // retries it, as that session's baseline. A validated viewer
+            // boundary may still complete it.
           },
         );
       checkpoints.push(checkpoint);

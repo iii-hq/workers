@@ -4,6 +4,7 @@ import {
   link,
   mkdir,
   open,
+  readFile,
   rename,
   stat,
   symlink,
@@ -1604,21 +1605,25 @@ describe('authorization', () => {
     });
   });
 
-  it('a failed recovery baseline does not confirm', async () => {
+  it('a failed recovery baseline holds back only its own session', async () => {
     await withSyntheticHost(async (s) => {
       await failBaselineOnce(s);
       const before = reads(s).length;
-      expect(await s.permission.confirm()).toBeNull();
+      const epoch = await s.permission.confirm();
+      expect(epoch).not.toBeNull();
       expect(reads(s)).toHaveLength(before + 1);
-      expect(s.permission.epoch).toBeNull();
+      expect(s.permission.epoch).toBe(epoch);
       expect(s.permission.watchCheckpointPending).toBe(false);
+      // A later confirm does not read that transcript again: only a poll does.
+      expect(await s.permission.confirm()).toBe(epoch);
+      expect(reads(s)).toHaveLength(before + 1);
     });
   });
 
   it('retries a failed recovery baseline', async () => {
     await withSyntheticHost(async (s) => {
       await failBaselineOnce(s);
-      expect(await s.permission.confirm()).toBeNull();
+      expect(await s.permission.confirm()).not.toBeNull();
       expect(s.permission.watchCheckpointPending).toBe(false);
       // The reply lands while the retried checkpoint is still pending, right
       // after its baseline read: the grant was never reported before it.
@@ -1675,6 +1680,125 @@ describe('authorization', () => {
         { id: recordId(3), text: 'after viewer boundary' },
         { id: recordId(4), text: 'after recovery' },
       ]);
+    });
+  });
+
+  const other = recordId(99);
+  const readsOf = (s: SyntheticHost, session: string) =>
+    reads(s).filter((c) => (c.payload.args as string[])[5] === session).length;
+  // Retained watches on two listed sessions; A's transcript is gone across a
+  // deny→grant refresh, so only A's recovery baseline fails.
+  async function unreadableAcrossGrant(s: SyntheticHost, denied?: string) {
+    s.host.cli.push({ kind: 'interactive', sessionId: other, status: 'idle', name: 'other' });
+    await writeFile(join(s.project, `${other}.jsonl`), lines(answer(50, null, 'B last reply')));
+    await observe(s, 'A');
+    await observe(s, 'B', other);
+    await setPermission(s, false);
+    if (denied) await appendFile(s.file, lines(answer(2, 1, denied)));
+    const content = await readFile(s.file);
+    await unlink(s.file);
+    await setPermission(s, true);
+    await s.permission.watchCheckpointSettled();
+    return () => writeFile(s.file, content);
+  }
+
+  it('confirm keeps the grant while one baseline fails', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      const epoch = s.permission.epoch;
+      expect(epoch).not.toBeNull();
+      for (let i = 0; i < 3; i++) expect(await s.permission.confirm()).toBe(epoch);
+      expect(s.permission.epoch).toBe(epoch);
+    });
+  });
+
+  it('persistently unreadable retained transcript does not deny other sessions', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      await s.poll();
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      expect(await lookup(s, other)).toMatchObject({
+        claude_session_id: other,
+        last_reply: { id: recordId(50), text: 'B last reply' },
+      });
+    });
+  });
+
+  it('persistently unreadable retained transcript keeps rows listed', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      await s.poll();
+      const listed = (await s.list()).agents.map((a) => a.claude_session_id);
+      expect(listed).toEqual(expect.arrayContaining([id, other]));
+    });
+  });
+
+  it('unreadable baseline is read once per poll tick', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      const before = readsOf(s, id);
+      for (let tick = 1; tick <= 3; tick++) {
+        await s.poll();
+        expect(readsOf(s, id)).toBe(before + tick);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(readsOf(s, id)).toBe(before + tick);
+      }
+      expect(seen(s, 'A')).toEqual([]);
+    });
+  });
+
+  it('reply written while the baseline fails is delivered once', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s);
+      await s.poll();
+      await restore();
+      // The reply lands on A while its first successful baseline is in flight,
+      // before any cursor exists for its watch.
+      let written = false;
+      s.host.hostOutput = (stdout) => {
+        const last = reads(s).at(-1)?.payload.args as string[] | undefined;
+        if (!written && last?.[5] === id) {
+          written = true;
+          appendFileSync(s.file, lines(answer(2, 1, 'written while the baseline failed')));
+        }
+        return stdout;
+      };
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(written).toBe(true);
+      expect(seen(s, 'A')).toEqual([
+        { id: recordId(2), text: 'written while the baseline failed' },
+      ]);
+    });
+  });
+
+  it('baseline recovers later gets its replies once', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s);
+      await s.poll();
+      await restore();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(2, 1, 'after recovery')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'after recovery' }]);
+    });
+  });
+
+  it('denied interval stays undelivered after a late baseline', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s, 'denied interval');
+      await s.poll();
+      await restore();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after late baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after late baseline' }]);
     });
   });
 
