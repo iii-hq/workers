@@ -73,7 +73,7 @@ class ProfileContractTests(unittest.TestCase):
 
     def test_manifest_raises_the_worker_floors(self):
         self.assertHasAll([line.strip() for line in self.manifest.splitlines()],
-                          ["version: 0.1.16", "harness: ^1.10.0", "kanban: ^0.2.7"])
+                          ["version: 0.1.17", "harness: ^1.10.0", "kanban: ^0.2.7"])
 
     def test_readme_names_the_new_calls_and_no_longer_leaves_out_ci(self):
         self.assertHasAll(self.readme, [f"`{function}`" for function in NEW_FUNCTIONS])
@@ -238,6 +238,32 @@ class ProfileContractTests(unittest.TestCase):
                                         "the run ticket keeps the link with its `PR:` comment"])
         self.assertEqual(self.readme.count("<run ticket> <what changed>"), 0)
         self.assertEqual(self.readme.count("so the control plane links the pull request"), 0)
+
+    def test_a_failed_model_reruns_only_its_failed_nodes_once(self):
+        self.assertHasAll(self.profile, [
+            "a node on one ends in `node_errors` with an error that names a usage limit or a refused or unknown model",
+            "**A failed model's nodes run again, alone.**",
+            "never start the whole run again",
+            "Start one run of only the nodes whose error put a model in `skip_models` (an error that names a usage limit or a refused or unknown model; on a model that failed every node on it, any error but `cancelled` or `node_timeout`) and every node that reads a node of the rerun",
+            "A rerun node with neither `reads` nor `fanout` (the `baseline`) receives that `input` too",
+            "with the failed run's label + `-2`",
+            "A rerun node whose `reads` name only nodes outside the rerun drops its `reads`: their results are the run's `input`",
+            "(one id: the result as is; several ids: an object keyed by id)",
+            'each read once with `workflow::node-result {"run_id":"<the failed run>","node_uid":"<id>"}`',
+            "and its task stays as it was",
+            "A fanout node runs only those copies",
+            "The pointer's `active` for it has the kind of the run it replaces",
+            "It is that run's one rerun",
+            "start its rerun (A failed model's nodes run again, Models: label `plan-2`",
+            "start its rerun before you read the review (A failed model's nodes run again, Models: label `review-2`, only those refuters, each over its finding)",
+            "`output` and, in a rerun only, `input` (Models)"])
+        # Each rerun is one rule in Models, pointed to from Step A.7 and the review.
+        self.assertEqual(self.profile.count("**A failed model's nodes run again, alone.**"), 1)
+        self.assertEqual(self.profile.count("(A failed model's nodes run again, Models:"), 2)
+        for gone in ("start the design run once more", "which you never set"):
+            self.assertEqual(self.profile.count(gone), 0, gone)
+        self.assertIn("runs only those nodes once more, on the next model", self.readme)
+        self.assertEqual(self.readme.count("runs once more before the orchestrator plans"), 0)
 
 if __name__ == "__main__":
     unittest.main()
