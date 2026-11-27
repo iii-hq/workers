@@ -2,6 +2,7 @@
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::PROVIDER_ID;
+use crate::budget::{Shrink, shrink_from_error};
 use crate::errors::classify;
 use crate::sse::{PartialState, build_final, build_partial, handle_chunk, synthetic_error_event};
 use futures::StreamExt;
@@ -54,32 +55,63 @@ fn data_line(block: &str) -> Option<&str> {
         .next_back()
 }
 
+/// Upper bound on budget-shrink retries (one per rejection kind: a credit
+/// wall and a context overflow can each fire once).
+const MAX_BUDGET_RETRIES: usize = 2;
+
 async fn run_upstream(
     client: reqwest::Client,
-    args: UpstreamArgs,
+    mut args: UpstreamArgs,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) {
-    let mut req = client.post(&args.api_url);
-    for (name, value) in &args.headers {
-        req = req.header(*name, value);
-    }
-    let resp = match req.json(&args.body).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx
-                .send(synthetic_error_event(
-                    &format!("openrouter fetch failed: {}", error_chain(&e)),
-                    &args.model,
-                    ErrorKind::Transient,
-                ))
-                .await;
-            return;
+    let mut retries = 0;
+    let resp = loop {
+        let mut req = client.post(&args.api_url);
+        for (name, value) in &args.headers {
+            req = req.header(*name, value);
         }
-    };
+        let resp = match req.json(&args.body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx
+                    .send(synthetic_error_event(
+                        &format!("openrouter fetch failed: {}", error_chain(&e)),
+                        &args.model,
+                        ErrorKind::Transient,
+                    ))
+                    .await;
+                return;
+            }
+        };
 
-    let status = resp.status();
-    if !status.is_success() {
+        let status = resp.status();
+        if status.is_success() {
+            break resp;
+        }
         let text = resp.text().await.unwrap_or_default();
+        // A budget rejection (credits cannot cover the max_tokens
+        // reservation, or prompt + max_tokens overflows the window) names
+        // the budget that fits: retry with it instead of failing the turn.
+        let current = args.body.get("max_tokens").and_then(Value::as_u64);
+        if retries < MAX_BUDGET_RETRIES
+            && let Some(current) = current
+            && let Some((next, why)) = shrink_from_error(status.as_u16(), &text, current)
+        {
+            retries += 1;
+            args.body["max_tokens"] = serde_json::json!(next);
+            args.warnings.push(match why {
+                Shrink::Credits { affordable } => format!(
+                    "max_tokens lowered from {current} to {next}: OpenRouter credits cover only {affordable} output tokens"
+                ),
+                Shrink::Context {
+                    context_window,
+                    input,
+                } => format!(
+                    "max_tokens lowered from {current} to {next}: ~{input} input tokens leave no room for more in the {context_window}-token window"
+                ),
+            });
+            continue;
+        }
         let kind = classify(Some(status.as_u16()), &text);
         let msg = if text.is_empty() {
             format!("openrouter http {status}")
@@ -90,7 +122,7 @@ async fn run_upstream(
             .send(synthetic_error_event(&msg, &args.model, kind))
             .await;
         return;
-    }
+    };
 
     let mut state = PartialState::new(args.warnings);
     if tx
@@ -420,5 +452,78 @@ mod tests {
             }
             other => panic!("want done, got {other:?}"),
         }
+    }
+
+    /// Multi-shot stub: serves `responses` to successive connections and
+    /// hands back each request's `max_tokens`.
+    async fn stub_seq(
+        responses: Vec<&'static str>,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Option<u64>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 65536];
+                // read until the JSON body closes (head + body are small)
+                loop {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    raw.extend_from_slice(&buf[..n]);
+                    if n == 0 || raw.ends_with(b"}") {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&raw);
+                let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+                let max = serde_json::from_str::<Value>(body)
+                    .ok()
+                    .and_then(|v| v.get("max_tokens").and_then(Value::as_u64));
+                let _ = seen_tx.send(max);
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1/chat/completions"), seen_rx)
+    }
+
+    const CREDITS_402: &str = "HTTP/1.1 402 Payment Required\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"code\":402,\"message\":\"This request requires more credits, or fewer max_tokens. You requested up to 943718 tokens, but can only afford 40000. To increase, visit https://openrouter.ai/settings/credits\"}}";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn credit_wall_on_max_tokens_retries_with_the_affordable_budget() {
+        let (url, mut seen) = stub_seq(vec![CREDITS_402, HAPPY]).await;
+        let mut a = args(url);
+        a.body = serde_json::json!({ "stream": true, "max_tokens": 943_718 });
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert_eq!(seen.recv().await.flatten(), Some(943_718));
+        assert_eq!(seen.recv().await.flatten(), Some(38_000));
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                let warnings = message.warnings.clone().unwrap_or_default();
+                assert!(
+                    warnings
+                        .iter()
+                        .any(|w| w.contains("max_tokens lowered from 943718 to 38000")),
+                    "{warnings:?}"
+                );
+            }
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_balance_is_reported_without_retry() {
+        let (url, _seen) = stub_seq(vec![
+            "HTTP/1.1 402 Payment Required\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"code\":402,\"message\":\"Insufficient credits\"}}",
+        ])
+        .await;
+        let mut a = args(url);
+        a.body = serde_json::json!({ "stream": true, "max_tokens": 8192 });
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
     }
 }

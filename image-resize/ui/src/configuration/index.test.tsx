@@ -49,19 +49,22 @@ const render = (value: JsonValue, errors?: Map<string, string>) =>
   )
 
 describe('ImageResizeConfigForm', () => {
-  it('renders the five fields with their labels, values and errors', () => {
+  it('renders the seven fields with their labels, values and errors', () => {
     const html = render(
-      { width: 640, strategy: 'crop-to-fit', quality: { webp: 70 } },
+      { width: 640, strategy: 'crop-to-fit', quality: { webp: 70 }, max_bytes: 500000 },
       new Map([['/quality/jpeg', 'quality must be 1-100, got 0']]),
     )
     expect(html).toContain('<h2>Default box</h2>')
     expect(html).toContain('<h2>Default output</h2>')
+    expect(html).toContain('<h2>Output limits</h2>')
     for (const [field, label] of [
       ['width', 'Width'],
       ['height', 'Height'],
       ['strategy', 'Strategy'],
       ['quality.jpeg', 'JPEG quality'],
       ['quality.webp', 'WebP quality'],
+      ['max_pixels', 'Max pixels'],
+      ['max_bytes', 'Max bytes'],
     ]) {
       expect(html).toContain(`<label for="${field}">${label}</label>`)
       expect(html).toContain(`data-field="${field}"`)
@@ -71,6 +74,8 @@ describe('ImageResizeConfigForm', () => {
     expect(html).toContain('data-select="crop-to-fit"')
     expect(html).toContain('placeholder="85"')
     expect(html).toContain('value="70"')
+    expect(html).toMatch(/data-field="max_bytes"[^>]*value="500000"|value="500000"[^>]*data-field="max_bytes"/)
+    expect(html).toMatch(/placeholder="No limit"[^>]*data-field="max_pixels"|data-field="max_pixels"[^>]*placeholder="No limit"/)
     expect(html).toMatch(
       /data-row="quality.jpeg"><label[^>]*>JPEG quality<\/label><p role="alert">quality must be 1-100/,
     )
@@ -80,6 +85,7 @@ describe('ImageResizeConfigForm', () => {
     const html = render(null)
     expect(html).toContain('data-select="Scale to fit"')
     expect(html).toContain('placeholder="80"')
+    expect(html.match(/placeholder="No limit"/g)).toHaveLength(2)
     expect(html).not.toMatch(/value="[^"]/)
   })
 })
@@ -92,6 +98,12 @@ describe('withPath', () => {
 
   it('sets a quality key and keeps its sibling', () => {
     expect(withPath({ quality: { webp: 70 } }, ['quality', 'jpeg'], 90)).toEqual({ quality: { webp: 70, jpeg: 90 } })
+  })
+
+  it('clears a limit, which means no limit', () => {
+    expect(withPath({ max_pixels: 1150000, max_bytes: 5000000 }, ['max_bytes'], settingNumber(''))).toEqual({
+      max_pixels: 1150000,
+    })
   })
 
   it('removes quality when its last key is cleared', () => {

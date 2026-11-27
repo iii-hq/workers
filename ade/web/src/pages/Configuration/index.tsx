@@ -64,6 +64,7 @@ import {
 } from './components/SettingsNavigation'
 import { isOperatorConfiguration } from './lib/configuration-catalog'
 import { generalSearchFields } from './lib/general-settings-index'
+import { revealGeneralRow } from './lib/reveal-general-row'
 import {
   buildSettingsSearchIndex,
   type SettingsSearchDoc,
@@ -537,35 +538,6 @@ function ConfigurationUnavailable({
       <EditorEmptyState title={title} description={description} />
     </div>
   )
-}
-
-/**
- * Scroll a General row into view and flash it, once it is mounted (the page
- * may still be transitioning in). The first id that exists wins, so a hidden
- * row falls back to its neighbour.
- */
-function revealGeneralRow(anchors: string[]) {
-  if (anchors.length === 0 || typeof window === 'undefined') return
-  const reduceMotion = window.matchMedia?.(
-    '(prefers-reduced-motion: reduce)',
-  ).matches
-  let frames = 0
-  const tick = () => {
-    const target = anchors
-      .map((anchor) => document.getElementById(anchor))
-      .find((element): element is HTMLElement => element !== null)
-    if (!target) {
-      if (++frames < 60) window.requestAnimationFrame(tick)
-      return
-    }
-    target.scrollIntoView({
-      block: 'center',
-      behavior: reduceMotion ? 'auto' : 'smooth',
-    })
-    target.setAttribute('data-search-flash', '')
-    window.setTimeout(() => target.removeAttribute('data-search-flash'), 1600)
-  }
-  window.requestAnimationFrame(tick)
 }
 
 function iconForConfiguration(

@@ -108,7 +108,8 @@ Consumer-facing:
   while the Chat setting `descriptions.agent_writes` is on; answered by the
   turn loop for the turn's own session, so a direct call fails. Call it with
   other calls or after the reply text: a step whose only call it is, beside
-  reply text, ends the turn without another model request. A description the
+  reply text, asks the model once more (end with no text when the reply was
+  the answer; that reply is then the turn's result). A description the
   user wrote is never replaced (`The user wrote this description; leave it.`).
 - `harness::projects::list { version: 2 }` — the chat projects: named,
   coloured groups of folders; a conversation's `metadata.project_id` names

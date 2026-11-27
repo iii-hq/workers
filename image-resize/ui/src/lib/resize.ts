@@ -17,6 +17,8 @@ export interface ResizeResult {
   source_width: number
   source_height: number
   strategy: Strategy
+  /** JPEG and WebP only: the quality used, which `max_bytes` can lower. */
+  quality?: number
 }
 
 /** The call's `metadata`: only the keys the user set, so the rest fall back to the worker's configuration. */

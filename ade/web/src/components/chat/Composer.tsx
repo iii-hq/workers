@@ -6,12 +6,15 @@ import {
   ClipboardCheck,
   Loader2,
   Plus,
+  SlidersVertical,
   Square,
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -64,6 +67,12 @@ import { BankPicker } from './BankPicker'
 import { SendGlyph } from './ChatGlyphs'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import './conversation-design.css'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import { ComposerPill } from '@/components/ui/ComposerPill'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
@@ -157,12 +166,49 @@ export function composerControlNodes(
   props: ComposerControlProps,
 ): { footer: ReactNode[]; project: ReactNode[] } {
   const nodes = { footer: [] as ReactNode[], project: [] as ReactNode[] }
-  for (const { id, placement, render: Control } of controls) {
+  for (const { id, placement, label, render: Control } of controls) {
     nodes[placement === 'project' ? 'project' : 'footer'].push(
-      <Control key={id} {...props} />,
+      placement === 'project' ? (
+        <Control key={id} {...props} />
+      ) : (
+        <ComposerPickerRow key={id} label={label}>
+          <Control {...props} />
+        </ComposerPickerRow>
+      ),
     )
   }
   return nodes
+}
+
+/**
+ * Where the pickers after the model are rendered: on their own (the phone
+ * sheet) they are bare pills; in the Options popover's list each sits
+ * beside its name.
+ */
+const ComposerPickerListContext = createContext(false)
+
+function ComposerPickerRow({
+  label,
+  children,
+}: {
+  label?: string
+  children: ReactNode
+}) {
+  const listed = useContext(ComposerPickerListContext)
+  if (!listed) return <>{children}</>
+  if (!label) {
+    return (
+      <span className="col-span-2 flex min-h-9 min-w-0 items-center">
+        {children}
+      </span>
+    )
+  }
+  return (
+    <>
+      <span className="text-sm text-ink-faint">{label}</span>
+      <span className="flex min-h-9 min-w-0 items-center">{children}</span>
+    </>
+  )
 }
 
 export interface ComposerSubmitPayload {
@@ -982,6 +1028,43 @@ export function Composer({
   }, [])
 
   const reduceMotion = useReducedMotion()
+  /* The pickers after the model: a worker's controls (the judge), the
+   * agent, the memory bank and the permission mode, each on a named row of
+   * the Options popover. */
+  const extraPickers =
+    !!composerControls ||
+    !!agentPicker ||
+    (showMemoryBank && !!onMemoryBankChange) ||
+    showPermissionMode
+  const renderExtraPickers = () => (
+    <>
+      {composerControls}
+      {agentPicker ? (
+        <ComposerPickerRow label="Agent">
+          <ComposerActionsSlot layout="wide">{agentPicker}</ComposerActionsSlot>
+        </ComposerPickerRow>
+      ) : null}
+      {showMemoryBank && onMemoryBankChange ? (
+        <ComposerPickerRow label="Memory">
+          <BankPicker
+            value={memoryBank ?? null}
+            onChange={onMemoryBankChange}
+            disabled={optionsDisabled}
+          />
+        </ComposerPickerRow>
+      ) : null}
+      {showPermissionMode ? (
+        <ComposerPickerRow label="Permissions">
+          <PermissionModePicker
+            value={permissionMode}
+            onChange={onPermissionModeChange}
+            disabled={optionsDisabled || !!permissionModeLoading}
+          />
+        </ComposerPickerRow>
+      ) : null}
+    </>
+  )
+
   const renderActionButton = () =>
     isStreaming &&
     !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
@@ -1260,9 +1343,10 @@ export function Composer({
  the model (with its provider), a worker's controls, then the
  agent, memory and permission pickers; what you do with it on the right — injected
  actions, attach, and send, where the eye lands after typing. */}
-          {/* One row at every pane width: in a narrow pane (a side panel, a
- split) the pickers shrink — the model name truncates, the agent
- drops to its icon — and the send button stays in view. */}
+          {/* One row at every pane width: the model, then one Options pill
+ for everything else the message goes out with (a worker's control
+ such as the judge, the agent, the memory bank, the permission
+ mode), each on its own named row in the popover. */}
           <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
             <div className="flex min-w-0 flex-1 items-center gap-1">
               {lockedModel ? (
@@ -1286,26 +1370,30 @@ export function Composer({
                   className="min-w-0 max-w-[24rem]"
                 />
               )}
-              {/* A worker's per-session controls (the judge) sit between the
- model and the agent: what the message goes out with, in the
- order it is decided. */}
-              {composerControls}
-              <ComposerActionsSlot layout="wide">
-                {agentPicker}
-              </ComposerActionsSlot>
-              {showMemoryBank && onMemoryBankChange ? (
-                <BankPicker
-                  value={memoryBank ?? null}
-                  onChange={onMemoryBankChange}
-                  disabled={optionsDisabled}
-                />
-              ) : null}
-              {showPermissionMode ? (
-                <PermissionModePicker
-                  value={permissionMode}
-                  onChange={onPermissionModeChange}
-                  disabled={optionsDisabled || !!permissionModeLoading}
-                />
+              {extraPickers ? (
+                <Popover>
+                  {/* The same pill language as the model picker beside it:
+ icon, label, chevron. */}
+                  <PopoverTrigger render={<ComposerPill />}>
+                    <SlidersVertical aria-hidden className="size-4 shrink-0" />
+                    <span>Options</span>
+                    <ChevronDown aria-hidden className="size-4 shrink-0" />
+                  </PopoverTrigger>
+                  {/* Kept mounted: a worker's control keeps its state
+ between opens, like the agent picker's list. */}
+                  <PopoverContent
+                    keepMounted
+                    align="start"
+                    side="top"
+                    sideOffset={8}
+                  >
+                    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-0.5 px-0.5">
+                      <ComposerPickerListContext.Provider value>
+                        {renderExtraPickers()}
+                      </ComposerPickerListContext.Provider>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               ) : null}
             </div>
 

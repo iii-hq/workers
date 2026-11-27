@@ -42,7 +42,7 @@ export function ShellListView({ output }: ShellListViewProps) {
 
   return (
     <div className="shui-card">
-      <Table density="compact">
+      <Table density="compact" inset>
         <TableHeader>
           <TableRow>
             <TableHead>job</TableHead>
