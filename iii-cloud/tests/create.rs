@@ -513,6 +513,22 @@ async fn a_new_project_is_imported_from_a_choosable_manifest_then_selected() {
             .unwrap()
             .starts_with("iii-cloud:project:")
     );
+    // The cloud is asked about this repository only: for the whole list it makes a trip to GitHub per
+    // repository (25 s for a team of 71), in the folder's first read and again in the create.
+    let asked: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path().ends_with("/github/repositories"))
+        .collect();
+    assert!(asked.len() >= 2, "{asked:?}");
+    assert!(
+        asked
+            .iter()
+            .all(|r| r.url.query() == Some("full_name=ada/hello-iii")),
+        "{asked:?}"
+    );
 }
 
 #[tokio::test]
