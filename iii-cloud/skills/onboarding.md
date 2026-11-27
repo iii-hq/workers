@@ -74,8 +74,9 @@ Work in that directory from now on. A worktree from an earlier run is reused: it
 
 Call `iii-cloud::check`. Read `plan`, `here` and every problem.
 
-- Ask first (see the profile): each `person` problem and each warning, in one
-  sentence with your recommendation, in one card, before the first edit.
+- Ask first (see the profile): each blocking `person` problem and each warning
+  that is not about a variable or secret, in one sentence with your
+  recommendation, in one card, before the first edit.
 - When the environment's compose file also serves another deploy (a
   Dockerfile, a CI workflow, tests), recommend a separate compose file next to
   it for iii cloud, left out of the other deploy, and check it with
@@ -104,11 +105,10 @@ if the environment is public or team only, and which path is the health path.
 
 A database URL is not a secret. Follow the "Databases" rule of `iii-cloud`: add the `database` worker and bind `DATABASE_URL: ${DATABASE_PRIMARY_URL}`. Never ask for it (`DATABASE_FROM_CLOUD`).
 
-For each name the plan or the app needs, call
-`iii-cloud::secret {name, description}`. The person types the value on the
-page. It goes to iii cloud and to the local `.env`. You only see `set`,
-`left_empty` or `failed`. Use `mode: "not_needed"` or `mode: "decide"` to
-mark a name that needs no value or the person's choice.
+Values are the person's, set on the page (Secrets and variables, and its
+"values need you" row). Do not ask for them or list them: fix only the compose
+file (`EMPTY_DEFAULT_VARIABLE`). A secret the person types goes to iii cloud and
+to the local `.env`; you only see `set`, `left_empty` or `failed`.
 
 `NOT_SAVED` means the secret went nowhere (an API key cannot write to the cloud, and the `.env` is tracked): tell the person to set it in the console. `local: "skipped"` means nothing was written to the `.env`: either git tracks it, or the cloud took the value and the compose file does not read `${NAME}`. Never ask for a value in chat, even when the person offers.
 
