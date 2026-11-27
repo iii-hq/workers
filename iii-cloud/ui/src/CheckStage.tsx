@@ -1653,7 +1653,11 @@ export function CheckStage(props: CheckStageProps) {
 
       {!replaced ? (
         <ValuesCard
-          runFailed={run?.status === 'failed'}
+          failedAt={
+            run?.status === 'failed' && run.error
+              ? { stage: run.error.stage, label: stageLabel(run.error.stage) }
+              : null
+          }
           linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? [], 6, missing).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}

@@ -1125,7 +1125,15 @@ describe('the check follows the canvas', () => {
     })
 
     it('when the local run failed the card never says "you can deploy without them", and a missing value explains the stop', async () => {
-      await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 12)) })
+      // the application starts at `workers`: a missing value can explain a failure there
+      const atWorkers = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: { ...quiet.check!.run!, error: { ...quiet.check!.run!.error!, stage: 'workers' as const } },
+        },
+      }
+      await stage(atWorkers, { 'iii-cloud::values': answer(names('OPT', 12)) })
       expect(card()?.textContent).not.toContain('Optional ones can wait')
       expect(card()?.textContent).toContain(
         "The local run failed. If the application needs one of the names above, set it: the run's last lines say which.",
@@ -1258,6 +1266,23 @@ describe('the check follows the canvas', () => {
       const bare = { ...agentNote, question_source: undefined }
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'SECRET_MISSING: 8 values' } })).toBe(false)
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
+    })
+
+    it('a run that failed at another stage says values are not the cause, and never "optional ones can wait"', async () => {
+      const atRelease = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: {
+            ...quiet.check!.run!,
+            error: { ...quiet.check!.run!.error!, stage: 'release' as const, code: 'RELEASE_FAILED' },
+          },
+        },
+      }
+      await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
+      expect(card()?.textContent).toContain('The local run failed at Release command; values are not the cause.')
+      expect(card()?.textContent).not.toContain('If the application needs')
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
@@ -1638,11 +1663,19 @@ describe('an agent that ended its turn waiting on a wake', () => {
       owner: 'person' as const,
       title: 'JWT_SECRET has no value here',
     }
-    const items = [valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] })]
+    const items = [
+      valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] }),
+      valueItem('OPT_ONE', { suggestions: [] }),
+    ]
     const answers = {
       'iii-cloud::values': () => ({ ...rcValues, environment_id: base.project?.environment?.id, items }),
     }
-    const s = { ...base, agent: null, check: { ...base.check!, problems: [value] } }
+    const err = { ...base.check!.run!.error!, stage: 'workers' as const }
+    const s = {
+      ...base,
+      agent: null,
+      check: { ...base.check!, problems: [value], run: { ...base.check!.run!, error: err } },
+    }
     // the stop is suppressed while a check_here problem is open: the lines are behind the local run's row
     await stage(s, answers)
     expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")

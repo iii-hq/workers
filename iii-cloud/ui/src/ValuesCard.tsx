@@ -9,6 +9,8 @@ import { plainMessage } from './model'
 import { Mono, SectionCard } from './parts'
 import type { ValuesRead } from './ValuesEditor'
 
+/** Where the application starts: the stages a missing value can make fail. */
+const APP_STAGES = new Set(['workers', 'healthcheck'])
 const NO_WRITE = {
   api_key:
     "An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser.",
@@ -21,12 +23,12 @@ export function ValuesCard({
   onSkip,
   onRunWithout,
   onAll,
-  runFailed,
+  failedAt,
   linesShown,
 }: {
   read: ValuesRead
   /** The check's local run failed: "deploy without them" is not a thing to say then. */
-  runFailed: boolean
+  failedAt: { stage: string; label: string } | null
   /** The run's last lines are on this screen (its stop shows them): otherwise they are behind the local run's row. */
   linesShown: boolean
   /** "Set values": the review editor over these names (required first, then asked, then optional). */
@@ -163,11 +165,19 @@ export function ValuesCard({
             {!toSet.length && !plan.skipped.length ? (
               <p className="iii-cloud-cs-sub">{`Every name ${file} reads is set.`}</p>
             ) : null}
-            {runFailed && toSet.length ? (
-              <p className="iii-cloud-cs-sub">
-                The local run failed. If the application needs one of the names above, set it:{' '}
-                {linesShown ? "the run's last lines say which." : "open the local run's row below."}
-              </p>
+            {failedAt ? (
+              // Values can explain a run only where the application starts; at any other stage they are not the cause.
+              APP_STAGES.has(failedAt.stage) && plan.optional.length ? (
+                <p className="iii-cloud-cs-sub">
+                  The local run failed. If the application needs one of the names above, set it:{' '}
+                  {linesShown ? "the run's last lines say which." : "open the local run's row below."}
+                </p>
+              ) : !APP_STAGES.has(failedAt.stage) &&
+                !plan.required.length &&
+                !plan.asked.length &&
+                !plan.local.length ? (
+                <p className="iii-cloud-cs-sub">{`The local run failed at ${failedAt.label}; values are not the cause.`}</p>
+              ) : null
             ) : !plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
               <p className="iii-cloud-cs-sub">Optional ones can wait: you can deploy without them.</p>
             ) : null}
