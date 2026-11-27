@@ -476,6 +476,10 @@ pub struct Handoff {
     /// Fast checks that failed in a row (reset by one that worked).
     #[serde(default)]
     pub check_failures: u32,
+    /// The run the "it is waiting for a container" continue went out for: told once
+    /// per run, never counted against the cap, and judged no more while it goes on.
+    #[serde(default)]
+    pub waited_run: Option<String>,
 }
 
 impl Handoff {

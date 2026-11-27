@@ -30,9 +30,21 @@ pub struct StoredChoice {
     pub choice: OverrideChoice,
 }
 
+/// What the workspace was on when a check was stored: the source branch or ref
+/// and the environment's compose file. A deploy of the check is refused when
+/// they are not the same any more (`SOURCE_CHANGED`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckedFor {
+    pub source: Option<String>,
+    pub compose: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
+    /// `CheckedFor` by check id (kept with the checks). A check with none (made
+    /// before this was recorded) is never refused for it.
+    pub check_sources: std::collections::BTreeMap<String, CheckedFor>,
     pub merges: Vec<PendingMerge>,
     /// Ids of the deployments this worker made or adopted from its own merge.
     pub worker_deploys: Vec<String>,
@@ -136,6 +148,20 @@ impl State {
     pub fn put_check_for(&mut self, check: Check, latest: bool) {
         self.checks.retain(|c| c.id != check.id);
         self.checks.insert(0, check.clone());
+        // Recorded once, when the check is first kept: a later update of its run is not a new source.
+        if let Some(p) = self.project.as_ref()
+            && let Some(e) = p
+                .environment
+                .as_ref()
+                .filter(|e| e.id == check.environment_id)
+        {
+            self.check_sources
+                .entry(check.id.clone())
+                .or_insert_with(|| CheckedFor {
+                    source: p.workspace.as_ref().and_then(|w| w.source.clone()),
+                    compose: e.manifest.clone(),
+                });
+        }
         let referenced = |s: &State, c: &Check| {
             s.merges.iter().any(|m| m.check_id == c.id)
                 || s.handoffs
@@ -157,9 +183,31 @@ impl State {
                 kept <= MAX_CHECKS || referenced(self, c)
             })
             .collect();
+        let kept: std::collections::BTreeSet<&str> =
+            self.checks.iter().map(|c| c.id.as_str()).collect();
+        self.check_sources
+            .retain(|id, _| kept.contains(id.as_str()));
         if latest {
             self.check = Some(check);
         }
+    }
+
+    /// Whether the workspace is on what `check_id` was made for. A check with
+    /// no record (or of another environment than the selected one) passes.
+    pub fn source_unchanged(&self, check_id: &str) -> bool {
+        let (Some(rec), Some(p)) = (self.check_sources.get(check_id), self.project.as_ref()) else {
+            return true;
+        };
+        let (Some(env), Some(check)) = (p.environment.as_ref(), self.find_check(check_id)) else {
+            return true;
+        };
+        if env.id != check.environment_id {
+            return true;
+        }
+        let source = p.workspace.as_ref().and_then(|w| w.source.clone());
+        // A check of another compose file switches the environment to it at deploy: its file is its own.
+        let compose_same = check.manifest.is_some() || env.manifest == rec.compose;
+        source == rec.source && compose_same
     }
 
     /// Put a used project first; one entry per folder and cloud project.

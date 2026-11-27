@@ -179,7 +179,7 @@ keep working.
 
 A call fails with a coded error:
 
-- `NOT_CONNECTED`, `NO_PROJECT`, `NOT_READY`, `PLAN_CHANGED`, `MAIN_MOVED`, `PR_HEAD_CHANGED`, `PR_NOT_MERGEABLE`: the state is old or missing; fix it and call again.
+- `NOT_CONNECTED`, `NO_PROJECT`, `NOT_READY`, `PLAN_CHANGED`, `MAIN_MOVED`, `PR_HEAD_CHANGED`, `SOURCE_CHANGED`, `PR_NOT_MERGEABLE`: the state is old or missing; fix it and call again.
 - `PERSON_ONLY`: the person changes it on the page.
 - `NOT_SAVED`: a secret went nowhere (an API key without cloud write, or a tracked `.env`). Tell the person to set it in the console.
 - `PUSH_REFUSED`: `check {push: true}` pushes only your fix branch, or GitHub refused. `MERGE_CONFLICT`: the person's commits conflict with the environment's branch, so `use {from: "checkout"}` left the worktree at the environment's head: in the worktree, `git merge <their branch>`, resolve the files the message lists, commit, check again. `MERGE_IN_PROGRESS`: finish the merge (commit). `WORKTREE_PATH_TAKEN`: the fix branch is checked out elsewhere; tell the person.

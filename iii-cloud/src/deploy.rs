@@ -486,6 +486,16 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 "The check does not exist, is of another environment, or is not ready.",
             )
         })?;
+    // The source or compose file the check was made for is still the workspace's.
+    if !ctx.store.read(|s| s.source_unchanged(&check.id)) {
+        return Err(CloudError::new(
+            "SOURCE_CHANGED",
+            format!(
+                "{}'s source or compose file changed after this check. Check again.",
+                sel.env.name
+            ),
+        ));
+    }
     // The pin holds at deploy time too: the base is still in the checked commit's history.
     if !check.base.is_empty()
         && !crate::check::base_is_ancestor(

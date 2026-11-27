@@ -3464,3 +3464,86 @@ async fn a_create_whose_answer_is_lost_keeps_the_switch() {
     );
     assert_eq!(*f.manifest.lock().unwrap(), NEXT);
 }
+
+async fn deploy_chk(s: &Setup) -> Result<Deploy, iii_cloud::error::CloudError> {
+    deploy(
+        &s.h.ctx,
+        DeployRequest {
+            handoff_id: None,
+            check_id: "chk".into(),
+            pr: Some(12),
+            deployment_id: None,
+        },
+    )
+    .await
+}
+
+async fn reuse(s: &Setup) -> Result<Project, iii_cloud::error::CloudError> {
+    use_project(
+        &s.h.ctx,
+        UseRequest {
+            path: s.repo.checkout.to_string_lossy().into(),
+            environment_id: Some(ENV.into()),
+            mode: WorkspaceMode::Worktree,
+            bring_changes: None,
+            cloud_project_id: None,
+            from: None,
+            source: None,
+        },
+    )
+    .await
+}
+
+/// A check is of the source and compose file the workspace had when it was made.
+#[tokio::test]
+async fn deploy_refuses_a_check_whose_source_or_compose_file_was_replaced() {
+    let s = setup(plan(false)).await;
+    // Selecting the environment again changes nothing: the check is still deployable.
+    reuse(&s).await.unwrap();
+    assert_ne!(
+        deploy_chk(&s).await.err().map(|e| e.code),
+        Some("SOURCE_CHANGED".to_string())
+    );
+    // The environment's compose file is another one now (a refused check leaves C1 the latest).
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": "other/worker-compose.yaml", "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    reuse(&s).await.unwrap();
+    assert_eq!(s.h.ctx.store.read(|st| st.check.clone().unwrap().id), "chk");
+    let err = deploy_chk(&s).await.unwrap_err();
+    assert_eq!(err.code, "SOURCE_CHANGED");
+    assert!(
+        err.message
+            .contains("production's source or compose file changed")
+    );
+}
+
+#[tokio::test]
+async fn deploy_refuses_a_check_made_for_another_source() {
+    let s = setup(plan(false)).await;
+    // `use` with a source is never for production, so the workspace's source is set as `use` would.
+    s.h.ctx.store.update(|st| {
+        st.project
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .source = Some("feature-x".into())
+    });
+    let err = deploy(
+        &s.h.ctx,
+        DeployRequest {
+            handoff_id: None,
+            check_id: "chk".into(),
+            pr: Some(12),
+            deployment_id: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "SOURCE_CHANGED");
+}

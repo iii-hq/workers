@@ -2690,6 +2690,16 @@ async fn a_worktree_on_another_branch_is_a_continue_and_then_stalls_with_the_rea
     })
     .await;
     assert_eq!(a.state, AgentPhase::Stalled);
+    // The reason stays on the next polls (no older ready check turns it into Done or generic text).
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let a = until(&h, "still stalled with the reason", |a| {
+        a.state == AgentPhase::Stalled
+            && a.question
+                .as_deref()
+                .is_some_and(|q| q.contains("the worktree is on elsewhere"))
+    })
+    .await;
+    assert_eq!(a.state, AgentPhase::Stalled);
 }
 
 /// Any other failure of the fast check is tried again, and stalls after three in a row.
@@ -2993,4 +3003,51 @@ async fn a_refused_continue_still_reads_stalled_after_a_restart() {
         .unwrap();
     assert_eq!(a.state, AgentPhase::Stalled);
     assert!(a.question.is_some());
+}
+
+/// The waiting notice is information: once per run, outside the cap of three.
+#[tokio::test]
+async fn the_waiting_continue_goes_once_per_run_and_does_not_use_the_cap() {
+    let waiting = |r: &mut Run| {
+        r.status = RunStatus::Running;
+        r.error = None;
+        r.waiting_on = Some(WaitingOn {
+            containers: vec!["api".into()],
+            since: "t".into(),
+        });
+    };
+    let (h, w, _c, _keep) = idle_with_run(waiting).await;
+    let m = first_sent(&h).await.expect("the waiting notice");
+    assert!(m.contains("waits for api to connect"), "{m}");
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 0);
+    // The turn ends again with the same run still going: nothing is judged or sent.
+    *w.status.lock().unwrap() = "working".into();
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 400).await;
+    assert_eq!(sent(&h).len(), 1);
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 0);
+    // The run ends for real: the agent hears it, and it is the first counted continue.
+    h.ctx.store.update(|s| {
+        let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
+        let run = c.run.as_mut().unwrap();
+        run.id = "rf2".into();
+        run.status = RunStatus::Failed;
+        run.waiting_on = None;
+        run.error = Some(RunError {
+            stage: StageName::Workers,
+            code: "WORKERS_NOT_READY".into(),
+            message: "api did not connect".into(),
+        });
+    });
+    *w.status.lock().unwrap() = "working".into();
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    for _ in 0..200 {
+        if sent(&h).len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(sent(&h)[1].contains("WORKERS_NOT_READY"), "{:?}", sent(&h));
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
 }

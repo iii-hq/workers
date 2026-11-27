@@ -158,6 +158,7 @@ Besides problems, a call can fail with a code:
 - `DATABASE_FROM_CLOUD`: `iii-cloud::secret` refused a database URL. iii cloud creates the database: follow `DATABASE_NOT_MANAGED`. Pass `external: true` only when the person chose a database outside iii cloud.
 - `NOT_SAVED`: a secret went nowhere. Tell the person to set it in the console.
 - `PR_HEAD_CHANGED`: the pull request's head moved after the check. Check again.
+- `SOURCE_CHANGED`: the environment's source or compose file changed after the check (the workspace was selected again for another one). Check again.
 - `WORKTREE_FAILED`: `git worktree add` failed. Read the message.
 - `IDEMPOTENCY_KEY_REUSED`: the key was used for another request. Use a new key.
 - `DEVICE_CODE_EXPIRED`: the sign-in code timed out. Connect again.

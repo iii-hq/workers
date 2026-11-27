@@ -155,8 +155,8 @@ never do it another way (`gh pr merge`, raw HTTP), even when asked. The merge
 is pinned to what you checked: the merged tree must equal the checked commit's
 tree, and its first parent must be the base. If the person merges on GitHub
 instead, tell them to confirm the waiting deployment on the page ("Confirm
-deploy"). When the page reports `MAIN_MOVED`, `PR_HEAD_CHANGED` or
-`PLAN_CHANGED`, the plan is old: check again. `PUSH_STILL_RUNNING` means the
+deploy"). When the page reports `MAIN_MOVED`, `PR_HEAD_CHANGED`,
+`SOURCE_CHANGED` or `PLAN_CHANGED`, the plan is old: check again. `PUSH_STILL_RUNNING` means the
 plan changed but iii cloud could not cancel the merged commit's deployment:
 watch it.
 

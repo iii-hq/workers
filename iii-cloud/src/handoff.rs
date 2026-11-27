@@ -370,6 +370,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         continue_at_ms: None,
         continue_refused: false,
         check_failures: 0,
+        waited_run: None,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -1047,6 +1048,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             }
             // The hand-off's own local run, when the plan has nothing left to say.
             let mut run_going = false;
+            let mut waiting: Option<((String, String), String)> = None;
             if forced.is_none()
                 && mine.is_empty()
                 && theirs.is_empty()
@@ -1056,6 +1058,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                     Some(RunJudgment::Agent(line)) => mine.push(line),
                     Some(RunJudgment::Person(line)) => theirs.push(line),
                     Some(RunJudgment::Going) => run_going = true,
+                    Some(RunJudgment::Waiting(line, run)) => waiting = Some((line, run)),
                     None => {}
                 }
             }
@@ -1063,10 +1066,24 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 // Nothing to judge until it ends.
                 phase = AgentPhase::Working;
                 current = Some("the local run is going".to_string());
+            } else if let Some((line, run)) = waiting {
+                // Information, not a failed attempt: once per run, outside the cap.
+                let sent =
+                    send_continue(ctx, &handoff, &session, &[line], &secrets, Some(&run)).await;
+                phase = if sent == Continue::Sent {
+                    AgentPhase::Working
+                } else {
+                    AgentPhase::Stalled
+                };
+                if phase == AgentPhase::Stalled {
+                    question = Some(STOPPED_TEXT.to_string());
+                }
             } else if !mine.is_empty() {
-                let sent = send_continue(ctx, &handoff, &session, &mine, &secrets).await;
+                let sent = send_continue(ctx, &handoff, &session, &mine, &secrets, None).await;
                 // The window opens; when it passes the stretch is judged again.
-                local.idle_checked = local.idle_checked || sent == Continue::Spent;
+                // A reason that comes from the check itself (the worktree) is read again each poll.
+                local.idle_checked =
+                    local.idle_checked || (sent == Continue::Spent && forced.is_none());
                 if sent == Continue::Sent {
                     phase = AgentPhase::Working;
                 } else {
@@ -1317,12 +1334,17 @@ async fn send_continue(
     session: &str,
     problems: &[(String, String)],
     secrets: &[String],
+    // The run a waiting notice is for: sent outside the cap and not counted.
+    waiting_run: Option<&str>,
 ) -> Continue {
     let n = ctx.store.read(|s| {
         s.handoffs
             .iter()
             .find(|h| h.id == handoff.id)
-            .filter(|h| h.agent.state != AgentPhase::Stopped && h.continues < MAX_CONTINUES)
+            .filter(|h| {
+                h.agent.state != AgentPhase::Stopped
+                    && (waiting_run.is_some() || h.continues < MAX_CONTINUES)
+            })
             .map(|h| h.continues + 1)
     });
     let Some(n) = n.filter(|_| !retired(ctx, handoff)) else {
@@ -1334,13 +1356,20 @@ async fn send_continue(
         problem_lines(problems)
     );
     let text = crate::run::redact(&text, secrets);
-    let sent = deliver(ctx, session, &text, &format!("{}-continue-{n}", handoff.id)).await;
+    let key = match waiting_run {
+        Some(run) => format!("{}-waiting-{run}", handoff.id),
+        None => format!("{}-continue-{n}", handoff.id),
+    };
+    let sent = deliver(ctx, session, &text, &key).await;
     ctx.store.update(|s| {
         if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == handoff.id) {
             h.continue_at_ms = Some(now_ms());
             h.continue_refused = !sent;
             if sent {
-                h.continues += 1;
+                match waiting_run {
+                    Some(run) => h.waited_run = Some(run.to_string()),
+                    None => h.continues += 1,
+                }
             }
         }
     });
@@ -1434,8 +1463,10 @@ enum RunJudgment {
     Agent((String, String)),
     /// What the person must do.
     Person((String, String)),
-    /// Running, and not waiting on anything: nothing to judge yet.
+    /// Running, and not waiting on anything (or already told about it): nothing to judge yet.
     Going,
+    /// Running and waiting on containers, not yet told: `(line, run id)`.
+    Waiting((String, String), String),
 }
 
 fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
@@ -1444,14 +1475,19 @@ fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
         match run.status {
             RunStatus::Passed => None,
             RunStatus::Running => Some(match &run.waiting_on {
-                None => RunJudgment::Going,
-                Some(w) => RunJudgment::Agent((
-                    "RUN_WAITING".into(),
-                    format!(
-                        "the local run waits for {} to connect; read the run's log, fix it and check again",
-                        w.containers.join(", ")
-                    ),
-                )),
+                Some(w) if h.waited_run.as_deref() != Some(run.id.as_str()) => {
+                    RunJudgment::Waiting(
+                        (
+                            "RUN_WAITING".into(),
+                            format!(
+                                "the local run waits for {} to connect; read the run's log, fix it and check again",
+                                w.containers.join(", ")
+                            ),
+                        ),
+                        run.id.clone(),
+                    )
+                }
+                _ => RunJudgment::Going,
             }),
             RunStatus::Failed => {
                 let (code, line) = run_failure_of(run);
