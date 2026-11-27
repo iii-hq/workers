@@ -1347,7 +1347,7 @@ describe('the check follows the canvas', () => {
     expect(text()).not.toContain('Pinned to the plan')
     expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
     await stage(B('deploy-passed'))
-    expect(region('Details')?.textContent).toMatch(/your agent fixed \d+/)
+    expect(region('Details')?.textContent).toMatch(/[Yy]our agent fixed \d+/)
     // nothing the person did can be counted here: no "You did 0"
     expect(region('Details')?.textContent).not.toContain('You did 0')
   })
@@ -1570,8 +1570,16 @@ describe('small things the review found', () => {
     }
     const items = names8.map((n) => valueItem(n, { need: 'required', default: null, in_cloud: 'set', suggestions: [] }))
     const answers = { 'iii-cloud::values': () => ({ ...rcValues, environment_id: r.project?.environment?.id, items }) }
-    await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
+    const mine = { ...r, check: { ...r.check!, handoff_id: brief.handoff_id } }
+    await stage({ ...mine, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
+    expect(region('Details')?.textContent).toMatch(/^Details(You did 8|Your agent fixed)/)
     expect(region('Details')?.textContent).toMatch(/You did 8/)
+    // an old hand-off of another kind, or one that is not this check's, counts nothing
+    await stage({ ...mine, handoff_brief: { ...brief, kind: 'pull_request' as const } }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    await stage({ ...r, handoff_brief: brief }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    expect(text()).not.toContain('agent fixed 0')
     // without the read nothing is invented
     await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } })
     expect(text()).not.toContain('You did')
@@ -2184,6 +2192,49 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(replaced).toBeTruthy()
     expect(replaced?.querySelectorAll('button')).toHaveLength(0)
     expect(title() ?? '').not.toContain('for your agent to fix')
+  })
+
+  it('a plan that could not be read is said once, with one button when the run also failed; routes may be a value too', async () => {
+    const w = release(note)
+    const both = {
+      ...w,
+      agent: null,
+      handoff_brief: null,
+      check: {
+        ...w.check!,
+        plan: {
+          ...w.check!.plan,
+          status: 'unavailable' as const,
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+        },
+      },
+    } as Status
+    await stage(both)
+    const t = text()
+    expect(t.split('iii cloud answered 503.').length - 1).toBe(1)
+    expect(t).not.toContain("iii cloud couldn't check this commit just now")
+    const buttons = [...el.querySelectorAll('[role=status] button')]
+      .map((b) => b.textContent)
+      .filter((x) => /Check again|Run again/.test(x ?? ''))
+    expect(buttons).toEqual(['Check again'])
+  })
+
+  it('routes is a command stage too: a prefix read from a variable may be the cause', async () => {
+    const atRoutes = owned('agent', {
+      stage: 'routes',
+      code: 'ROUTE_OUTSIDE_PREFIX',
+      message: 'A route is outside its prefix.',
+    })
+    const answers = {
+      'iii-cloud::values': () => ({
+        ...rcValues,
+        environment_id: atRoutes.project?.environment?.id,
+        items: [valueItem('BASE_PATH', { suggestions: [] })],
+      }),
+    }
+    await stage(atRoutes, answers)
+    expect(region('Secrets and variables')?.textContent ?? '').toContain('If that command reads one of the names above')
+    expect(region('Secrets and variables')?.textContent ?? '').not.toContain('values are not the cause')
   })
 
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {

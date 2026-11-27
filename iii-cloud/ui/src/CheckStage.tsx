@@ -516,7 +516,15 @@ function cloudPart(s: Status, c: Check): Part {
   if (cloudPending(c)) {
     return {
       status: plan.status === 'unavailable' ? 'unavailable' : 'check pending',
-      rows: [{ key: 'pending', mark: 'wait', label: cloudPendingNote(s) ?? '', state: '' }],
+      // An unreadable plan is said once, in its stop above.
+      rows: [
+        {
+          key: 'pending',
+          mark: 'wait',
+          label: plan.status === 'unavailable' ? 'The reason is in the panel above.' : (cloudPendingNote(s) ?? ''),
+          state: '',
+        },
+      ],
     }
   }
   const rows: Row[] = openProblems(s)
@@ -1343,6 +1351,8 @@ export function CheckStage(props: CheckStageProps) {
       // The person's values count here too: a name the run lacks is why it failed, and the values card says so.
       !openProblems(s, true).some((x) => x.source === 'check_here')
     ) {
+      // The plan stop already says "Check again": the same button is not offered twice.
+      const planStop = stops.some((x) => x.key === 'plan')
       stops.push({
         key: 'run',
         variant: 'alert',
@@ -1381,9 +1391,11 @@ export function CheckStage(props: CheckStageProps) {
                         disabled: !canAsk || settling,
                       },
                     ]),
-              { label: 'Run again', onClick: checkAgain, disabled: running },
+              ...(planStop ? [] : [{ label: 'Run again', onClick: checkAgain, disabled: running }]),
             ]
-          : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+          : planStop
+            ? []
+            : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
@@ -1687,18 +1699,31 @@ export function CheckStage(props: CheckStageProps) {
   // The values you set since the hand-off began: names its brief listed as the person's to set that the values read
   // now reports as set. Without a brief or a read there is nothing to count, so "You did" is left out, never 0.
   const setNow = new Set(valuesPlan(read).set.map((i) => i.name))
-  const valuesYouSet = (s.handoff_brief?.person_problems ?? [])
+  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it.
+  const briefNow =
+    s.handoff_brief?.kind === 'ready' && !!c?.handoff_id && c.handoff_id === s.handoff_brief.handoff_id
+      ? s.handoff_brief
+      : null
+  const valuesYouSet = (briefNow?.person_problems ?? [])
     .filter((b) => b.code && VALUE_CODES.has(b.code))
     .map((b) => variableName({ title: b.title, detail: b.detail, code: b.code ?? null }))
     .filter((n): n is string => !!n && setNow.has(n))
   const youDid = doneN - agentFixed + new Set(valuesYouSet).size
   const summary = [
     ready
-      ? [youDid > 0 ? `You did ${youDid}` : null, `your agent fixed ${agentFixed}`].filter(Boolean).join(' · ')
+      ? // A zero part is dropped, and the line starts with a capital whichever part comes first.
+        [
+          youDid > 0 ? `You did ${youDid}` : null,
+          agentFixed > 0 ? `${youDid > 0 ? 'your' : 'Your'} agent fixed ${agentFixed}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : `Done ${doneN}`,
     `Warnings ${warnings.length}`,
     `Checks ${past.length}${lastCheck && !ready ? ` (last ${clock(lastCheck.checked_at)}, ${duration(lastCheck.duration_ms)})` : ''}`,
-  ].join(' · ')
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div className="iii-cloud-cs" data-narrow={narrow ? '' : undefined}>
