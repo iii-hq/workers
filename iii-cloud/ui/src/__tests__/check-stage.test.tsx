@@ -1420,8 +1420,8 @@ describe('small things the review found', () => {
     )
     const restored = note(
       'RUN_FILES_RESTORED',
-      'The local run rewrote 3 tracked files; they are back as committed',
-      'api/a.ts, api/b.ts, api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
+      "The local run changed 3 files in the agent's copy; the copy is as it was before the run",
+      'Put back: api/a.ts, api/b.ts. Moved: api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
     )
     const withNotes = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left, restored] } }
     await stage(withNotes)
@@ -1429,6 +1429,7 @@ describe('small things the review found', () => {
     const lines = [...el.querySelectorAll('details.iii-cloud-cs-quiet')]
     expect(lines.map((l) => l.querySelector('summary')?.textContent)).toEqual([left.title, restored.title])
     expect(lines[0].textContent).toContain('pnpm-lock.yaml, tsconfig.tsbuildinfo')
+    expect(lines[1].textContent).toContain('Put back: api/a.ts, api/b.ts. Moved: api/c.ts.')
     expect(lines[1].textContent).toContain('run-leftovers')
     await stage(r)
     expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
@@ -1893,5 +1894,24 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await stage(release({ ...rcFixing.agent!, state: 'working' as const }))
     expect(stop()?.textContent).toContain('Your agent is on it.')
     expect([...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Run again'])
+  })
+
+  it("the run's whole log is one quiet line with a copy button under its last lines", async () => {
+    const LOG = '/home/you/.iii-cloud/runs/run-1.log'
+    const r = rcFixing.check!
+    const w = {
+      ...rcFixing,
+      agent: null,
+      handoff_brief: null,
+      check: { ...r, problems: [], run: { ...r.run!, log_path: LOG } },
+    } as Status
+    await stage(w)
+    const stopBlock = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('The local run stopped at'),
+    )
+    expect(stopBlock?.textContent).toContain(`The whole log: ${LOG}`)
+    expect([...(stopBlock?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toContain('Copy')
+    await stage({ ...w, check: { ...w.check!, run: { ...w.check!.run!, log_path: null } } })
+    expect(text()).not.toContain('The whole log')
   })
 })

@@ -289,6 +289,8 @@ export type Run = {
   /** The commit's run had already passed and this answer is that run. A worker that does not send it: false. */
   reused?: boolean
   log_tail: string[]
+  /** Where the run's whole redacted log is, on this machine. */
+  log_path?: string | null
   error: { stage: Stage['name']; code: string; message: string } | null
 }
 

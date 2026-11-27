@@ -18,6 +18,7 @@ import {
   Skeleton,
   TerminalStream,
 } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { ChevronRight, CircleAlert, CircleDashed, Check as Done, Info, Loader2 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AgentControls } from './AgentRow'
@@ -113,6 +114,7 @@ type Row = {
   state: string
   detail?: string | null
   log?: string[]
+  logPath?: string | null
 }
 type Act = {
   label: string
@@ -581,6 +583,7 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
       state: st.status === 'pending' ? 'waiting' : st.status === 'running' ? 'running' : stageTime(r, st),
       detail: t.note,
       log: st.status === 'failed' ? r.log_tail : undefined,
+      logPath: st.status === 'failed' ? r.log_path : undefined,
     }
   })
   const start = Date.parse(r.started_at)
@@ -613,6 +616,20 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
   }
 }
 
+/** The run's whole log on this machine: one quiet line, selectable, with a copy button. */
+function LogPath({ path }: { path?: string | null }) {
+  const copy = useCopyFlash(path ?? '')
+  if (!path) return null
+  return (
+    <p className="iii-cloud-cs-foot iii-cloud-cs-logpath">
+      The whole log: <Mono>{path}</Mono>{' '}
+      <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={copy.copy}>
+        {copy.state === 'copied' ? 'Copied' : 'Copy'}
+      </button>
+    </p>
+  )
+}
+
 function Rows({ rows }: { rows: Row[] }) {
   return (
     <ul className="iii-cloud-cs-rows">
@@ -626,6 +643,7 @@ function Rows({ rows }: { rows: Row[] }) {
             <details className="iii-cloud-cs-log">
               <summary>{`Last lines of ${r.aria ?? 'the local run'}`}</summary>
               <pre>{r.log.join('\n')}</pre>
+              <LogPath path={r.logPath} />
             </details>
           ) : null}
         </li>
@@ -1278,6 +1296,7 @@ export function CheckStage(props: CheckStageProps) {
             {plainMessage(err)}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
+            {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
         ),
         // The agent's to fix: its hand-off first (unless it is already on it); running again repeats the failure.
