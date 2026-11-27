@@ -799,16 +799,20 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             }
             continue;
         }
-        let done = futures_util::future::join_all(chunk.iter().map(|&i| {
-            let (ctx, sel, project, manifest) = (ctx, &sel, &project, &manifest);
-            let item = &request.items[i];
-            async move {
+        let mut tasks = tokio::task::JoinSet::new();
+        for &i in chunk {
+            let (ctx, sel, manifest) = (ctx.clone(), sel.clone(), manifest.clone());
+            let project_path = project.path.clone();
+            let item = request.items[i].clone();
+            tasks.spawn(async move {
+                let (ctx, sel) = (&ctx, &sel);
+                let item = &item;
                 let name = item.name();
                 let chosen: Result<(ValueKind, String), WorkerError> = match item {
                     SaveItem::Typed { kind, value, .. } => Ok((*kind, value.clone())),
                     SaveItem::EnvFile { kind, file, .. } => {
                         // Read again now: the file may have changed since the page listed it.
-                        match read_env(Path::new(&project.path), file)
+                        match read_env(Path::new(&project_path), file)
                             .and_then(|lines| lines.into_iter().find(|(n, _)| n == name))
                         {
                             None => Err(failed(
@@ -857,9 +861,14 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
                         (i, Ok((value, written)))
                     }
                 }
-            }
-        }))
-        .await;
+            });
+        }
+        // Awaited in the request's order, whichever write ends first.
+        let mut done = vec![];
+        while let Some(joined) = tasks.join_next().await {
+            done.push(joined.expect("a value write task ended without an answer"));
+        }
+        done.sort_by_key(|(i, _)| *i);
         for (i, outcome) in done {
             let item = &request.items[i];
             let (value, written) = match outcome {

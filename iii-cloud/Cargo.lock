@@ -821,7 +821,6 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "futures-util",
  "hex",
  "iii-console-ui",
  "iii-sdk",
