@@ -137,9 +137,16 @@ export function registerExternalReplies(
     const { env } = await lease.read(() => rowFor(id));
     for (const [cursor, batch] of batches) {
       if (!batch.some(([key, w]) => g.watches.get(key) === w)) continue;
-      const next = await lease.read(() =>
-        readTranscript(iii, env, id, cursor ? 'since' : 'baseline', cursor),
-      );
+      let next: Awaited<ReturnType<typeof readTranscript>>;
+      try {
+        next = await lease.read(() =>
+          readTranscript(iii, env, id, cursor ? 'since' : 'baseline', cursor),
+        );
+      } catch {
+        // Retry this cursor without holding up readers at a different boundary.
+        lease.check(); // A lost grant, unlike a failed page, ends the whole poll.
+        continue;
+      }
       for (const [key, w] of batch) {
         for (const reply of next.replies) {
           lease.check();

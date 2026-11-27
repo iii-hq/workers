@@ -478,6 +478,19 @@ describe('observation', () => {
     });
   });
 
+  it('delivers from a later baseline even when an earlier cursor cannot yield a page', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'first');
+      await appendFile(s.file, lines(answer(2, 1, 'ü'.repeat(9000))));
+      await observe(s, 'later');
+      await appendFile(s.file, lines(answer(3, 2, 'after admission')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'later')).toEqual([{ id: recordId(3), text: 'after admission' }]);
+      expect(seen(s, 'first')).toEqual([]); // Never skip its unread reply.
+    });
+  });
+
   it('keeps a physical boundary per accepted observer and targets only its new active replies', async () => {
     await withSyntheticHost(async (s) => {
       await appendFile(s.file, lines(answer(2, 1, 'old sibling')));

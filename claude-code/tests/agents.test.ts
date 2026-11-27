@@ -409,6 +409,37 @@ describe('claude::agents::list', () => {
     }, false);
   });
 
+  it.each([
+    15_300, 45_000,
+  ])('retains worker rows before the rail deadline for a %ims host failure', async (delay) => {
+    await withSyntheticHost(async (s) => {
+      vi.useFakeTimers();
+      try {
+        s.host.records.push(record('owned', 'done'));
+        s.host.config = () => new Promise((resolve) => setTimeout(() => resolve(null), 5_000));
+        s.host.beforeInventory = () => new Promise((resolve) => setTimeout(resolve, delay));
+        s.host.inventoryOK = false;
+        const response = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        const rail = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('rail deadline exceeded'), 20_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(20_300);
+        expect(await rail).toMatchObject({
+          agents: [{ id: 'owned' }],
+          inventory_status: 'unavailable',
+          detail: 'Terminal host inventory unavailable',
+          external_visibility: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
     const fake = host(ok([]), { external: true });
     await list(fake);

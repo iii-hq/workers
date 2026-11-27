@@ -235,6 +235,22 @@ async function cliSnapshot(
   }
 }
 
+// The rail allows 20s for the entire list. A timed-out shell command can take
+// longer to report over RPC; don't let that discard the worker's own rows.
+async function railSnapshot(...args: Parameters<typeof cliSnapshot>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      cliSnapshot(...args),
+      new Promise<Awaited<ReturnType<typeof cliSnapshot>>>((resolve) => {
+        timer = setTimeout(() => resolve({ rows: [], detail: INVENTORY_UNAVAILABLE }), 18_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Claude session ids whose hooks reached this worker: they wrote a hook settle. */
 async function hookSessions(iii: IIIClient): Promise<Set<string>> {
   try {
@@ -293,16 +309,18 @@ export function registerAgents(
       replies = false,
       showAll = replies,
       markExternal = false,
+      readSnapshot = cliSnapshot,
     }: {
       host?: Prepared;
       replies?: boolean;
       showAll?: boolean;
       markExternal?: boolean;
+      readSnapshot?: typeof cliSnapshot;
     } = {},
   ) => {
     const [records, snapshot, hooked, ptys] = await Promise.all([
       listSessions(iii),
-      cliSnapshot(iii, host, all),
+      readSnapshot(iii, host, all),
       !showAll ? hookSessions(iii) : new Set<string>(),
       replies ? null : claudePtys(iii),
     ]);
@@ -363,11 +381,16 @@ export function registerAgents(
     'claude::agents::list',
     async (payload: unknown) => {
       const { all, include_config_id } = ListPayloadSchema.parse(payload ?? {});
-      const epoch = await access.confirm();
-      const { merge, detail } = await inventory(all === true, {
-        showAll: false,
-        markExternal: include_config_id,
-      });
+      // The ordinary worker listing needs inventory even with external access off.
+      // Read it alongside confirmation, but authorize external rows only at publication.
+      const [epoch, { merge, detail }] = await Promise.all([
+        access.confirm(),
+        inventory(all === true, {
+          showAll: false,
+          markExternal: include_config_id,
+          readSnapshot: include_config_id ? railSnapshot : cliSnapshot,
+        }),
+      ]);
       // Recheck at publication; merge the same snapshot without external rows if revoked.
       const currentEpoch = access.epoch;
       const authorized = epoch !== null && epoch === currentEpoch;
