@@ -36,7 +36,7 @@ import {
   signInRequired,
   tilde,
 } from './model'
-import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink } from './parts'
+import { DetailRow, ErrorPanel, Mono, Notice, PathBar, StepLink, uncommittedCount } from './parts'
 import { type AreaProps, pathOf, type Route, type RouteAt } from './route'
 import type { CloudProjectChoice, ComposeFile, DeploymentList, Project, Status } from './types'
 
@@ -450,7 +450,7 @@ function Confirm({
   const envName = creatingProject ? np.env.trim() : creatingEnv ? ne.name.trim() : (env?.name ?? '')
   const base = project?.default_branch ?? 'main'
   const newEnv: NewEnv = { ...ne, branch: ne.branch || base }
-  const changed = project?.checkout.changed_files.length ?? 0
+  const changed = uncommittedCount(project?.checkout.changed_files ?? [])
   const manifestOf = (e: typeof env) =>
     e && 'manifest' in e && e.manifest
       ? e.manifest
@@ -771,7 +771,7 @@ function Confirm({
             <DetailRow
               label="Folder"
               onChange={toggle('folder')}
-              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : project.checkout.branch ? ', up to date' : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
+              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
             >
               <Mono>{tilde(project.path)}</Mono>
             </DetailRow>

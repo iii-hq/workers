@@ -130,6 +130,16 @@ export const Spinner = () => <Loader2 className="iii-ui-spin" aria-hidden />
 
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
 
+/**
+ * A file that looks like a secret (`.env*`, private keys): it stays on this machine, so it is neither counted as
+ * an uncommitted change the page talks about nor ever advised to be committed.
+ */
+export const secretLike = (path: string) =>
+  /(^|\/)(\.env[^/]*|[^/]*\.(pem|key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)[^/]*)$/i.test(path)
+
+/** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count. */
+export const uncommittedCount = (files: string[]) => files.filter((f) => !secretLike(f)).length
+
 /** A sentence with each short commit sha (seven hex characters, at least one a digit) set in mono. */
 export function monoShas(text: string): ReactNode {
   return text

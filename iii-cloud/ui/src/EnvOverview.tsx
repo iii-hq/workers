@@ -23,7 +23,7 @@ import {
   when,
   withAppFile,
 } from './model'
-import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill } from './parts'
+import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill, uncommittedCount } from './parts'
 import type { EnvTabProps, Route } from './route'
 import type { CloudDeployment, DeploymentList, Members, Status, Values, WorkerError } from './types'
 
@@ -226,7 +226,9 @@ export function nextAction(
     }
   }
 
-  const files = p?.checkout.changed_files.length ?? 0
+  const files = uncommittedCount(p?.checkout.changed_files ?? [])
+  // Only secret-like files left: the page says nothing about them.
+  const secretsOnly = !files && !!p?.checkout.changed_files.length
   const notServed = p?.checkout.not_served ?? []
   const folderMoved = notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha))
   if (failed && !folderMoved) {
@@ -256,13 +258,13 @@ export function nextAction(
 
   if (notServed.length > 0) {
     const top = notServed[0]
-    const rest = files ? stays(files) : 'nothing uncommitted in your folder'
+    const rest = files ? stays(files) : secretsOnly ? null : 'nothing uncommitted in your folder'
     return {
       state: 'deploy',
       wait: true,
       primary: true,
       title: `${plural(notServed.length, 'commit')} on ${branch ?? 'your branch'} ${notServed.length === 1 ? "isn't" : "aren't"} on ${name}`,
-      detail: `${sha7(top.sha)} ${top.message.split('\n')[0]} · ${rest}`,
+      detail: `${sha7(top.sha)} ${top.message.split('\n')[0]}${rest ? ` · ${rest}` : ''}`,
       action: { label: `Deploy to ${name}`, kind: 'check' },
     }
   }
@@ -283,8 +285,8 @@ export function nextAction(
     state: 'current',
     wait: false,
     primary: false,
-    title: `${name} serves everything in your folder`,
-    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}, ${files ? stays(files) : 'nothing uncommitted'}.`,
+    title: `${name} serves every commit of ${branch ?? 'your branch'}`,
+    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}${files ? `, ${stays(files)}` : secretsOnly ? '' : ', nothing uncommitted'}.`,
   }
 }
 

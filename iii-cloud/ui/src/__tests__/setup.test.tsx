@@ -163,7 +163,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
     ])
     expect(detail('Folder')).toMatchObject({
       value: '~/workspaces/registry',
-      note: 'iii-hq/registry on GitHub · you are on main, up to date',
+      note: 'iii-hq/registry on GitHub · you are on main',
     })
     expect(detail('Project')).toMatchObject({
       value: 'New project: registry',
@@ -501,6 +501,13 @@ describe('the button: the calls in order, then the Deploy place', () => {
     await mount({ ...base, project: clean, check: null }, ctx({ at: 'setup', step: 'confirm' }))
     expect(text()).toContain('Your agent works in a clean copy of what is committed, so your folder stays as it is.')
     expect(text()).not.toContain('uncommitted change')
+  })
+
+  it('only secret-like files uncommitted: they are not counted and never advised to be committed', async () => {
+    const secrets = { ...notImported, checkout: { ...notImported.checkout, changed_files: ['.env', '.env.local'] } }
+    await mount({ ...base, project: secrets, check: null }, ctx({ at: 'setup', step: 'confirm' }))
+    expect(text()).not.toContain('uncommitted change')
+    expect(text()).not.toContain('commit them')
   })
 
   it('iii cloud cannot see the repository on GitHub: the button waits and says why; the agent imports it', async () => {

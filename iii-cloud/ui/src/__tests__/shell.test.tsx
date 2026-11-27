@@ -381,7 +381,10 @@ describe('the hand-over between places, end to end', () => {
       'iii-cloud::project::use',
       'iii-cloud::check',
     ])
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toEqual({ run: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({
+      run: true,
+      manifest: expect.any(String),
+    })
     expect(path()).toBe('Projects / registry · dev / Deploy')
   })
 
