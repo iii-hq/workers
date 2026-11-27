@@ -29,6 +29,17 @@ export function record(n: number, parent: number | null, type: string, content: 
   };
 }
 
+export const MiB = 1024 * 1024;
+/** One newline-terminated annotation record of exactly `bytes` bytes. */
+export function summaryLine(bytes: number) {
+  const empty = JSON.stringify({ type: 'summary', summary: '' }).length + 1;
+  return `${JSON.stringify({ type: 'summary', summary: 'f'.repeat(bytes - empty) })}\n`;
+}
+/** Annotation records of 64 KiB each, at least `bytes` in total. */
+export function filler(bytes: number) {
+  return summaryLine(64 * 1024).repeat(Math.ceil(bytes / (64 * 1024)));
+}
+
 export function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {

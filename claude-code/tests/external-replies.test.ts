@@ -2,7 +2,9 @@ import {
   appendFile,
   link,
   mkdir,
+  open,
   rename,
+  stat,
   symlink,
   truncate,
   unlink,
@@ -14,10 +16,13 @@ import { registerWorker } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import {
   deferred,
+  filler,
   id,
+  MiB,
   record,
   recordId,
   type SyntheticHost,
+  summaryLine,
   withSyntheticHost,
 } from './_helpers/external-replies-host.js';
 
@@ -287,7 +292,7 @@ describe('lookup', () => {
         lines({ ...answer(1, null, 'invalid id'), uuid: 'other' }),
         lines({ ...answer(1, null, 'no parent field'), parentUuid: undefined }),
         lines({ type: 'user', uuid: recordId(1), parentUuid: null }),
-        lines({ type: 'unsupported-format', message: { content: 'private' } }),
+        lines({ type: 'unsupported-format', uuid: recordId(1), message: { content: 'private' } }),
       ]) {
         await writeFile(s.file, data);
         await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
@@ -449,6 +454,157 @@ describe('host reader', () => {
       };
       await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
       expect(s.host.outputs.join('')).toBe('');
+    });
+  });
+});
+
+describe('large transcripts and new CLI records', () => {
+  const owner = { type: 'session-owner', sessionId: id, pid: 4242, owner: 'synthetic' };
+  const ids = (s: SyntheticHost, observer: string) => seen(s, observer).map((r) => r.id);
+
+  it('returns the last active reply from the final 8 MiB of a 40 MiB transcript', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(40 * MiB) +
+          lines(
+            record(3, 2, 'user', 'late prompt'),
+            answer(4, 3, 'abandoned answer'),
+            answer(5, 3, 'latest answer'),
+          ),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(40 * MiB);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(5), text: 'latest answer' });
+      expect(s.host.snapshots.join('')).not.toMatch(/early|abandoned/);
+    });
+  });
+
+  it('ends an active chain at the window and still yields its replies', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt')),
+      );
+      // The only reply on the active chain lies before the parsed window.
+      expect((await lookup(s)).last_reply).toBeNull();
+      await appendFile(s.file, lines(answer(4, 3, 'late answer')));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'late answer' });
+    });
+  });
+
+  it('still rejects a missing parent in a transcript of at most 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      const tail = lines(answer(2, 1, 'orphan'));
+      const padded =
+        filler(8 * MiB - 64 * 1024) + summaryLine(64 * 1024 - Buffer.byteLength(tail)) + tail;
+      await writeFile(s.file, padded);
+      expect((await stat(s.file)).size).toBe(8 * MiB);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      // One more record pushes the parent's place out of the parsed window.
+      await writeFile(s.file, lines(record(1, null, 'user', 'early prompt')) + padded);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'orphan' });
+    });
+  });
+
+  it('delivers each reply appended after admission once, in order, on a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, filler(9 * MiB) + lines(answer(1, null, 'before admission')));
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      // Growth moves the delivered boundary before the parsed window.
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+        { id: recordId(4), text: 'third' },
+      ]);
+    });
+  });
+
+  it.each([
+    'truncate',
+    'rewrite',
+  ])('rebaselines a watcher after a %s of a transcript over 8 MiB', async (mutation) => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      const baseline = filler(9 * MiB) + lines(answer(1, null, 'fixture answer'));
+      const first = lines(answer(2, 1, large));
+      const second = lines(answer(3, 2, large));
+      const third = lines(answer(4, 3, large));
+      await writeFile(s.file, baseline);
+      await observe(s, 'large');
+      await appendFile(s.file, first + second + third);
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+
+      if (mutation === 'truncate') {
+        await truncate(s.file, Buffer.byteLength(baseline + first + second));
+      } else {
+        // Same size and the same parsed window: only the hashed prefix changes.
+        const handle = await open(s.file, 'r+');
+        try {
+          await handle.write('g', 100);
+        } finally {
+          await handle.close();
+        }
+      }
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+
+      const parent = mutation === 'truncate' ? 3 : 4;
+      await appendFile(s.file, lines(answer(5, parent, 'after reset')));
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(5), text: 'after reset' },
+      ]);
+    });
+  });
+
+  it('skips a session-owner record and other new records without a uuid', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          owner,
+          record(1, null, 'user', 'synthetic prompt'),
+          { type: 'future-annotation', note: 'synthetic' },
+          answer(2, 1, 'synthetic answer'),
+          owner,
+        ),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'synthetic answer' });
+      await observe(s, 'owner');
+      await appendFile(s.file, lines(owner, answer(3, 2, 'after owner')));
+      await s.poll();
+      expect(seen(s, 'owner')).toEqual([{ id: recordId(3), text: 'after owner' }]);
+    });
+  });
+
+  it('rejects an unknown record type that carries a uuid', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const unknown of [
+        { type: 'future-node', uuid: recordId(9), parentUuid: recordId(1) },
+        { ...owner, uuid: recordId(9) },
+      ]) {
+        await writeFile(
+          s.file,
+          lines(
+            record(1, null, 'user', 'synthetic prompt'),
+            unknown,
+            answer(2, 1, 'synthetic answer'),
+          ),
+        );
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+        await expect(observe(s, 'unknown')).rejects.toThrow(/^transcript unavailable$/);
+      }
+      expect(s.timers.size).toBe(0);
     });
   });
 });

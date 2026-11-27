@@ -156,18 +156,48 @@ def visible(content):
 
 def scan(sid, mode, previous):
     require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since', 'recent'))
+    # The previously observed prefix length, whose digest a cursor carries.
+    mark = int(previous.split(':')[2]) if mode in ('since', 'recent') else None
+    mark = mark if mark is not None and mark >= 0 else None
     with ExitStack() as stack:
         f = transcript(sid, stack)
         info = os.fstat(f.fileno())
-        require(info.st_size <= MAX_FILE)
-        data = f.read(MAX_FILE + 1)
+        total = info.st_size
+        # Parse only the final MAX_FILE bytes, plus the byte before them to find
+        # the first complete line. Hash everything before them, so cursors and
+        # rewrite detection still cover the whole file.
+        lead = max(0, total - MAX_FILE - 1)
+        h = hashlib.sha256()
+        marked = h.copy() if mark == 0 else None
+        done = 0
+        while done < lead:
+            step = min(1 << 20, lead - done)
+            if mark is not None and done < mark:
+                step = min(step, mark - done)
+            chunk = f.read(step)
+            require(len(chunk) == step)
+            h.update(chunk)
+            done += step
+            if done == mark:
+                marked = h.copy()
+        data = f.read(total - lead + 1)
         after = os.fstat(f.fileno())
-        require(len(data) == info.st_size == after.st_size and info.st_mtime_ns == after.st_mtime_ns)
-    end = data.rfind(b'\n') + 1
-    require(len(data) - end <= MAX_LINE)
+        require(len(data) == total - lead and total == after.st_size and info.st_mtime_ns == after.st_mtime_ns)
+    # File offsets are absolute; data starts at offset lead.
+    end = lead + data.rfind(b'\n') + 1
+    require(total - end <= MAX_LINE)
+    windowed = total > MAX_FILE
+    start = lead + data.index(b'\n') + 1 if windowed else 0
     identity = str(info.st_dev) + ':' + str(info.st_ino)
+    def digest_at(observed):
+        if observed >= lead:
+            digest = h.copy()
+            digest.update(memoryview(data)[:observed - lead])
+            return digest
+        require(observed == mark and marked is not None)
+        return marked
     def cursor(observed, offset, sizing=False):
-        digest = None if sizing else hashlib.sha256(memoryview(data)[:observed])
+        digest = None if sizing else digest_at(observed)
         prefix = f'{identity}:{observed}:'
         if observed == offset:
             return prefix + (digest.hexdigest() if digest else '0' * 64)
@@ -184,38 +214,48 @@ def scan(sid, mode, previous):
         # complete prefix still exists unchanged, not just what was delivered.
         if 0 <= offset <= observed <= end and cursor(observed, offset) == previous:
             boundary = offset
-    nodes, leaf, pos = {}, None, 0
+    nodes, leaf, i = {}, None, start - lead
     for count in range(65537):
-        if pos == end:
+        if i == end - lead:
             break
-        stop = data.index(b'\n', pos) + 1
-        require(count < 65536 and stop - pos <= MAX_LINE)
-        row = json.loads(data[pos:stop].decode('utf-8'), parse_constant=reject_constant,
+        stop = data.index(b'\n', i) + 1
+        require(count < 65536 and stop - i <= MAX_LINE)
+        row = json.loads(data[i:stop].decode('utf-8'), parse_constant=reject_constant,
                          object_pairs_hook=unique_members)
-        pos = stop
+        i = stop
         require(isinstance(row, dict) and isinstance(row.get('type'), str))
         kind = row['type']
         if kind in ANNOTATIONS:
             continue
-        require(kind in ('assistant', 'user', 'system', 'progress', 'attachment'))
+        if kind not in ('assistant', 'user', 'system', 'progress', 'attachment'):
+            # Newer CLI records without a uuid (session-owner) cannot be a
+            # chain node. An unknown record that can be one is unsupported.
+            require('uuid' not in row)
+            continue
         require(row.get('subtype') != 'compact_boundary')
         key = row.get('uuid')
         require(isinstance(key, str) and UUID.fullmatch(key) and key not in nodes)
         side = row.get('isSidechain', False)
         require(isinstance(side, bool))
-        nodes[key] = (row, pos)
+        nodes[key] = (row, lead + i)
         if (kind in ('user', 'assistant') and not side and not row.get('teamName')
                 and not any(row.get(flag) for flag in HIDDEN)):
             leaf = key
     replies = []
     while leaf is not None:
-        row, pos = nodes.pop(leaf)  # missing parents, duplicates and cycles fail closed
+        row, pos = nodes[leaf]
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
         if row['type'] in ('assistant', 'user'):
             content = message_content(row, row['type'])
         parent = row['parentUuid']
-        if parent is not None:
-            require(parent in nodes and nodes[parent][1] < pos)
+        if parent is not None and parent not in nodes:
+            # Only an ancestor before the parsed window may be absent: the
+            # walk ends there. Otherwise a missing parent fails closed.
+            require(windowed and isinstance(parent, str) and UUID.fullmatch(parent))
+            parent = None
+        elif parent is not None:
+            # Parents strictly precede children, so the walk cannot cycle.
+            require(nodes[parent][1] < pos)
         if row['type'] == 'assistant' and not any(row.get(k) for k in HIDDEN):
             text = visible(content)
             if text.strip() and (mode == 'last' or pos > boundary):

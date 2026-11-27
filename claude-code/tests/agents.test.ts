@@ -5,6 +5,8 @@ import { observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
   deferred,
+  filler,
+  MiB,
   record as transcriptRecord,
   recordId,
   withSyntheticHost,
@@ -1030,6 +1032,37 @@ describe('claude::agents::follow-snapshot', () => {
         release.resolve();
         await denied;
       }
+    });
+  });
+
+  it('returns the newest replies of a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string; text: string } | null;
+          replies: Array<{ id: string; text: string }>;
+        }>;
+      const row = (n: number, text: string) =>
+        `${JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text))}\n`;
+      await appendFile(s.file, filler(9 * MiB) + row(2, 'before view'));
+      const first = await snapshot();
+      expect(first).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(2), text: 'before view' },
+      });
+      // The viewed tip ends up before the parsed final 8 MiB.
+      await appendFile(s.file, row(3, 'early') + filler(9 * MiB) + row(4, 'newest'));
+      const page = await snapshot(first.cursor);
+      expect(page.last_reply).toEqual({ id: recordId(4), text: 'newest' });
+      expect(page.replies).toEqual([{ id: recordId(4), text: 'newest' }]);
+      expect(await snapshot(page.cursor)).toMatchObject({
+        replies: [],
+        last_reply: page.last_reply,
+      });
     });
   });
 
