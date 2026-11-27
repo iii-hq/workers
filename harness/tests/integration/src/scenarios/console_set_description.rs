@@ -1,14 +1,14 @@
 //! UI-006 — the Console shows a description the agent wrote in its turn.
 //!
 //! chat-projects §1.4 / §1.8 (4), driven by Playwright
-//! (`ade/web/e2e/set-description.spec.ts`): the model's only generation
+//! (`ade/web/e2e/set-description.spec.ts`): the model's first generation
 //! answers in text and, in the same message, calls `harness::set-description`
 //! (no `title`, so the session keeps the name the test opens it by). The turn
-//! loop writes the description through `session::patch-meta`; since the
-//! description opened the turn, the model is asked once more and ends it with
-//! no text (two scripted generations: a third `router::chat` would fail the
-//! turn). The Console then shows the
-//! description in the chat header and the sidebar row, and no call card.
+//! loop writes the description through `session::patch-meta`; a description
+//! beside the reply never ends the turn, so the model is asked once more and
+//! ends it with no text (two scripted generations: a third `router::chat`
+//! would fail the turn). The Console then shows the description in the chat
+//! header and the sidebar row, and no call card.
 
 use serde_json::json;
 
@@ -29,7 +29,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         ID,
         "console-set-description",
         "A Console turn whose reply comes with harness::set-description: the description reaches \
-         the header and the sidebar, the transcript shows no call, and the turn makes one model call.",
+         the header and the sidebar, the transcript shows no call, and the turn makes two model calls.",
         ScenarioDriver::Playground,
         Model::scripted("fixture-model"),
     )
@@ -57,8 +57,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             )),
     )
     .generation(
-        // The description opened the turn, so the model is asked once more and
-        // ends the turn with no further text (the result's `next` note).
+        // A description beside the reply never ends the turn, so the model is
+        // asked once more and ends it with no further text (the `next` note).
         Generation::new(2)
             .expect(
                 Request::new()
@@ -72,7 +72,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .verify(|run| {
         anyhow::ensure!(
             run.generations_consumed == 2,
-            "expected two router calls (the description opened the turn), got {}",
+            "expected two router calls (a description beside the reply asks again), got {}",
             run.generations_consumed
         );
         let results = run.function_results(SET_DESCRIPTION);

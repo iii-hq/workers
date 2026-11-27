@@ -565,12 +565,16 @@ pub struct TurnRecord {
     /// step), also when the step is redelivered after a crash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_seen_step: Option<u64>,
-    /// The reply of the step that opened the turn with only
-    /// `harness::set-description` beside its text. Cleared when the turn makes
+    /// The reply of the latest step whose only calls were
+    /// `harness::set-description`, beside its text. Cleared when the turn makes
     /// another call or reads a new user message; an empty end then completes
     /// with it as the result (the go-on note asked for that empty end).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opening_reply: Option<String>,
+    #[serde(
+        default,
+        alias = "opening_reply",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kept_reply: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -747,7 +751,7 @@ pub(crate) mod tests {
             transient_resumes: 0,
             ask_step: None,
             ask_seen_step: None,
-            opening_reply: None,
+            kept_reply: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -812,13 +816,21 @@ pub(crate) mod tests {
 
         let seen = TurnRecord {
             ask_seen_step: Some(4),
-            opening_reply: None,
+            kept_reply: None,
             ..record()
         };
         let wire = serde_json::to_value(&seen).unwrap();
         assert_eq!(wire["ask_seen_step"], json!(4));
         let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
         assert_eq!(decoded.ask_seen_step, Some(4));
+    }
+
+    #[test]
+    fn kept_reply_reads_records_that_named_it_opening_reply() {
+        let mut legacy = serde_json::to_value(record()).unwrap();
+        legacy["opening_reply"] = json!("Paris.");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.kept_reply.as_deref(), Some("Paris."));
     }
 
     #[test]
