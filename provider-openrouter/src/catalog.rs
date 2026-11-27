@@ -22,6 +22,16 @@ pub const MODEL_PREFIX: &str = "openrouter/";
 const FALLBACK_CONTEXT_WINDOW: u64 = 32_768;
 const FALLBACK_MAX_OUTPUT: u64 = 16_384;
 
+/// Absolute cap on a listed output ceiling. OpenRouter's
+/// `top_provider.max_completion_tokens` is sometimes the whole window or
+/// close to it (Gemini 4: 943,718 of 1,048,576). The catalog ceiling is
+/// what the router forwards as `max_tokens` when uncapped and what context
+/// assembly reserves for the reply, so a near-window listing shrinks the
+/// usable history to a sliver (~85k of a 1M window) and makes every request
+/// reserve credits for ~1M output tokens. No model writes more than this in
+/// one reply in practice.
+pub const MAX_OUTPUT_CEILING: u64 = 131_072;
+
 /// OpenRouter model id → catalog id (`anthropic/claude-x` →
 /// `openrouter/anthropic/claude-x`).
 pub fn catalog_id(upstream: &str) -> String {
@@ -71,7 +81,8 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         .and_then(Value::as_u64)
         .filter(|m| *m > 0)
         .unwrap_or(FALLBACK_MAX_OUTPUT)
-        .min(context_window);
+        .min(context_window / 2)
+        .clamp(1, MAX_OUTPUT_CEILING);
 
     let supports_vision =
         str_array(row.pointer("/architecture/input_modalities")).any(|m| m == "image");
@@ -261,13 +272,41 @@ mod tests {
     }
 
     #[test]
-    fn output_ceiling_never_exceeds_the_context_window() {
+    fn output_ceiling_is_capped_to_half_the_window() {
         let row = json!({
             "id": "vendor/tiny",
             "context_length": 4096,
             "top_provider": { "max_completion_tokens": 128_000 }
         });
-        assert_eq!(model_from_row(&row).unwrap().max_output_tokens, 4096);
+        assert_eq!(model_from_row(&row).unwrap().max_output_tokens, 2048);
+        // listing == window (common): half is left for input
+        let row = json!({
+            "id": "vendor/equal",
+            "context_length": 131_072,
+            "top_provider": { "max_completion_tokens": 131_072 }
+        });
+        assert_eq!(model_from_row(&row).unwrap().max_output_tokens, 65_536);
+    }
+
+    #[test]
+    fn near_window_listings_are_capped_absolutely() {
+        // Gemini 4 shape: 943,718 of 1,048,576 listed
+        let row = json!({
+            "id": "google/gemini-4-neon",
+            "context_length": 1_048_576,
+            "top_provider": { "max_completion_tokens": 943_718 }
+        });
+        assert_eq!(
+            model_from_row(&row).unwrap().max_output_tokens,
+            MAX_OUTPUT_CEILING
+        );
+        // a realistic listing under both caps is untouched
+        let row = json!({
+            "id": "anthropic/claude-x",
+            "context_length": 200_000,
+            "top_provider": { "max_completion_tokens": 64_000 }
+        });
+        assert_eq!(model_from_row(&row).unwrap().max_output_tokens, 64_000);
     }
 
     #[test]
