@@ -392,6 +392,64 @@ describe('claude::agents::list', () => {
     });
   });
 
+  it.each([
+    true,
+    false,
+  ])('returns visibility before a slow retained watch recovers (explicit confirmation: %s)', async (confirm_live_config) => {
+    await withSyntheticHost(async (s) => {
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      s.host.config = async () => ({ external_sessions: true });
+      const other = recordId(99);
+      s.host.cli.push(interactive(other, 'idle'));
+
+      vi.useFakeTimers();
+      try {
+        let inventoryReads = 0;
+        s.host.beforeInventory = async () => {
+          if (++inventoryReads === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 21_000));
+          }
+        };
+        const response = s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: confirm_live_config ? { confirm_live_config } : {},
+        });
+        const browser = Promise.race([
+          response,
+          new Promise((resolve) =>
+            setTimeout(() => resolve('visibility deadline exceeded'), 5_000),
+          ),
+        ]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(inventoryReads).toBe(1); // The recovery read, not a rail inventory read.
+        const railResponse = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+        const result = await browser;
+        await vi.advanceTimersByTimeAsync(16_000);
+        await response;
+        const rail = (await railResponse) as unknown as { external_visibility: string };
+
+        expect(rail).toMatchObject({
+          agents: expect.arrayContaining([
+            expect.objectContaining({ id: other, external_only: true }),
+          ]),
+          external_visibility: expect.any(String),
+        });
+        expect(result).toEqual({
+          external_visibility: rail.external_visibility,
+          ...(confirm_live_config ? { live_config_confirmed: true } : {}),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('distinguishes empty and unavailable listings without external permission', async () => {
     await withSyntheticHost(async (s) => {
       s.host.cli.length = 0;

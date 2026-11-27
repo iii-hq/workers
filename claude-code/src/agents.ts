@@ -371,10 +371,12 @@ export function registerAgents(
     'claude::agents::visibility',
     async (payload: unknown) => {
       const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
-      // Retry an uncertain grant on the same acknowledged connection. A normal
-      // heartbeat otherwise only checks the watch, not the host inventory.
+      // Confirm the live setting without waiting for retained watches to
+      // rebaseline on the host. A normal heartbeat can reuse a current grant.
       const epoch =
-        confirm_live_config || access.epoch === null ? await access.confirm() : access.epoch;
+        confirm_live_config || access.epoch === null
+          ? await access.confirm({ waitForWatchRecovery: false })
+          : access.epoch;
       if (epoch === null || epoch !== access.epoch) return { external_visibility: null };
       return {
         external_visibility: visibilityToken(epoch),

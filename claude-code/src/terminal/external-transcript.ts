@@ -166,13 +166,23 @@ def scan(sid, mode, previous):
     end = data.rfind(b'\n') + 1
     require(len(data) - end <= MAX_LINE)
     identity = str(info.st_dev) + ':' + str(info.st_ino)
-    def cursor(offset):
-        digest = hashlib.sha256(memoryview(data)[:offset]).hexdigest()
-        return identity + ':' + str(offset) + ':' + digest
+    def cursor(observed, offset, sizing=False):
+        digest = None if sizing else hashlib.sha256(memoryview(data)[:observed])
+        prefix = f'{identity}:{observed}:'
+        if observed == offset:
+            return prefix + (digest.hexdigest() if digest else '0' * 64)
+        # Partial watch pages also carry the delivery offset. Use compact
+        # base64 here to leave room for it without shrinking the reply budget.
+        tag = base64.urlsafe_b64encode(digest.digest()).decode('ascii') if digest else '0' * 44
+        return f'{prefix}{tag}:{offset}'
     boundary = end
     if mode in ('since', 'recent'):
-        offset = int(previous.split(':')[2])
-        if 0 <= offset <= end and cursor(offset) == previous:
+        fields = previous.split(':')
+        observed = int(fields[2])
+        offset = int(fields[4]) if mode == 'since' and len(fields) == 5 else observed
+        # A pending page is valid only if the entire previously observed
+        # complete prefix still exists unchanged, not just what was delivered.
+        if 0 <= offset <= observed <= end and cursor(observed, offset) == previous:
             boundary = offset
     nodes, leaf, pos = {}, None, 0
     for count in range(65537):
@@ -216,22 +226,22 @@ def scan(sid, mode, previous):
     # oldest unread reply; a viewer needs the newest suffix and the actual tip.
     encode = lambda obj: json.dumps(obj, separators=(',', ':'))
     parts, size, offset = [], 0, end
-    envelope = len(encode({'cursor': identity + '::' + '0' * 64, 'replies': []}))
+    envelope = len(encode({'cursor': '', 'replies': []}))
     for pos, reply in (reversed(replies) if mode == 'since' else replies):
         part = encode(reply)
         candidate = pos if mode == 'since' else end
         added = len(part) + bool(parts)
-        if envelope + len(str(candidate)) + size + added > MAX_RESULT:
+        if envelope + len(cursor(end, candidate, sizing=True)) + size + added > MAX_RESULT:
             require(parts)  # A single unrepresentable reply is not an empty page.
             break
         parts.append(part)
         size += added
         offset = candidate
-    if len(parts) == len(replies) and envelope + len(str(end)) + size <= MAX_RESULT:
+    if len(parts) == len(replies) and envelope + len(cursor(end, end, sizing=True)) + size <= MAX_RESULT:
         offset = end
     if mode == 'recent':
         parts.reverse()
-    out = '{"cursor":' + encode(cursor(offset)) + ',"replies":[' + ','.join(parts) + ']}'
+    out = '{"cursor":' + encode(cursor(end, offset)) + ',"replies":[' + ','.join(parts) + ']}'
     require(len(out) <= MAX_RESULT)
     return out
 

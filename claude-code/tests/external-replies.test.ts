@@ -478,6 +478,42 @@ describe('observation', () => {
     });
   });
 
+  it.each([
+    'truncate',
+    'rewrite',
+  ])('rebaselines after an in-place %s beyond the delivered page', async (mutation) => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      const baseline = lines(answer(1, null, 'fixture answer'));
+      const first = lines(answer(2, 1, large));
+      const second = lines(answer(3, 2, large));
+      const third = lines(answer(4, 3, large));
+      await observe(s, 'first');
+      await appendFile(s.file, first + second + third);
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+
+      if (mutation === 'truncate') {
+        await truncate(s.file, Buffer.byteLength(baseline + first + second));
+      } else {
+        await writeFile(
+          s.file,
+          baseline + first + second + lines(answer(4, 3, 'é' + large.slice(1))),
+        );
+      }
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+
+      const parent = mutation === 'truncate' ? 3 : 4;
+      await appendFile(s.file, lines(answer(5, parent, 'after reset')));
+      await s.poll();
+      expect(seen(s, 'first')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(5), text: 'after reset' },
+      ]);
+    });
+  });
+
   it('delivers from a later baseline even when an earlier cursor cannot yield a page', async () => {
     await withSyntheticHost(async (s) => {
       await observe(s, 'first');
