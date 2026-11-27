@@ -758,13 +758,15 @@ pub async fn selected_for(ctx: &Ctx, handoff_id: Option<&str>) -> Res<Selected> 
     })
 }
 
-/// Commits of the worktree branch made before the worktree was started that are
-/// not on the base: an earlier try's. Only for a worktree this worker made. The
-/// commits it took from the person's checkout (`from_head`) are the base too.
-/// The paths `git status` lists as changed in `dir` (`-z`; a rename or copy is not
-/// compared: `None`).
+/// The paths `git status` lists as changed in `dir`, every untracked file by
+/// itself (`-z`; a rename or copy is not compared: `None`).
 async fn changed_paths(dir: &Path) -> Option<Vec<String>> {
-    let out = git(dir, &["status", "--porcelain", "-z"]).await.ok()?;
+    let out = git(
+        dir,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )
+    .await
+    .ok()?;
     let mut paths = vec![];
     for entry in out.split('\0').filter(|e| !e.is_empty()) {
         if entry.len() < 4 || entry.starts_with(['R', 'C']) || entry[1..2].starts_with(['R', 'C']) {
@@ -785,15 +787,22 @@ async fn copies_of_the_folders_changes(ws: &Path, folder: &Path) -> Option<Vec<S
         return None;
     }
     for p in &mine {
-        if !theirs.contains(p)
-            || std::fs::read(ws.join(p)).ok() != std::fs::read(folder.join(p)).ok()
-        {
+        // A copy is a file both sides can read, with the same bytes: a deletion
+        // on both sides, or a directory, is not.
+        let same = match (std::fs::read(ws.join(p)), std::fs::read(folder.join(p))) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !theirs.contains(p) || !same {
             return None;
         }
     }
     Some(mine)
 }
 
+/// Commits of the worktree branch made before the worktree was started that are
+/// not on the base: an earlier try's. Only for a worktree this worker made. The
+/// commits it took from the person's checkout (`from_head`) are the base too.
 async fn old_attempt_commits(ctx: &Ctx, sel: &Selected, commit: &str) -> Option<usize> {
     let (path, branch, from_head) = ctx.store.read(|s| {
         s.project

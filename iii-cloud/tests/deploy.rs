@@ -2983,7 +2983,7 @@ async fn the_deployment_list_is_followed_by_cursor_until_the_push_shows_up() {
         base.trim_start_matches("/api/v1"),
         &target,
         None,
-        &[],
+        None,
     )
     .await
     .unwrap();
@@ -3140,12 +3140,12 @@ async fn a_failed_or_canceled_deployment_of_the_commit_is_never_adopted() {
         Mock::given(method("GET"))
             .and(path(dep_base()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "deployments": [deployment(DEP_ID, &target, status, "push")], "next_cursor": null
+                "deployments": [deployment(DEP_ID, &target, status, "manual")], "next_cursor": null
             })))
             .mount(&s.server)
             .await;
         // The credential survives a reset of the mocks only through the memory cache.
-        let got = iii_cloud::deploy::push_deployment(&s.h.ctx, base, &target, false, None, &[])
+        let got = iii_cloud::deploy::push_deployment(&s.h.ctx, base, &target, false, None, None)
             .await
             .unwrap();
         assert_eq!(got.is_some(), adopted, "{status}");
@@ -4733,4 +4733,35 @@ async fn a_manual_deployment_of_the_commit_that_appears_meanwhile_is_not_this_de
         .await;
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+}
+
+#[tokio::test]
+async fn after_a_merge_the_resume_follows_the_workers_own_manual_deployment() {
+    // Production: the merge's push deployment was replaced by the manual one whose answer was lost.
+    let s = setup(plan(false)).await;
+    let target = s.check.commit.clone();
+    let base = dep_base();
+    let base = base.trim_start_matches("/api/v1");
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "deployments": [
+                deployment(NEW_ID, &target, "ready", "manual"),
+                deployment(DEP_ID, &target, "replaced", "push"),
+            ],
+            "next_cursor": null
+        })))
+        .mount(&s.server)
+        .await;
+    let got = iii_cloud::deploy::push_deployment(&s.h.ctx, base, &target, true, None, None)
+        .await
+        .unwrap()
+        .expect("the manual deployment is followed");
+    assert_eq!(got["id"], NEW_ID);
+    // An assisted deploy (with its exclusion list) does not take a manual one for its own.
+    let none: Vec<String> = vec![];
+    let list = iii_cloud::deploy::list_pages(&s.h.ctx, base, &target, None, Some(&none))
+        .await
+        .unwrap();
+    assert_eq!(list["deployments"].as_array().unwrap().len(), 2);
 }

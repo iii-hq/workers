@@ -168,22 +168,24 @@ fn parse_time(text: Option<&str>) -> Since {
 /// The push's deployment for `target`, from the list: not a replaced one (its
 /// successor is the one), not one made before the merge (`since`), and not one
 /// that existed before this deploy began (`old`).
-fn find_push(list: &Value, target: &str, since: Since, old: &[String]) -> Option<Value> {
+fn find_push(list: &Value, target: &str, since: Since, old: Option<&[String]>) -> Option<Value> {
     list.get("deployments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|d| d.get("status").and_then(Value::as_str) != Some("replaced"))
-        // Only a push deployment is the push's: a teammate's console redeploy of the
-        // same commit, made after the list was read, is not.
+        // In an assisted deploy only a push deployment is the push's: a teammate's
+        // console redeploy of the same commit, made after the list was read, is not.
+        // (After a merge the worker's own manual deployment is followed too.)
         .filter(|d| {
-            d.get("type")
-                .and_then(Value::as_str)
-                .is_none_or(|t| t == "push")
+            old.is_none()
+                || d.get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|t| t == "push")
         })
         .filter(|d| {
             let id = d.get("id").and_then(Value::as_str).unwrap_or_default();
-            !old.iter().any(|o| o == id)
+            !old.is_some_and(|o| o.iter().any(|o| o == id))
         })
         .filter(|d| {
             let created = parse_time(d.get("created_at").and_then(Value::as_str));
@@ -213,7 +215,7 @@ async fn cancel_push(
     base: &str,
     target: &str,
     since: Since,
-    old: &[String],
+    old: Option<&[String]>,
 ) -> Option<Value> {
     let deadline = Instant::now() + ctx.secs(120);
     let mut running = None;
@@ -257,7 +259,7 @@ pub async fn list_pages(
     base: &str,
     target: &str,
     since: Since,
-    old: &[String],
+    old: Option<&[String]>,
 ) -> Res<Value> {
     let mut all: Vec<Value> = vec![];
     let mut cursor: Option<String> = None;
@@ -356,7 +358,7 @@ async fn push_coming(
     base: &str,
     target: &str,
     since: Since,
-    old: &[String],
+    old: Option<&[String]>,
 ) -> Res<bool> {
     let deadline = Instant::now() + ctx.secs(FIRST_PUSH_GRACE_S);
     loop {
@@ -377,7 +379,7 @@ pub async fn push_deployment(
     target: &str,
     need_confirm: bool,
     since: Since,
-    old: &[String],
+    old: Option<&[String]>,
 ) -> Res<Option<Value>> {
     let deadline = Instant::now() + ctx.secs(120);
     loop {
@@ -674,7 +676,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     // The first assisted deploy's move: (own branch, the branch it left).
     let mut moved: Option<(String, String)> = None;
     // The commit's deployments that existed before this deploy (assisted only).
-    let mut old: Vec<String> = vec![];
+    let mut old: Option<Vec<String>> = None;
     let mut since: Since = None;
     let mut waiting: Option<String> = None;
     let target = match (request.pr, &request.deployment_id) {
@@ -971,7 +973,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 way
             };
             if way != Way::PullRequest {
-                old = commit_deployments(ctx, &base, &check.commit).await?;
+                old = Some(commit_deployments(ctx, &base, &check.commit).await?);
             }
             match way {
                 // The first assisted deploy of an environment on a branch it must
@@ -1127,10 +1129,10 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     if Some(plan_digest(&plan)) != check.plan.digest {
         if (landed
             || (maybe
-                && push_coming(ctx, &base, &target, since, &old)
+                && push_coming(ctx, &base, &target, since, old.as_deref())
                     .await
                     .unwrap_or(false)))
-            && let Some(running) = cancel_push(ctx, &base, &target, since, &old).await
+            && let Some(running) = cancel_push(ctx, &base, &target, since, old.as_deref()).await
         {
             // Not "check again": the merged commit is deploying. Status shows it, followed.
             if let Some(id) = running.get("id").and_then(Value::as_str) {
@@ -1202,11 +1204,11 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     // waiting deployment is confirmed; nothing else is searched.
     let adopted = if waiting.is_some()
         || late
-        || (maybe && !push_coming(ctx, &base, &target, since, &old).await?)
+        || (maybe && !push_coming(ctx, &base, &target, since, old.as_deref()).await?)
     {
         None
     } else {
-        push_deployment(ctx, &base, &target, need_confirm, since, &old)
+        push_deployment(ctx, &base, &target, need_confirm, since, old.as_deref())
             .await
             .map_err(&after_move)?
     };
