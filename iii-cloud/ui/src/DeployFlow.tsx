@@ -62,7 +62,19 @@ import {
   stageKeyOf,
   stageRows,
 } from './model'
-import { Dot, Fresh, LinkButton, Mono, Notice, PageAction, PathBar, SectionCard, StatePill, useNow } from './parts'
+import {
+  Dot,
+  Fresh,
+  LinkButton,
+  Mono,
+  Notice,
+  PageAction,
+  PathBar,
+  SectionCard,
+  StatePill,
+  uncommittedCount,
+  useNow,
+} from './parts'
 import { type AreaProps, envState, pathOf, type RouteAt } from './route'
 import type { BranchRef, Deploy, Status } from './types'
 
@@ -297,7 +309,7 @@ function ChangePanel({
   if (!p || !env) return null
   const files = status.compose_files ?? []
   const current = composeFile(env.manifest)
-  const changed = p.checkout.changed_files.length
+  const changed = uncommittedCount(p.checkout.changed_files)
   const sources = env.production ? null : sourcesOf(p, env.name)
   const chosen = sources ? (sources.find((o) => o.value === source) ?? sources.find((o) => o.default)) : undefined
   const serving = servingNamed(status, envId, feed.data?.deployments)

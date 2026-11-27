@@ -40,7 +40,9 @@ describe('how an environment deploys', () => {
     for (const c of wayCases) {
       const others = c.others.map((branch, i) => ({ name: `other-${i}`, branch }))
       const got = deployWay(c.default, c.env, [c.env, ...others])
-      expect(got, c.case).toEqual(c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own, taken: c.taken })
+      expect(got, c.case).toEqual(
+        c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own, taken: c.taken },
+      )
     }
   })
 })

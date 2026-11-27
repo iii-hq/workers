@@ -115,8 +115,9 @@ describe('Change', () => {
     const panel = region('What goes to dev')
     expect(panel?.textContent).toContain('dev serves d738d2f · deployment #5')
     expect(panel?.textContent).toContain('The check starts from feat/search-rank.')
+    // The fixture has three changed entries; the .env is not counted and never advised to be committed.
     expect(panel?.textContent).toContain(
-      'The 3 uncommitted changes in your folder stay there: commit them to include them.',
+      'The 2 uncommitted changes in your folder stay there: commit them to include them.',
     )
     expect(el.querySelectorAll('[aria-label="Compose files in this folder"] [role=radio]')).toHaveLength(3)
     expect(radio('api/workers-compose.yaml')?.getAttribute('aria-disabled')).toBe('true')
