@@ -6,6 +6,7 @@ import { boards } from '../fixtures'
 import { apiPath, base, ENV, earlierReady, signedOut } from '../fixtures/base'
 import { cloudDeploy } from '../fixtures/manage'
 import { DEV, FILE } from '../fixtures/setup'
+import { hubOf } from '../hub'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
 import { board, btn, click, cloudAnswers, ctx, el, flush, mount, root, row, text, ui, usePage } from './util'
@@ -448,8 +449,11 @@ describe('the hand-over between places, end to end', () => {
       // The local run takes minutes: nothing waits for it before the Deploy screen opens.
       'iii-cloud::check': () => new Promise(() => undefined),
     })
+    // An older pick (a refused Change picked another file) must not outlive this Confirm.
+    hubOf(h.host).setPickedManifest(DEV.id, 'api/old-pick.yaml')
     await click(el.querySelector('button[data-variant=primary]'))
     await settle()
+    expect(hubOf(h.host).pickedManifest(DEV.id)).not.toBe('api/old-pick.yaml')
     expect(calls(h, 'iii-cloud::project::use', 'iii-cloud::check')).toEqual([
       'iii-cloud::project::use',
       'iii-cloud::check',

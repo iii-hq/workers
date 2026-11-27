@@ -377,6 +377,20 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     vi.unstubAllGlobals()
   })
 
+  it("another tab's mark is shown here: a storage event re-reads it, and Deploy goes off", async () => {
+    stubStorage()
+    const base = boards['deploy-review'].status
+    const ready = { ...base, check: { ...base.check!, environment_id: DEV.id } }
+    await mount(ready, ctx(route))
+    expect(title()).toBe('Ready to deploy to dev')
+    // The other tab changed the source: it wrote the mark; this tab is told by the browser.
+    localStorage.setItem(`iii-cloud:moved:${DEV.id}`, ready.check.id)
+    await act(async () => void window.dispatchEvent(new StorageEvent('storage', { key: `iii-cloud:moved:${DEV.id}` })))
+    expect(title()).not.toBe('Ready to deploy to dev')
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
   it('opening another environment for a route (a plain use) does not lock a ready check', async () => {
     const base = boards['deploy-review'].status
     const ready = { ...base, check: { ...base.check!, environment_id: DEV.id } }

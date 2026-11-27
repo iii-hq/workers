@@ -102,7 +102,7 @@ export type CloudDeployment = {
   created_at: string
   finished_at: string | null
 }
-export type DeploymentList = { deployments: CloudDeployment[] }
+export type DeploymentList = { deployments: CloudDeployment[]; next_cursor?: string | null }
 export type Members = { members: { user: { id: string; email: string; name?: string; github_login?: string } }[] }
 
 export type Connection = {

@@ -158,7 +158,11 @@ export function AgentRow({
           <Notice
             variant="warn"
             headline={label.stalled}
-            detail={`Started ${elapsed} ago. The agent has not reported a step for a while; it may be stuck or waiting on something.`}
+            detail={
+              // The worker says why it stalled (a cloud error that failed the checks, the worktree on another branch).
+              agent.question ??
+              `Started ${elapsed} ago. The agent has not reported a step for a while; it may be stuck or waiting on something.`
+            }
             action={chatButton("Open your agent's chat", true)}
           />
           {agent.current ? <span className="iii-cloud-agent-now">now: {agent.current}</span> : null}

@@ -627,23 +627,146 @@ describe('the review: what a check that is not ready still offers', () => {
     })
   })
 
-  it('Deploy is off while any deployment of the environment runs, whatever check it came from', async () => {
+  const runningOf = (s: Status, over: object) => ({
+    ...(boards['deploy-review'].status.deploys.at(0) ?? serving5),
+    id: 'dep-run',
+    number: 9,
+    environment_id: s.check!.environment_id,
+    status: 'in_progress' as const,
+    outcome: 'running' as const,
+    finished_at: null,
+    ...over,
+  })
+
+  it('a deployment going of the SAME check still stops Deploy: its notice follows it, whatever check it came from', async () => {
     const s = B('deploy-passed')
-    const same = {
-      ...(boards['deploy-review'].status.deploys.at(0) ?? serving5),
-      id: 'dep-same',
-      number: 9,
+    await stage({
+      ...s,
+      deploys: [runningOf(s, { check_id: s.check!.id, created_at: new Date().toISOString() }), ...s.deploys],
+    })
+    expect(btn('Follow #9')).toBeTruthy()
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+  })
+
+  it('a deployment going that is not the newest also stops Deploy: the shared lock counts every running one', async () => {
+    const s = B('deploy-passed')
+    const newest = {
+      ...serving5,
+      id: 'dep-newest',
+      number: 10,
       environment_id: s.check!.environment_id,
-      status: 'in_progress' as const,
-      outcome: 'running' as const,
-      finished_at: null,
-      check_id: s.check!.id,
-      created_at: new Date().toISOString(),
+      // Before the check ran: the "environment changed after the check" notice does not fire; only the shared lock does.
+      created_at: '2020-01-01T00:00:00.000Z',
     }
-    await stage({ ...s, deploys: [same, ...s.deploys] })
-    const deploys = [...el.querySelectorAll('button')].filter((b) => /^Deploy\b/.test(b.textContent ?? ''))
-    expect(deploys.length).toBeGreaterThan(0)
-    expect(deploys.every((b) => b.hasAttribute('disabled'))).toBe(true)
+    await stage({ ...s, deploys: [newest, runningOf(s, { check_id: null }), ...s.deploys] })
+    expect(btn('Follow #9')).toBeNull()
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    expect(text()).toContain('Deployment #9 is still going.')
+  })
+
+  it('a deployment held in iii cloud that this machine did not start does not lock Deploy, and says deploying replaces it', async () => {
+    const s = B('deploy-passed')
+    const held = runningOf(s, {
+      id: 'dep-held',
+      number: 11,
+      status: 'needs_action' as const,
+      type: 'push',
+      check_id: null,
+      approved_by_worker: false,
+      from_console: true,
+      created_at: new Date(Date.now() + 1000).toISOString(),
+    })
+    await stage({ ...s, deploys: [held, ...s.deploys] })
+    expect(text()).toContain('Deployment #11 is waiting for confirmation in iii cloud')
+    expect(text()).toContain('replaces it')
+    const primary = deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? ''))
+    expect(primary?.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('the production name dialog locks when the check it was opened for stops being the ready one (another pane changed the source)', async () => {
+    const s = B('deploy-passed')
+    const prod = { ...s.project!, environment: { ...s.project!.environment!, production: true } }
+    const h = await stage({ ...s, project: prod }, { 'iii-cloud::deploy': {} })
+    await click(deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? '')))
+    const dialog = () => el.querySelector('[role=dialog]')
+    await type(dialog()?.querySelector('input') ?? null, 'dev')
+    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Deploy')
+    expect(go()?.hasAttribute('disabled')).toBe(false)
+    await act(async () => hubOf(h.host).used(s.check!.environment_id, true))
+    expect(go()?.hasAttribute('disabled')).toBe(true)
+    expect(dialog()?.textContent).toContain('no longer the check that was ready')
+  })
+
+  it('on a replaced source Details › Warnings offers no action of the old check', async () => {
+    const s = B('setup-fixing-live')
+    const h = await stage(s)
+    const actions = () =>
+      [...el.querySelectorAll('.iii-cloud-cs-item button')].filter((b) =>
+        /Skip for now|Undo|^Copy /.test(b.textContent ?? ''),
+      )
+    expect(actions().length).toBeGreaterThan(0)
+    await act(async () => hubOf(h.host).used(s.check!.environment_id, true))
+    expect(actions()).toHaveLength(0)
+  })
+
+  it('the header of a replaced check names the new source and the picked file, with no old commit count', async () => {
+    const s = B('deploy-passed')
+    const h = await stage(s)
+    expect(text()).toMatch(/\d+ commits?/)
+    await act(async () => {
+      hubOf(h.host).used(s.check!.environment_id, true)
+      hubOf(h.host).setPickedManifest(s.check!.environment_id, 'api/worker-compose.staging.yaml')
+    })
+    const sub = el.querySelector('.iii-cloud-stephead-sub, .iii-cloud-cs-sub')?.textContent ?? ''
+    expect(sub).toContain('api/worker-compose.staging.yaml')
+    expect(sub).not.toMatch(/\d+ commits?/)
+  })
+
+  it("a stalled agent says why when the worker did: its question is the card's text and the environment card's", async () => {
+    const why = 'The cloud refused the plan three checks in a row: ENV_FILE_MISSING.'
+    const stalled = B('state-stalled')
+    await stage({ ...stalled, agent: { ...stalled.agent!, question: why } })
+    expect(region('Your agent')?.textContent).toContain(why)
+    expect(region('Your agent')?.textContent).not.toContain('No progress for')
+    await stage(stalled)
+    expect(region('Your agent')?.textContent).toContain('No progress for')
+  })
+
+  it("the Ready footer says nothing is live when iii cloud's list only has failed rows, and a deployment it does not show when it may hide one", async () => {
+    const s = { ...boards['deploy-review'].status, deploys: [] }
+    const row = (status: string) => ({
+      id: 'x1',
+      number: 1,
+      environment_id: DEV.id,
+      type: 'push',
+      status,
+      current: false,
+      commit: { sha: 'a'.repeat(40) },
+      triggered_by: { user_id: null, api_key_id: null },
+      created_at: new Date().toISOString(),
+      finished_at: null,
+    })
+    const list = (deployments: object[], next_cursor: string | null = null) =>
+      cloudAnswers({ [apiPath('/deployments', DEV.id)]: { deployments, next_cursor } })
+    await stage(s, list([row('failed')]))
+    expect(text()).toContain('Nothing is live on dev yet.')
+    await stage(s, list([row('failed'), row('replaced')]))
+    expect(text()).toContain("serves a deployment iii cloud's list does not show")
+    await stage(s, list([row('failed')], 'next-page'))
+    expect(text()).toContain("serves a deployment iii cloud's list does not show")
+  })
+
+  it('SOURCE_CHANGED (the worker refuses a check whose source was replaced) is shown with Check again, like MAIN_MOVED', async () => {
+    const h = await stage(B('deploy-passed'), {
+      'iii-cloud::deploy': () => Promise.reject(Object.assign(new Error('x'), { code: 'SOURCE_CHANGED' })),
+    })
+    await click(deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? '')))
+    await flush()
+    expect(text()).toContain('The source or the compose file changed after the check.')
+    expect(btn('Check again')).toBeTruthy()
+    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    await click(btn('Check again'))
+    expect(h.calls.some((c) => c.id === 'iii-cloud::check')).toBe(true)
   })
 
   it('the primary Deploy reads the shared lock: it goes off when the worker stops answering', async () => {

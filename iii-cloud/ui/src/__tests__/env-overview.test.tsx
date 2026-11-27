@@ -258,6 +258,13 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(n).toMatchObject({ state: 'you', action: { label: 'Open the check', kind: 'go' } })
     expect(n.title).toBe('The check for dev needs you')
   })
+
+  it("a stalled agent says why when the worker did: its question is the card's detail", () => {
+    const why = 'The worktree is on another branch than iii-cloud/ready-dev.'
+    const n = next(dev({ agent: { ...agent('stalled'), question: why } }))
+    expect(n.detail).toBe(why)
+    expect(next(dev({ agent: agent('stalled') })).detail).toContain('no progress')
+  })
 })
 
 describe('the next-action card: when two states apply, the first of the order wins', () => {

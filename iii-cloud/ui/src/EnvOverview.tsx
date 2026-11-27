@@ -186,7 +186,8 @@ export function nextAction(
       detail:
         s.agent.state === 'waiting_for_you'
           ? (s.agent.question ?? 'Your agent has a question in its chat.')
-          : 'Your agent made no progress for a while. Open the check to read what it tried, or stop it.',
+          : (s.agent.question ??
+            'Your agent made no progress for a while. Open the check to read what it tried, or stop it.'),
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }

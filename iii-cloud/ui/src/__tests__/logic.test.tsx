@@ -531,15 +531,74 @@ describe('the hub keeps what a page that is gone cannot', () => {
   })
 
   it('the environment a use selected lasts only until the next status, whatever it reports', async () => {
-    const h = fakeHost(base, { 'iii-cloud::project::use': { environment: { id: 'e-x' } } })
+    const h = fakeHost(base)
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    // A use selected e-x (its call named it); the status that follows reports another one (the worker fell back).
+    hub.used('e-x', false)
+    expect(hub.selectedEnv()).toBe('e-x')
+    await act(async () => hub.refresh(true))
+    expect(hub.selectedEnv()).toBe(ENV.id)
+  })
+
+  it("a status read ends a recorded move once the environment's latest check is another one", async () => {
+    let status: Status = base
+    const h = fakeHost(() => status, { 'iii-cloud::project::use': {} })
     const hub = hubOf(h.host)
     await act(async () => hub.refresh(false))
     const a = await grab(h.host)
-    await act(async () => {
-      await a.current.call('use', 'iii-cloud::project::use', { path: '/p' })
-    })
+    await useCall(a, ENV.id, true)
     await act(async () => hub.refresh(true))
-    expect(hub.selectedEnv()).toBe(ENV.id)
+    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
+    status = { ...base, check: { ...base.check!, id: 'chk-after-read' } }
+    await act(async () => hub.refresh(true))
+    expect(hub.movedFrom(ENV.id)).toBeNull()
+  })
+
+  it('a use that changes the source is marked before it is sent: a timeout keeps the mark, a refusal takes it back', async () => {
+    let answer: (v?: unknown) => void = () => undefined
+    let fail: (e: Error) => void = () => undefined
+    const h = fakeHost(base, {
+      'iii-cloud::project::use': () =>
+        new Promise((res, rej) => {
+          answer = res
+          fail = rej
+        }),
+    })
+    const hub = hubOf(h.host)
+    await act(async () => hub.refresh(false))
+    const a = await grab(h.host)
+    let sent: Promise<unknown> = Promise.resolve()
+    await act(async () => {
+      sent = a.current.call('use', 'iii-cloud::project::use', { environment_id: ENV.id }, { changesSource: true })
+    })
+    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id) // marked while the worker is still at it
+    await act(async () => {
+      fail(Object.assign(new Error('timed out'), { code: 'TIMEOUT' }))
+      await sent
+    })
+    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id) // the page gave up; the worker may have finished it
+    hub.restoreMove(ENV.id, null)
+    await act(async () => {
+      sent = a.current.call('use', 'iii-cloud::project::use', { environment_id: ENV.id }, { changesSource: true })
+    })
+    await act(async () => {
+      fail(Object.assign(new Error('no'), { code: 'ENVIRONMENT_DELETED' }))
+      await sent
+    })
+    expect(hub.movedFrom(ENV.id)).toBeNull() // the worker answered that it refused
+    answer()
+  })
+
+  it("another tab's mark (a storage event) is read again by this one", () => {
+    const hub = hubOf(fakeHost(base).host)
+    const seen = vi.fn()
+    hub.subscribe(seen)
+    window.dispatchEvent(new StorageEvent('storage', { key: 'iii-cloud:moved:e1' }))
+    expect(seen).toHaveBeenCalled()
+    seen.mockClear()
+    window.dispatchEvent(new StorageEvent('storage', { key: 'someone-else' }))
+    expect(seen).not.toHaveBeenCalled()
   })
 
   it('a newer check ends the move; the move and the stop survive a reload (only storage carries them)', async () => {
@@ -576,10 +635,20 @@ describe('the hub keeps what a page that is gone cannot', () => {
     vi.unstubAllGlobals()
   })
 
-  it('no recorded stop leaves nothing in storage to carry over', () => {
+  it('a recorded stop IS in storage; once cleared, nothing is left to carry over', () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    })
+    hubOf(fakeHost(base).host).markStopped(ENV.id, true)
+    expect([...store.keys()].some((k) => k.includes(ENV.id))).toBe(true)
+    hubOf(fakeHost(base).host).markStopped(ENV.id, false)
     forgetHubMemory()
+    expect(store.size).toBe(0)
     expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
-    expect(hubOf(fakeHost(base).host).movedFrom(ENV.id)).toBeNull()
+    vi.unstubAllGlobals()
   })
 
   it("with iii cloud's list read and no current row, no deployment is named as serving", () => {

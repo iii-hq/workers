@@ -45,6 +45,8 @@ export type Hub = {
    * environment for a route changes nothing and marks nothing.
    */
   used(envId: string, changed: boolean): void
+  /** The worker answered that it refused the `use`: the move marked before sending it goes back to what it was. */
+  restoreMove(envId: string, before: string | null): void
   /** The person stopped the agent of this environment: nothing starts one by itself until they check or ask again. */
   stopped(envId: string): boolean
   markStopped(envId: string, on: boolean): void
@@ -215,6 +217,10 @@ export function hubOf(host: Host): Hub {
       }
       emit()
     },
+    restoreMove(envId, before) {
+      writeKey(MOVED(envId), before)
+      emit()
+    },
     checking(delta) {
       set({ checking: Math.max(0, state.checking + delta) })
     },
@@ -246,9 +252,15 @@ export function hubOf(host: Host): Hub {
       if (listeners.size === 1) {
         // A card in the chat can mount before any page: it still needs the env names.
         if (!state.loaded) void hub.refresh(false)
+        // Another tab marked a move or stopped the agent (`localStorage`): what this tab shows from it is read again.
+        const onStorage = (e: StorageEvent) => {
+          if (!e.key || e.key.startsWith('iii-cloud:')) emit()
+        }
+        window.addEventListener('storage', onStorage)
         const off = host.iii.on<ChangeEvent>(EVENTS_FN, onEvent)
         const unobserve = host.iii.observe('iii-cloud::on-change', `${EVENTS_FN}::${host.iii.browserId}`)
         dispose = () => {
+          window.removeEventListener('storage', onStorage)
           unobserve()
           off()
         }
@@ -350,6 +362,12 @@ export function useActions(host: Host) {
         // A new check is the person asking again: the agent may start on what it finds.
         hubOf(host).markStopped(checkEnv, false)
       }
+      // A `use` that changes the source is marked BEFORE it is sent: the page may give up on it (60 s) while the worker
+      // goes on and finishes it. Only the worker's answer that it refused takes the mark back.
+      const marksMove = id === 'iii-cloud::project::use' && !!opts.changesSource
+      const useEnv = typeof payload.environment_id === 'string' ? payload.environment_id : hubOf(host).selectedEnv()
+      const before = marksMove ? hubOf(host).movedFrom(useEnv) : null
+      if (marksMove) hubOf(host).used(useEnv, true)
       try {
         const out = await host.iii.call<T>(id, payload, {
           timeoutMs: id === 'iii-cloud::check' || id === 'iii-cloud::deploy' ? LONG : 60_000,
@@ -358,6 +376,8 @@ export function useActions(host: Host) {
         // name none, or the worker may fall back to another); the callers that change the source say so.
         if (id === 'iii-cloud::project::use') {
           const named = (out as { environment?: { id?: string } | null } | null)?.environment?.id
+          // The worker fell back to another environment than the one marked up front: that one was not replaced.
+          if (marksMove && named && named !== useEnv) hubOf(host).restoreMove(useEnv, before)
           hubOf(host).used(
             named ?? (typeof payload.environment_id === 'string' ? payload.environment_id : hubOf(host).selectedEnv()),
             !!opts.changesSource,
@@ -369,6 +389,12 @@ export function useActions(host: Host) {
       } catch (err) {
         const refused = workerError(err, errorCode(err), errorMessage(err))
         if (alive.current) setError(refused)
+        // The worker answered (it is not a timeout or a lost connection): it refused the `use`, nothing was replaced.
+        if (
+          marksMove &&
+          !/timeout|timed out|abort|network|connection|closed|disconnect/i.test(`${refused.code} ${refused.message}`)
+        )
+          hubOf(host).restoreMove(useEnv, before)
         // The card that asked may be gone (the page went to the Deploy screen): the hub keeps the refusal.
         if (isCheck) hubOf(host).setCheckError(checkEnv, refused)
         return null

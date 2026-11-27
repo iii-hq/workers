@@ -5,6 +5,7 @@ import type {
   CloudDeployment,
   Connection,
   Deploy,
+  DeploymentList,
   HandoffKind,
   Members,
   Problem,
@@ -158,6 +159,7 @@ const PLAIN: Record<string, string> = {
   PR_NOT_MERGEABLE: "The pull request can't be merged yet. Open it on GitHub to see why, then check again.",
   MAIN_MOVED: 'The base branch moved after the check. Check again before you deploy.',
   PLAN_CHANGED: 'The plan changed after the check. Check again before you deploy.',
+  SOURCE_CHANGED: 'The source or the compose file changed after the check. Check again before you deploy.',
   NOT_READY: 'The check no longer holds for this deploy. Check again before you deploy.',
   MERGE_CONFLICT: "Your commits conflict with the environment's branch, so they can't come in without resolving them.",
   MERGE_IN_PROGRESS:
@@ -347,6 +349,13 @@ export function deployState(d: Stateful, serving: string | null = null): { label
  */
 export const servingId = (s: Status, envId: string | undefined, cloud?: CloudDeployment[] | null): string | null =>
   cloud ? (cloud.find((d) => d.current)?.id ?? null) : (servingDeploy(s, envId)?.id ?? null)
+
+/**
+ * Whether iii cloud's list, read, may be hiding what serves the environment: it has a next page, or shows that
+ * something was once ready (a `ready` or `replaced` row). Otherwise nothing is live: say so.
+ */
+export const listMayHideServing = (l: DeploymentList): boolean =>
+  !!l.next_cursor || l.deployments.some((d) => d.status === 'ready' || d.status === 'replaced')
 
 /**
  * The deployment serving an environment, by iii cloud's list, for text that names it ("dev serves #5"). Until the
@@ -793,7 +802,7 @@ export function postgresNote(s: Status): string | null {
 }
 
 /** Deploy refusals that mean the check no longer holds: the only way on is to check again. */
-export const CHECK_AGAIN = new Set(['NOT_READY', 'MAIN_MOVED', 'PLAN_CHANGED', 'PR_HEAD_CHANGED'])
+export const CHECK_AGAIN = new Set(['NOT_READY', 'MAIN_MOVED', 'PLAN_CHANGED', 'PR_HEAD_CHANGED', 'SOURCE_CHANGED'])
 
 /** How a plan's resource kinds read. */
 export const RESOURCE_KIND: Record<string, string> = { postgres: 'Postgres', redis: 'Redis', rabbitmq: 'RabbitMQ' }

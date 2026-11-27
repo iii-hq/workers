@@ -47,6 +47,7 @@ import {
   deployWord,
   failureWords,
   isFailedDeploy,
+  listMayHideServing,
   minutesLabel,
   needsAction,
   plural,
@@ -301,7 +302,7 @@ function ChangePanel({
         serving
           ? `${env.name} serves ${sha7(serving.sha)} · deployment #${serving.number}`
           : feed.data
-            ? feed.data.deployments.length
+            ? listMayHideServing(feed.data)
               ? `${env.name} serves a deployment iii cloud's list does not show`
               : `Nothing is live on ${env.name} yet`
             : null

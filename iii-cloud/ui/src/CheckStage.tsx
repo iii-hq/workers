@@ -36,13 +36,16 @@ import {
   configDir,
   conflictFiles,
   deployBusy,
+  deployOrigin,
   duration,
   envHead,
   envPageUrl,
   fixBranch,
   isDirectEnv,
   isFailedDeploy,
+  listMayHideServing,
   minutesLabel,
+  needsAction,
   openProblems,
   opensToPublic,
   plainDetail,
@@ -162,9 +165,17 @@ export function deployLockReason(
   if (o.sending) return 'A deploy is being sent.'
   if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix')
     return 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
-  const other = s.deploys.find((d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running')
+  const other = s.deploys.find(
+    (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(s, d),
+  )
   return other ? `Deployment #${other.number} is still going.` : null
 }
+
+/**
+ * A deployment iii cloud holds for confirmation that this machine did not start (a push or a merge on GitHub): the
+ * person can't confirm it here (there is no check of its commit), and deploying replaces it. It locks nothing.
+ */
+export const heldElsewhere = (s: Status, d: Deploy) => needsAction(d) && deployOrigin(s, d).from !== 'machine'
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
 export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
@@ -254,15 +265,20 @@ export function GoesSub({
   c,
   env,
   onChange,
+  replaced,
+  file,
 }: {
   s: Status
   c: Check | null
   env: string
   onChange?: (trigger: HTMLElement) => void
+  /** The shown check is of a source the person replaced: no old commit count, and the file that was picked. */
+  replaced?: boolean
+  file?: string
 }) {
   return (
     <p className="iii-cloud-cs-sub">
-      {goesLine(s, c, env)} · <Mono>{appFile(s).path}</Mono>
+      {replaced ? `${sourceLabel(s, env)}, to ${env}` : goesLine(s, c, env)} · <Mono>{file ?? appFile(s).path}</Mono>
       {onChange ? (
         <>
           {' · '}
@@ -954,7 +970,7 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
           serving
             ? `${env.name} serves #${serving.number} until the new deployment is live.`
             : feed.data
-              ? feed.data.deployments.length
+              ? listMayHideServing(feed.data)
                 ? `${env.name} serves a deployment iii cloud's list does not show; its console names it.`
                 : `Nothing is live on ${env.name} yet.`
               : null,
@@ -988,6 +1004,8 @@ export function CheckStage(props: CheckStageProps) {
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
   const launching = useLaunch()?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
+  // The check the production name dialog was opened for: it deploys that one, only while it is still the ready one.
+  const [confirmFor, setConfirmFor] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   // The check this page saw running: when it ends not ready, the agent may start (once).
   const watch = useRef<{ base: string | null } | null>(null)
@@ -1138,7 +1156,11 @@ export function CheckStage(props: CheckStageProps) {
     await hubOf(host).refresh(false)
     go({ at: 'deploy', env: envId, deploy: d.id })
   }
-  const startDeploy = () => (production ? setConfirming(true) : void deploy())
+  const startDeploy = () => {
+    if (!production) return void deploy()
+    setConfirmFor(c?.id ?? null)
+    setConfirming(true)
+  }
 
   // The warnings: what won't block, from either owner, the notes and the skipped names.
   const warnings: Item[] = [
@@ -1237,8 +1259,17 @@ export function CheckStage(props: CheckStageProps) {
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
-    // A deployment going locks Deploy whatever check it came from: its progress is the screen for that state.
-    if (d?.outcome === 'running') {
+    if (d && heldElsewhere(s, d)) {
+      // Waiting for confirmation in iii cloud, started elsewhere: nothing here can confirm it, and deploying replaces it.
+      stops.push({
+        key: 'held',
+        variant: 'info',
+        headline: `Deployment #${d.number} is waiting for confirmation in iii cloud`,
+        detail: `It was not started from this machine, so it can't be confirmed here. Deploying ${env} replaces it.`,
+        acts: [],
+      })
+      // A deployment going locks Deploy whatever check it came from: its progress is the screen for that state.
+    } else if (d?.outcome === 'running') {
       stops.push({
         key: 'busy',
         variant: 'info',
@@ -1354,7 +1385,14 @@ export function CheckStage(props: CheckStageProps) {
       <GoesSub s={s} c={c} env={env} onChange={onChange} />
     </>
   ) : (
-    <GoesSub s={s} c={c} env={env} onChange={onChange} />
+    <GoesSub
+      s={s}
+      c={c}
+      env={env}
+      onChange={onChange}
+      replaced={replaced}
+      file={replaced ? (hubOf(host).pickedManifest(envId) ?? undefined) : undefined}
+    />
   )
 
   let action: ReactNode
@@ -1615,7 +1653,7 @@ export function CheckStage(props: CheckStageProps) {
               {a.state === 'waiting_for_you'
                 ? (a.question ?? 'Your agent has a question in its chat.')
                 : a.state === 'stalled'
-                  ? `No progress for ${minutesLabel(idle)}. It may be stuck: open its chat, or stop it.`
+                  ? (a.question ?? `No progress for ${minutesLabel(idle)}. It may be stuck: open its chat, or stop it.`)
                   : folder}
             </p>
           ) : null}
@@ -1706,7 +1744,8 @@ export function CheckStage(props: CheckStageProps) {
                 title={i.title}
                 sub={[i.detail, i.fix].filter(Boolean).join(' ')}
                 end={
-                  i.skipped ? (
+                  // On a replaced source no action of the old check is offered (skip, undo, copy the config).
+                  replaced ? null : i.skipped ? (
                     <span className="iii-cloud-cs-acts-row">
                       <Button
                         size="sm"
@@ -1804,7 +1843,11 @@ export function CheckStage(props: CheckStageProps) {
           }
           confirmLabel={pr ? 'Merge and deploy' : 'Deploy'}
           onConfirm={deploy}
-          locked={lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false })}
+          locked={
+            !ready || confirmFor !== c.id
+              ? 'This is no longer the check that was ready to deploy. Check again.'
+              : (lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false }))
+          }
         />
       ) : null}
     </div>

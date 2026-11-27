@@ -393,8 +393,9 @@ function Confirm({
     // A compose file picked here that isn't the environment's: the check plans that one.
     const picked =
       manifest && manifest !== composeFile(manifestOf(env)) && !creatingProject && !creatingEnv ? { manifest } : {}
-    // ...and a retry after a refusal checks it too.
-    if (picked.manifest) hubOf(host).setPickedManifest(envId, picked.manifest)
+    // ...and a retry after a refusal checks what this Confirm picked, always: an older pick (a refused Change) never
+    // outlives it.
+    hubOf(host).setPickedManifest(envId, manifest || null)
     // The Deploy screen follows the check and shows a refusal: the local run can take minutes, so nothing waits here.
     void actions.call('check', 'iii-cloud::check', { run: true, ...picked })
     go({ at: 'deploy', env: envId })
