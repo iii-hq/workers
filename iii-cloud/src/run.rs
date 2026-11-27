@@ -3076,16 +3076,22 @@ async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Ar
     }
 }
 
-/// Replace every secret value (3 characters or more) with `[redacted]`.
+/// Replace every secret value (3 characters or more) with `[redacted]`. The longest value goes
+/// first, so a short one that sits inside a longer secret (`test` in `sk_test_51N…`) cannot
+/// leave the rest of that secret in the clear.
 pub fn redact(text: &str, secrets: &[String]) -> String {
-    secrets
+    // Every non-empty value, so `s3cret` goes too; only 1-2 characters would turn the log into
+    // noise.
+    let mut values: Vec<&str> = secrets
         .iter()
-        // Every non-empty value, so `s3cret` goes too; only 1-2 characters
-        // would turn the log into noise.
+        .map(String::as_str)
         .filter(|s| s.len() >= 3)
-        .fold(text.to_string(), |acc, s| {
-            acc.replace(s.as_str(), "[redacted]")
-        })
+        .collect();
+    values.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+    values.dedup();
+    values
+        .into_iter()
+        .fold(text.to_string(), |acc, s| acc.replace(s, "[redacted]"))
 }
 
 fn tail_of(file: &Path) -> Vec<String> {
@@ -3152,7 +3158,39 @@ pub async fn prune(runs: &Path, keep: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{recheck, save_left};
+    use super::{recheck, redact, save_left};
+
+    #[test]
+    fn a_short_value_inside_a_longer_secret_does_not_leave_the_secret_in_the_clear() {
+        let key = "sk_test_51NabcSECRETPART";
+        let secrets = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let text = format!("key: {key}");
+        assert_eq!(redact(&text, &secrets(&["test", key])), "key: [redacted]");
+        let url = "postgres://app:Hunter2pw@db.example.com/app";
+        assert_eq!(
+            redact(&format!("url: {url}"), &secrets(&["app", url, "app"])),
+            "url: [redacted]"
+        );
+        // The same through a kept copy.
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("c.yaml"),
+            format!("key: {key}\nurl: {url}\n"),
+        )
+        .unwrap();
+        save_left(
+            ws.path(),
+            left.path(),
+            "c.yaml",
+            &secrets(&["test", "app", key, url]),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("c.yaml")).unwrap(),
+            "key: [redacted]\nurl: [redacted]\n"
+        );
+    }
 
     #[test]
     fn a_file_changed_between_its_save_and_the_checkout_is_saved_again() {
