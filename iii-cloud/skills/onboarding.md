@@ -73,9 +73,14 @@ Work in that directory from now on. A worktree from an earlier run is reused: it
 
 Call `iii-cloud::check`. Read `plan`, `here` and every problem.
 
-- Fix each problem whose `owner` is `agent`. The fix is in `iii-cloud/plan-codes`.
-- Bring each `person` problem and each warning to the person. Say what it is
-  in one sentence, give your recommendation, and let them choose.
+- Ask first (see the profile): each `person` problem and each warning, in one
+  sentence with your recommendation, in one card, before the first edit.
+- When the environment's compose file also serves another deploy (a
+  Dockerfile, a CI workflow, tests), recommend a separate compose file next to
+  it for iii cloud, left out of the other deploy, and check it with
+  `iii-cloud::check {manifest: "<that file>"}`, naming it in every check. Never change the
+  environment's setting: the person's deploy switches it.
+- Then fix each problem whose `owner` is `agent`. The fix is in `iii-cloud/plan-codes`.
 - Work in groups, quick fixes first and app-code changes last, and call `check {}` after each commit. See the "Fix loop" of `iii-cloud`.
 - Check again after each round. The cloud plan stops at its first blocking
   step, so more problems can show up.

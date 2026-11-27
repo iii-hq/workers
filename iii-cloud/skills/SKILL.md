@@ -158,8 +158,8 @@ Only three ways:
 - Ready: `check.ready` and a passed run on the current commit.
 - ONE `harness::ask` that lists every person-owned item (`SECRET_MISSING`, a
   `WEB_*` choice, a decision), the recommended option first. Read the code
-  first and say what each default does. Stuck more than 5 minutes on a
-  decision: ask. When the person answers, continue in the same turn.
+  first and say what each default does. A decision that picks where or how
+  you fix goes in the first card, before any edit. When the person answers, continue in the same turn.
 - An armed wake (`harness::observe`) on a run, a child agent or a deployment.
 
 Never a plain text that says what is left. With agent-owned problems left,
