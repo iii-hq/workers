@@ -647,6 +647,15 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     let mut since: Since = None;
     let mut waiting: Option<String> = None;
     let target = match (request.pr, &request.deployment_id) {
+        (Some(_), _) if !sel.env.production => {
+            return Err(CloudError::new(
+                "NO_PULL_REQUEST",
+                format!(
+                    "{} is not production: it gets an assisted deploy, with no pull request to merge. Deploy it without one.",
+                    sel.env.name
+                ),
+            ));
+        }
         (Some(number), _) => {
             let n = number.to_string();
             let view = gh(
@@ -829,16 +838,20 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                         "iii cloud sent a deployment without a commit.",
                     )
                 })?;
-            // A merge made on GitHub: what landed must be what was checked.
-            verify_merge(
-                &sel.workspace,
-                &sel.env.branch,
-                &target,
-                &check.base,
-                &check.commit,
-                rebase,
-            )
-            .await?;
+            // A merge made on GitHub: what landed must be what was checked. A push
+            // deployment of the checked commit itself (an assisted environment's) is
+            // not a merge: it is the checked commit already.
+            if !same_commit(&target, &check.commit) {
+                verify_merge(
+                    &sel.workspace,
+                    &sel.env.branch,
+                    &target,
+                    &check.base,
+                    &check.commit,
+                    rebase,
+                )
+                .await?;
+            }
             waiting = Some(id.clone());
             target
         }

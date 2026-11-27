@@ -4316,3 +4316,44 @@ async fn an_older_checked_commit_on_the_own_branch_is_fast_forwarded() {
     );
     assert_eq!(f.log(), vec![format!("move to {OWN}")]);
 }
+
+#[tokio::test]
+async fn confirming_a_held_push_deployment_of_the_checked_commit_is_not_a_merge() {
+    let s = setup(plan(false)).await;
+    // The check has two commits on its base: a merge check would refuse it (MAIN_MOVED).
+    std::fs::write(s.ws.join("second.txt"), "2\n").unwrap();
+    git(&s.ws, &["add", "."]);
+    git(&s.ws, &["commit", "-m", "second"]);
+    let head = git(&s.ws, &["rev-parse", "HEAD"]);
+    s.h.ctx.store.update(|st| {
+        for c in st.checks.iter_mut().chain(st.check.iter_mut()) {
+            c.commit = head.clone();
+            c.run.as_mut().unwrap().commit = head.clone();
+        }
+    });
+    let _f = env_file(&s, "worker-compose.yaml", 201).await;
+    not_production(&s).await;
+    let held = deployment(DEP_ID, &head, "needs_action", "push");
+    Mock::given(method("GET"))
+        .and(path(format!("{}/{DEP_ID}", dep_base())))
+        .respond_with(ResponseTemplate::new(200).set_body_json(held))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let d = deploy(&s.h.ctx, req("chk", None, Some(DEP_ID)))
+        .await
+        .unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+}
+
+#[tokio::test]
+async fn a_pull_request_is_refused_for_an_environment_that_is_not_production() {
+    let s = setup(plan(false)).await;
+    not_production(&s).await;
+    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "NO_PULL_REQUEST");
+    assert!(!argv(&s).contains("pr merge") && !argv(&s).contains("pr view"));
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+}
