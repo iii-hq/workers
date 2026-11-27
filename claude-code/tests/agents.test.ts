@@ -4,6 +4,7 @@ import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '..
 import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
+  deferred,
   record as transcriptRecord,
   recordId,
   withSyntheticHost,
@@ -578,6 +579,81 @@ describe('claude::agents::stop', () => {
     expect(res.reason).toContain(reason);
     expect(commands(fake).some((c) => String(c).includes(' stop '))).toBe(false);
   });
+
+  it('refuses before inventory when live permission is unconfirmed', async () => {
+    const fake = host(ok([]), { external: true, visibilityEpoch: () => null });
+    expect(await stop(fake)).toEqual({
+      id: BG,
+      stopped: false,
+      reason: 'Terminal host inventory unavailable',
+    });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it.each([
+    [null, 'Terminal host inventory unavailable'],
+    [2, 'Terminal host inventory unavailable'],
+    [1, 'claude agents --json failed: exit 1: inventory unavailable at /fixture/diagnostic'],
+  ])('publishes inventory failure with final permission epoch %s', async (finalEpoch, reason) => {
+    let epoch: number | null = 1;
+    const started = deferred<void>();
+    const inventory = deferred<{ stdout: string; stderr: string; exit_code: number }>();
+    const fake = host(
+      () => {
+        started.resolve();
+        return inventory.promise;
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const pending = stop(fake);
+    await started.promise;
+    epoch = finalEpoch;
+    inventory.resolve({
+      stdout: '',
+      stderr: 'inventory unavailable at /fixture/diagnostic',
+      exit_code: 1,
+    });
+    expect(await pending).toEqual({ id: BG, stopped: false, reason });
+    expect(fake.calls).toMatchObject([
+      { function_id: 'shell::exec', payload: { command: "'/opt/claude bin/claude' agents --json" } },
+    ]);
+  });
+
+  it('does not stop a session after permission changes during inventory', async () => {
+    let epoch = 1;
+    const fake = host(
+      () => {
+        epoch++;
+        return ok([background(BG, 'working', { pid: 7 })])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    expect(await stop(fake)).toEqual({
+      id: BG,
+      stopped: false,
+      reason: 'Terminal host inventory unavailable',
+    });
+    expect(commands(fake)).toEqual(["'/opt/claude bin/claude' agents --json"]);
+  });
+
+  it.each(['exit failure', 'exception'])(
+    'returns a generic stop failure after permission changes: %s',
+    async (failure) => {
+      let epoch: number | null = 1;
+      const fake = host(
+        (command) => {
+          if (command.endsWith('agents --json'))
+            return ok([background(BG, 'working', { pid: 7 })])();
+          epoch = null;
+          const detail = 'stop unavailable at /fixture/diagnostic';
+          if (failure === 'exception') throw new Error(detail);
+          return { stdout: '', stderr: detail, exit_code: 1 };
+        },
+        { external: true, visibilityEpoch: () => epoch },
+      );
+      expect(await stop(fake)).toEqual({ id: BG, stopped: false, reason: 'claude stop failed' });
+    },
+  );
 
   it('never reads a killed claude stop as stopped', async () => {
     const fake = host(

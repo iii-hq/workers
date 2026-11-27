@@ -84,6 +84,7 @@ const StopPayloadSchema = z.object({
 
 /** The CLI's 8-hex background id; anything else never reaches the shell. */
 const SHORT_ID = /^[0-9a-f]{8}$/;
+const INVENTORY_UNAVAILABLE = 'Terminal host inventory unavailable';
 
 /**
  * How long a conversation counts as open after a plain `--resume` was handed
@@ -371,7 +372,7 @@ export function registerAgents(
       const currentEpoch = visibilityEpoch();
       const authorized = epoch !== null && epoch === currentEpoch;
       const { agents, hidden } = merge(authorized);
-      const details = detail ? [authorized ? detail : 'Terminal host inventory unavailable'] : [];
+      const details = detail ? [authorized ? detail : INVENTORY_UNAVAILABLE] : [];
       if (hidden > 0) {
         details.push(
           `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
@@ -411,10 +412,14 @@ export function registerAgents(
       if (!external()) {
         return refuse('external_sessions is off: this worker does not stop host sessions');
       }
+      const epoch = visibilityEpoch();
+      if (epoch === null) return refuse(INVENTORY_UNAVAILABLE);
+      const authorized = () => epoch === visibilityEpoch();
       const prepared = current();
       // Fresh, never cached: the short id is what `claude stop` acts on, and
       // a stale one could name a session that has since been replaced.
       const snapshot = await cliSnapshot(iii, prepared, false);
+      if (!authorized()) return refuse(INVENTORY_UNAVAILABLE);
       const row = snapshot.rows.find((r) => r.sessionId === id && r.kind === 'background');
       if (!row) {
         return refuse(snapshot.detail ?? 'no background session with that id on the terminal host');
@@ -430,15 +435,16 @@ export function registerAgents(
           timeoutMs: 30_000,
         });
         if (result.exit_code === 0) return { id, stopped: true };
+        if (!authorized()) return refuse('claude stop failed');
         const stderr = result.stderr.trim().slice(0, 200);
         return refuse(`claude stop failed: exit ${result.exit_code}${stderr ? `: ${stderr}` : ''}`);
       } catch (err) {
-        return refuse(`claude stop failed: ${String(err)}`);
+        return refuse(authorized() ? `claude stop failed: ${String(err)}` : 'claude stop failed');
       }
     },
     {
       description:
-        'Stop a background Claude Code session on the terminal host (`claude stop <short id>`); its conversation is kept. Only background sessions with a live process, and only with the external_sessions setting on. A headless run of this worker stops through claude::stop.',
+        'Stop a background Claude Code session on the terminal host (`claude stop <short id>`); its conversation is kept. Only background sessions with a live process, and only with confirmed live external_sessions permission. A headless run of this worker stops through claude::stop.',
       request_format: jsonSchema(StopPayloadSchema),
       response_format: jsonSchema(
         z.object({ id: z.string(), stopped: z.boolean(), reason: z.string().optional() }),
