@@ -35,7 +35,9 @@ export function ValuesCard({
   // Nothing was read and nothing is being read (an older worker): the card has nothing to say.
   if (!read.loading && !read.error && (!v || !plan.items.length)) return null
   const file = v?.manifest ?? 'the compose file'
-  const toSet = [...plan.required, ...plan.asked, ...plan.optional]
+  const toSet = [...plan.required, ...plan.asked, ...plan.local, ...plan.optional]
+  // What "Skip for now" may skip: never a required name; a name the run here lacks runs with an empty value.
+  const skippable = [...plan.local, ...plan.optional]
   const noWrite = v && v.save !== 'ok' ? NO_WRITE[v.save] : null
   const skip = async (names: string[], on: boolean) => {
     setBusy(true)
@@ -96,6 +98,21 @@ export function ValuesCard({
                 ))}
               </div>
             ) : null}
+            {plan.local.length ? (
+              <div className="iii-cloud-cs-vfact">
+                <p className="iii-cloud-cs-vline" data-tone="alert">
+                  {`${plan.local.length} set in iii cloud but missing on this machine`}
+                </p>
+                <p className="iii-cloud-cs-vnames">
+                  {plan.local.map((i) => (
+                    <Mono key={i.name}>{i.name}</Mono>
+                  ))}
+                </p>
+                <p className="iii-cloud-cs-sub">
+                  The run here needs them in an env file of your folder, or skip them to run with an empty value.
+                </p>
+              </div>
+            ) : null}
             {plan.optional.length ? (
               <p className="iii-cloud-cs-vline">{`${plan.optional.length} optional, not set`}</p>
             ) : null}
@@ -124,7 +141,7 @@ export function ValuesCard({
             {!toSet.length && !plan.skipped.length ? (
               <p className="iii-cloud-cs-sub">{`Every name ${file} reads is set.`}</p>
             ) : null}
-            {!plan.required.length && !plan.asked.length && plan.optional.length ? (
+            {!plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
               <p className="iii-cloud-cs-sub">Optional ones can wait: you can deploy without them.</p>
             ) : null}
             {noWrite ? <p className="iii-cloud-cs-sub">{noWrite}</p> : null}
@@ -138,14 +155,14 @@ export function ValuesCard({
                 >
                   Set values
                 </Button>
-                {plan.optional.length ? (
+                {skippable.length ? (
                   <Button
                     size="sm"
                     variant="secondary"
                     disabled={!!noWrite || busy}
                     onClick={() =>
                       void skip(
-                        plan.optional.map((i) => i.name),
+                        skippable.map((i) => i.name),
                         true,
                       )
                     }

@@ -261,18 +261,27 @@ export const preselected = (i: ValueItem): Suggestion[] =>
 /** The names the compose file reads that iii cloud does not fill in by itself, told apart for the values card. */
 export function valuesPlan(v: Values | null) {
   const items = (v?.items ?? []).filter((i) => !i.database)
+  // An agent's ask is the agent's reason first: the worker marks it `required` too, though the file may not read it.
   const unset = items.filter((i) => i.in_cloud !== 'set' && i.need !== 'has_default')
-  const required = unset.filter((i) => i.need === 'required')
-  const rest = unset.filter((i) => i.need !== 'required')
+  const asked = unset.filter((i) => i.asked)
+  const rest = unset.filter((i) => !i.asked)
+  // Set in iii cloud, but the run here has no value (`LOCAL_VARIABLE_UNSET`, which blocks the check): an env file of
+  // the folder gives it, or a skip runs it with an empty value.
+  const local = items.filter((i) => i.in_cloud === 'set' && i.here === 'unset' && !i.skipped)
   return {
     items,
     /** Required by the file and not set: what stops a deploy. */
-    required,
-    /** Asked for by the agent (a secret request), and not already counted as required. */
-    asked: rest.filter((i) => i.asked),
-    optional: rest.filter((i) => !i.asked && !i.skipped),
-    skipped: rest.filter((i) => !i.asked && i.skipped),
-    set: items.filter((i) => i.in_cloud === 'set'),
+    required: rest.filter((i) => i.need === 'required'),
+    /** Asked for by the agent (a secret request). */
+    asked,
+    /** Set in iii cloud and missing on this machine. */
+    local,
+    optional: rest.filter((i) => i.need !== 'required' && !i.skipped),
+    skipped: [
+      ...rest.filter((i) => i.need !== 'required' && i.skipped),
+      ...items.filter((i) => i.in_cloud === 'set' && i.skipped),
+    ],
+    set: items.filter((i) => i.in_cloud === 'set' && !local.includes(i) && !i.skipped),
     /** Not set, and an env file or this environment's address can give the value: the Secrets screen's "can come from your env files". */
     offered: items.filter((i) => preselected(i).length > 0),
   }
@@ -285,8 +294,10 @@ export function valuesPlan(v: Values | null) {
  * never rows of their own (`values` names them, for the sentence that says how many).
  */
 export function needsYou(s: Status, read: Values | null = null) {
+  const plan = valuesPlan(read)
   const names = new Set([
-    ...valuesPlan(read).required.map((i) => i.name),
+    ...plan.required.map((i) => i.name),
+    ...plan.local.map((i) => i.name),
     ...findings(s).values.map((i) => valueName(i) ?? i.key),
   ])
   const items = findings(s).person.filter((i) => !i.fixed && i.severity === 'block' && !configAction(i))

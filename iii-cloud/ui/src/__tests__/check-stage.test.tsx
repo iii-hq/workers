@@ -948,6 +948,25 @@ describe('the check follows the canvas', () => {
       expect(h.go).toHaveBeenCalledWith({ at: 'secrets', env: expect.any(String) })
     })
 
+    it('a name set in iii cloud but missing here: its own line, to set or skip, never "every name is set"', async () => {
+      const items = [valueItem('STRIPE_KEY', { need: 'required', default: null, in_cloud: 'set', here: 'unset' })]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      expect(card()?.textContent).toContain('1 set in iii cloud but missing on this machine')
+      expect(card()?.textContent).toContain('STRIPE_KEY')
+      expect(card()?.textContent).toContain('skip them to run with an empty value')
+      expect(card()?.textContent).not.toContain('Every name')
+      await click(btn('Skip for now'))
+      expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
+        names: ['STRIPE_KEY'],
+        skip: true,
+      })
+      await click(btn('Set values'))
+      expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
