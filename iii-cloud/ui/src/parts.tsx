@@ -17,6 +17,7 @@ import {
   CircleAlert,
   CircleCheck,
   ExternalLink,
+  FolderOpen,
   Info,
   Loader2,
   RefreshCw,
@@ -300,16 +301,16 @@ export function Notice({ variant = 'info', className, headline, ...rest }: Statu
 
 /**
  * A deployment of any project on this machine waits for the person (iii cloud holds it for approval) and the
- * screen does not already show it: not the deploy screen of that deployment, nor its environment's page.
+ * screen does not already show it. Shown means only: the deploy screen that follows that very deployment, and
+ * that environment's own page (not its check view, its secrets, or another deployment's record).
  */
 export function waitingElsewhere(s: Status, r?: Route): boolean {
-  const on =
-    r && (r.at === 'env' || r.at === 'deploy' || r.at === 'secrets') ? r.env || s.project?.environment?.id : null
+  const home = r?.at === 'env' && !r.deploy ? r.env || s.project?.environment?.id : null
   return moving(s).some(
     (m) =>
       needsAction(m.deploy) &&
       !(r?.at === 'deploy' && r.deploy === m.deploy.id) &&
-      !(!m.other && on && m.deploy.environment_id === on),
+      !(!m.other && home && m.deploy.environment_id === home),
   )
 }
 
@@ -346,6 +347,7 @@ export function PathBar({
   const dot = <StatusDot tone="warn" className="iii-cloud-crumb-dot" aria-hidden />
   const up = path.slice(0, -1)
   const parent = up.filter((p) => p.to).at(-1)
+  const toProjects = parent?.to?.at === 'start'
   return (
     <Toolbar aria-label={here.label} className="iii-cloud-envhead" data-rule={rule ? '' : undefined} end={end}>
       {narrow ? (
@@ -366,6 +368,18 @@ export function PathBar({
             </IconButton>
           ) : null}
           <h2 className="iii-cloud-head-title iii-cloud-head-name">{here.label}</h2>
+          {held && !toProjects ? (
+            // Back goes to the environment here, so Projects gets its own small control while something waits.
+            <IconButton
+              label="A deployment needs you: see Projects"
+              variant="ghost"
+              className="iii-cloud-crumb-back"
+              onClick={() => go({ at: 'start' })}
+            >
+              <FolderOpen />
+              {dot}
+            </IconButton>
+          ) : null}
         </>
       ) : (
         <nav aria-label="Breadcrumb" className="iii-cloud-crumbs">
