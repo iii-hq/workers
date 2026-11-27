@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
-import { observeConfigChanges } from '../src/configuration.js';
+import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
   record as transcriptRecord,
@@ -344,6 +344,35 @@ describe('claude::agents::list', () => {
     });
     epoch = 2;
     expect(await probe()).not.toEqual(visible);
+  });
+
+  it('reconfirms a visibility lease against the live setting without listing sessions', async () => {
+    let epoch: number | null = 1;
+    const fake = host(ok([]), { visibilityEpoch: () => epoch });
+    const visibility = fake.registered.get('claude::agents::visibility');
+    const probe = () => visibility?.({ confirm_live_config: true });
+    const key = `configuration/${CONFIG_ID}`;
+
+    const lease = (await visibility?.({})) as { external_visibility: string };
+    expect(lease).toEqual({ external_visibility: expect.any(String) });
+    expect(await probe()).toEqual({ external_visibility: null });
+    fake.state.set(key, { external_sessions: false });
+    expect(await probe()).toEqual({ external_visibility: null });
+    fake.state.set(key, { external_sessions: 'true' });
+    expect(await probe()).toEqual({ external_visibility: null });
+    fake.state.set(key, { external_sessions: true });
+    expect(await probe()).toEqual({ ...lease, live_config_confirmed: true });
+
+    const pending = probe();
+    epoch = 2;
+    expect(await pending).toEqual({ external_visibility: null });
+    expect(await probe()).toEqual({
+      external_visibility: expect.any(String),
+      live_config_confirmed: true,
+    });
+    epoch = null;
+    expect(await probe()).toEqual({ external_visibility: null });
+    expect(fake.calls.map((call) => call.function_id)).toEqual(Array(6).fill('configuration::get'));
   });
 
   it('runs claude agents --json on the terminal host, --all when asked', async () => {

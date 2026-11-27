@@ -9,7 +9,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import { CONFIG_ID } from './configuration.js';
+import { CONFIG_ID, fetchRuntime } from './configuration.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
@@ -325,15 +325,36 @@ export function registerAgents(
       ? null
       : createHmac('sha256', visibilityKey).update(String(epoch)).digest('base64url');
   const visibilitySchema = z.string().nullable();
+  const visibilityArgs = z.object({ confirm_live_config: z.boolean().optional() });
   iii.registerFunction(
     'claude::agents::visibility',
-    async () => ({ external_visibility: visibilityToken(visibilityEpoch()) }),
+    async (payload: unknown) => {
+      const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
+      const epoch = visibilityEpoch();
+      if (epoch === null) return { external_visibility: null };
+      // A browser notice may precede the worker's reload, or arrive after it.
+      // Check the live entry as well as the worker lease when the order is unclear.
+      if (confirm_live_config) {
+        const runtime = await fetchRuntime(iii);
+        if (runtime?.external_sessions !== true || epoch !== visibilityEpoch())
+          return { external_visibility: null };
+      }
+      return {
+        external_visibility: visibilityToken(epoch),
+        ...(confirm_live_config ? { live_config_confirmed: true } : {}),
+      };
+    },
     {
       description:
         'Read the current external inventory visibility snapshot without listing sessions.',
       metadata: { internal: true },
-      request_format: jsonSchema(z.object({})),
-      response_format: jsonSchema(z.object({ external_visibility: visibilitySchema })),
+      request_format: jsonSchema(visibilityArgs),
+      response_format: jsonSchema(
+        z.object({
+          external_visibility: visibilitySchema,
+          live_config_confirmed: z.literal(true).optional(),
+        }),
+      ),
     },
   );
 

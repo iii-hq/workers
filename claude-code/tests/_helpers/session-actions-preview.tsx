@@ -44,6 +44,12 @@ const watches = new Set<{
 }>();
 const configId = 'fixture-claude';
 let allowed = true;
+let livePermission: boolean | null = true;
+let orderingScenario = false;
+let holdVisibilityList: Promise<void> | undefined;
+let releaseVisibilityList: (() => void) | undefined;
+const notifyConfig = () =>
+  emit('configuration::on-updated', { id: configId, event_type: 'configuration:updated' });
 let visibility = 1;
 const externalVisibility = () => (allowed ? `fixture-${visibility}` : null);
 let sourceAvailable = true;
@@ -121,6 +127,7 @@ const host = {
         mode?: string;
         cursor?: string;
         include_config_id?: boolean;
+        confirm_live_config?: boolean;
         id?: string;
         all?: boolean;
       },
@@ -136,12 +143,24 @@ const host = {
         };
       }
       if (fn === 'claude::agents::visibility') {
-        return { external_visibility: externalVisibility() };
+        const token = externalVisibility();
+        if (!p.confirm_live_config) return { external_visibility: token };
+        return token && livePermission === true
+          ? { external_visibility: token, live_config_confirmed: true }
+          : { external_visibility: null };
       }
       if (fn === 'claude::agents::list') {
+        if (holdVisibilityList) {
+          document.getElementById('root')?.setAttribute('data-inventory-waiting', 'true');
+          await holdVisibilityList;
+        }
         return {
           agents: rows
-            .map(currentRow)
+            .map((row) =>
+              row === rows[0] && orderingScenario
+                ? { ...row, status: 'waiting', waiting_for: 'permission confirmation' }
+                : currentRow(row),
+            )
             .filter(
               (row) =>
                 (allowed || !row.external_only) &&
@@ -306,6 +325,27 @@ function Preview() {
       // Change only the synthetic worker snapshot; the browser watch stays active.
       allowed = !allowed;
       visibility++;
+    }
+    if (e.code === 'KeyG') {
+      livePermission = null;
+      notifyConfig();
+    }
+    if (e.code === 'KeyH') {
+      orderingScenario = true;
+      livePermission = true;
+      allowed = true;
+      visibility++;
+      emit('claude::on-config-change', {});
+    }
+    if (e.code === 'KeyJ') {
+      holdVisibilityList = new Promise<void>((resolve) => {
+        releaseVisibilityList = resolve;
+      });
+      notifyConfig();
+    }
+    if (e.code === 'KeyK') {
+      holdVisibilityList = undefined;
+      releaseVisibilityList?.();
     }
     if (e.code === 'KeyS') scenario('stale');
     if (e.code === 'KeyN') scenario('sibling');

@@ -205,7 +205,6 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const off: (() => void)[] = [];
     let connected = true;
     let watched: string | null = null;
-    let lastConfirmed: string | null = null;
     let checking = false;
     let probe = 0;
     const invalidate = () => {
@@ -214,16 +213,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       setFailure((current) => (current?.externalId ? null : current));
     };
     const acceptWatch = (token: string | null) => {
-      if (token) {
-        // The old worker epoch may still answer while it receives the config event.
-        // A new confirmed epoch can settle the change even if the completion was missed.
-        if (configPending.current && token === lastConfirmed) token = null;
-        else {
-          configPending.current = false;
-          lastConfirmed = token;
-        }
-      }
-      if (watched === token) return;
+      const confirmedChange = token !== null && configPending.current;
+      if (confirmedChange) configPending.current = false;
+      if (watched === token && !confirmedChange) return;
       watched = token;
       invalidate();
       setWatch(token ? { iii, configId, token } : undefined);
@@ -234,6 +226,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       if (!connected || checking) return;
       checking = true;
       const current = probe;
+      const confirmLiveConfig = configPending.current;
       let token: string | null = null;
       try {
         const [watch, visibility] = await Promise.all([
@@ -243,9 +236,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             target?: { function_id?: string };
             state?: string;
           }>('engine::observers::get', { id: observerId }, { timeoutMs: WATCH_CHECK_MS }),
-          iii.call<{ external_visibility?: unknown }>(
+          iii.call<{ external_visibility?: unknown; live_config_confirmed?: unknown }>(
             'claude::agents::visibility',
-            {},
+            confirmLiveConfig ? { confirm_live_config: true } : {},
             { timeoutMs: WATCH_CHECK_MS },
           ),
         ]);
@@ -255,6 +248,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           watch.function_id === 'configuration::on-updated' &&
           watch.target?.function_id === target(handler) &&
           watch.state === 'active' &&
+          (!confirmLiveConfig || visibility?.live_config_confirmed === true) &&
           typeof snapshot === 'string' &&
           snapshot
         ) {
@@ -279,10 +273,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           probe++;
           checking = false;
           invalidate();
+          void checkWatch();
         }),
       );
       off.push(
         iii.on(settled, () => {
+          // A probe started before the reload cannot settle its result.
+          probe++;
+          checking = false;
           invalidate();
           refresh();
           void checkWatch();

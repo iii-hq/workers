@@ -429,6 +429,46 @@ async function testSessionActions(code) {
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
 
+  for (const order of ['browser first', 'worker first']) {
+    await test(`recovers current external inventory when permission confirms ${order}`, async (t) => {
+      const { click, document, follow, shortcut, text, until } = setup(t, { heartbeat: false });
+      const original = () => document.querySelector('[aria-label="Open original: Design review"]');
+      const withheld = async () => {
+        await until(() => !original());
+        assert.doesNotMatch(document.body.textContent, /Design review|external-only/);
+        assert.match(document.body.textContent, /Console original/);
+      };
+      await text('/fixture/external-only');
+
+      if (order === 'browser first') {
+        shortcut('KeyG');
+        await withheld();
+        await click('Refresh sessions');
+        await new Promise((resolve) => document.defaultView.requestAnimationFrame(resolve));
+        assert.equal(original(), null);
+        shortcut('KeyH');
+      } else {
+        shortcut('KeyH');
+        await text('Waiting for permission confirmation');
+        shortcut('KeyJ');
+        await withheld();
+        await until(() => document.querySelector('[data-inventory-waiting="true"]'));
+        assert.equal(original(), null);
+        shortcut('KeyK');
+      }
+
+      await until(original);
+      await click('Refresh sessions');
+      await new Promise((resolve) => document.defaultView.requestAnimationFrame(resolve));
+      assert.ok(original());
+      await follow();
+      assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
+      shortcut('KeyR');
+      await text('Replies unavailable');
+      await withheld();
+    });
+  }
+
   await test('Escape returns focus to Refresh sessions if access removes the opener', async (t) => {
     const { document, focus, follow, shortcut, text, until } = setup(t, { heartbeat: false });
     await follow();
