@@ -44,6 +44,9 @@ type Snapshot = {
 };
 type View = { state: 'loading' | 'unavailable' } | { state: 'ready'; data: Snapshot };
 
+const RETRY_DELAY_MS = 1000;
+const MAX_REJECTIONS = 3;
+
 function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId: string }) {
   const [view, setView] = useState<View>({ state: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -55,9 +58,19 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
     let reading = false;
     let again = false;
     let cursor: string | undefined;
+    // A rejected snapshot is asked for again after a short delay, a bounded
+    // number of times in a row; after that only a wakeup or heartbeat reads.
+    let rejections = 0;
+    let retryTimer: number | undefined;
+    const cancelRetry = () => {
+      if (retryTimer === undefined) return;
+      window.clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
     const cleanup: (() => void)[] = [];
     const stop = () => {
       active = false;
+      cancelRetry();
       for (const off of cleanup.splice(0).reverse()) off();
     };
     const unavailable = () => {
@@ -66,6 +79,8 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
       setView({ state: 'unavailable' });
     };
     const read = async () => {
+      // Any read covers a pending retry, so a wakeup never adds a second one.
+      cancelRetry();
       if (!active) return;
       if (reading) {
         again = true;
@@ -80,7 +95,17 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
             { claude_session_id: id, ...(cursor ? { cursor } : {}) },
             { timeoutMs: 30000 },
           );
-          if ('retry' in data) continue;
+          if ('retry' in data) {
+            rejections += 1;
+            if (active && !again && rejections < MAX_REJECTIONS) {
+              retryTimer = window.setTimeout(() => {
+                retryTimer = undefined;
+                void read();
+              }, RETRY_DELAY_MS);
+            }
+            continue;
+          }
+          rejections = 0;
           if (data.claude_session_id !== id) throw new Error('Session changed');
           if (active) {
             const unchanged = cursor === data.cursor;
