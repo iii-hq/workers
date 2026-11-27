@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use image_resize::shutdown::{DRAIN_DEADLINE, InFlight};
 use image_resize::{config, configuration, handler, ui};
 use tokio::sync::Semaphore;
 
@@ -80,12 +81,19 @@ async fn main() -> Result<()> {
         std::thread::available_parallelism().map_or(1, NonZero::get),
     ));
 
-    let _fn_ref = iii.register_function(
+    let calls = Arc::new(InFlight::default());
+    let resize_fn = iii.register_function(
         "image_resize::resize",
         RegisterFunction::new_async({
             let shared = shared.clone();
+            let calls = calls.clone();
             move |req: handler::ResizeRequest| {
-                handler::resize(configuration::snapshot(&shared), permits.clone(), req)
+                handler::resize(
+                    configuration::snapshot(&shared),
+                    permits.clone(),
+                    calls.clone(),
+                    req,
+                )
             }
         })
         .description(
@@ -103,6 +111,15 @@ async fn main() -> Result<()> {
     shutdown.await?;
 
     tracing::info!("image-resize shutting down");
+    // Unregistered first, so the engine routes no new call while the ones in flight finish.
+    resize_fn.unregister();
+    let running = calls.drain(DRAIN_DEADLINE).await;
+    if running > 0 {
+        tracing::warn!(
+            running,
+            "calls still in flight at the drain deadline are cut off"
+        );
+    }
     // shutdown() joins the SDK connection thread, so the close frame and the OTel shutdown finish before main returns.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
 

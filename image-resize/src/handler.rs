@@ -12,6 +12,7 @@ use crate::config::{ResizeConfig, check_quality};
 use crate::processing::{
     ImageMetadata, ThumbnailMetadata, invalid, process_image, resolve_params, sniff,
 };
+use crate::shutdown::InFlight;
 
 /// Largest input read from `input_channel`.
 pub const MAX_INPUT_BYTES: usize = 64 << 20;
@@ -58,12 +59,15 @@ pub async fn read_image(
 }
 
 /// The `image_resize::resize` handler: on success output_channel carries the
-/// result as one JSON text frame, then the image bytes.
+/// result as one JSON text frame, then the image bytes. Counted in `calls`
+/// until it returns.
 pub async fn resize(
     config: Arc<ResizeConfig>,
     permits: Arc<Semaphore>,
+    calls: Arc<InFlight>,
     req: ResizeRequest,
 ) -> Result<ThumbnailMetadata, Error> {
+    let _call = calls.enter();
     let result = run(&config, permits, &req).await;
     if let Err(error) = &result {
         // The SDK leaves an output the handler never used open on failure; a

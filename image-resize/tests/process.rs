@@ -263,8 +263,8 @@ async fn boot_fails_when_the_configuration_service_fails() {
 }
 
 #[tokio::test]
-async fn sigterm_exits_cleanly_with_blank_namespace() {
-    let (url, _frames) = engine(false).await;
+async fn sigterm_unregisters_resize_and_exits_cleanly_with_blank_namespace() {
+    let (url, mut frames) = engine(false).await;
     let mut worker = worker(&url, &[], Some(""));
     let mut logs = lines(&mut worker);
     timeout(Duration::from_secs(20), async {
@@ -285,6 +285,22 @@ async fn sigterm_exits_cleanly_with_blank_namespace() {
     assert!(kill.success());
     let status = exit_status(&mut worker, Duration::from_secs(10)).await;
     assert!(status.success(), "{status}");
+
+    // The scripted engine ends, and closes `frames`, when the worker's socket closes.
+    let unregistered = timeout(Duration::from_secs(10), async {
+        while let Some(value) = frames.recv().await {
+            if value["type"] == "unregisterfunction" && value["id"] == "image_resize::resize" {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("the worker's socket closes");
+    assert!(
+        unregistered,
+        "the worker stopped without unregistering image_resize::resize"
+    );
 
     // The SDK logs this from its connection thread, so it only appears when main joins that thread.
     let mut otel_shut_down = false;

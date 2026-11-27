@@ -13,6 +13,7 @@ use image::{DynamicImage, ImageFormat, RgbImage};
 use image_resize::config::{ResizeConfig, ResizeStrategy};
 use image_resize::handler::{ResizeRequest, read_image, resize};
 use image_resize::processing::{Format, ThumbnailMetadata};
+use image_resize::shutdown::InFlight;
 use serde_json::{Map, Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
@@ -61,6 +62,7 @@ async fn call_with(
     input: InputStream,
     metadata: Option<Value>,
     permits: Arc<Semaphore>,
+    calls: Arc<InFlight>,
     rest: Map<String, Value>,
 ) -> Call {
     let (writer, mut reader) = tokio::io::duplex(8 << 20);
@@ -72,7 +74,7 @@ async fn call_with(
         metadata,
         rest,
     };
-    let result = resize(Arc::new(ResizeConfig::default()), permits, req).await;
+    let result = resize(Arc::new(ResizeConfig::default()), permits, calls, req).await;
     let mut bytes = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut bytes))
         .await
@@ -90,6 +92,7 @@ async fn call(input: Vec<u8>, metadata: Option<Value>) -> Call {
         InputStream::from_bytes(input),
         metadata,
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         Map::new(),
     )
     .await
@@ -179,6 +182,7 @@ async fn large_input_in_64k_frames_resizes() {
         InputStream::from_reader(Cursor::new(input)),
         Some(json!({ "strategy": "crop-to-fit", "target_width": 64, "target_height": 64 })),
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         Map::new(),
     )
     .await;
@@ -273,6 +277,7 @@ async fn top_level_options_are_invalid_args() {
             InputStream::from_bytes(png(400, 400)),
             None,
             Arc::new(Semaphore::new(1)),
+            Arc::default(),
             rest,
         )
         .await;
@@ -476,6 +481,7 @@ async fn permits_gate_processing() {
         InputStream::from_bytes(png(20, 20)),
         None,
         permits.clone(),
+        Arc::default(),
         Map::new(),
     ));
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -488,6 +494,36 @@ async fn permits_gate_processing() {
         .unwrap();
     assert_eq!(call.result.unwrap().width, 20);
     assert_eq!(permits.available_permits(), 1, "the permit is given back");
+}
+
+#[tokio::test]
+async fn a_call_counts_as_in_flight_until_it_returns() {
+    let (permits, calls) = (Arc::new(Semaphore::new(0)), Arc::new(InFlight::default()));
+    let pending = tokio::spawn(call_with(
+        InputStream::from_bytes(png(20, 20)),
+        None,
+        permits.clone(),
+        calls.clone(),
+        Map::new(),
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        calls.running(),
+        1,
+        "a call waiting for a permit is in flight"
+    );
+
+    permits.add_permits(1);
+    let call = tokio::time::timeout(Duration::from_secs(30), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call.result.unwrap().width, 20);
+    assert_eq!(
+        calls.running(),
+        0,
+        "the call left the count when it returned"
+    );
 }
 
 #[tokio::test]
@@ -506,6 +542,7 @@ async fn payload_with_engine_keys_deserializes() {
         InputStream::from_bytes(png(20, 20)),
         None,
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         req.rest,
     )
     .await;

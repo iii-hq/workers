@@ -116,6 +116,11 @@ page shows an error that tells you to update the ade worker.
 
 - Input up to 64 MiB and 50 megapixels.
 - One image per CPU core at a time; further calls queue.
+- On SIGTERM or Ctrl-C the worker unregisters `image_resize::resize`, so the
+  engine routes it no new call, and waits up to 8 s for the calls in flight
+  to finish before it exits; calls still running then are cut off. A second
+  signal does not shorten the wait. iii compose waits 10 s by default before
+  its SIGKILL.
 - WebP output is at most 16383 px per side, JPEG 65535.
 - EXIF orientation is applied; other metadata is dropped.
 - An embedded RGB colour profile, such as Display P3 or Adobe RGB, is
@@ -168,6 +173,8 @@ page shows an error that tells you to update the ade worker.
 - Images with an embedded RGB colour profile are converted to sRGB. The
   profile used to be dropped and the values kept, so Display P3 or Adobe RGB
   photos came out with wrong colours.
+- A stop lets the calls in flight finish, for up to 8 s, instead of cutting
+  them off at once.
 - WebP input is decoded by libwebp instead of image-webp. A frame whose size
   disagrees with its canvas fails with `INVALID_ARGS` before any pixels are
   decoded, an animation frame whose header disagrees with its bitstream is
