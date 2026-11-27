@@ -7,6 +7,7 @@ import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
 import { findings } from '../findings'
+import { openProblems } from '../model'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing, rcVariables } from '../fixtures/check'
@@ -965,6 +966,22 @@ describe('the check follows the canvas', () => {
       })
       await click(btn('Set values'))
       expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
+    })
+
+    it("the agent's own value problem (the database's) is the agent's, not a value to set, and the hand-off still sees it", async () => {
+      const db = {
+        ...rcVariables[0],
+        id: 'p-db',
+        code: 'SECRET_MISSING',
+        severity: 'block' as const,
+        owner: 'agent' as const,
+        title: 'DATABASE_URL has no value',
+      }
+      const s = { ...base, check: { ...base.check!, problems: [db] } }
+      await stage(s)
+      expect(title()).toBe('1 for your agent to fix')
+      expect(region('Your agent')?.textContent).toContain('DATABASE_URL has no value')
+      expect(openProblems(s).map((p) => p.id)).toEqual(['p-db'])
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

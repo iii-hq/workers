@@ -522,7 +522,10 @@ function cloudPart(s: Status, c: Check): Part {
     status:
       plan.status === 'clean'
         ? `done · ${duration(c.duration_ms)}`
-        : `${plan.blocking} to fix${plan.at_least ? ', at least' : ''}`,
+        : // The rows it shows (the person's values are the values card's): the count is theirs.
+          rows.some((r) => r.mark === 'bad')
+          ? `${rows.filter((r) => r.mark === 'bad').length} to fix${plan.at_least ? ', at least' : ''}`
+          : 'waits on values',
     rows,
     foot: plan.at_least ? AT_LEAST : undefined,
   }

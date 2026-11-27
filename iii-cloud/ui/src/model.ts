@@ -788,17 +788,25 @@ export function hiddenPerson(s: Status, p: Problem): boolean {
 export const VALUE_CODES = new Set(['EMPTY_DEFAULT_VARIABLE', 'SECRET_MISSING', 'LOCAL_VARIABLE_UNSET'])
 
 /**
- * The one list every count comes from: the current check's problems that still need someone.
+ * A variable or a secret the PERSON sets: the values card's, never a row of the check. (The agent's own, such as the
+ * database's, stay in its list.)
+ */
+export const isPersonValue = (p: { code: string; owner: Problem['owner'] }) =>
+  VALUE_CODES.has(p.code) && p.owner === 'person'
+
+/**
+ * The one list every count comes from: the current check's problems that still need someone, without the person's
+ * values (`withValues` keeps them, for the hand-off's own comparison and count).
  * Person warnings (decisions with defaults) stop counting once the check is ready.
  */
-export function openProblems(s: Status): Problem[] {
+export function openProblems(s: Status, withValues = false): Problem[] {
   const c = s.check
   if (!c) return []
   // A name skipped for now never counts, unless iii cloud still blocks on it (SECRET_MISSING).
   return c.problems.filter(
     (p) =>
       p.owner !== 'none' &&
-      !VALUE_CODES.has(p.code) &&
+      (withValues || !isPersonValue(p)) &&
       !hiddenPerson(s, p) &&
       !(p.skipped && p.severity !== 'block') &&
       !(c.ready && p.owner === 'person' && p.severity !== 'block'),

@@ -232,13 +232,13 @@ export function findings(s: Status): Findings {
   // They come from the check's own problems (the hand-off's checklist leaves them out), and from what the agent asked for.
   const values = [
     ...c.problems
-      .filter((p) => VALUE_CODES.has(p.code) && p.severity === 'block' && p.owner !== 'none' && !hiddenPerson(s, p))
+      .filter((p) => VALUE_CODES.has(p.code) && p.severity === 'block' && p.owner === 'person' && !hiddenPerson(s, p))
       .map((p) => ({ ...itemOf(p.id, p, { ...p, title: problemTitle(p) }, p.owner, false), secret: variableName(p) })),
     ...shown.filter((i) => !i.code && i.secret && !i.fixed),
   ]
   return {
     person: shown.filter((i) => !isValue(i)),
-    agent: all.filter((i) => i.owner === 'agent' && !isValue(i)),
+    agent: all.filter((i) => i.owner === 'agent'),
     values,
     notes: all.filter((i) => i.owner === 'none' && !isValue(i)),
     skipped: [...aside, ...byCode].filter((i) => !isValue(i)),
