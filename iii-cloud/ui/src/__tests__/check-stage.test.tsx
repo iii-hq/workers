@@ -1459,6 +1459,22 @@ describe('small things the review found', () => {
     expect(el.querySelector('p.iii-cloud-cs-quiet')?.textContent).toBe(bare.title)
   })
 
+  it('the worker\'s "Confirm the worktree folder in the chat" text with source "agent" is the person\'s step: counted and shown', async () => {
+    const text = 'Confirm the worktree folder in the chat: the agent waits for your answer.'
+    const ask = {
+      ...rcFixing.agent!,
+      state: 'waiting_for_you' as const,
+      question: text,
+      question_source: 'agent' as const,
+    }
+    const w = { ...rcFixing, agent: ask }
+    const none = { ...w, check: { ...w.check!, problems: [] } }
+    await stage(none)
+    expect(title()).toBe('1 thing needs you')
+    expect(region('Your agent')?.textContent).toContain(text)
+    expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
