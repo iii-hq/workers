@@ -977,6 +977,35 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             Err(()) => return Poll::Continue,
         }
     }
+    // The agent ended its turn with no wake, and the person's own check left something of the
+    // agent's: it hears it now (the Done branch judges only the hand-off's own checks).
+    let mut person_sent = false;
+    if phase == AgentPhase::Done
+        && waiting_for.is_none()
+        && !confirm_pending
+        && matches!(handoff.kind, HandoffKind::Ready | HandoffKind::DeployFix)
+        && let Some(check_id) = handoff
+            .person_check
+            .clone()
+            .filter(|c| handoff.person_check_told.as_deref() != Some(c.as_str()))
+    {
+        let lines = person_check_lines(ctx, &check_id);
+        let refused_lately = continuing && handoff.continue_refused;
+        let sent = match &lines {
+            None => Continue::Refused,
+            Some(mine) if mine.is_empty() => Continue::Spent,
+            Some(_) if refused_lately => Continue::Refused,
+            Some(mine) => send_continue(ctx, &handoff, &session, mine, &secrets, None).await,
+        };
+        if lines.is_some() && sent != Continue::Refused {
+            ctx.store.update(|s| {
+                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                    h.person_check_told = Some(check_id.clone());
+                }
+            });
+        }
+        person_sent = sent == Continue::Sent;
+    }
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
         // A check the person started ended while the agent waits: what it owns goes to
@@ -1035,6 +1064,9 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         if queued {
             phase = AgentPhase::Working;
         }
+    } else if person_sent {
+        // Our "continue" is queued: the turn has not begun yet.
+        phase = AgentPhase::Working;
     } else if phase == AgentPhase::Done && continuing {
         if handoff.continue_refused {
             // The chat refused our "continue"; the page can say so and point at the chat.
@@ -1413,18 +1445,28 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
     })
 }
 
-/// A check the person started on a hand-off's worktree has ended: when the agent
-/// waits on a wake, the poll tells it what it owns (`person_check_lines`). Called
-/// where the check ends (`check::check`, a request with no hand-off).
+/// A check the person started on a hand-off's worktree has ended: when the agent is not
+/// working, the poll tells it what it owns (`person_check_lines`). Called where the check
+/// ends (`check::check`, a request with no hand-off). The agent is not working when it waits on
+/// a wake, is stalled inside a refused continue's grace with one armed, ended its turn
+/// (`Done`), or waits with the worker's own text about the check (`question_source: check`). A
+/// real ask of the agent's is not overridden: the person owes an answer first. Not for a
+/// hand-off the person stopped, one that is retired, or one at its cap of continues.
 pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path) {
     let path = workspace.to_string_lossy().into_owned();
+    let idle = |h: &Handoff| match h.agent.state {
+        AgentPhase::Waiting | AgentPhase::Done => true,
+        AgentPhase::Stalled => h.agent.waiting_for.is_some(),
+        AgentPhase::WaitingForYou => h.agent.question_source == Some(QuestionSource::Check),
+        _ => false,
+    };
     ctx.store.update(|s| {
         if let Some(h) = s.handoffs.iter_mut().find(|h| {
             h.environment_id == check.environment_id
                 && h.workspace_path == path
-                // Waiting on a wake; or stalled inside a refused continue's grace with one armed.
-                && (h.agent.state == AgentPhase::Waiting
-                    || (h.agent.state == AgentPhase::Stalled && h.agent.waiting_for.is_some()))
+                && idle(h)
+                && !retired(ctx, h)
+                && h.continues < MAX_CONTINUES
         }) {
             h.person_check = Some(check.id.clone());
         }
