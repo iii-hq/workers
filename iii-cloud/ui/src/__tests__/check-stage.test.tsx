@@ -5,7 +5,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
-import { CheckStage, retryPayload } from '../CheckStage'
+import { CheckStage, deployLockReason, retryPayload } from '../CheckStage'
 import { findings } from '../findings'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
@@ -14,6 +14,7 @@ import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
 import { checklist, handoffMessage, openProblems, wayOf } from '../model'
+import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
@@ -1262,5 +1263,41 @@ describe('a branch another environment follows', () => {
     await stage(s)
     expect(region('What this deploy does')?.textContent).toContain('staging follows')
     expect(region('What this deploy does')?.textContent).toContain('Deploy will refuse')
+    // ...and Deploy is off, with the reason beside it, before it is pressed.
+    expect((btn('Deploy 9c04e7f to dev') ?? deployButton()) as HTMLButtonElement).toHaveProperty('disabled', true)
+    expect(text()).toContain('Deploy will refuse: staging follows')
+  })
+})
+
+describe('small things the review found', () => {
+  it('a held deployment this page started says it waits for the person, not that it is going', () => {
+    const r = B('deploy-review')
+    const held = {
+      ...live6,
+      status: 'needs_action' as const,
+      outcome: 'running' as const,
+      check_id: 'chk-x',
+      approved_by_worker: true,
+    }
+    const s = { ...r, deploys: [held, serving5] }
+    expect(deployLockReason(s, DEV.id, { stale: false, sending: false })).toBe(
+      'Deployment #6 waits for you: confirm or cancel it first.',
+    )
+  })
+
+  it('the held dot is not shown on the record of that same deployment', () => {
+    const r = B('deploy-review')
+    const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
+    const s = { ...r, deploys: [held, serving5] }
+    expect(waitingElsewhere(s, { at: 'env', env: DEV.id })).toBe(false)
+    expect(waitingElsewhere(s, { at: 'secrets', env: DEV.id })).toBe(true)
+    expect(waitingElsewhere(s, { at: 'env', env: DEV.id, deploy: held.id })).toBe(false)
+  })
+
+  it('templates and public keys are not secrets', () => {
+    for (const f of ['.env.production.example', 'api/.env.local.sample', 'id_rsa.pub', '.env.example'])
+      expect(secretLike(f), f).toBe(false)
+    for (const f of ['.env', '.env.production', 'api/.env.local', 'id_rsa', 'deploy.key'])
+      expect(secretLike(f), f).toBe(true)
   })
 })

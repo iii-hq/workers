@@ -261,7 +261,10 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   } else if (held && !going) {
     line1 = `${held.env ?? env?.name ?? 'deploying'} · deployment #${held.deploy.number} needs your action`
   } else if (going && run) {
-    line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far${held ? ` · ${held.env ?? 'another environment'} deployment #${held.deploy.number} needs your action` : ''}`
+    line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far${held ? ` · ${held.env ?? 'another environment'} deployment #${held.deploy.number} needs your action` : ''}${waits
+      .filter((w) => w !== 'a held deployment')
+      .map((w) => ` · ${w}`)
+      .join('')}`
   } else if (offline) line1 = "Sign in to see what's live"
   // Only the folder and the names are known: say what exists, and how to see the rest.
   else if (!team) line1 = place.envName ? `${place.envName} · open it to see what's live` : "Open it to see what's live"

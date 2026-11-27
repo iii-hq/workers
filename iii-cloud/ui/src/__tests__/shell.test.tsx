@@ -318,7 +318,7 @@ describe("every project's deploys going on (running_deploys)", () => {
   it('a deployment held here: the crumb dot shows on every screen but its own deploy follow and its environment home', async () => {
     const b = boards['manage-overview-deploying']
     const held = { ...b.status.deploys[0], status: 'needs_action' as const }
-    const other = b.status.deploys[1] ?? { ...held, id: 'd-other', number: 3, status: 'ready' as const }
+    const other = { ...(b.status.deploys[1] ?? held), id: 'd-other', number: 3, status: 'ready' as const }
     const status = { ...b.status, deploys: [held, ...(b.status.deploys[1] ? b.status.deploys.slice(1) : [other])] }
     const dot = () => el.querySelector('button.iii-cloud-crumbs-up [data-dot=warn]')
     let n = 10
@@ -335,6 +335,9 @@ describe("every project's deploys going on (running_deploys)", () => {
     await at({ at: 'env', env: held.environment_id })
     expect(dot()).toBeNull()
     await at({ at: 'deploy', env: held.environment_id, deploy: held.id })
+    expect(dot()).toBeNull()
+    // Its own record says it already.
+    await at({ at: 'env', env: held.environment_id, deploy: held.id })
     expect(dot()).toBeNull()
   })
 
