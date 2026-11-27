@@ -33,6 +33,8 @@ pub struct RunWrote {
     #[serde(default)]
     pub restored: Vec<String>,
     #[serde(default)]
+    pub moved: Vec<String>,
+    #[serde(default)]
     pub left_dir: Option<String>,
 }
 

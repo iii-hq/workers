@@ -750,6 +750,8 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             reused: false,
             waiting_on: None,
             restored: vec![],
+            moved: vec![],
+            log_path: None,
         };
         c.run = Some(run);
         s.put_check(c);
@@ -900,8 +902,14 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
     std::fs::write(ws.join("api/data/a.db"), "data").unwrap();
     let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
     assert_eq!(done.restored, vec!["config/http.yaml", "config/queue.yaml"]);
-    // Only the new directory is left, and git says so.
-    assert_eq!(git(&ws, &["status", "--porcelain"]), "?? api/");
+    // The data the run created is moved out too: the copy is as it was.
+    assert_eq!(done.moved, vec!["api/data/a.db"]);
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+    assert!(!ws.join("api").exists(), "the empty directories go");
+    assert_eq!(
+        std::fs::read_to_string(run_dir.path().join("left/api/data/a.db")).unwrap(),
+        "data"
+    );
     assert_eq!(
         std::fs::read_to_string(ws.join("config/http.yaml")).unwrap(),
         "# comment\nport: ${PORT}\n"
@@ -933,10 +941,11 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
     let (title, detail) = (&restored[0].title, restored[0].detail.as_deref().unwrap());
     assert_eq!(
         title,
-        "The local run rewrote 2 tracked files; they are back as committed"
+        "The local run changed 3 files in the agent's copy; the copy is as it was before the run"
     );
     assert!(
-        detail.contains("config/http.yaml")
+        detail.contains("Put back as committed: config/http.yaml, config/queue.yaml.")
+            && detail.contains("Moved out of the copy (the run created them): api/data/a.db.")
             && detail.contains(&run_dir.path().join("left").display().to_string())
     );
     assert!(
@@ -950,15 +959,8 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
         )),
         "{detail}"
     );
-    let left = c
-        .problems
-        .iter()
-        .find(|p| p.code == "RUN_LEFT_FILES")
-        .unwrap();
-    assert!(
-        left.detail.as_deref().unwrap().contains("api/data/a.db")
-            && !left.detail.as_deref().unwrap().contains("config/")
-    );
+    // Nothing is left to name.
+    assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
 }
 
 #[tokio::test]
@@ -1170,15 +1172,99 @@ async fn a_file_where_a_tracked_directory_was_is_left_alone_and_a_deleted_direct
     std::fs::remove_dir_all(ws.join("gone")).unwrap();
     let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
     assert_eq!(done.restored, vec!["gone/b"]);
+    // The run's file `p` is moved out with a copy, never deleted without one.
+    assert_eq!(done.moved, vec!["p"]);
     assert_eq!(
-        std::fs::read_to_string(ws.join("p")).unwrap(),
-        "run data\n",
-        "never deleted"
+        std::fs::read_to_string(run_dir.path().join("left/p")).unwrap(),
+        "run data\n"
     );
     assert!(ws.join("gone/b").exists());
+    // `p/a` is a tracked deletion no checkout can undo: it stays set aside.
     assert!(
         h.ctx
             .store
-            .read(|s| s.run_wrote.values().any(|w| w.files.contains_key("p")))
+            .read(|s| s.run_wrote.values().any(|w| w.files.contains_key("p/a")))
     );
+}
+
+#[tokio::test]
+async fn the_data_a_run_created_leaves_the_copy_so_no_staging_can_sweep_it_into_a_commit() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::write(ws.join(".gitignore"), "node_modules/\ndist/\n").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "ignore"]);
+    // Untracked before the run: the agent's own new file.
+    std::fs::write(ws.join("mine.txt"), "agent's new file\n").unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    // The run's data, and what git ignores.
+    std::fs::create_dir_all(ws.join("api/data/queue")).unwrap();
+    std::fs::create_dir_all(ws.join("api/data/secrets")).unwrap();
+    std::fs::write(ws.join("api/data/queue/x.json"), "{}").unwrap();
+    std::fs::write(ws.join("api/data/secrets/vault.json"), r#"{"secrets": {}}"#).unwrap();
+    std::fs::create_dir_all(ws.join("node_modules")).unwrap();
+    std::fs::write(ws.join("node_modules/x"), "dep").unwrap();
+    std::fs::create_dir_all(ws.join("dist")).unwrap();
+    std::fs::write(ws.join("dist/y"), "built").unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(
+        done.moved,
+        vec!["api/data/queue/x.json", "api/data/secrets/vault.json"]
+    );
+    // Only the agent's own file is in the tree; ignored files stay.
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "?? mine.txt");
+    assert!(ws.join("node_modules/x").exists() && ws.join("dist/y").exists());
+    assert!(!ws.join("api").exists());
+    assert_eq!(
+        std::fs::read_to_string(run_dir.path().join("left/api/data/secrets/vault.json")).unwrap(),
+        r#"{"secrets": {}}"#
+    );
+    // The notice names them.
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_FILES_RESTORED")
+        .expect("said once");
+    assert_eq!(
+        p.title,
+        "The local run changed 2 files in the agent's copy; the copy is as it was before the run"
+    );
+    assert!(
+        p.detail
+            .as_deref()
+            .unwrap()
+            .contains("Moved out of the copy (the run created them): api/data/queue/x.json, api/data/secrets/vault.json."),
+    );
+    assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
+}
+
+#[tokio::test]
+async fn files_over_the_caps_and_the_persons_folder_are_not_moved() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    // A file over 4 MiB stays (set aside); more than 500 files: none move.
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("big.bin"), vec![1u8; 5 * 1024 * 1024]).unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert!(done.moved.is_empty() && ws.join("big.bin").exists());
+    std::fs::remove_file(ws.join("big.bin")).unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("many")).unwrap();
+    for i in 0..501 {
+        std::fs::write(ws.join(format!("many/{i}.db")), "x").unwrap();
+    }
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert!(done.moved.is_empty() && ws.join("many/0.db").exists());
+    // The person's own folder: untouched.
+    let folder = repo.checkout.clone();
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = folder.to_string_lossy().into_owned();
+    });
+    let before = iii_cloud::run::dirty_snapshot(&folder).await.unwrap();
+    std::fs::write(folder.join("typed.txt"), "typed during the run").unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &folder, &before, Some(run_dir.path())).await;
+    assert!(done.moved.is_empty() && folder.join("typed.txt").exists());
 }

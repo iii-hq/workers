@@ -737,24 +737,41 @@ fn fingerprint(path: &Path) -> String {
     }
 }
 
-/// The one info line for the tracked files a run rewrote and the worker put back. Never their content.
-pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
+/// The one info line for what a run changed in the copy and the worker undid: tracked files put
+/// back as committed, and files the run created moved out. Never their content.
+pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Problem {
+    let n = restored.len() + moved.len();
+    // Up to five paths in all, the put-back ones first.
+    let mut left = 5usize;
+    let mut take = |list: &[String]| -> String {
+        let shown: Vec<String> = list.iter().take(left).cloned().collect();
+        left -= shown.len();
+        shown.join(", ")
+    };
+    let mut parts: Vec<String> = vec![];
+    if !restored.is_empty() {
+        parts.push(format!("Put back as committed: {}.", take(restored)));
+    }
+    if !moved.is_empty() {
+        parts.push(format!(
+            "Moved out of the copy (the run created them): {}.",
+            take(moved)
+        ));
+    }
+    let more = if n > 5 {
+        format!(" And {} more.", n - 5)
+    } else {
+        String::new()
+    };
     let mut p = crate::local::here(
         "RUN_FILES_RESTORED",
         format!(
-            "The local run rewrote {} tracked file{}; they are back as committed",
-            restored.len(),
-            if restored.len() == 1 { "" } else { "s" }
+            "The local run changed {n} file{} in the agent's copy; the copy is as it was before the run",
+            if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
-            restored
-                .iter()
-                .take(5)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
-            if restored.len() > 5 { " and more" } else { "" },
+            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
+            parts.join(" "),
             dir.display(),
             dir.display()
         )),
@@ -794,6 +811,8 @@ pub struct SetAside {
     pub note: Option<String>,
     /// The tracked files put back as committed.
     pub restored: Vec<String>,
+    /// The untracked files the run created, moved out of the copy.
+    pub moved: Vec<String>,
     /// Where their rewritten versions were kept.
     pub saved_in: Option<PathBuf>,
 }
@@ -825,6 +844,7 @@ pub async fn set_aside_run(
         .unwrap_or_default();
     // Tracked files the run rewrote or deleted, clean when it began: back as committed.
     let mut restored: Vec<String> = vec![];
+    let mut moved: Vec<String> = vec![];
     let mut left_dir: Option<PathBuf> = None;
     if let Some(run_dir) = run_dir {
         let tracked: std::collections::BTreeSet<String> =
@@ -842,35 +862,75 @@ pub async fn set_aside_run(
             .filter(|p| !before.contains_key(*p) && tracked.contains(*p))
             .cloned()
             .collect();
-        if !candidates.is_empty() && candidates.len() <= MAX_WROTE {
+        // Untracked, not ignored files the run created: moved out of the copy (the agent's
+        // staging would sweep them into a commit).
+        let untracked: std::collections::BTreeSet<String> =
+            tool::git(ws, &["ls-files", "-z", "--others", "--exclude-standard"])
+                .await
+                .map(|o| {
+                    o.split('\0')
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+        let created: Vec<String> = after
+            .keys()
+            .filter(|p| !before.contains_key(*p) && untracked.contains(*p))
+            .cloned()
+            .collect();
+        let candidates = if candidates.len() <= MAX_WROTE {
+            candidates
+        } else {
+            vec![]
+        };
+        let created = if created.len() <= MAX_WROTE {
+            created
+        } else {
+            vec![]
+        };
+        if !candidates.is_empty() || !created.is_empty() {
             let dir = run_dir.join("left");
             let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
-            // Save each file, then check again that it still is what was saved: what is put back
-            // is exactly what `left/` holds. (Blocking work, off the runtime.)
-            let saved: Vec<String> = tokio::task::spawn_blocking(move || {
-                let mut total = 0u64;
-                let mut kept: Vec<(String, String)> = vec![];
-                for p in candidates {
-                    let Some((hash, len)) = save_left(&ws2, &dir2, &p) else {
-                        continue;
+            let before_dirs: std::collections::BTreeSet<String> = before.keys().cloned().collect();
+            // Save each file, then check again that it still is what was saved: what is put back or
+            // taken away is exactly what `left/` holds. One byte budget for both. (Blocking work.)
+            let (saved, saved_new): (Vec<String>, Vec<String>) =
+                tokio::task::spawn_blocking(move || {
+                    let mut total = 0u64;
+                    let mut keep = |list: Vec<String>| {
+                        let mut kept: Vec<(String, String)> = vec![];
+                        for p in list {
+                            let Some((hash, len)) = save_left(&ws2, &dir2, &p) else {
+                                continue;
+                            };
+                            if total + len > LEFT_BYTES_MAX {
+                                // Over the cap: left as it is, stays set aside.
+                                let _ = std::fs::remove_file(dir2.join(&p));
+                                continue;
+                            }
+                            total += len;
+                            kept.push((p, hash));
+                        }
+                        recheck(&ws2, &dir2, kept)
                     };
-                    if total + len > LEFT_BYTES_MAX {
-                        // Over the cap: not put back, stays set aside.
-                        let _ = std::fs::remove_file(dir2.join(&p));
-                        continue;
-                    }
-                    total += len;
-                    kept.push((p, hash));
-                }
-                recheck(&ws2, &dir2, kept)
-            })
-            .await
-            .unwrap_or_default();
+                    let tracked = keep(candidates);
+                    let created = keep(created);
+                    // The moved files leave the copy now (their copies are in `left/`).
+                    let gone: Vec<String> = created
+                        .into_iter()
+                        .filter(|p| remove_moved(&ws2, p, &before_dirs))
+                        .collect();
+                    (tracked, gone)
+                })
+                .await
+                .unwrap_or_default();
             restored = put_back(ws, &saved).await;
-            for p in &restored {
+            for p in restored.iter().chain(saved_new.iter()) {
                 after.remove(p);
             }
-            if !restored.is_empty() {
+            moved = saved_new;
+            if !restored.is_empty() || !moved.is_empty() {
                 left_dir = Some(dir);
             }
         }
@@ -900,6 +960,7 @@ pub async fn set_aside_run(
             crate::store::RunWrote {
                 files,
                 restored: restored.clone(),
+                moved: moved.clone(),
                 left_dir: left_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
             },
         );
@@ -907,8 +968,27 @@ pub async fn set_aside_run(
     SetAside {
         note,
         restored,
+        moved,
         saved_in: left_dir,
     }
+}
+
+/// Take a moved file out of the copy (its saved copy is in `left/`), and the directories it leaves
+/// empty, unless the run's snapshot had a file in them. False when it could not be removed.
+fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String>) -> bool {
+    if std::fs::remove_file(ws.join(rel)).is_err() {
+        return false;
+    }
+    let mut dir = Path::new(rel).parent();
+    while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
+        let prefix = format!("{}/", d.display());
+        if before.iter().any(|b| b.starts_with(&prefix)) || std::fs::remove_dir(ws.join(d)).is_err()
+        {
+            break;
+        }
+        dir = d.parent();
+    }
+    true
 }
 
 /// Right before the checkout: each saved file is hashed again. One whose content changed since its
@@ -1182,6 +1262,10 @@ async fn prepare(
         reused: false,
         waiting_on: None,
         restored: vec![],
+        moved: vec![],
+        // The whole redacted log (`note` and the output pumps redact with this run's secrets, as
+        // `log_tail`, its last lines, does).
+        log_path: Some(dir.join("run.log").to_string_lossy().into_owned()),
     };
     set_run_live(&dir, true);
     Ok(Exec {
@@ -1379,10 +1463,11 @@ impl Exec {
                 // Into the run's own log, so the last publish carries it (it rebuilds `log_tail` from there).
                 self.note(&note);
             }
-            if !done.restored.is_empty() {
+            if !done.restored.is_empty() || !done.moved.is_empty() {
                 self.run.restored = done.restored.clone();
+                self.run.moved = done.moved.clone();
                 if let Some(dir) = &done.saved_in {
-                    let problem = restored_problem(&done.restored, dir);
+                    let problem = restored_problem(&done.restored, &done.moved, dir);
                     let mut ids = self.followers.lock().unwrap().clone();
                     ids.push(self.check_id.clone());
                     ids.sort();

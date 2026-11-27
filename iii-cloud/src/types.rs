@@ -319,6 +319,12 @@ pub struct HandoffResponse {
     /// True: an equal hand-off was already open (a double click), and this is it.
     #[serde(default)]
     pub reused: bool,
+    /// With `reused`: the worker sent the open hand-off's agent on (the same "continue" as after a
+    /// person's check: the newest check's blocking problems of the agent's, and its failed run).
+    /// False: nothing was sent (it works, asks the person something, or has nothing open).
+    /// Absent for a new hand-off.
+    #[serde(default)]
+    pub sent: Option<bool>,
 }
 
 /// `iii-cloud::handoff::stop` input.
@@ -1135,6 +1141,13 @@ pub struct Run {
     /// (at most 500; their rewritten versions are kept in the run's `left/` folder).
     #[serde(default)]
     pub restored: Vec<String>,
+    /// The untracked files the run created, moved out of the copy into the run's `left/` folder
+    /// when it ended (at most 500).
+    #[serde(default)]
+    pub moved: Vec<String>,
+    /// The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).
+    #[serde(default)]
+    pub log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

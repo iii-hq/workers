@@ -277,7 +277,28 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
                 .cloned()
         })
     });
+    // The same kind already exists and its agent is not working (it ended its turn, waits on a
+    // wake, or stalled): that one is reused, and sent on.
+    let same = same.or_else(|| {
+        ctx.store.read(|s| {
+            s.handoffs
+                .iter()
+                .find(|h| {
+                    h.environment_id == sel.env.id
+                        && h.kind == request.kind
+                        && h.deployment_id == request.deployment_id
+                        && h.agent.session_id.is_some()
+                        && match h.agent.state {
+                            AgentPhase::Done => !retired(ctx, h),
+                            AgentPhase::WaitingForYou | AgentPhase::Stalled => true,
+                            _ => false,
+                        }
+                })
+                .cloned()
+        })
+    });
     if let Some(h) = same {
+        let sent = send_on(ctx, &h).await;
         let delivered = match (&h.agent.session_id, request.text.as_deref()) {
             (Some(session), Some(text)) => {
                 deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
@@ -304,6 +325,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
             delivered,
             session_id: h.agent.session_id,
             reused: true,
+            sent: Some(sent),
         });
     }
     let (mut workspace_path, mut branch, checkout, source) = ctx.store.read(|s| {
@@ -400,6 +422,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         delivered: delivered_to.is_some(),
         session_id: delivered_to,
         reused: false,
+        sent: None,
     })
 }
 
@@ -977,6 +1000,35 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             Err(()) => return Poll::Continue,
         }
     }
+    // The agent ended its turn with no wake, and the person's own check left something of the
+    // agent's: it hears it now (the Done branch judges only the hand-off's own checks).
+    let mut person_sent = false;
+    if phase == AgentPhase::Done
+        && waiting_for.is_none()
+        && !confirm_pending
+        && matches!(handoff.kind, HandoffKind::Ready | HandoffKind::DeployFix)
+        && let Some(check_id) = handoff
+            .person_check
+            .clone()
+            .filter(|c| handoff.person_check_told.as_deref() != Some(c.as_str()))
+    {
+        let lines = person_check_lines(ctx, &check_id);
+        let refused_lately = continuing && handoff.continue_refused;
+        let sent = match &lines {
+            None => Continue::Refused,
+            Some(mine) if mine.is_empty() => Continue::Spent,
+            Some(_) if refused_lately => Continue::Refused,
+            Some(mine) => send_continue(ctx, &handoff, &session, mine, &secrets, None).await,
+        };
+        if lines.is_some() && sent != Continue::Refused {
+            ctx.store.update(|s| {
+                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                    h.person_check_told = Some(check_id.clone());
+                }
+            });
+        }
+        person_sent = sent == Continue::Sent;
+    }
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
         // A check the person started ended while the agent waits: what it owns goes to
@@ -1035,6 +1087,9 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         if queued {
             phase = AgentPhase::Working;
         }
+    } else if person_sent {
+        // Our "continue" is queued: the turn has not begun yet.
+        phase = AgentPhase::Working;
     } else if phase == AgentPhase::Done && continuing {
         if handoff.continue_refused {
             // The chat refused our "continue"; the page can say so and point at the chat.
@@ -1413,18 +1468,66 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
     })
 }
 
-/// A check the person started on a hand-off's worktree has ended: when the agent
-/// waits on a wake, the poll tells it what it owns (`person_check_lines`). Called
-/// where the check ends (`check::check`, a request with no hand-off).
+/// An existing hand-off's agent is not working and the person asks again: send it on with what
+/// the newest check of the environment leaves it (its blocking problems and its failed run).
+/// Nothing for an agent that works, one with a real ask of its own open (the person owes an
+/// answer first), one with nothing open, or a check whose run still goes. Whether it went.
+async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
+    let idle = match h.agent.state {
+        AgentPhase::Waiting | AgentPhase::Done | AgentPhase::Stalled => true,
+        AgentPhase::WaitingForYou => h.agent.question_source != Some(QuestionSource::Agent),
+        _ => false,
+    };
+    let Some(session) = h.agent.session_id.clone().filter(|_| idle) else {
+        return false;
+    };
+    let Some(check_id) = ctx.store.read(|s| {
+        s.check
+            .iter()
+            .chain(s.checks.iter())
+            .find(|c| c.environment_id == h.environment_id)
+            .map(|c| c.id.clone())
+    }) else {
+        return false;
+    };
+    let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
+        return false;
+    };
+    let sent =
+        send_continue(ctx, h, &session, &lines, &env_values(ctx), None).await == Continue::Sent;
+    if sent {
+        // The poll must not send the same check again.
+        ctx.store.update(|s| {
+            if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
+                h2.person_check_told = Some(check_id.clone());
+            }
+        });
+    }
+    sent
+}
+
+/// A check the person started on a hand-off's worktree has ended: when the agent is not
+/// working, the poll tells it what it owns (`person_check_lines`). Called where the check
+/// ends (`check::check`, a request with no hand-off). The agent is not working when it waits on
+/// a wake, is stalled inside a refused continue's grace with one armed, ended its turn
+/// (`Done`), or waits with the worker's own text about the check (`question_source: check`). A
+/// real ask of the agent's is not overridden: the person owes an answer first. Not for a
+/// hand-off the person stopped, one that is retired, or one at its cap of continues.
 pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path) {
     let path = workspace.to_string_lossy().into_owned();
+    let idle = |h: &Handoff| match h.agent.state {
+        AgentPhase::Waiting | AgentPhase::Done => true,
+        AgentPhase::Stalled => h.agent.waiting_for.is_some(),
+        AgentPhase::WaitingForYou => h.agent.question_source == Some(QuestionSource::Check),
+        _ => false,
+    };
     ctx.store.update(|s| {
         if let Some(h) = s.handoffs.iter_mut().find(|h| {
             h.environment_id == check.environment_id
                 && h.workspace_path == path
-                // Waiting on a wake; or stalled inside a refused continue's grace with one armed.
-                && (h.agent.state == AgentPhase::Waiting
-                    || (h.agent.state == AgentPhase::Stalled && h.agent.waiting_for.is_some()))
+                && idle(h)
+                && !retired(ctx, h)
+                && h.continues < MAX_CONTINUES
         }) {
             h.person_check = Some(check.id.clone());
         }

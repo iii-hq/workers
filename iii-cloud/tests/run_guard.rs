@@ -1216,9 +1216,40 @@ async fn a_second_run_names_its_own_restore_not_the_one_before() {
         notices.push((n[0].detail.clone().unwrap(), run.id));
     }
     assert!(
-        notices[1].0.starts_with("b.yaml") && notices[1].0.contains(&notices[1].1),
+        notices[1].0.starts_with("Put back as committed: b.yaml")
+            && notices[1].0.contains(&notices[1].1),
         "{}",
         notices[1].0
     );
     assert!(!notices[1].0.contains("a.yaml"));
+}
+
+#[tokio::test]
+async fn a_passed_run_that_made_data_leaves_a_clean_copy_and_stays_the_runs_proof() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+    });
+    let bin = fake_iii(&h, "mkdir -p api/data; printf '{}' > api/data/queue.json;");
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ALL);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.status, RunStatus::Passed, "{:?}", run.error);
+    assert_eq!(run.moved, vec!["api/data/queue.json"]);
+    // The copy is as it was, and the run proves the commit itself (not `+dirty`).
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+    assert_eq!(run.commit, git(&ws, &["rev-parse", "HEAD"]));
+}
+
+#[tokio::test]
+async fn a_run_says_where_its_whole_log_is() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, "containers: {}\nengine: nope\n").await;
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    let expected = h.dir.path().join("data/runs").join(&run.id).join("run.log");
+    assert_eq!(run.log_path.as_deref(), Some(expected.to_str().unwrap()));
+    assert!(expected.exists(), "the file the path names is there");
 }

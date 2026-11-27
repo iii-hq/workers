@@ -197,6 +197,8 @@ fn passed_run(commit: &str) -> Run {
         reused: false,
         waiting_on: None,
         restored: vec![],
+        moved: vec![],
+        log_path: None,
     }
 }
 
@@ -1710,4 +1712,45 @@ fn a_command_the_runtimes_image_does_not_have_is_found_in_the_run_and_release_co
             .iter()
             .all(|p| p.code != "RUN_COMMAND_NOT_IN_IMAGE")
     );
+}
+
+#[test]
+fn a_command_that_prints_the_environment_is_a_problem() {
+    use iii_cloud::local::prints_environment;
+    for yes in [
+        "env",
+        "printenv",
+        "printenv DATABASE_URL",
+        "set",
+        "export -p",
+        "pnpm build && env",
+        "FOO=1 exec printenv | sort",
+    ] {
+        assert!(prints_environment(yes).is_some(), "{yes}");
+    }
+    for no in [
+        "env FOO=1 node x.js",
+        "node env.js",
+        "set -e",
+        "export FOO=1",
+        "pnpm env use",
+        "echo env",
+    ] {
+        assert!(prints_environment(no).is_none(), "{no}");
+    }
+    // In the compose file: a run script, the release command tied to a worker, the build command.
+    let ws = tempfile::tempdir().unwrap();
+    write(ws.path(), "package-lock.json", "{}");
+    write(
+        ws.path(),
+        "workers/api/iii.worker.yaml",
+        "language: typescript\n",
+    );
+    let compose = "containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: printenv\ncloud:\n  build:\n    command: env\n  release:\n    worker: api\n    command: set\n";
+    let titles: Vec<String> = local(ws.path(), compose, None)
+        .into_iter()
+        .filter(|p| p.code == "COMMAND_PRINTS_ENVIRONMENT")
+        .map(|p| p.title)
+        .collect();
+    assert_eq!(titles.len(), 3, "{titles:?}");
 }

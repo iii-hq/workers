@@ -1294,14 +1294,15 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         ));
     }
     // The tracked files the last run rewrote and the worker put back: said once per check.
-    if let Some((restored, Some(dir))) = ctx.store.read(|s| {
+    if let Some((restored, moved, Some(dir))) = ctx.store.read(|s| {
         s.run_wrote
             .get(&sel.workspace.to_string_lossy().into_owned())
-            .map(|w| (w.restored.clone(), w.left_dir.clone()))
-    }) && !restored.is_empty()
+            .map(|w| (w.restored.clone(), w.moved.clone(), w.left_dir.clone()))
+    }) && !(restored.is_empty() && moved.is_empty())
     {
         here_problems.push(crate::run::restored_problem(
             &restored,
+            &moved,
             std::path::Path::new(&dir),
         ));
     }
