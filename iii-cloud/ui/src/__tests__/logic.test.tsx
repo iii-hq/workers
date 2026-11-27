@@ -36,11 +36,11 @@ usePage()
 
 describe('how an environment deploys', () => {
   it('follows the cases the worker reads too', () => {
-    expect(wayCases.length).toBeGreaterThanOrEqual(8)
+    expect(wayCases.length).toBeGreaterThanOrEqual(11)
     for (const c of wayCases) {
       const others = c.others.map((branch, i) => ({ name: `other-${i}`, branch }))
       const got = deployWay(c.default, c.env, [c.env, ...others])
-      expect(got, c.case).toEqual(c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own })
+      expect(got, c.case).toEqual(c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own, taken: c.taken })
     }
   })
 })

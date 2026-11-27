@@ -1071,7 +1071,12 @@ pub async fn default_branch_of(top: &Path, known: Option<&str>) -> Option<String
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Way {
     PullRequest,
-    Assisted { own: Option<String> },
+    /// `taken`: the branch it would push (`own`, else its own current one) is
+    /// followed by another environment, so nothing may be pushed to it.
+    Assisted {
+        own: Option<String>,
+        taken: bool,
+    },
 }
 
 /// The branch an environment's assisted deploys push to.
@@ -1081,7 +1086,8 @@ pub fn own_branch(name: &str) -> String {
 
 /// `others`: the branches the project's other environments follow. A branch
 /// that is the default, shared, or whose default is unknown is never pushed:
-/// the environment gets its own. Mirrored by `deployWay` in `ui/src/model.ts`.
+/// the environment gets its own, and when another environment follows that one
+/// too, nothing is pushed at all (`taken`). Mirrored by `deployWay` in `ui/src/model.ts`.
 pub fn deploy_way(default: Option<&str>, env: &EnvironmentInfo, others: &[String]) -> Way {
     if env.production {
         return Way::PullRequest;
@@ -1089,7 +1095,9 @@ pub fn deploy_way(default: Option<&str>, env: &EnvironmentInfo, others: &[String
     let own = own_branch(&env.name);
     let moves = env.branch != own
         && (default.is_none_or(|d| d == env.branch) || others.contains(&env.branch));
+    let target = if moves { &own } else { &env.branch };
     Way::Assisted {
+        taken: others.contains(target),
         own: moves.then_some(own),
     }
 }

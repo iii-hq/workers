@@ -4275,3 +4275,44 @@ async fn an_older_running_deployment_of_the_commit_is_not_cancelled_when_the_pla
     );
     assert!(f.log().iter().any(|l| l == "switch to worker-compose.yaml"));
 }
+
+#[tokio::test]
+async fn a_branch_another_environment_follows_is_never_pushed_even_as_the_own_branch() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    // `qa` (once `test`) still follows the branch this environment would take as its own.
+    s.h.ctx.store.update(|st| {
+        st.project.as_mut().unwrap().environments = vec![EnvironmentBrief {
+            id: "qa".into(),
+            name: "qa".into(),
+            production: false,
+            branch: OWN.into(),
+        }];
+    });
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "OWN_BRANCH_TAKEN");
+    assert!(
+        err.message.contains("followed by qa") && err.message.ends_with("Nothing changed."),
+        "{}",
+        err.message
+    );
+    assert!(origin_branch(&s, OWN).is_none() && f.log().is_empty());
+}
+
+#[tokio::test]
+async fn an_older_checked_commit_on_the_own_branch_is_fast_forwarded() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    // An earlier attempt pushed the base (an ancestor of the checked commit).
+    git(&s.repo.origin, &["branch", OWN, &s.check.base]);
+    list_of_commit(&s, &f, Some("queued")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
+}

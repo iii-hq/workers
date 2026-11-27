@@ -861,16 +861,34 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                             format!("Could not read {} from iii cloud. Try again.", sel.env.name),
                         )
                     })?;
-                let others = ctx.store.read(|s| {
+                let others: Vec<(String, String)> = ctx.store.read(|s| {
                     s.project.as_ref().map_or(vec![], |p| {
                         p.environments
                             .iter()
                             .filter(|e| e.id != sel.env.id)
-                            .map(|e| e.branch.clone())
+                            .map(|e| (e.name.clone(), e.branch.clone()))
                             .collect()
                     })
                 });
-                deploy_way(default.as_deref(), &sel.env, &others)
+                let branches: Vec<String> = others.iter().map(|(_, b)| b.clone()).collect();
+                let way = deploy_way(default.as_deref(), &sel.env, &branches);
+                // Another environment follows the branch this one would push: a push
+                // there would deploy an unchecked commit to it.
+                if let Way::Assisted { own, taken: true } = &way {
+                    let target = own.as_deref().unwrap_or(&sel.env.branch);
+                    let who = others
+                        .iter()
+                        .find(|(_, b)| b == target)
+                        .map_or("another environment", |(n, _)| n.as_str());
+                    return Err(CloudError::new(
+                        "OWN_BRANCH_TAKEN",
+                        format!(
+                            "{target} is followed by {who}, so {} can't push it. Set {}'s branch (or {who}'s) in iii cloud. Nothing changed.",
+                            sel.env.name, sel.env.name
+                        ),
+                    ));
+                }
+                way
             };
             if way != Way::PullRequest {
                 old = commit_deployments(ctx, &base, &check.commit).await?;
@@ -879,7 +897,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 // The first assisted deploy of an environment on a branch it must
                 // not push: the checked commit goes to its own new branch, the
                 // environment follows it, and only then is anything deployed.
-                Way::Assisted { own: Some(own) } => {
+                Way::Assisted { own: Some(own), .. } => {
                     let from = sel.env.branch.clone();
                     if ctx.conn().await.method == Some(Method::ApiKey) {
                         return Err(CloudError::new(

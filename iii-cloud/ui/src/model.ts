@@ -575,10 +575,11 @@ export const ownBranch = (name: string) => `iii-cloud/${name}`
 /**
  * How an environment gets a deploy, from production alone (`project::deploy_way`; both read
  * `tests/fixtures/deploy-way.json`). `own` is the branch an assisted environment moves to on its first deploy:
- * its branch is the default one, one another environment follows, or the default is unknown. `envs` is the
+ * its branch is the default one, one another environment follows, or the default is unknown. `taken`: another
+ * environment follows the branch it would push, so nothing is pushed. `envs` is the
  * project's environments, this one included.
  */
-export type DeployWay = { way: 'pull_request' } | { way: 'assisted'; own: string | null }
+export type DeployWay = { way: 'pull_request' } | { way: 'assisted'; own: string | null; taken: boolean }
 export function deployWay(
   base: string | null,
   env: { name: string; production: boolean; branch: string },
@@ -588,7 +589,9 @@ export function deployWay(
   const own = ownBranch(env.name)
   const shared = envs.some((e) => e.name !== env.name && e.branch === env.branch)
   const moves = env.branch !== own && (base === null || base === env.branch || shared)
-  return { way: 'assisted', own: moves ? own : null }
+  const target = moves ? own : env.branch
+  const taken = envs.some((e) => e.name !== env.name && e.branch === target)
+  return { way: 'assisted', own: moves ? own : null, taken }
 }
 
 /** How the environment gets a deploy, decided from production alone (never from the hand-off's brief). */

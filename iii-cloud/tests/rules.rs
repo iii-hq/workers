@@ -1556,7 +1556,7 @@ fn an_environment_deploys_by_pull_request_only_in_production() {
         .unwrap(),
     )
     .unwrap();
-    assert!(cases.len() >= 8);
+    assert!(cases.len() >= 11);
     for c in cases {
         let e = &c["env"];
         let env = EnvironmentInfo {
@@ -1577,6 +1577,7 @@ fn an_environment_deploys_by_pull_request_only_in_production() {
             "pull_request" => Way::PullRequest,
             _ => Way::Assisted {
                 own: c["own"].as_str().map(str::to_owned),
+                taken: c["taken"].as_bool().unwrap(),
             },
         };
         assert_eq!(
