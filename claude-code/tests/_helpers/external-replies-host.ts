@@ -28,6 +28,32 @@ export function record(n: number, parent: number | null, type: string, content: 
     message: { role: type, content },
   };
 }
+/**
+ * The record the CLI writes when it compacts a conversation. It normally has
+ * no `parentUuid`; `logicalParentUuid` names the last record before it.
+ */
+export function compactBoundary(n: number, logical: number, parent: number | null = null) {
+  return {
+    type: 'system',
+    subtype: 'compact_boundary',
+    uuid: recordId(n),
+    parentUuid: parent === null ? null : recordId(parent),
+    logicalParentUuid: recordId(logical),
+    isSidechain: false,
+    isMeta: false,
+    level: 'info',
+    content: 'Conversation compacted',
+    compactMetadata: { trigger: 'auto', preTokens: 1000 },
+  };
+}
+/** The hidden summary the CLI writes right after a compaction boundary. */
+export function compactSummary(n: number, parent: number) {
+  return {
+    ...record(n, parent, 'user', 'synthetic compact summary'),
+    isCompactSummary: true,
+    isVisibleInTranscriptOnly: true,
+  };
+}
 
 export const MiB = 1024 * 1024;
 /** One newline-terminated annotation record of exactly `bytes` bytes. */

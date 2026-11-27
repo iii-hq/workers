@@ -15,6 +15,8 @@ import { context, trace } from '@opentelemetry/api';
 import { registerWorker } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  compactBoundary,
+  compactSummary,
   deferred,
   filler,
   id,
@@ -605,6 +607,160 @@ describe('large transcripts and new CLI records', () => {
         await expect(observe(s, 'unknown')).rejects.toThrow(/^transcript unavailable$/);
       }
       expect(s.timers.size).toBe(0);
+    });
+  });
+});
+
+describe('compacted sessions and long lines', () => {
+  const prompt = (n: number, parent: number | null, text = 'synthetic prompt') =>
+    record(n, parent, 'user', text);
+  /** A conversation answered once, then compacted (records 1 to 4). */
+  const compacted = (linked = false) =>
+    lines(
+      prompt(1, null, 'early prompt'),
+      answer(2, 1, 'before compaction'),
+      compactBoundary(3, 2, linked ? 2 : null),
+      compactSummary(4, 3),
+    );
+  const toolResult = (n: number, parent: number, bytes: number) =>
+    record(n, parent, 'user', [
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: 'r'.repeat(bytes) },
+    ]);
+
+  it('returns the last reply written after a compaction boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() + lines(prompt(5, 4), answer(6, 5, 'after compaction'), answer(7, 5, 'other')),
+      );
+      await appendFile(s.file, lines(answer(8, 6, 'latest after compaction')));
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(8),
+        text: 'latest after compaction',
+      });
+      expect(s.host.snapshots.join('')).not.toMatch(/before compaction|early prompt/);
+    });
+  });
+
+  it('ends the active chain at a boundary whose parentUuid points before the compaction', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted(true) + lines(prompt(5, 4)));
+      expect((await lookup(s)).last_reply).toBeNull();
+      await appendFile(s.file, lines(answer(6, 5, 'after compaction')));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(6), text: 'after compaction' });
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it('returns no reply when nothing was answered since the latest compaction', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() +
+          lines(
+            prompt(5, 4),
+            answer(6, 5, 'between compactions'),
+            compactBoundary(7, 6),
+            compactSummary(8, 7),
+            prompt(9, 8),
+            record(10, 9, 'assistant', [
+              { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} },
+            ]),
+            toolResult(11, 10, 16),
+          ),
+      );
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toMatch(/compaction/);
+    });
+  });
+
+  it('returns no reply when the boundary or its hidden summary is the newest chain record', async () => {
+    await withSyntheticHost(async (s) => {
+      const before = lines(prompt(1, null), answer(2, 1, 'before compaction'));
+      await writeFile(s.file, before + lines(compactBoundary(3, 2)));
+      expect((await lookup(s)).last_reply).toBeNull();
+      await appendFile(s.file, lines(compactSummary(4, 3)));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it('delivers each reply after a compaction once, in order, and none from before admission', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'early');
+      await appendFile(s.file, lines(answer(2, 1, 'before compaction')));
+      await s.poll();
+      await appendFile(
+        s.file,
+        lines(
+          compactBoundary(3, 2),
+          compactSummary(4, 3),
+          prompt(5, 4),
+          answer(6, 5, 'first after'),
+          answer(7, 6, 'second after'),
+        ),
+      );
+      await observe(s, 'late');
+      await s.poll();
+      await appendFile(s.file, lines(answer(8, 7, 'third after')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'early')).toEqual([
+        { id: recordId(2), text: 'before compaction' },
+        { id: recordId(6), text: 'first after' },
+        { id: recordId(7), text: 'second after' },
+        { id: recordId(8), text: 'third after' },
+      ]);
+      expect(seen(s, 'late')).toEqual([{ id: recordId(8), text: 'third after' }]);
+    });
+  });
+
+  it('does not deliver a reply left behind by a compaction that landed before delivery', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'race');
+      await appendFile(s.file, lines(answer(2, 1, 'undelivered before compaction')));
+      await appendFile(
+        s.file,
+        lines(compactBoundary(3, 2, 2), compactSummary(4, 3), prompt(5, 4)) +
+          lines(answer(6, 5, 'after compaction')),
+      );
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'race')).toEqual([{ id: recordId(6), text: 'after compaction' }]);
+      expect(s.host.snapshots.join('')).not.toContain('undelivered');
+    });
+  });
+
+  it('returns the last reply past a 3 MiB tool result line, for lookup and a watcher', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript({ content: 'r'.repeat(3 * MiB) }));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      await observe(s, 'long');
+      await appendFile(s.file, lines(toolResult(5, 4, 3 * MiB), answer(6, 5, 'after long line')));
+      await s.poll();
+      expect(seen(s, 'long')).toEqual([{ id: recordId(6), text: 'after long line' }]);
+    });
+  });
+
+  it('ignores a trailing partial line over 1 MiB that is still being written', async () => {
+    await withSyntheticHost(async (s) => {
+      const partial = JSON.stringify(toolResult(5, 4, 2 * MiB));
+      await writeFile(s.file, toolResultTranscript({}) + partial);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      await appendFile(s.file, '\n' + lines(answer(6, 5, 'after completion')));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(6), text: 'after completion' });
+    });
+  });
+
+  it('fails closed on a complete line longer than the 8 MiB window', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(prompt(1, null), answer(2, 1, 'earlier answer'), toolResult(3, 2, 9 * MiB)),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(9 * MiB);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
     });
   });
 });

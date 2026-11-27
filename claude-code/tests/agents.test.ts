@@ -4,6 +4,8 @@ import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '..
 import { observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
+  compactBoundary,
+  compactSummary,
   deferred,
   filler,
   MiB,
@@ -1063,6 +1065,45 @@ describe('claude::agents::follow-snapshot', () => {
         replies: [],
         last_reply: page.last_reply,
       });
+    });
+  });
+  it('returns the replies written after a compaction boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string; text: string } | null;
+          replies: Array<{ id: string; text: string }>;
+        }>;
+      const rows = (...records: unknown[]) => records.map((r) => `${JSON.stringify(r)}\n`).join('');
+      const first = await snapshot();
+      expect(first.last_reply).toEqual({ id: recordId(1), text: 'fixture answer' });
+      await appendFile(
+        s.file,
+        rows(
+          compactBoundary(2, 1),
+          compactSummary(3, 2),
+          transcriptRecord(4, 3, 'user', 'synthetic prompt'),
+        ),
+      );
+      const compacted = await snapshot(first.cursor);
+      expect(compacted).toMatchObject({ replies: [], last_reply: null });
+      await appendFile(
+        s.file,
+        rows(
+          transcriptRecord(5, 4, 'assistant', 'first after'),
+          transcriptRecord(6, 5, 'assistant', 'second after'),
+        ),
+      );
+      const page = await snapshot(compacted.cursor);
+      expect(page.replies).toEqual([
+        { id: recordId(5), text: 'first after' },
+        { id: recordId(6), text: 'second after' },
+      ]);
+      expect(page.last_reply).toEqual({ id: recordId(6), text: 'second after' });
     });
   });
 

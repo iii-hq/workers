@@ -22,7 +22,8 @@ from contextlib import ExitStack
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
-MAX_FILE, MAX_LINE, MAX_RESULT = 8 << 20, 1 << 20, 48 << 10
+# A complete record may be as long as the parsed window itself.
+MAX_FILE, MAX_RESULT = 8 << 20, 48 << 10
 
 # Standalone annotations do not move the conversation leaf. Unknown formats,
 # content replacements and layouts that require relinking are unsupported.
@@ -31,6 +32,11 @@ ANNOTATIONS = {'summary', 'metadata', 'file-history-snapshot', 'queue-operation'
                'last-prompt', 'mode', 'permission-mode', 'tag', 'pr-link', 'attribution-snapshot',
                'todo', 'worktree-state', 'tools-used', 'atis-latch', 'derived-from', 'relocated'}
 HIDDEN = ('isMeta', 'isCompactSummary', 'isVirtual', 'isVisibleInTranscriptOnly', 'isApiErrorMessage')
+
+# The CLI writes this record when it compacts a conversation. It starts the
+# chain the conversation continues on, so the active chain ends there.
+def compact_boundary(row):
+    return row['type'] == 'system' and row.get('subtype') == 'compact_boundary'
 
 def require(ok):
     if not ok:
@@ -184,10 +190,13 @@ def scan(sid, mode, previous):
         after = os.fstat(f.fileno())
         require(len(data) == total - lead and total == after.st_size and info.st_mtime_ns == after.st_mtime_ns)
     # File offsets are absolute; data starts at offset lead.
+    # A trailing line without its newline is still being written: ignore it.
     end = lead + data.rfind(b'\n') + 1
-    require(total - end <= MAX_LINE)
     windowed = total > MAX_FILE
     start = lead + data.index(b'\n') + 1 if windowed else 0
+    # A window without one complete record of its own is covered by a line
+    # longer than the window: fail closed, never report an earlier or empty chain.
+    require(not windowed or start < end)
     identity = str(info.st_dev) + ':' + str(info.st_ino)
     def digest_at(observed):
         if observed >= lead:
@@ -219,7 +228,7 @@ def scan(sid, mode, previous):
         if i == end - lead:
             break
         stop = data.index(b'\n', i) + 1
-        require(count < 65536 and stop - i <= MAX_LINE)
+        require(count < 65536)
         row = json.loads(data[i:stop].decode('utf-8'), parse_constant=reject_constant,
                          object_pairs_hook=unique_members)
         i = stop
@@ -232,14 +241,13 @@ def scan(sid, mode, previous):
             # chain node. An unknown record that can be one is unsupported.
             require('uuid' not in row)
             continue
-        require(row.get('subtype') != 'compact_boundary')
         key = row.get('uuid')
         require(isinstance(key, str) and UUID.fullmatch(key) and key not in nodes)
         side = row.get('isSidechain', False)
         require(isinstance(side, bool))
         nodes[key] = (row, lead + i)
-        if (kind in ('user', 'assistant') and not side and not row.get('teamName')
-                and not any(row.get(flag) for flag in HIDDEN)):
+        if not side and not row.get('teamName') and (compact_boundary(row) or (
+                kind in ('user', 'assistant') and not any(row.get(flag) for flag in HIDDEN))):
             leaf = key
     replies = []
     while leaf is not None:
@@ -248,7 +256,11 @@ def scan(sid, mode, previous):
         if row['type'] in ('assistant', 'user'):
             content = message_content(row, row['type'])
         parent = row['parentUuid']
-        if parent is not None and parent not in nodes:
+        if compact_boundary(row):
+            # Neither parentUuid nor logicalParentUuid crosses a compaction.
+            require(parent is None or (isinstance(parent, str) and UUID.fullmatch(parent)))
+            parent = None
+        elif parent is not None and parent not in nodes:
             # Only an ancestor before the parsed window may be absent: the
             # walk ends there. Otherwise a missing parent fails closed.
             require(windowed and isinstance(parent, str) and UUID.fullmatch(parent))
