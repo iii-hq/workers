@@ -172,13 +172,13 @@ export function deployLockReason(
 
 /**
  * A deployment iii cloud holds for confirmation that is not this machine's: the worker's own markers on the record
- * (a `check_id`, or the flag it sets when it approved or created it) say it started it, or its commit is the shown
- * check's (the deployment's screen matches a push by commit). Only a held one with neither is "elsewhere": it locks
- * nothing, and deploying replaces it. A held one that is ours is confirmed on its own screen.
+ * (a `check_id`, or the flag it sets when it approved or created it) say it started it. A matching commit proves
+ * nothing: a push by hand of the checked commit makes the check's base the branch head, and the worker refuses
+ * that Confirm as MAIN_MOVED. A held one without the markers is "elsewhere": it locks nothing, and deploying from
+ * the check replaces it. A held one that is ours is confirmed on its own screen.
  */
-export const heldElsewhere = (s: Status, d: Deploy) =>
-  needsAction(d) &&
-  !(d.check_id || d.approved_by_worker || d.from_console === false || (!!s.check && d.commit.sha === s.check.commit))
+export const heldElsewhere = (_s: Status, d: Deploy) =>
+  needsAction(d) && !(d.check_id || d.approved_by_worker || d.from_console === false)
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
 export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {

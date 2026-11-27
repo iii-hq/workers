@@ -26,6 +26,7 @@ import {
   checkPayload,
   deployLockReason,
   GoesSub,
+  heldElsewhere,
   retryPayload,
   ScreenHead,
   TypedConfirm,
@@ -443,8 +444,11 @@ function Follow({
       Date.parse(x.created_at) < Date.parse(d.created_at),
   )
   const c = status.check
-  // The deploy is of this check: its id when the deploy names one, else the same commit.
-  const ours = !!c && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
+  // The deploy is of this check: its id when the deploy names one, else the same commit. A held one counts only when
+  // the worker's own markers say this machine started it: a commit that matches proves nothing (a push by hand of the
+  // checked commit makes the check's base the branch head, and the worker refuses its Confirm as MAIN_MOVED).
+  const elsewhere = heldElsewhere(status, d)
+  const ours = !!c && !elsewhere && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
   const confirmable = !!c?.ready && ours
   const stage = d.failure?.stage ?? d.error?.stage ?? null
   const stageWords = stage ? `while ${WHILE[stage] ?? cloudStageLabel(stage).toLowerCase()}` : null
@@ -546,7 +550,18 @@ function Follow({
           }
         />
       ) : null}
-      {held ? (
+      {held && elsewhere ? (
+        <Notice
+          variant="info"
+          headline={`Deployment #${d.number} was not started from this machine`}
+          detail={`iii cloud holds it for confirmation, and nothing here can confirm it. Deploying from the check replaces it.`}
+          action={
+            <Button size="sm" variant="primary" onClick={() => go({ at: 'deploy', env: envId })}>
+              Go to the check
+            </Button>
+          }
+        />
+      ) : held ? (
         <Notice
           variant="warn"
           headline="Needs your action"

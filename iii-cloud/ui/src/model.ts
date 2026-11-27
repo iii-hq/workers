@@ -352,10 +352,11 @@ export const servingId = (s: Status, envId: string | undefined, cloud?: CloudDep
 
 /**
  * Whether iii cloud's list, read, may be hiding what serves the environment: it has a next page, or shows that
- * something was once ready (a `ready` or `replaced` row). Otherwise nothing is live: say so.
+ * something was ready (a `ready` row; a `replaced` one never served: iii cloud replaces only a deployment that was
+ * waiting for confirmation). Otherwise nothing is live: say so.
  */
 export const listMayHideServing = (l: DeploymentList): boolean =>
-  !!l.next_cursor || l.deployments.some((d) => d.status === 'ready' || d.status === 'replaced')
+  !!l.next_cursor || l.deployments.some((d) => d.status === 'ready')
 
 /**
  * The deployment serving an environment, by iii cloud's list, for text that names it ("dev serves #5"). Until the
@@ -395,7 +396,7 @@ export function liveOf(list: CloudDeployment[] | null | undefined): Live | null 
   if (current) return { label: 'Live', tone: 'ok', sha: current.commit.sha }
   // No current row, but something was live (a rollback to a deployment beyond the list's first page): the same rule
   // as `listMayHideServing`; it is live, and the list can't say which.
-  if (list.some((d) => d.status === 'ready' || d.status === 'replaced')) return { label: 'Live', tone: 'ok', sha: null }
+  if (list.some((d) => d.status === 'ready')) return { label: 'Live', tone: 'ok', sha: null }
   return { label: 'Nothing live yet', tone: 'ghost', sha: null }
 }
 

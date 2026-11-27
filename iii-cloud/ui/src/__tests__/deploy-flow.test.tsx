@@ -437,6 +437,25 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     expect(text()).not.toContain('Commit something first')
   })
 
+  it('a held push matched to the check by commit alone is not confirmable: no Confirm, it says so, and the action goes to the check', async () => {
+    const s = boards['deploy-review'].status
+    // No worker marker (no check_id, not approved, from the console), but the deployed commit is the ready check's.
+    const byHand = {
+      ...held,
+      check_id: null,
+      approved_by_worker: false,
+      from_console: true,
+      commit: { sha: s.check!.commit, message: 'pushed by hand' },
+    }
+    await mount({ ...s, deploys: [byHand, serving5] }, ctx({ ...route, deploy: 'dep-6' }))
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(text()).toContain('Deployment #6 was not started from this machine')
+    expect(text()).toContain('Deploying from the check replaces it.')
+    await click(btn('Go to the check'))
+    expect(path()).toBe('Projects / registry · dev / Deploy')
+    expect(title()).toBe('Ready to deploy to dev')
+  })
+
   it('Confirm deploy is off for every lock: signed out, a deploy-fix hand-off, another deployment running', async () => {
     const s = boards['deploy-review'].status
     const confirm = () => btn('Confirm deploy') as HTMLButtonElement | null

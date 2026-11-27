@@ -683,7 +683,7 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(primary?.hasAttribute('disabled')).toBe(false)
   })
 
-  it("a held deployment that IS this machine's (its merge, its check_id, the worker's flag, or the shown check's commit) is not 'elsewhere'", async () => {
+  it("a held deployment is this machine's only by the worker's markers (check_id, approved, created); a pr or the check's commit alone is elsewhere", async () => {
     const s = B('deploy-passed')
     const base = {
       status: 'needs_action' as const,
@@ -697,12 +697,29 @@ describe('the review: what a check that is not ready still offers', () => {
       'its merge (pr and check_id)': { ...base, pr: 5, check_id: s.check!.id },
       'the worker approved it': { ...base, approved_by_worker: true },
       'the worker created it': { ...base, from_console: false },
-      "the shown check's commit (a push by hand)": { ...base, commit: { sha: s.check!.commit, message: 'm' } },
     }
+    // Ours: it counts as going. The screen follows it by its number, and Deploy waits for it.
     for (const [why, over] of Object.entries(ours)) {
       await stage({ ...s, deploys: [runningOf(s, { id: 'dep-held', number: 11, ...over }), ...s.deploys] })
+      expect(btn('Follow #11'), why).toBeTruthy()
       expect(text(), why).not.toContain('is waiting for confirmation in iii cloud')
-      expect(text(), why).not.toContain("can't be confirmed here")
+      expect(
+        deployButtons().every((b) => b.hasAttribute('disabled')),
+        why,
+      ).toBe(true)
+    }
+    // Elsewhere: a merge's `pr` with no worker marker, or a push whose commit is the shown check's (a push by hand,
+    // which the worker would refuse to confirm as MAIN_MOVED): nothing to follow, Deploy is open, it says it replaces it.
+    const elsewhere: Record<string, object> = {
+      'a pr with no worker marker': { ...base, pr: 5 },
+      "the shown check's commit (a push by hand)": { ...base, commit: { sha: s.check!.commit, message: 'm' } },
+    }
+    for (const [why, over] of Object.entries(elsewhere)) {
+      await stage({ ...s, deploys: [runningOf(s, { id: 'dep-held', number: 11, ...over }), ...s.deploys] })
+      expect(text(), why).toContain('Deployment #11 is waiting for confirmation in iii cloud')
+      expect(btn('Follow #11'), why).toBeNull()
+      const primary = deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? ''))
+      expect(primary?.hasAttribute('disabled'), why).toBe(false)
     }
   })
 
@@ -795,7 +812,10 @@ describe('the review: what a check that is not ready still offers', () => {
       cloudAnswers({ [apiPath('/deployments', DEV.id)]: { deployments, next_cursor } })
     await stage(s, list([row('failed')]))
     expect(text()).toContain('Nothing is live on dev yet.')
-    await stage(s, list([row('failed'), row('replaced')]))
+    // A replaced row never served (iii cloud replaces only a deployment that was waiting for confirmation).
+    await stage(s, list([row('canceled'), row('replaced')]))
+    expect(text()).toContain('Nothing is live on dev yet.')
+    await stage(s, list([row('failed'), row('ready')]))
     expect(text()).toContain("serves a deployment iii cloud's list does not show")
     await stage(s, list([row('failed')], 'next-page'))
     expect(text()).toContain("serves a deployment iii cloud's list does not show")

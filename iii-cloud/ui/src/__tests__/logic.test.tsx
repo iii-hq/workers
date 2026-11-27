@@ -621,7 +621,9 @@ describe('the hub keeps what a page that is gone cannot', () => {
   it('liveOf: no current row but something was live (a rollback beyond the first page) is Live with no sha; only failed rows is nothing live', () => {
     const row = (status: string) =>
       ({ id: 'x', number: 1, status, current: false, commit: { sha: 'abc' } }) as unknown as CloudDeployment
-    expect(liveOf([row('replaced')])).toMatchObject({ label: 'Live', sha: null })
+    // A replaced row never served: push #1 waits, push #2 replaces it, #2 is canceled: nothing is live.
+    expect(liveOf([row('canceled'), row('replaced')])).toMatchObject({ label: 'Nothing live yet' })
+    expect(liveOf([row('replaced')])).toMatchObject({ label: 'Nothing live yet' })
     expect(liveOf([row('ready')])).toMatchObject({ label: 'Live', sha: null })
     expect(liveOf([row('failed')])).toMatchObject({ label: 'Last deployment failed' })
     expect(liveOf([row('canceled')])).toMatchObject({ label: 'Nothing live yet' })
