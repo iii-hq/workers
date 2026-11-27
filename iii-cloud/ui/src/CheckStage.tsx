@@ -919,7 +919,7 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
               : null,
           typical ? `It takes about ${minutesLabel(typical)}${range ? `; the last deploys took ${range}` : ''}.` : null,
           "Only you can confirm this; your agent can't.",
-          'A new commit before you confirm runs the check again.',
+          'A new commit before you confirm needs a new check.',
         ]
           .filter(Boolean)
           .join(' ')}

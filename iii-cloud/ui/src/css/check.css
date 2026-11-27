@@ -715,3 +715,17 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-vals .iii-cloud-cs-sub {
   font-size: 12px;
 }
+
+/* A phone: the Change panel's label sits over its choices, and a compose file's path wraps instead of being cut. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-crow {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-clabel {
+  padding-top: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-choices [role='radio'] {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

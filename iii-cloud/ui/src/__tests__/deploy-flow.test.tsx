@@ -375,6 +375,18 @@ describe('the deployment', () => {
     })
   })
 
+  it('the first stage says "pushed" only when this page started the deployment', async () => {
+    await board('deploy-follow-running')
+    const first = () => el.querySelector('[aria-label="Deployment stages"] li')?.textContent ?? ''
+    expect(first()).toContain("Pushed 9c04e7f to dev's branch and started #6")
+    // A deployment made in the console (no mark of this page) pushed nothing.
+    const s = boards['deploy-follow-running'].status
+    const hand = { ...s.deploys[0], check_id: null, approved_by_worker: false, from_console: true, type: 'redeploy' }
+    await mount({ ...s, deploys: [hand, ...s.deploys.slice(1)] }, ctx({ ...route, deploy: hand.id }))
+    expect(first()).toContain('Deployment #6 of 9c04e7f started')
+    expect(first()).not.toContain('Pushed')
+  })
+
   it('the stages say Deployments, never Deploys', async () => {
     await board('deploy-follow-live')
     expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)
@@ -406,10 +418,13 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
 
   it("1. a plan with blocking problems: can't start, fix or check, no Confirm, cancel with the confirm", async () => {
     const h = await mount(status(blocked), at, {
+      ...cloudList(),
       'iii-cloud::handoff': { id: 'ho-5', marker: '[iii-cloud handoff ho-5]', delivered: false },
       'iii-cloud::api::write': { status: 202, body: {} },
       'iii-cloud::check': {},
     })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe("Deployment #6 can't start as it is")
     const t = text()
     expect(t).toContain(`iii cloud's plan for ${sha(blocked)} has blocking problems`)
@@ -427,7 +442,10 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
     expect(region('Deployment stages')?.textContent).toContain('The plan has 3 blocking issues')
     expect(links()).toContainEqual(['Open it in iii cloud', blocked.console_url])
     await click(btn('Check dev here'))
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({
+      run: true,
+      manifest: 'api/worker-compose-prod.yaml',
+    })
     await click(btn('Cancel deployment #6'))
     expect(text()).toContain('dev keeps serving #5.')
     await click([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Cancel deployment #6').at(-1))
@@ -446,15 +464,60 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
 
   it('2. held and a passed check of that commit: Confirm deploy is the one primary, with Cancel and the console link', async () => {
     await mount(status(heldBase), at, { 'iii-cloud::deploy': {} })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe('Deployment #6 needs your action')
     expect(primaries()).toEqual(['Confirm deploy'])
     expect(btn('Cancel deployment #6')).toBeTruthy()
     expect(links()).toContainEqual(['Open it in iii cloud', heldBase.console_url])
   })
 
-  it('3. held with no passed check of that commit: check it first, no Confirm, approve or cancel in the links', async () => {
+  it('3b. started here, its check no longer the newest: a passed check of the same commit confirms it again', async () => {
+    const mine = { ...heldBase, check_id: 'chk-older', approved_by_worker: true }
+    await mount(status(mine), at, { 'iii-cloud::deploy': {} })
+    expect(title()).toBe('Deployment #6 needs your action')
+    expect(btn('Confirm deploy')).toBeTruthy()
+  })
+
+  it('3c. started here but its commit is not the passed check: it says no check matches any more, never "not started from this page"', async () => {
+    const mine = { ...heldBase, check_id: 'chk-older', commit: { sha: 'b'.repeat(40), message: null } }
+    await mount(status(mine), at, { 'iii-cloud::check': {} })
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(text()).toContain('No passed check of bbbbbbb matches deployment #6 any more.')
+    expect(text()).not.toContain('not started from this page')
+  })
+
+  it("the cancel dialog says what iii cloud's list serves, not what the worker remembers", async () => {
     const other = { ...heldBase, check_id: null, from_console: false, commit: { sha: 'a'.repeat(40), message: null } }
+    const never = {
+      id: 'dep-never-seen',
+      number: 9,
+      environment_id: DEV.id,
+      type: 'push',
+      status: 'ready',
+      current: true,
+      commit: { sha: 'c'.repeat(40) },
+      triggered_by: { user_id: null, api_key_id: null },
+      created_at: heldBase.created_at,
+      finished_at: null,
+    }
+    await mount(status(other), at, cloudAnswers({ [apiPath('/deployments', DEV.id)]: { deployments: [never] } }))
+    await click(btn('Cancel deployment #6'))
+    expect(text()).toContain('dev keeps serving #9.')
+    expect(text()).not.toContain('Nothing is live')
+  })
+
+  it('3. held with no passed check of that commit: check it first, no Confirm, approve or cancel in the links', async () => {
+    const other = {
+      ...heldBase,
+      check_id: null,
+      approved_by_worker: false,
+      from_console: false,
+      commit: { sha: 'a'.repeat(40), message: null },
+    }
     const h = await mount(status(other), at, { 'iii-cloud::check': {} })
+    // The class the phone's wrap rules target.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
     expect(title()).toBe('Deployment #6 waits for your approval')
     expect(text()).toContain(
       'It was not started from this page, so nothing here has checked aaaaaaa. Check dev first: when a check of aaaaaaa passes, you confirm here.',
@@ -464,7 +527,10 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
     expect(links()).toContainEqual(['Approve it in iii cloud', other.console_url])
     expect(btn('Cancel deployment #6')).toBeTruthy()
     await click(btn('Check dev here'))
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({
+      run: true,
+      manifest: 'api/worker-compose-prod.yaml',
+    })
   })
 })
 
