@@ -490,10 +490,25 @@ fn first_frame(bytes: &[u8], w: u32, h: u32) -> Option<RgbaImage> {
     RgbaImage::from_raw(w, h, canvas.to_vec())
 }
 
+/// `img` composited over white into opaque RGB.
 fn over_white(img: &DynamicImage) -> DynamicImage {
-    let mut bg = RgbaImage::from_pixel(img.width(), img.height(), Rgba([255; 4]));
-    imageops::overlay(&mut bg, img, 0, 0);
-    DynamicImage::ImageRgba8(bg)
+    let src = img
+        .as_rgba8()
+        .map_or_else(|| Cow::Owned(img.to_rgba8()), Cow::Borrowed);
+    let mut px = Vec::with_capacity(src.len() / 4 * 3);
+    for &Rgba([r, g, b, a]) in src.pixels() {
+        px.extend_from_slice(&match a {
+            0 => [255; 3],
+            255 => [r, g, b],
+            _ => {
+                // image's Rgba blend over white, step for step, so colours stay as they were.
+                let a = f32::from(a) / 255.0;
+                let alpha = 1.0 + a - a;
+                [r, g, b].map(|c| (255.0 * ((f32::from(c) / 255.0 * a + (1.0 - a)) / alpha)) as u8)
+            }
+        });
+    }
+    DynamicImage::ImageRgb8(RgbImage::from_raw(src.width(), src.height(), px).expect("w*h pixels"))
 }
 
 /// Runs `resize` on colour premultiplied by alpha: Lanczos3 mixes channels as
@@ -1915,6 +1930,22 @@ mod tests {
         );
         assert_eq!((out.width(), out.height()), (20, 15));
         assert_eq!(out.color(), image::ColorType::L8);
+    }
+
+    #[test]
+    fn flattening_matches_image_s_blend_over_white() {
+        // Every alpha against a spread of colours.
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_fn(256, 256, |c, a| {
+            Rgba([c as u8, 255 - c as u8, (c * 7) as u8, a as u8])
+        }));
+        let mut expected = RgbaImage::from_pixel(256, 256, Rgba([255; 4]));
+        imageops::overlay(&mut expected, &img, 0, 0);
+        let out = over_white(&img);
+        assert_eq!(out.color(), image::ColorType::Rgb8);
+        assert_eq!(
+            out,
+            DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(expected).to_rgb8())
+        );
     }
 
     #[test]
