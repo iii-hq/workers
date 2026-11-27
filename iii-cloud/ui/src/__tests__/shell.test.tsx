@@ -60,7 +60,7 @@ describe('Manage', () => {
     expect(side()?.textContent).toContain('you@example.com · Owner')
     // A new environment is made in iii cloud's console: a link built from the connection's cloud_url.
     const link = [...side()!.querySelectorAll('a')].find((a) => a.textContent?.startsWith('New environment'))
-    expect(link?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry')
+    expect(link?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry/production/new-environment')
   })
 
   it('an environment page: the path names it, no tabs, Refresh reads the status again, Secrets and variables is a page', async () => {

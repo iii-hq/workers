@@ -124,7 +124,7 @@ describe('Deployments', () => {
     await board('env-page')
     await settle()
     expect(byText('a', 'All deployments and logs in iii cloud')?.getAttribute('href')).toBe(
-      'https://cloud.iii.dev/iii/registry',
+      'https://cloud.iii.dev/iii/registry/dev/deployments',
     )
     await mount({ ...envPageStatus, deploys: [] }, ctx({ at: 'env', env: DEV.id }, 2), cloudAnswers({}))
     await settle()

@@ -10,6 +10,7 @@ import { ConnectView } from './ConnectView'
 import { useActions, useLocked } from './hub'
 import {
   ago,
+  deletionsUrl,
   liveOf,
   minutesLabel,
   needsAction,
@@ -279,7 +280,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
           },
           place.envName,
         )
-  const cloud = `${status.connection.cloud_url.replace(/\/$/, '')}/${status.connection.teams.find((t) => t.id === team)?.slug ?? ''}`
+  const cloud = deletionsUrl(status, status.connection.teams.find((t) => t.id === team)?.slug)
   // Until iii cloud lists the row's environments, Open can't tell which one to ask for.
   const reading = !place.current && envs.loading && !envs.data && !envs.error
   const off = !!switching || (!place.current && (offline || locked || reading))

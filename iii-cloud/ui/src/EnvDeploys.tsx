@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { useCloud } from './api'
 import { type DeploymentList, StateChip } from './EnvOverview'
 import { FailureCard, failureTitle, stoppedAt } from './FailureCard'
-import { deployOrigin, deployState, isFailedDeploy, needsAction, projectUrl, servingId, sha7, when } from './model'
+import { deployOrigin, deployState, isFailedDeploy, needsAction, envPageUrl, servingId, sha7, when } from './model'
 import { Mono, SectionCard } from './parts'
 import type { Route } from './route'
 import type { Deploy, Members, Status } from './types'
@@ -73,8 +73,9 @@ export function Deployments({
   const deploys = status.deploys.filter((d) => d.environment_id === envId).slice(0, SHOWN)
   const members = useMembers(host, status, cloud)
   const live = servingId(status, envId, cloud?.deployments)
-  const url = projectUrl(status)
-  const env = status.project?.environments.find((e) => e.id === envId)?.name ?? 'this environment'
+  const envName = status.project?.environments.find((e) => e.id === envId)?.name
+  const env = envName ?? 'this environment'
+  const url = envPageUrl(status, 'deployments', envName)
   return (
     <SectionCard
       title="Deployments"

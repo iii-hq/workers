@@ -10,7 +10,7 @@ import { DEV, live6, running6, serving5 } from '../fixtures/deploy'
 import { forgetHubMemory, hubOf } from '../hub'
 import type { BranchRef, Status } from '../types'
 import { type Call, fakeHost } from './host'
-import { board, btn, click, cloudAnswers, ctx, el, flush, lastCall, mount, root, text, type, usePage } from './util'
+import { board, btn, byText, click, cloudAnswers, ctx, el, flush, lastCall, mount, root, text, type, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -215,7 +215,9 @@ describe('the deployment', () => {
     expect(address?.textContent).toContain('Copy')
     expect(address?.textContent).toContain("iii cloud says it's healthy")
     expect(address?.textContent).toContain('11 of 11 workers up')
-    expect(text()).toContain('roll back to #5 in iii cloud')
+    expect(byText('a', 'roll back to #5 in iii cloud')?.getAttribute('href')).toBe(
+      'https://cloud.iii.dev/iii/registry/dev/deployments/5',
+    )
     await click(btn('Back to dev'))
     expect(path()).toBe('Projects / registry · dev')
   })

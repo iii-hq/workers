@@ -3,7 +3,7 @@ import { List, ListGroup, ListGroupLabel, ListItem, PageSidebar, SegmentedContro
 import { ExternalLink, ShieldCheck } from 'lucide-react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react'
 import { type Cloud, Feeds, useCloud } from './api'
-import { liveOf, needsAction, projectName, projectUrl, roleOf, sha7, type Tone, tilde } from './model'
+import { envPageUrl, liveOf, needsAction, projectName, roleOf, sha7, type Tone, tilde } from './model'
 import { Dot, useLeave } from './parts'
 import type { Route } from './route'
 import type { DeploymentList, Status } from './types'
@@ -79,7 +79,7 @@ export function ProjectShell({
   const name = projectName(status)
   const team = project.team?.name
   const role = roleOf(status)
-  const url = projectUrl(status)
+  const url = envPageUrl(status, 'new-environment')
   const envs = project.environments.map((e) => ({ e, line: stateLine(feeds[e.id], status, e) }))
   const readers = deleted
     ? null

@@ -9,7 +9,7 @@ import { DEV, devDeploys } from '../fixtures/deploys'
 import { NEW_SHA } from '../fixtures/manage'
 import { envPageStatus } from '../fixtures/overview'
 import type { Deploy, Status } from '../types'
-import { board, btn, click, cloudAnswers, ctx, el, flush, mount, text, usePage } from './util'
+import { board, btn, byText, click, cloudAnswers, ctx, el, flush, mount, text, usePage } from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -325,6 +325,14 @@ describe('the environment page', () => {
     expect(liveNow).toContain("Deploys fromthis machine, after the checka push to dev's branch deploys without it")
     expect(text()).toContain('Secrets and variables')
     expect(text()).toContain("Machines, domains, rollback and a new environment are in iii cloud's console.")
+    expect(byText('a', "iii cloud's console")?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry/dev')
+    // Every link to the console is a page it has: never `/<team>/<project>` and never `/variables`.
+    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '').filter((h) => h.startsWith('https://cloud.iii.dev/'))
+    expect(hrefs.length).toBeGreaterThan(1)
+    for (const h of hrefs) {
+      expect(h).not.toMatch(/\/variables$/)
+      expect(h).not.toMatch(/^https:\/\/cloud\.iii\.dev\/[^/]+\/[^/]+$/)
+    }
     expect(path()).toBe('Projects / registry · dev')
   })
 

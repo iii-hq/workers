@@ -3,14 +3,14 @@ import { Button, Input } from '@iii-dev/console-ui'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { type ReactNode, useId, useState } from 'react'
 import { useActions } from './hub'
-import { envName, variablesUrl } from './model'
+import { envName, envPageUrl } from './model'
 import { ErrorPanel, Mono } from './parts'
 import type { SecretRequest, Status } from './types'
 
 /** Where the value goes, in the person's words ("Goes to…" until it is saved, "It went to…" after). */
 export function Destinations({ status, saved }: { status: Status; saved: boolean }) {
   const env = envName(status)
-  const url = variablesUrl(status)
+  const url = envPageUrl(status, 'config')
   const lead = saved ? 'Saved. It went to' : 'Goes to'
   if (status.connection.method === 'api_key') {
     return (

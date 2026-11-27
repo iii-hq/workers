@@ -489,20 +489,17 @@ export function followUp(s: Status, kind: HandoffKind): boolean {
 export const sendLabel = (s: Status, kind: HandoffKind, normal: string) =>
   followUp(s, kind) ? 'Send to your agent' : normal
 
-/** A page of this environment in the iii cloud console (`variables`, `config`). */
-export function envPageUrl(s: Status, page: 'variables' | 'config'): string | null {
+/** A page of an environment in the iii cloud console (default: the selected one): '' is its overview, else `config`, `deployments`, `deployments/<n>`, `new-environment`. */
+export function envPageUrl(s: Status, page: string, env?: string): string | null {
   const p = s.project
-  if (!p?.team?.slug || !p.cloud_project?.slug || !p.environment) return null
-  return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}/${p.environment.name}/${page}`
+  const name = env ?? p?.environment?.name
+  if (!p?.team?.slug || !p.cloud_project?.slug || !name) return null
+  return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}/${name}${page ? `/${page}` : ''}`
 }
-/** The project in the iii cloud console (where a new environment, machines, domains and rollback live), built from the connection's `cloud_url`. */
-export function projectUrl(s: Status): string | null {
-  const p = s.project
-  if (!p?.team?.slug || !p.cloud_project?.slug) return null
-  return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}`
+/** Where a team's deleted projects and environments are listed in the iii cloud console. */
+export function deletionsUrl(s: Status, teamSlug?: string): string {
+  return `${s.connection.cloud_url.replace(/\/$/, '')}/${teamSlug ?? s.project?.team?.slug ?? ''}/deletions`
 }
-/** Where the variables of this environment live in the iii cloud console. */
-export const variablesUrl = (s: Status) => envPageUrl(s, 'variables')
 
 /**
  * O1: a console setting in short words. `web` from `serve`, `container`, `port`, `api.prefix` and `access`
