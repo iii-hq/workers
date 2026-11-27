@@ -4608,9 +4608,36 @@ async fn the_live_reads_say_what_is_gone_and_skip_what_the_webhook_skips() {
 
 #[tokio::test]
 async fn an_origin_whose_head_names_no_branch_only_stops_a_deploy_that_needs_the_default() {
-    // The environment follows a branch of its own: no decision about the default branch is needed.
+    // The environment follows its own `iii-cloud/<name>` branch: no decision about the default is needed.
     let s = setup(plan(false)).await;
-    direct(&s).await; // store default `trunk`, the environment on `main`
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    not_production(&s).await;
+    git(&s.repo.origin, &["branch", OWN, "main"]);
+    *f.branch.lock().unwrap() = OWN.into();
+    s.h.ctx.store.update(|st| {
+        st.project
+            .as_mut()
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .branch = OWN.into()
+    });
+    git(
+        &s.repo.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/nowhere"],
+    );
+    // (No push deployment ever shows in this mock: the deploy gives up waiting for one.)
+    let _ = deploy(&s.h.ctx, req("chk", None, None)).await;
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str()),
+        "the push went ahead"
+    );
+
+    // Any other branch could be the default under a new name: nothing is pushed.
+    let s = setup(plan(false)).await;
+    direct(&s).await;
     s.h.ctx
         .store
         .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
@@ -4618,10 +4645,9 @@ async fn an_origin_whose_head_names_no_branch_only_stops_a_deploy_that_needs_the
         &s.repo.origin,
         &["symbolic-ref", "HEAD", "refs/heads/nowhere"],
     );
-    push_list(&s, "queued").await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!(d.id, DEP_ID);
-    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "GIT_FAILED");
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
 
     // On the (stored) default branch it does: nothing is pushed.
     let s = setup(plan(false)).await;
@@ -4674,6 +4700,14 @@ async fn a_deploy_that_switched_the_file_records_it_so_a_revert_in_the_console_s
     push_list(&s, "needs_action").await;
     deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!(*f.manifest.lock().unwrap(), NEXT);
+    // What the check was made for is left as it was: a deploy of an older check still meets SOURCE_CHANGED.
+    assert_eq!(
+        s.h.ctx
+            .store
+            .read(|st| st.check_sources["chk"].compose.clone())
+            .as_deref(),
+        Some("worker-compose.yaml")
+    );
     // The person puts the first file back in the console: the check of NEXT does not switch it again.
     let work =
         s.h.ctx

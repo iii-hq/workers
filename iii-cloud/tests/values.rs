@@ -1050,3 +1050,36 @@ async fn an_empty_default_set_in_iii_cloud_needs_its_value_here() {
         (Here::FromFile, Some("api/.env.test".into()))
     );
 }
+
+#[tokio::test]
+async fn a_cancelled_save_leaves_no_write_running_and_its_value_is_still_redacted() {
+    let w = world(false, "developer").await;
+    Mock::given(method("PUT"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(400))
+                .set_body_json(json!({})),
+        )
+        .mount(&w.server)
+        .await;
+    let value = "typed-value-for-the-cancelled-save";
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        save(
+            &w.h.ctx,
+            request(
+                json!([{"name": "SET_ONE", "from": "typed", "type": "variable", "value": value}]),
+            ),
+        ),
+    )
+    .await;
+    assert!(cancelled.is_err(), "the call was dropped before its answer");
+    assert!(
+        w.h.ctx
+            .known_secrets
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == value)
+    );
+}

@@ -940,14 +940,18 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                     .collect();
                 let branches: Vec<String> = others.iter().map(|(_, b)| b.clone()).collect();
                 let way = deploy_way(default.as_deref(), &sel.env, &branches);
+                // Without the live default, only the environment's own `iii-cloud/<name>` branch
+                // (which is never a default) is safe to keep: any other branch could be the
+                // default under a new name.
                 if !live
-                    && !matches!(
-                        way,
-                        Way::Assisted {
-                            own: None,
-                            taken: false
-                        }
-                    )
+                    && (sel.env.branch != crate::project::own_branch(&sel.env.name)
+                        || !matches!(
+                            way,
+                            Way::Assisted {
+                                own: None,
+                                taken: false
+                            }
+                        ))
                 {
                     return Err(CloudError::new(
                         "GIT_FAILED",
