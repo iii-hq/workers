@@ -301,17 +301,19 @@ describe('per-session judge provider', () => {
     expect(localStorage.getItem('judge-ui-session-intro-seen')).toBe('true')
   })
 
-  it("lists Default and each running judge with its model, and writes only this session's metadata key", async () => {
+  it("lists the default judge first with its designation, then Off and each other running judge with its model, and writes only this session's metadata key", async () => {
     const { view, iii, setMetadata, option, options, labels } = await mount({
       [SESSION_PROVIDER_KEY]: 'typesafe',
       model: 'm',
     })
     expect(view.querySelector('.judge-ui-session-trigger')?.textContent).toBe('typesafe')
-    expect(options()).toEqual(['default', 'off', 'semif', 'typesafe'])
-    expect(labels()).toEqual(['Default', 'Off', 'semif', 'typesafe'])
+    // The settings' judge is one row carrying "Default", never a second entry.
+    expect(options()).toEqual(['typesafe', 'off', 'semif'])
+    expect(labels()).toEqual(['typesafeDefault', 'Off', 'semif'])
     expect(option('semif')?.textContent).toContain('qwen3.5-4b')
     expect(option('typesafe')?.textContent).toContain('jev-latest')
-    expect(option('default')?.textContent).toContain('typesafe · jev-latest')
+    expect(option('typesafe')?.querySelector('.judge-ui-session-option-badge')?.textContent).toBe('Default')
+    expect(option('semif')?.querySelector('.judge-ui-session-option-badge')).toBeNull()
     expect(option('typesafe')?.getAttribute('aria-pressed')).toBe('true')
     // A judge's model comes from its settings, read raw: no `${VAR}` expands into the page.
     expect(iii.call).toHaveBeenCalledWith('configuration::get', { id: 'judge-semif', raw: true }, { timeoutMs: 5_000 })
@@ -324,8 +326,10 @@ describe('per-session judge provider', () => {
       { provider: 'semif', timeout_ms: 1_000 },
       { timeoutMs: 10_000 },
     )
+    // Choosing the default judge writes nothing: the session follows the
+    // judge settings from here on.
     const calls = iii.call.mock.calls.length
-    await act(async () => option('default')!.click())
+    await act(async () => option('typesafe')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: undefined })
     expect(iii.call.mock.calls.length).toBe(calls)
   })
@@ -372,9 +376,9 @@ describe('per-session judge provider', () => {
       { iii: engine(['typesafe', 'semif', 'laya', 'decider', 'clef', 'openai']) },
     )
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter judges"]')!
-    // The highlight starts on the session's choice (Default) and walks down,
-    // past Off.
-    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('default')
+    // The highlight starts on the session's choice (the default judge) and
+    // walks down, past Off.
+    expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('typesafe')
     await press(filter, 'ArrowDown')
     expect(view.querySelector('[data-highlighted]')?.getAttribute('data-judge-option')).toBe('off')
     await press(filter, 'ArrowDown')
@@ -385,26 +389,26 @@ describe('per-session judge provider', () => {
     expect(listbox?.getAttribute('role')).toBe('listbox')
     const optionRows = [...(listbox?.querySelectorAll('[data-judge-option]') ?? [])]
     expect(optionRows.every((row) => row.getAttribute('role') === 'option')).toBe(true)
-    expect(listbox?.querySelector('[data-judge-option="default"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(listbox?.querySelector('[data-judge-option="typesafe"]')?.getAttribute('aria-selected')).toBe('true')
     expect(listbox?.querySelector('[data-judge-option="clef"]')?.getAttribute('aria-selected')).toBe('false')
     await press(filter, 'Enter')
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'clef' })
-    // Default matches what it resolves to.
+    // The default judge matches on its model too, and picking it writes
+    // nothing: the session follows the settings.
     await type(filter, 'jev')
-    expect(options()).toEqual(['default', 'typesafe'])
-    await press(filter, 'ArrowDown')
+    expect(options()).toEqual(['typesafe'])
     await press(filter, 'Enter')
-    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'typesafe' })
+    expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: undefined })
     await type(filter, 'nothing')
     expect(options()).toEqual([])
     expect(view.textContent).toContain('No judge matches “nothing”.')
   })
 
-  it('a judge named "default" gets its own row, apart from Default', async () => {
-    const { view } = await mount({}, { iii: engine(['default', 'typesafe']) })
+  it('a judge named "default" gets its own row, apart from the default judge', async () => {
+    const { view, options } = await mount({}, { iii: engine(['default', 'typesafe']) })
     const ids = [...view.querySelectorAll('[data-judge-option]')].map((row) => row.id)
     expect(new Set(ids).size).toBe(ids.length)
-    expect(view.querySelectorAll('.judge-ui-session-option-label').length).toBe(4)
+    expect(options()).toEqual(['typesafe', 'off', 'default'])
   })
 
   it("configures a judge inside the picker and comes back to the list", async () => {
@@ -496,7 +500,7 @@ describe('per-session judge provider', () => {
     expect(activePage()).toBe('configure')
     expect(view.querySelector('[data-panel]')?.getAttribute('data-panel')).toBe('judge-decider')
     await act(async () => button('Back to judges').click())
-    expect(options()).toEqual(['default', 'off', 'decider', 'semif', 'typesafe'])
+    expect(options()).toEqual(['typesafe', 'off', 'decider', 'semif'])
   }, 10_000)
 
   it('shows why an add failed and offers a retry', async () => {
@@ -714,9 +718,9 @@ describe('per-session judge provider', () => {
     expect(option('typesafe')?.textContent).toContain('Needs an API key')
     expect(option('typesafe')?.getAttribute('title')).toBe(`Not configured: ${reason}`)
     expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
-    // Default resolves to the same judge, so it says so too.
-    expect(option('default')?.textContent).toContain('typesafe, not configured')
-    expect(option('default')?.hasAttribute('data-warning')).toBe(true)
+    // The same row carries the Default designation: no second entry to warn.
+    expect(option('typesafe')?.querySelector('.judge-ui-session-option-badge')?.textContent).toBe('Default')
+    expect(view.querySelectorAll('[data-warning][data-judge-option]').length).toBe(1)
     // A local judge registers no status and is never asked for one.
     expect(option('semif')?.hasAttribute('data-warning')).toBe(false)
     expect(iii.call.mock.calls.some(([id]) => id === 'judge-semif::status')).toBe(false)
@@ -729,14 +733,15 @@ describe('per-session judge provider', () => {
     expect(menuButton()?.getAttribute('title')).toBe('Judge for this session: typesafe')
   })
 
-  it('warns when Default resolves to a judge without a usable key', async () => {
+  it('warns when the default judge has no usable key', async () => {
     const iii = engine()
     iii.state.status.typesafe = { configured: false }
     const { view, option } = await mount({}, { iii })
     expect(view.querySelector('.judge-ui-session-trigger')?.getAttribute('title')).toBe(
       'typesafe is not configured: no usable key',
     )
-    expect(option('default')?.textContent).toContain('typesafe, not configured')
+    expect(option('typesafe')?.textContent).toContain('Not configured')
+    expect(option('typesafe')?.hasAttribute('data-warning')).toBe(true)
   })
 
   it('says so when the registry is unreachable', async () => {
