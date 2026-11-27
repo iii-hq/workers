@@ -4094,7 +4094,8 @@ async fn a_refused_move_is_retried_by_the_second_click_without_pushing_again() {
     list_of_commit(&s, &f, Some("queued")).await;
     let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
     assert_eq!(err.code, "BRANCH_NOT_MOVED", "{}", err.message);
-    assert!(err.message.contains("answered 403") && err.message.contains("Deploy again"));
+    assert!(err.message.contains("answered 403") && err.message.contains("Ask an Owner or Admin"));
+    assert!(!err.message.contains("Deploy again"), "{}", err.message);
     // The branch is on origin, no environment follows it, nothing deployed.
     assert_eq!(
         origin_branch(&s, OWN).as_deref(),
@@ -4467,15 +4468,17 @@ async fn a_checks_file_is_kept_only_while_the_environment_still_has_the_file_it_
         workspace: true,
         compose: Some(compose.into()),
     };
-    let mut st = iii_cloud::store::State::default();
     // Newest first, two environments interleaved: A's work is on w.yaml (its environment had y.yaml
     // then), B's on b.yaml, and A's older check named nothing.
-    st.checks = vec![
-        check("b1", "B", Some("b.yaml")),
-        check("a2", "A", Some("w.yaml")),
-        check("b0", "B", None),
-        check("a1", "A", None),
-    ];
+    let mut st = iii_cloud::store::State {
+        checks: vec![
+            check("b1", "B", Some("b.yaml")),
+            check("a2", "A", Some("w.yaml")),
+            check("b0", "B", None),
+            check("a1", "A", None),
+        ],
+        ..Default::default()
+    };
     st.check_sources.insert("b1".into(), at("main-b.yaml"));
     st.check_sources.insert("a2".into(), at("y.yaml"));
     // Unchanged in the console: the work stays on the check's file, each environment on its own.

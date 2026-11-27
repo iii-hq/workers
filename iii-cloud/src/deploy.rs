@@ -946,6 +946,17 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                     // older checked one is fast-forwarded, anything else is not ours.
                     let old = crate::check::remote_ref(&sel.workspace, &own).await?;
                     if old.as_deref() != Some(check.commit.as_str()) {
+                        if old.is_some() {
+                            // A fetch that failed is not "other commits": say so and stop.
+                            crate::tool::git(&sel.workspace, &["fetch", "origin", &own])
+                                .await
+                                .map_err(|_| {
+                                    CloudError::new(
+                                        "GIT_FAILED",
+                                        format!("Could not fetch {own} from GitHub, so nothing was pushed. Try again."),
+                                    )
+                                })?;
+                        }
                         if let Some(head) = &old
                             && !is_ancestor(&sel.workspace, &own, head, &check.commit).await?
                         {
@@ -1270,6 +1281,13 @@ async fn push_env_branch(ws: &Path, branch: &str, commit: &str, expected: Option
         // The answer was lost, but the push landed.
         Ok(Some(head)) if head == commit => Ok(()),
         Ok(head) if head.as_deref() == expected => Err(refused()),
+        // Someone created the branch between the read and the push.
+        Ok(Some(_)) if expected.is_none() => Err(CloudError::new(
+            "OWN_BRANCH_TAKEN",
+            format!(
+                "GitHub got a branch {branch} with other commits while this deploy was pushing. Nothing was deployed. Delete it or set the environment's branch in iii cloud, then deploy again."
+            ),
+        )),
         Ok(_) => Err(CloudError::new(
             "MAIN_MOVED",
             format!("{branch} moved since the check. Check again."),
@@ -1308,14 +1326,22 @@ async fn set_branch(
         .await
     {
         Ok((200..=299, _)) => None,
-        Ok((status, _)) => Some(format!("answered {status}")),
-        Err(_) => Some("did not answer".to_string()),
+        Ok((status, _)) => Some((format!("answered {status}"), Some(status))),
+        Err(_) => Some(("did not answer".to_string(), None)),
     };
-    if let Some(what) = answered {
+    if let Some((what, status)) = answered {
+        // A retry helps only when the answer may be a passing failure.
+        let next = match status {
+            Some(401) => "Sign in again, then deploy.",
+            Some(403) => "Ask an Owner or Admin to change it, or set the branch in iii cloud.",
+            Some(409) => "iii cloud is changing it: look at the environment there, then deploy.",
+            Some(422) => "iii cloud does not take that branch name: set the branch in iii cloud.",
+            _ => "Deploy again to retry.",
+        };
         return Err(CloudError::new(
             "BRANCH_NOT_MOVED",
             format!(
-                "{} could not move to its own branch {own} (iii cloud {what}). Nothing was deployed. Deploy again to retry.",
+                "{} could not move to its own branch {own} (iii cloud {what}). Nothing was deployed. {next}",
                 sel.env.name
             ),
         ));
