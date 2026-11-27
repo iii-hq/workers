@@ -46,10 +46,18 @@ fn shutdown_signal() -> std::io::Result<impl Future<Output = std::io::Result<()>
     Ok(tokio::signal::ctrl_c())
 }
 
-/// RUST_LOG as `level` and `target=level` directives; unset or unparsable means info.
+/// RUST_LOG as `level` and `target=level` directives; unset, empty or unparsable means info.
 fn log_filter(var: Option<&str>) -> Targets {
-    var.and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| Targets::new().with_default(LevelFilter::INFO))
+    // Targets reads an empty directive as `error`, so "info," would log errors only.
+    var.map(|v| {
+        v.split(',')
+            .filter(|d| !d.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(",")
+    })
+    .filter(|v| !v.is_empty())
+    .and_then(|v| v.parse().ok())
+    .unwrap_or_else(|| Targets::new().with_default(LevelFilter::INFO))
 }
 
 #[tokio::main]
@@ -150,6 +158,15 @@ mod tests {
         };
         assert!(on(None, "iii_sdk", Level::INFO) && !on(None, "iii_sdk", Level::DEBUG));
         assert!(on(Some("debug"), "rustls", Level::DEBUG));
+        for var in ["info,", ",info", "info,,", ",", ""] {
+            assert!(on(Some(var), "iii_sdk", Level::INFO), "{var:?}");
+            assert!(!on(Some(var), "iii_sdk", Level::DEBUG), "{var:?}");
+        }
+        assert!(on(
+            Some("warn,,image_resize=debug,"),
+            "image_resize",
+            Level::DEBUG
+        ));
         let scoped = Some("image_resize=debug,iii_sdk=warn");
         assert!(on(scoped, "image_resize::handler", Level::DEBUG));
         assert!(!on(scoped, "iii_sdk::iii", Level::INFO) && !on(scoped, "rustls", Level::ERROR));

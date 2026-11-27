@@ -188,7 +188,8 @@ page shows an error that tells you to update the ade worker.
   engine's configuration worker to start.
 - `RUST_LOG` takes comma-separated `level` and `target=level` directives
   only. Span and field-value filters such as `[request{id=7}]=debug` no
-  longer apply: a value that does not parse falls back to `info`.
+  longer apply: a value that does not parse falls back to `info`. Empty
+  directives, as in `info,`, are skipped.
 
 ## License
 
