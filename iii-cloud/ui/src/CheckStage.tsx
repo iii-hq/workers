@@ -495,7 +495,7 @@ export function TypedConfirm({
 
 /* ── The check's two parts, as rows ────────────────────────────────── */
 
-type Part = { status: string; rows: Row[]; foot?: string }
+type Part = { status: string; rows: Row[]; foot?: string; action?: ReactNode }
 const skeleton = (status: string, n: number): Part => ({
   status,
   rows: Array.from({ length: n }, (_, i) => ({
@@ -556,7 +556,7 @@ function cloudPart(s: Status, c: Check): Part {
 }
 
 /** "Local run": the run's seven stages, live through the run events. */
-function runPart(s: Status, c: Check, now: number, running: boolean): Part {
+function runPart(s: Status, c: Check, now: number, running: boolean, again: () => void): Part {
   const r = c.run
   if (!r) {
     return running
@@ -590,10 +590,18 @@ function runPart(s: Status, c: Check, now: number, running: boolean): Part {
         ? `running · ${elapsed(now - start)}`
         : r.status === 'passed'
           ? r.reused
-            ? 'the local run of this commit already passed'
+            ? `passed${r.finished_at ? ` at ${clock(r.finished_at)}` : ''} · not run again: nothing changed`
             : `passed${r.finished_at ? ` · ${duration(Date.parse(r.finished_at) - start)}` : ''}`
           : `failed${r.error ? ` at ${stageLabel(r.error.stage)}` : ''}`,
     rows,
+    action:
+      r.status === 'passed' && r.reused ? (
+        <p className="iii-cloud-cs-foot">
+          <button type="button" className="iii-cloud-linkbtn iii-cloud-small" disabled={running} onClick={again}>
+            Run it again
+          </button>
+        </p>
+      ) : undefined,
     foot: [
       `Engine ${r.engine}.`,
       r.status === 'passed' && r.not_covered.length
@@ -1031,6 +1039,8 @@ export function CheckStage(props: CheckStageProps) {
     error && !(refused && error.code === refused.code && error.message === refused.message) ? error : null
 
   const checkAgain = () => void call('check', 'iii-cloud::check', retryPayload(host, s))
+  // A reused local run did not run now: the person may ask for a real one.
+  const runItAgain = () => void call('check', 'iii-cloud::check', { ...retryPayload(host, s), run: true, force: true })
   const ask = () => void handOff(host, s, 'ready')
   const canAsk = !!host.chat?.compose && !launching
 
@@ -1404,7 +1414,18 @@ export function CheckStage(props: CheckStageProps) {
   const sub = ready ? (
     <p className="iii-cloud-cs-sub">
       <Mono>{c ? sha7(c.commit) : ''}</Mono>
-      {` passed iii cloud's plan${run ? ' and the local run' : ''} at ${clock(ranAt ?? '')}${past.length > 1 ? ` · ${past.length} checks${spent > 0 ? `, ${minutesLabel(spent)}` : ''}` : ''}`}
+      {run?.reused
+        ? ` passed iii cloud's plan at ${clock(c?.checked_at ?? '')}; the local run passed at ${clock(run.finished_at ?? run.started_at)} (not run again: nothing changed)`
+        : ` passed iii cloud's plan${run ? ' and the local run' : ''} at ${clock(ranAt ?? '')}`}
+      {past.length > 1 ? ` · ${past.length} checks${spent > 0 ? `, ${minutesLabel(spent)}` : ''}` : ''}
+      {run?.reused ? (
+        <>
+          {' · '}
+          <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={runItAgain}>
+            Run it again
+          </button>
+        </>
+      ) : null}
       {onChange ? (
         <>
           {' · '}
@@ -1481,7 +1502,7 @@ export function CheckStage(props: CheckStageProps) {
     !replaced && !ready && (running || (!needN && !lines.length))
       ? {
           cloud: c && fresh ? cloudPart(s, c) : skeleton('checking', 4),
-          here: c && fresh ? runPart(s, c, now, running) : skeleton('next', 5),
+          here: c && fresh ? runPart(s, c, now, running, runItAgain) : skeleton('next', 5),
         }
       : null
   const pending = c && !running && !ready && !replaced ? cloudPendingNote(s) : null
@@ -1709,6 +1730,7 @@ export function CheckStage(props: CheckStageProps) {
                 </h3>
                 <Rows rows={part.rows} />
                 {part.foot ? <p className="iii-cloud-cs-foot">{part.foot}</p> : null}
+                {part.action}
               </section>
             ))}
           </div>

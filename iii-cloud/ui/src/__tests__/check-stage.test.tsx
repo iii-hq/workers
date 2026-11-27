@@ -388,6 +388,27 @@ describe('Ready', () => {
     expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(false)
   })
 
+  it('a reused run says when it really ran, and "Run it again" forces a real one', async () => {
+    const reused = { ...passed.run, reused: true, finished_at: '2026-11-27T11:30:00.000Z' } as NonNullable<
+      typeof passed.run
+    >
+    const h = await stage({ ...dev, check: { ...passed, run: reused } })
+    expect(text()).toContain('the local run passed at')
+    expect(text()).toContain('(not run again: nothing changed)')
+    await click(btn('Run it again'))
+    await flush()
+    expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({
+      run: true,
+      force: true,
+      from_page: true,
+    })
+    // the Local run part says the same, with the same quiet action
+    await stage({ ...{ ...dev, agent: null, handoff_brief: null }, check: { ...passed, ready: false, run: reused } })
+    const part = el.querySelector('[aria-label="Local run"]')?.textContent ?? ''
+    expect(part).toContain('not run again: nothing changed')
+    expect(part).toContain('Run it again')
+  })
+
   it('a deployment of dev still going locks the button and says so, with Follow', async () => {
     const going = boards['deploy-follow-running'].status.deploys[0]
     const h = await stage({

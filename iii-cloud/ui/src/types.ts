@@ -202,7 +202,14 @@ export type Problem = {
 }
 
 /** `iii-cloud::check`'s request. `from_page`: the person asked for it on this page (the worker wakes a waiting agent only for such a check). */
-export type CheckRequest = { run?: boolean; push?: boolean; manifest?: string | null; from_page?: boolean }
+export type CheckRequest = {
+  run?: boolean
+  push?: boolean
+  manifest?: string | null
+  from_page?: boolean
+  /** With `run`: run again even when a passed run of the same commit, file, engine and environment exists. */
+  force?: boolean
+}
 
 export type Check = {
   id: string
