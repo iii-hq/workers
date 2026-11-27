@@ -134,7 +134,6 @@ pub fn default_environment<'a>(
 /// `iii-cloud::project::resolve`: read the folder, then keep it as the
 /// selection, or as `candidate` while another project with a workspace is selected.
 pub async fn resolve(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
-    refuse_agent_copy(ctx, &request.path).await?;
     let project = read_project(ctx, request).await?;
     store_project(ctx, &project);
     Ok(project)
@@ -144,20 +143,15 @@ pub async fn resolve(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
 /// or one it recorded) is never the person's folder: `AGENT_COPY`, with the main checkout's path in `fix`.
 async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
     let top = toplevel(path).await?;
-    let dirs = git(
-        &top,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-dir",
-            "--git-common-dir",
-        ],
-    )
-    .await?;
+    // Both, as canonical paths (no `--path-format`: git before 2.31 lacks it; the
+    // answers may be relative to the folder).
+    let dirs = git(&top, &["rev-parse", "--git-dir", "--git-common-dir"]).await?;
     let mut lines = dirs.lines();
     let (Some(dir), Some(common)) = (lines.next(), lines.next()) else {
         return Ok(());
     };
+    let canon = |p: &str| std::fs::canonicalize(top.join(p)).unwrap_or_else(|_| top.join(p));
+    let (dir, common) = (canon(dir), canon(common));
     if dir == common {
         return Ok(());
     }
@@ -169,7 +163,7 @@ async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
     if !made && !branch.trim().starts_with("iii-cloud/") {
         return Ok(());
     }
-    let common = Path::new(common);
+    let common = common.as_path();
     let main = match common.file_name() {
         Some(n) if n == ".git" => common.parent().unwrap_or(common),
         _ => common,
@@ -186,6 +180,8 @@ async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
 
 /// The folder, its repository and what iii cloud has for it; stores nothing.
 async fn read_project(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
+    // Every read of a folder (`resolve`, `use`) refuses the agent's own copy.
+    refuse_agent_copy(ctx, &request.path).await?;
     let top = toplevel(&request.path).await?;
     let remote = tool::run(
         "git",

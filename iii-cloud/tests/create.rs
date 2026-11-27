@@ -222,6 +222,43 @@ async fn resolve_refuses_the_copy_the_agent_works_in_and_names_the_main_checkout
 }
 
 #[tokio::test]
+async fn use_refuses_the_agents_copy_too_and_a_persons_own_linked_worktree_is_accepted() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = cloud(&server, true).await;
+    let copy = r.checkout.parent().unwrap().join("hello-iii-iii-cloud");
+    git(
+        &r.checkout,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "iii-cloud/ready-test",
+            copy.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    let err = use_project(&h.ctx, use_req(&copy, None, Some(E1)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "AGENT_COPY");
+    // A linked worktree the person made themselves, on an ordinary branch, is their folder.
+    let own = r.checkout.parent().unwrap().join("my-feature");
+    git(
+        &r.checkout,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/mine",
+            own.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    assert!(resolve(&h.ctx, resolve_req(&own)).await.is_ok());
+}
+
+#[tokio::test]
 async fn use_takes_a_project_an_environment_or_both_and_checks_they_belong_together() {
     let server = MockServer::start().await;
     let r = repo();
