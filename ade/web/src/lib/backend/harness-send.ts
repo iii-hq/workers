@@ -219,8 +219,6 @@ export interface HarnessStatusReport {
   children: HarnessChildRef[]
   /** A completed turn is parked rather than terminal while this is true. */
   expects_wake: boolean
-  /** Question cards still up in the session. Absent from an older harness. */
-  open_asks?: number
   /** Wake details are omitted when no wake is armed. */
   armed_wakes?: HarnessArmedWake[]
   /** Messages queued while a step streams, in arrival order. */
@@ -250,25 +248,6 @@ export interface HarnessStopResponse {
 /** Whether a status report represents a turn that is still in flight. */
 export function isTurnActive(status: HarnessTurnStatus): boolean {
   return status === 'running' || status === 'awaiting_functions'
-}
-
-/** A completed turn either waits for a wake or is over. */
-export type TurnRest = 'waiting' | 'ended'
-
-/**
- * How a completed turn rests, by the harness's own rule (`expects_wake`). Null
- * for any other state: running, failed, cancelled, a question card up, or an
- * older harness that does not count them. `ended` does not mean that nothing
- * is pending: a run or a child that nobody observes is not a wake.
- */
-export function turnRest(
-  report: Pick<
-    HarnessStatusReport,
-    'status' | 'expects_wake' | 'open_asks'
-  > | null,
-): TurnRest | null {
-  if (report?.status !== 'completed' || report.open_asks !== 0) return null
-  return report.expects_wake ? 'waiting' : 'ended'
 }
 
 /**

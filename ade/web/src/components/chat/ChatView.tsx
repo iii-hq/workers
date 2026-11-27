@@ -269,7 +269,6 @@ import {
   skillSelectionForSend,
   turnEstablishedFrom,
 } from './system-prompt-selection'
-import { TurnRestRow } from './TurnRestRow'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useAwaitingQuestions } from './use-awaiting-questions'
 import { useModelSwitch } from './use-model-switch'
@@ -4271,18 +4270,6 @@ export function ChatView({
                     dismissLimit(conversation.id, limitCard.key)
                     setLimitTick((tick) => tick + 1)
                   }}
-                />
-              ) : !side && !conversation.parentId && backend.turnRest ? (
-                <TurnRestRow
-                  sessionId={conversation.id}
-                  // A reconnect reloads the transcript while the status stays
-                  // `done`: a turn it missed is only seen by reading again.
-                  atRest={
-                    conversation.status === 'done' &&
-                    !streamingIndicator &&
-                    !sessionHydrating
-                  }
-                  turnRest={backend.turnRest}
                 />
               ) : null}
               <Composer

@@ -333,11 +333,9 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       })
       await card.screenshot({ path: shot('limit-card-waiting') })
 
-      // The X puts the card away, and "Turn ended." doesn't come in its
-      // place: the turn failed.
+      // The X puts the card away.
       await card.locator('[data-limit-dismiss]').click()
       await expect(card).toHaveCount(0)
-      await expect(page.getByText('Turn ended.')).toHaveCount(0)
       // Put away in this tab only: opened again, the conversation shows it.
       await openSession(page, stack)
       await expect(card).toHaveAttribute('data-limit-card', 'failed')
@@ -377,8 +375,9 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await details.screenshot({ path: shot('details-row') })
       await page.keyboard.press('Escape')
       await expect(details).toHaveCount(0)
-      // The turn ran again: the conversation rests as after any turn.
-      await expect(page.getByText('Turn ended.')).toBeVisible()
+      // The turn ran again: its reply stays and the card does not come back.
+      await expect(page.getByText(REPLY, { exact: true })).toBeVisible()
+      await expect(card).toHaveCount(0)
 
       /* The sidebar footer opens the screen (§4.3.1, §4.3.3): one button,
          the Claude Code mark and a ring per account, the global (Personal)
