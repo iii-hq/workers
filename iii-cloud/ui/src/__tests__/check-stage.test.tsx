@@ -9,10 +9,11 @@ import { CheckStage } from '../CheckStage'
 import { findings } from '../findings'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
-import { found, passed, rcFixing, rcVariables } from '../fixtures/check'
+import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/check'
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
+import { checklist, handoffMessage, openProblems, wayOf } from '../model'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
@@ -923,10 +924,17 @@ describe('the check follows the canvas', () => {
 
     it("the agent's secret request is in the card, not in You", async () => {
       const items = [
-        valueItem('ASKED_KEY', { asked: { request_id: 'r1', description: 'Signs the cookies.' }, suggestions: [] }),
+        valueItem('ASKED_KEY', {
+          // The worker marks an ask `required` too.
+          need: 'required',
+          default: null,
+          asked: { request_id: 'r1', description: 'Signs the cookies.' },
+          suggestions: [],
+        }),
       ]
       await stage(quiet, { 'iii-cloud::values': answer(items) })
       expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(card()?.textContent).not.toContain('required by')
       expect(card()?.textContent).toContain('Signs the cookies.')
       expect(region('You')).toBeNull()
     })
@@ -934,7 +942,8 @@ describe('the check follows the canvas', () => {
     it('a session that cannot write: the buttons are off, with the sentence', async () => {
       await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 2), { save: 'api_key' }) })
       expect((btn('Set values') as HTMLButtonElement).disabled).toBe(true)
-      expect((btn('Skip for now') as HTMLButtonElement).disabled).toBe(true)
+      // A skip only writes the worker's own store: it stays on for an API key.
+      expect((btn('Skip for now') as HTMLButtonElement).disabled).toBe(false)
       expect(card()?.textContent).toContain("An API key can't write secrets and variables.")
     })
 
@@ -946,6 +955,60 @@ describe('the check follows the canvas', () => {
       expect(btn('Set values')).toBeNull()
       await click(btn('All names'))
       expect(h.go).toHaveBeenCalledWith({ at: 'secrets', env: expect.any(String) })
+    })
+
+    it('a name set in iii cloud but missing here: its own line, to set or skip, never "every name is set"', async () => {
+      const items = [valueItem('STRIPE_KEY', { need: 'required', default: null, in_cloud: 'set', here: 'unset' })]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      expect(card()?.textContent).toContain('1 set in iii cloud but missing on this machine')
+      expect(card()?.textContent).toContain('STRIPE_KEY')
+      expect(card()?.textContent).toContain('skip them to run with an empty value')
+      expect(card()?.textContent).not.toContain('Every name')
+      await click(btn('Skip for now'))
+      expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
+        names: ['STRIPE_KEY'],
+        skip: true,
+      })
+      await click(btn('Set values'))
+      expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
+    })
+
+    it("the agent's own value problem (the database's) is the agent's, not a value to set, and the hand-off still sees it", async () => {
+      const db = {
+        ...rcVariables[0],
+        id: 'p-db',
+        code: 'SECRET_MISSING',
+        severity: 'block' as const,
+        owner: 'agent' as const,
+        title: 'DATABASE_URL has no value',
+      }
+      const s = { ...base, check: { ...base.check!, problems: [db] } }
+      await stage(s)
+      expect(title()).toBe('1 for your agent to fix')
+      expect(region('Your agent')?.textContent).toContain('DATABASE_URL has no value')
+      expect(openProblems(s).map((p) => p.id)).toEqual(['p-db'])
+    })
+
+    it('during a hand-off a value row of the brief is neither "fixed" nor shown, and the message counts it', async () => {
+      const s = rcFixingHere
+      const { rows, fixed } = checklist(s)
+      expect(rows.some((r) => /SESSION_SECRET|LOG_LEVEL/.test(r.title))).toBe(false)
+      expect(fixed).toBe(checklist(rcFixing).fixed)
+      expect(handoffMessage(s)).toContain(`fix the ${openProblems(s, true).length} problems`)
+      expect(openProblems(s, true).length).toBeGreaterThan(openProblems(s).length)
+    })
+
+    it('a required name can be left empty from the editor, and the dialog speaks for this screen', async () => {
+      const items = names('REQ', 1, { need: 'required', default: null })
+      await stage(quiet, { 'iii-cloud::values': answer(items) })
+      await click(btn('Set values'))
+      const dialog = el.querySelector('[role=dialog]')
+      expect([...(dialog?.querySelectorAll('option') ?? [])].map((o) => o.textContent)).toContain('Leave empty')
+      expect(dialog?.textContent).toContain('iii cloud does not deploy without the required ones')
+      expect(dialog?.textContent).not.toContain('The local run needs')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
@@ -1003,3 +1066,22 @@ describe('the check follows the canvas', () => {
 })
 
 const byLink = (label: string) => [...el.querySelectorAll('a')].find((a) => a.textContent === label)
+
+describe('a branch another environment follows', () => {
+  it('Ready says so before Deploy is pressed', async () => {
+    const r = B('deploy-review')
+    const p0 = r.project as NonNullable<Status['project']>
+    // dev follows the default branch, so a deploy moves it to its own branch; another environment already follows that.
+    const env = { ...p0.environment!, branch: p0.default_branch! }
+    const own = wayOf(r, env)
+    const mine = { ...p0, environment: env, environments: p0.environments.map((e) => (e.id === env.id ? env : e)) }
+    const target = own.way === 'assisted' && own.own ? own.own : 'x'
+    const other = { ...p0.environments[0], id: 'e-other', name: 'staging', branch: target }
+    const p = { ...mine, environments: [...mine.environments, other] }
+    const s = { ...r, project: p }
+    expect(wayOf(s, p.environment!)).toMatchObject({ way: 'assisted', taken: true })
+    await stage(s)
+    expect(region('What this deploy does')?.textContent).toContain('staging follows')
+    expect(region('What this deploy does')?.textContent).toContain('Deploy will refuse')
+  })
+})

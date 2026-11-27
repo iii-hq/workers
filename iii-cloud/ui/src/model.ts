@@ -788,17 +788,25 @@ export function hiddenPerson(s: Status, p: Problem): boolean {
 export const VALUE_CODES = new Set(['EMPTY_DEFAULT_VARIABLE', 'SECRET_MISSING', 'LOCAL_VARIABLE_UNSET'])
 
 /**
- * The one list every count comes from: the current check's problems that still need someone.
+ * A variable or a secret the PERSON sets: the values card's, never a row of the check. (The agent's own, such as the
+ * database's, stay in its list.)
+ */
+export const isPersonValue = (p: { code: string; owner: Problem['owner'] }) =>
+  VALUE_CODES.has(p.code) && p.owner === 'person'
+
+/**
+ * The one list every count comes from: the current check's problems that still need someone, without the person's
+ * values (`withValues` keeps them, for the hand-off's own comparison and count).
  * Person warnings (decisions with defaults) stop counting once the check is ready.
  */
-export function openProblems(s: Status): Problem[] {
+export function openProblems(s: Status, withValues = false): Problem[] {
   const c = s.check
   if (!c) return []
   // A name skipped for now never counts, unless iii cloud still blocks on it (SECRET_MISSING).
   return c.problems.filter(
     (p) =>
       p.owner !== 'none' &&
-      !VALUE_CODES.has(p.code) &&
+      (withValues || !isPersonValue(p)) &&
       !hiddenPerson(s, p) &&
       !(p.skipped && p.severity !== 'block') &&
       !(c.ready && p.owner === 'person' && p.severity !== 'block'),
@@ -819,7 +827,7 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 
 /** What the person says to the agent: a plain sentence. The problems, fixes and paths are in `status`. */
 export function handoffMessage(s: Status): string {
-  const n = openProblems(s).length
+  const n = openProblems(s, true).length
   const what = envName(s) || s.project?.repository || 'this project'
   return n
     ? `Make ${what} ready for iii cloud: fix the ${plural(n, 'problem', 'problems')} from the latest check.`
@@ -1002,7 +1010,9 @@ export function checklist(s: Status): { rows: CheckRow[]; fixed: number; counted
       counted: false,
     }
   }
-  const now = new Map(open.map((p) => [briefKey(problemTitle(p), p.file, p.line), p]))
+  // The comparison includes the person's values (the brief holds them): one still open is not "fixed", and the
+  // values card shows it, so its row is dropped below.
+  const now = new Map(openProblems(s, true).map((p) => [briefKey(problemTitle(p), p.file, p.line), p]))
   const rows: CheckRow[] = [
     ...brief.agent_problems.map((b) => ({ b, owner: 'agent' })),
     ...brief.person_problems.map((b) => ({ b, owner: 'person' })),
@@ -1023,18 +1033,20 @@ export function checklist(s: Status): { rows: CheckRow[]; fixed: number; counted
     }
   })
   for (const [key, p] of now)
-    rows.push({
-      id: key,
-      pid: p.id,
-      title: problemTitle(p),
-      code: p.code,
-      owner: p.owner,
-      fixed: false,
-      file: p.file,
-      line: p.line,
-      detail: p.detail,
-    })
-  return { rows, fixed: rows.filter((r) => r.fixed).length, counted: true }
+    if (!isPersonValue(p))
+      rows.push({
+        id: key,
+        pid: p.id,
+        title: problemTitle(p),
+        code: p.code,
+        owner: p.owner,
+        fixed: false,
+        file: p.file,
+        line: p.line,
+        detail: p.detail,
+      })
+  const shown = rows.filter((r) => !(r.code && VALUE_CODES.has(r.code) && r.owner === 'person'))
+  return { rows: shown, fixed: shown.filter((r) => r.fixed).length, counted: true }
 }
 
 /** `/home/you/x` reads `~/x`. */

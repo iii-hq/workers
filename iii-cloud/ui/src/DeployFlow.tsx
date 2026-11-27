@@ -504,12 +504,12 @@ function Follow({
       Date.parse(x.created_at) < Date.parse(d.created_at),
   )
   const c = status.check
-  // The deploy is of this check: its id when the deploy names one, else the same commit. A held one counts only when
-  // the worker's own markers say this page started it: a commit that matches proves nothing (a push by hand of the
-  // checked commit makes the check's base the branch head, and the worker refuses its Confirm as MAIN_MOVED).
+  // A held deployment is this page's only when the worker's own markers say so (a check_id, an approval, or the record
+  // it created). One without them is "elsewhere": a console push the worker never saw, which a check cannot confirm.
   const elsewhere = heldElsewhere(d)
   // A deployment this page started names the check it came from, but every new check has a new id: a passed check of
-  // the same commit is what lets it be confirmed (the worker checks the commit that landed against the check's).
+  // the same commit lets it be confirmed (the worker's `deployment_id` path accepts the same commit, and pins the
+  // plan to the new check's digest).
   const ours = !!c && !elsewhere && (d.check_id === c.id || d.commit.sha === c.commit)
   // It carries this page's own marks: it was started here, and no passed check matches it any more.
   const startedHere = !!d.check_id || d.approved_by_worker

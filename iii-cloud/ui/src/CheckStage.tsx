@@ -522,7 +522,10 @@ function cloudPart(s: Status, c: Check): Part {
     status:
       plan.status === 'clean'
         ? `done · ${duration(c.duration_ms)}`
-        : `${plan.blocking} to fix${plan.at_least ? ', at least' : ''}`,
+        : // The rows it shows (the person's values are the values card's): the count is theirs.
+          rows.some((r) => r.mark === 'bad')
+          ? `${rows.filter((r) => r.mark === 'bad').length} to fix${plan.at_least ? ', at least' : ''}`
+          : 'waits on values',
     rows,
     foot: plan.at_least ? AT_LEAST : undefined,
   }
@@ -763,6 +766,8 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const assisted = !env.production
   const way = wayOf(s, env)
   const target = way.way === 'assisted' && way.own ? way.own : env.branch
+  // `taken`: another environment follows the branch this deploy sends to; Deploy refuses it.
+  const follower = p.environments.find((e) => e.name !== env.name && e.branch === target)?.name
   const pr = assisted ? null : usablePr(s)
   const file = appFile(s)
   const { resources, overrides } = c.plan.confirmations
@@ -868,6 +873,14 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
             >
               {ASSISTED}
             </DetailRow>
+            {way.way === 'assisted' && way.taken ? (
+              <DetailRow
+                label="Branch"
+                note={`Deploy will refuse: ${target} cannot be followed by two environments. Change what ${env.name} or ${follower ?? 'the other one'} follows in iii cloud, then check again.`}
+              >
+                {`${follower ?? 'Another environment'} follows ${target}`}
+              </DetailRow>
+            ) : null}
             {way.way === 'assisted' && way.own ? (
               <DetailRow
                 label="Branch"
@@ -1702,6 +1715,7 @@ export function CheckStage(props: CheckStageProps) {
       {editing ? (
         <ValuesDialog
           only={editing}
+          describe="Set them from a file, type them, leave them empty on purpose, or skip the optional ones: iii cloud does not deploy without the required ones."
           host={host}
           status={s}
           narrow={narrow}

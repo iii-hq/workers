@@ -492,7 +492,11 @@ describe('the step', () => {
     const one = { ...rcValues, items: [valueItem('NEW_ONE', { need: 'required', default: null })] }
     await editor(one, {}, { mode: 'step' })
     expect(select('NEW_ONE').value).toBe('typed')
-    expect([...select('NEW_ONE').options].map((o) => o.textContent)).toEqual(['Type a value', 'Skip for now'])
+    expect([...select('NEW_ONE').options].map((o) => o.textContent)).toEqual([
+      'Type a value',
+      'Leave empty',
+      'Skip for now',
+    ])
   })
 })
 
