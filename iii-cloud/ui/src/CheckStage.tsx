@@ -1535,6 +1535,13 @@ export function CheckStage(props: CheckStageProps) {
             const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip })
             if (out !== null) values.refetch()
           }}
+          onRunWithout={async (names) => {
+            const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip: true })
+            if (out !== null) {
+              values.refetch()
+              checkAgain()
+            }
+          }}
           onAll={() => go({ at: 'secrets', env: envId })}
         />
       ) : null}

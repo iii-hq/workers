@@ -232,7 +232,14 @@ export function findings(s: Status): Findings {
   // They come from the check's own problems (the hand-off's checklist leaves them out), and from what the agent asked for.
   const values = [
     ...c.problems
-      .filter((p) => VALUE_CODES.has(p.code) && p.severity === 'block' && p.owner === 'person' && !hiddenPerson(s, p))
+      .filter(
+        (p) =>
+          VALUE_CODES.has(p.code) &&
+          p.severity === 'block' &&
+          p.owner === 'person' &&
+          !hiddenPerson(s, p) &&
+          !skippedHere(s, p),
+      )
       .map((p) => ({ ...itemOf(p.id, p, { ...p, title: problemTitle(p) }, p.owner, false), secret: variableName(p) })),
     ...shown.filter((i) => !i.code && i.secret && !i.fixed),
   ]
@@ -244,6 +251,10 @@ export function findings(s: Status): Findings {
     skipped: [...aside, ...byCode].filter((i) => !isValue(i)),
   }
 }
+
+/** The run here lacks this name and the person skipped it: it runs with an empty value; the old problem waits for the next check. */
+const skippedHere = (s: Status, p: Problem) =>
+  p.code === 'LOCAL_VARIABLE_UNSET' && (s.skipped_values ?? []).includes(variableName(p) ?? '')
 
 /** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)

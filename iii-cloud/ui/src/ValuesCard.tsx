@@ -19,6 +19,7 @@ export function ValuesCard({
   read,
   onSet,
   onSkip,
+  onRunWithout,
   onAll,
 }: {
   read: ValuesRead
@@ -26,6 +27,8 @@ export function ValuesCard({
   onSet: (names: string[]) => void
   /** `values::skip` for these names; resolves when it went through. */
   onSkip: (names: string[], skip: boolean) => Promise<void>
+  /** "Run without them here": skip these names, then check (the check makes the title and the lock true again). */
+  onRunWithout: (names: string[]) => Promise<void>
   /** "All names": the Secrets and variables screen. */
   onAll: () => void
 }) {
@@ -37,7 +40,7 @@ export function ValuesCard({
   const file = v?.manifest ?? 'the compose file'
   const toSet = [...plan.required, ...plan.asked, ...plan.local, ...plan.optional]
   // What "Skip for now" may skip: never a required name; a name the run here lacks runs with an empty value.
-  const skippable = [...plan.local, ...plan.optional]
+  const skippable = plan.optional
   const noWrite = v && v.save !== 'ok' ? NO_WRITE[v.save] : null
   const skip = async (names: string[], on: boolean) => {
     setBusy(true)
@@ -111,6 +114,19 @@ export function ValuesCard({
                 <p className="iii-cloud-cs-sub">
                   The run here needs them in an env file of your folder, or skip them to run with an empty value.
                 </p>
+                <div className="iii-cloud-cs-acts">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setBusy(true)
+                      void onRunWithout(plan.local.map((i) => i.name)).finally(() => setBusy(false))
+                    }}
+                  >
+                    Run without them here
+                  </Button>
+                </div>
               </div>
             ) : null}
             {plan.optional.length ? (

@@ -982,11 +982,16 @@ describe('the check follows the canvas', () => {
       expect(card()?.textContent).toContain('STRIPE_KEY')
       expect(card()?.textContent).toContain('skip them to run with an empty value')
       expect(card()?.textContent).not.toContain('Every name')
-      await click(btn('Skip for now'))
+      // "Skip for now" is for the optional names only: here there are none, so it is absent.
+      expect(btn('Skip for now')).toBeNull()
+      await click(btn('Run without them here'))
+      await flush()
       expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
         names: ['STRIPE_KEY'],
         skip: true,
       })
+      // then a check, which makes the title and the lock true again
+      expect(h.calls.map((c) => c.id)).toContain('iii-cloud::check')
       await click(btn('Set values'))
       expect(el.querySelector('[role=dialog]')?.textContent).toContain('STRIPE_KEY')
     })
@@ -1058,6 +1063,32 @@ describe('the check follows the canvas', () => {
         names: ['STRIPE_KEY'],
         skip: true,
       })
+    })
+
+    it('Skip for now skips only the optional names; once the local ones are skipped the title stops counting them', async () => {
+      const local = names('LOC', 3, { need: 'required', default: null, in_cloud: 'set', here: 'unset' })
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer([...local, ...names('OPT', 12)]),
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      await click(btn('Skip for now'))
+      const sent = h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload as { names: string[] }
+      expect(sent.names).toHaveLength(12)
+      expect(sent.names.some((n) => n.startsWith('LOC'))).toBe(false)
+      const problem = {
+        ...rcVariables[0],
+        id: 'p-loc',
+        code: 'LOCAL_VARIABLE_UNSET',
+        source: 'check_here' as const,
+        severity: 'block' as const,
+        owner: 'person' as const,
+        title: 'LOC_0 has no value here',
+      }
+      const s = { ...base, check: { ...base.check!, problems: [problem] } }
+      await stage(s)
+      expect(title()).toMatch(/to set/)
+      await stage({ ...s, skipped_values: ['LOC_0'] })
+      expect(title() ?? '').not.toMatch(/to set/)
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
