@@ -1655,7 +1655,7 @@ pub struct Values {
 }
 
 /// One value `iii-cloud::values::save` writes. No `Debug`: it can hold a value.
-#[derive(Deserialize, JsonSchema)]
+#[derive(Clone, Deserialize, JsonSchema)]
 #[serde(tag = "from", rename_all = "snake_case")]
 pub enum SaveItem {
     Typed {

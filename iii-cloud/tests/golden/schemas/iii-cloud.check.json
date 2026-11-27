@@ -1,5 +1,5 @@
 {
-  "description": "The cloud plan for a commit plus the fast checks here; with run: true, also the run here. manifest checks another worker-compose*.yaml instead of the environment's, changing nothing in iii cloud. push: true pushes the workspace's fix branch first, never an environment's branch.",
+  "description": "The cloud plan for a commit plus the fast checks here; with run: true, also the run here. Without manifest it checks the file the work is on: the newest check's of this environment if it named one and the environment's file is unchanged since, else the environment's own. manifest checks another worker-compose*.yaml instead, changing nothing in iii cloud. push: true pushes the workspace's fix branch first, never an environment's branch.",
   "function_id": "iii-cloud::check",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

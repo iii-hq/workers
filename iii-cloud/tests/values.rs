@@ -979,3 +979,45 @@ async fn a_secret_request_is_for_a_secret_the_compose_file_reads() {
     names.sort();
     assert_eq!(names, vec!["GH_TOKEN", "GONE_NOW"]);
 }
+
+#[tokio::test]
+async fn more_than_four_names_with_uneven_delays_never_run_more_than_four_at_once() {
+    let w = world(false, "developer").await;
+    let arrivals: std::sync::Arc<std::sync::Mutex<Vec<(std::time::Instant, u64)>>> =
+        Default::default();
+    let log = arrivals.clone();
+    Mock::given(method("PUT"))
+        .respond_with(move |r: &wiremock::Request| {
+            // The name's own delay, from its last letter's place in the list: uneven on purpose.
+            let name = r.url.path().rsplit('/').next().unwrap().to_string();
+            let n: u64 = name.trim_start_matches('N').parse().unwrap();
+            let ms = [240, 20, 160, 20, 60, 20, 200, 20, 20, 120][n as usize];
+            log.lock().unwrap().push((std::time::Instant::now(), ms));
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(ms))
+                .set_body_json(json!({}))
+        })
+        .mount(&w.server)
+        .await;
+    let items: Vec<Value> = (0..10)
+        .map(|i| json!({"name": format!("N{i}"), "from": "typed", "type": "variable", "value": format!("v{i}")}))
+        .collect();
+    let out = save(&w.h.ctx, request(Value::Array(items))).await.unwrap();
+    // Answered in the request's order, every one written.
+    let names: Vec<_> = out.results.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(names, (0..10).map(|i| format!("N{i}")).collect::<Vec<_>>());
+    assert!(out.results.iter().all(|r| r.ok));
+    // The most requests in flight at one moment, by arrival and delay (the answer's own latency adds a little).
+    let log = arrivals.lock().unwrap().clone();
+    assert_eq!(log.len(), 10);
+    let most = log
+        .iter()
+        .map(|(at, _)| {
+            log.iter()
+                .filter(|(o, ms)| o <= at && *at < *o + std::time::Duration::from_millis(*ms))
+                .count()
+        })
+        .max()
+        .unwrap();
+    assert!((2..=4).contains(&most), "{most} in flight at once");
+}

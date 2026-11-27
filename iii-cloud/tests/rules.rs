@@ -1556,7 +1556,7 @@ fn an_environment_deploys_by_pull_request_only_in_production() {
         .unwrap(),
     )
     .unwrap();
-    assert!(cases.len() >= 8);
+    assert!(cases.len() >= 11);
     for c in cases {
         let e = &c["env"];
         let env = EnvironmentInfo {
@@ -1577,6 +1577,7 @@ fn an_environment_deploys_by_pull_request_only_in_production() {
             "pull_request" => Way::PullRequest,
             _ => Way::Assisted {
                 own: c["own"].as_str().map(str::to_owned),
+                taken: c["taken"].as_bool().unwrap(),
             },
         };
         assert_eq!(
@@ -1586,4 +1587,16 @@ fn an_environment_deploys_by_pull_request_only_in_production() {
             c["case"]
         );
     }
+}
+
+#[test]
+fn an_environment_whose_production_flag_cannot_be_read_counts_as_production() {
+    let read = |v: Value| iii_cloud::project::env_info(&v).unwrap().production;
+    assert!(read(json!({"id": "e", "name": "n", "branch": "b"})));
+    assert!(read(
+        json!({"id": "e", "name": "n", "branch": "b", "production": "yes"})
+    ));
+    assert!(!read(
+        json!({"id": "e", "name": "n", "branch": "b", "production": false})
+    ));
 }

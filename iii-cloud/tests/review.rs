@@ -479,3 +479,29 @@ async fn refresh_fills_the_default_branch_and_deleting_environments_are_dropped(
         vec!["dev"]
     );
 }
+
+#[tokio::test]
+async fn a_commit_an_older_worker_made_of_copied_files_is_a_problem_before_any_deploy() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::write(ws.join("copied.txt"), "from the person's folder").unwrap();
+    git(&ws, &["add", "."]);
+    git(
+        &ws,
+        &["commit", "-q", "-m", "Uncommitted changes from feat/search"],
+    );
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "BROUGHT_FILES_COMMIT")
+        .expect("the brought-files commit is a problem");
+    assert_eq!((p.owner, p.severity), (Owner::Agent, Severity::Block));
+    let detail = p.detail.as_deref().unwrap();
+    assert!(
+        detail.contains("Uncommitted changes from feat/search")
+            && detail.contains("git reset --hard"),
+        "{detail}"
+    );
+    assert!(!c.ready);
+}

@@ -92,10 +92,9 @@ pub fn env_info(v: &Value) -> Option<EnvironmentInfo> {
     Some(EnvironmentInfo {
         id: str_of(v, "id")?,
         name: str_of(v, "name")?,
-        production: v
-            .get("production")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        // An environment whose `production` can't be read counts as production: the
+        // worker pushes to a branch only for one it knows is not.
+        production: v.get("production").and_then(Value::as_bool).unwrap_or(true),
         branch: str_of(v, "branch")?,
         manifest: str_of(v, "manifest"),
         url: str_of(v, "url"),
@@ -135,7 +134,6 @@ pub fn default_environment<'a>(
 /// `iii-cloud::project::resolve`: read the folder, then keep it as the
 /// selection, or as `candidate` while another project with a workspace is selected.
 pub async fn resolve(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
-    refuse_agent_copy(ctx, &request.path).await?;
     let project = read_project(ctx, request).await?;
     store_project(ctx, &project);
     Ok(project)
@@ -145,20 +143,15 @@ pub async fn resolve(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
 /// or one it recorded) is never the person's folder: `AGENT_COPY`, with the main checkout's path in `fix`.
 async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
     let top = toplevel(path).await?;
-    let dirs = git(
-        &top,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-dir",
-            "--git-common-dir",
-        ],
-    )
-    .await?;
+    // Both, as canonical paths (no `--path-format`: git before 2.31 lacks it; the
+    // answers may be relative to the folder).
+    let dirs = git(&top, &["rev-parse", "--git-dir", "--git-common-dir"]).await?;
     let mut lines = dirs.lines();
     let (Some(dir), Some(common)) = (lines.next(), lines.next()) else {
         return Ok(());
     };
+    let canon = |p: &str| std::fs::canonicalize(top.join(p)).unwrap_or_else(|_| top.join(p));
+    let (dir, common) = (canon(dir), canon(common));
     if dir == common {
         return Ok(());
     }
@@ -170,7 +163,7 @@ async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
     if !made && !branch.trim().starts_with("iii-cloud/") {
         return Ok(());
     }
-    let common = Path::new(common);
+    let common = common.as_path();
     let main = match common.file_name() {
         Some(n) if n == ".git" => common.parent().unwrap_or(common),
         _ => common,
@@ -187,6 +180,8 @@ async fn refuse_agent_copy(ctx: &Ctx, path: &str) -> Res<()> {
 
 /// The folder, its repository and what iii cloud has for it; stores nothing.
 async fn read_project(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
+    // Every read of a folder (`resolve`, `use`) refuses the agent's own copy.
+    refuse_agent_copy(ctx, &request.path).await?;
     let top = toplevel(&request.path).await?;
     let remote = tool::run(
         "git",
@@ -254,6 +249,37 @@ async fn read_project(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
         project.default_branch = default_branch_of(&top, None).await;
     }
     Ok(project)
+}
+
+/// The environments of the selected environment's project as iii cloud has them
+/// now (the store's list may be older than a console edit).
+pub async fn live_environments(
+    ctx: &Ctx,
+    team_id: &str,
+    environment_id: &str,
+) -> Res<Vec<EnvironmentInfo>> {
+    let env = ctx
+        .call(&Req::get(format!(
+            "/teams/{team_id}/environments/{environment_id}"
+        )))
+        .await?;
+    let project_id = str_of(&env, "project_id").ok_or_else(|| {
+        CloudError::new(
+            "CLOUD_ERROR",
+            "iii cloud sent an environment without its project.",
+        )
+    })?;
+    read_environments(ctx, team_id, &project_id).await
+}
+
+/// The repository's default branch as origin has it now (`ls-remote --symref`).
+pub async fn live_default_branch(ws: &Path) -> Res<String> {
+    let out = git(ws, &["ls-remote", "--symref", "origin", "HEAD"]).await?;
+    out.lines()
+        .find_map(|l| l.strip_prefix("ref: refs/heads/"))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_owned)
+        .ok_or_else(|| CloudError::new("GIT_FAILED", "origin did not name its default branch."))
 }
 
 /// The project's environments, as the cloud has them now.
@@ -1071,7 +1097,12 @@ pub async fn default_branch_of(top: &Path, known: Option<&str>) -> Option<String
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Way {
     PullRequest,
-    Assisted { own: Option<String> },
+    /// `taken`: the branch it would push (`own`, else its own current one) is
+    /// followed by another environment, so nothing may be pushed to it.
+    Assisted {
+        own: Option<String>,
+        taken: bool,
+    },
 }
 
 /// The branch an environment's assisted deploys push to.
@@ -1081,7 +1112,8 @@ pub fn own_branch(name: &str) -> String {
 
 /// `others`: the branches the project's other environments follow. A branch
 /// that is the default, shared, or whose default is unknown is never pushed:
-/// the environment gets its own. Mirrored by `deployWay` in `ui/src/model.ts`.
+/// the environment gets its own, and when another environment follows that one
+/// too, nothing is pushed at all (`taken`). Mirrored by `deployWay` in `ui/src/model.ts`.
 pub fn deploy_way(default: Option<&str>, env: &EnvironmentInfo, others: &[String]) -> Way {
     if env.production {
         return Way::PullRequest;
@@ -1089,7 +1121,9 @@ pub fn deploy_way(default: Option<&str>, env: &EnvironmentInfo, others: &[String
     let own = own_branch(&env.name);
     let moves = env.branch != own
         && (default.is_none_or(|d| d == env.branch) || others.contains(&env.branch));
+    let target = if moves { &own } else { &env.branch };
     Way::Assisted {
+        taken: others.contains(target),
         own: moves.then_some(own),
     }
 }

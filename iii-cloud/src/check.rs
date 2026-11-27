@@ -873,7 +873,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "manifest must be a worker-compose*.yaml of the repository, from its root, such as api/worker-compose.yaml",
         ));
     }
-    let sel = selected_for(ctx, request.handoff_id.as_deref()).await?;
+    let mut sel = selected_for(ctx, request.handoff_id.as_deref()).await?;
     // What this check is made for, read before anything slow: a `use` that lands meanwhile is not its source.
     let made_for = ctx.store.read(|s| s.checked_for_now(&sel.env.id));
     // Without a credential the checks on this machine still run; the plan is
@@ -890,6 +890,24 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         }
         Err(e) => return Err(e),
     };
+    // An assisted environment's own branch that GitHub deleted (a head branch
+    // removed after a merge) leaves nothing to compare with: the base is the
+    // default branch, and the deploy creates the branch again.
+    if !sel.env.production
+        && sel.env.branch == crate::project::own_branch(&sel.env.name)
+        && matches!(remote_ref(&sel.workspace, &sel.env.branch).await, Ok(None))
+    {
+        let stored = ctx
+            .store
+            .read(|s| s.project.as_ref().and_then(|p| p.default_branch.clone()));
+        let default = match crate::project::live_default_branch(&sel.workspace).await {
+            Ok(d) => Some(d),
+            Err(_) => stored,
+        };
+        if let Some(d) = default {
+            sel.env.branch = d;
+        }
+    }
     let cfg = ctx.config().await;
     let explicit = request.commit.clone();
     let commit = match explicit {
@@ -977,7 +995,10 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let asked = request
         .manifest
         .clone()
-        .or_else(|| ctx.store.read(|s| s.work_file(&sel.env.id)))
+        .or_else(|| {
+            ctx.store
+                .read(|s| s.work_file(&sel.env.id, env_manifest.as_deref()))
+        })
         .filter(|m| env_manifest.as_deref() != Some(m.as_str()));
     // What this check is for: the file the cloud has now, not the cache.
     // Recorded whatever is selected: a hand-off's check of another environment still has its file.
@@ -1129,6 +1150,28 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             Some(format!(
                 "{count} commit(s) on this branch were made before this worktree started and are not on the base. Start from the base: `git reset --hard {}` and redo the fixes.",
                 base.as_deref().unwrap_or(&format!("origin/{}", sel.env.branch))
+            )),
+            Owner::Agent,
+            None,
+        ));
+    }
+    // A reused or resumed fix branch may hold what an older worker brought from the
+    // person's folder: a commit of copied uncommitted files. A deploy would push it.
+    if !base_head.is_empty()
+        && let Ok(subjects) = git(
+            &sel.workspace,
+            &["log", "--format=%s", &format!("{base_head}..{commit}")],
+        )
+        .await
+        && let Some(subject) = subjects
+            .lines()
+            .find(|l| l.starts_with("Uncommitted changes from "))
+    {
+        here_problems.push(crate::local::here(
+            "BROUGHT_FILES_COMMIT",
+            "A commit holds files copied from your folder".into(),
+            Some(format!(
+                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Start from the base (`git reset --hard {base_head}`) and redo only the fixes, or ask your agent to drop that commit."
             )),
             Owner::Agent,
             None,
