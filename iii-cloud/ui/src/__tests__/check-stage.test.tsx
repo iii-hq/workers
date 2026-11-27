@@ -1890,13 +1890,28 @@ describe("a local run that failed at the release stage is the agent's to fix", (
 
   it('the title counts it, the stop offers the agent first, and Run again stays second', async () => {
     const openScreen = vi.fn()
-    await stage(release(note), marker, { openScreen })
+    const reused = (sent: boolean) => ({
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent, session_id: 'sess-1' },
+    })
+    const h = await stage(release(note), reused(true), { openScreen })
     expect(title()).toBe('1 for your agent to fix')
     const buttons = [...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)
     expect(buttons).toEqual(['Fix with your agent', 'Run again'])
-    // The agent waits in its chat: the same call the screen uses for a waiting agent opens that chat.
+    // The agent waits in its chat: the button calls the worker, which sends what failed into that chat, then the chat opens.
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
     expect(openScreen).toHaveBeenCalled()
+    expect(handoffs(h)).toHaveLength(1)
+    expect(handoffs(h)[0]).toMatchObject({ payload: { kind: 'ready' } })
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    // The worker could not put it in: the chat opens and the person is told to tell it.
+    const openScreen2 = vi.fn()
+    await stage(release(note), reused(false), { openScreen: openScreen2 })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(openScreen2).toHaveBeenCalled()
+    expect(stop()?.textContent).toContain('Tell it in the chat.')
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
     // No agent at all: the same button sends the hand-off.
     const h2 = await stage({ ...release(note), agent: null, handoff_brief: null }, marker)
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])

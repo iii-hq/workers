@@ -27,13 +27,16 @@ export async function handOff(
   choice?: ImportChoice,
   text?: string,
   /** `candidate`: an import for the folder Setup is adding, not the project in use. */
-  more: { candidate?: boolean } = {},
+  more: {
+    candidate?: boolean /** Call the worker even when a hand-off of this kind exists: it sends the open problems into that chat. */
+    call?: boolean
+  } = {},
 ): Promise<boolean> {
   const compose = host.chat?.compose
   if (!compose) return false
   // One launch at a time, and never a second session for a hand-off the agent is already on.
   if (isLaunching()) return false
-  if (!text && activeSameKind(status, kind)) {
+  if (!text && !more.call && activeSameKind(status, kind)) {
     openAgentChat(host, status)
     return true
   }
@@ -69,7 +72,8 @@ export async function handOff(
   // A hand-off the worker already had open delivers its own text: never start a second chat.
   if (made?.reused) {
     if (made.session_id) openChatFor(host, made.session_id)
-    setLaunch(made.session_id ? { kind: 'sent' } : { kind: 'waiting' })
+    // `sent: false`: the chat is open but nothing was put in it: the person tells it.
+    setLaunch(made.sent === false ? { kind: 'told' } : made.session_id ? { kind: 'sent' } : { kind: 'waiting' })
     return true
   }
   if (made?.delivered && made.session_id) {

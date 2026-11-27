@@ -64,6 +64,8 @@ export const FOLDER_NOTE = 'Confirm the folder in the chat when asked.'
 export type Launch =
   | { kind: 'launching' }
   | { kind: 'sent' }
+  /** The agent's chat is open, but the worker could not put anything into it: the person tells it. */
+  | { kind: 'told' }
   | { kind: 'waiting' }
   | { kind: 'started' }
   | { kind: 'error'; retry: () => void }

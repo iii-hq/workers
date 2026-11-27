@@ -1006,7 +1006,8 @@ export function CheckStage(props: CheckStageProps) {
   const now = useNow(1000)
   const { error, busy, call, setError } = useActions(host)
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
-  const launching = useLaunch()?.kind === 'launching'
+  const launch = useLaunch()
+  const launching = launch?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
   // The check the production name dialog was opened for: it deploys that one, only while it is still the ready one.
   const [confirmFor, setConfirmFor] = useState<string | null>(null)
@@ -1295,6 +1296,8 @@ export function CheckStage(props: CheckStageProps) {
           <>
             {plainMessage(err)}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
+            {agentRun && launch?.kind === 'sent' ? " Sent to your agent's chat." : ''}
+            {agentRun && launch?.kind === 'told' ? ' Tell it in the chat.' : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
             {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
@@ -1304,7 +1307,14 @@ export function CheckStage(props: CheckStageProps) {
           ? [
               ...(agentWorking(s)
                 ? []
-                : [{ label: sendLabel(s, 'ready', 'Fix with your agent'), onClick: ask, disabled: !canAsk }]),
+                : [
+                    {
+                      label: sendLabel(s, 'ready', 'Fix with your agent'),
+                      // An agent that waits has a hand-off open: the worker puts what failed into its chat.
+                      onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
+                      disabled: !canAsk,
+                    },
+                  ]),
               { label: 'Run again', onClick: checkAgain, disabled: running },
             ]
           : [{ label: 'Run again', onClick: checkAgain, disabled: running }],

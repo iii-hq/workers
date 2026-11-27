@@ -413,6 +413,8 @@ export type HandoffResult = {
   delivered?: boolean
   /** The worker already had this hand-off open: it delivered the text itself; never start another chat. */
   reused?: boolean
+  /** With `reused`: the worker put the latest check's problems and failed run into that chat (false: it could not, tell it there). */
+  sent?: boolean
   session_id?: string | null
 }
 
