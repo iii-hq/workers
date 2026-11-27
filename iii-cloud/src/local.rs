@@ -568,9 +568,26 @@ const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
 /// word on (leading `NAME=value` words and `exec` skipped).
 fn command_parts(command: &str) -> Vec<Vec<&str>> {
     command
-        .split(['&', '|', ';'])
+        .split(['&', '|', ';', '\n'])
         .map(|part| {
-            part.split_whitespace()
+            // Redirections are not part of the command: `env > /tmp/x` is `env`.
+            let mut words: Vec<&str> = vec![];
+            let mut skip_target = false;
+            for w in part.split_whitespace() {
+                if skip_target {
+                    skip_target = false;
+                    continue;
+                }
+                let redirect = w.trim_start_matches(|c: char| c.is_ascii_digit());
+                if redirect.starts_with('>') || redirect.starts_with('<') {
+                    // `>`, `>>`, `2>`, `<`: the next word is its target; `>file` carries it.
+                    skip_target = redirect.chars().all(|c| c == '>' || c == '<');
+                    continue;
+                }
+                words.push(w);
+            }
+            words
+                .into_iter()
                 .skip_while(|w| {
                     *w == "exec"
                         || w.split_once('=').is_some_and(|(k, _)| {
@@ -607,7 +624,7 @@ pub fn prints_environment(command: &str) -> Option<String> {
         .find(|w| {
             matches!(
                 w.as_slice(),
-                ["env"] | ["set"] | ["export", "-p"] | ["printenv", ..]
+                ["env"] | ["set"] | ["export"] | ["export", "-p"] | ["printenv", ..]
             )
         })
         .map(|w| w.join(" "))
@@ -731,6 +748,7 @@ pub fn here(
 ) -> Problem {
     Problem {
         skipped: false,
+        variable: None,
         id: problem_id(Source::CheckHere, code, file.as_deref(), None, &title),
         source: Source::CheckHere,
         code: code.to_string(),
@@ -1002,7 +1020,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                         "COMMAND_PRINTS_ENVIRONMENT",
                         format!("{name}'s {what} command runs `{part}`"),
                         Some(format!(
-                            "This command prints every variable, secrets included, into the log. Its {what} command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                            "This command prints every variable, secrets included, into the log. Its {what} command is `{command}`. Take it out; read the whole log of the run with `iii-cloud::check::read` instead."
                         )),
                         Owner::Agent,
                         Some(rel(i.workspace, &dir)),
@@ -1069,7 +1087,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 "COMMAND_PRINTS_ENVIRONMENT",
                 format!("The build command runs `{part}`"),
                 Some(format!(
-                    "This command prints every variable, secrets included, into the log. The build command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                    "This command prints every variable, secrets included, into the log. The build command is `{command}`. Take it out; read the whole log of the run with `iii-cloud::check::read` instead."
                 )),
                 Owner::Agent,
                 None,
@@ -1154,7 +1172,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 if !env.iter().any(|e| e == name) {
                     // Only an empty default that iii cloud has a value for is needed for that reason.
                     let because_cloud_has_it = of_name().all(|x| x.default.is_some());
-                    out.push(here(
+                    let mut unset = here(
                         "LOCAL_VARIABLE_UNSET",
                         format!("{name} has no value here"),
                         Some(if because_cloud_has_it {
@@ -1166,7 +1184,9 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                         }),
                         Owner::Person,
                         None,
-                    ));
+                    );
+                    unset.variable = Some(name.to_string());
+                    out.push(unset);
                 }
             }
         }

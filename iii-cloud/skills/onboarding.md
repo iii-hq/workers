@@ -131,7 +131,7 @@ On a failed stage, read `run.error` and `run.log_tail`, and the code in `iii-clo
 ## 9. Commit, push, and for production open the pull request
 
 ```
-git add -A && git commit -m "<message>"
+git add <the files you changed> && git commit -m "<message>"
 git push --force-with-lease -u origin HEAD
 gh pr create --base <environment branch> --head <fix branch> \
   --title "<title>" --body "<check.report>

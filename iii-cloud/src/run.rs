@@ -605,6 +605,8 @@ pub async fn start_with(
                         stage,
                         code: "RUN_PANIC".into(),
                         message: "The run stopped on an internal error.".into(),
+                        owner: None,
+                        withheld: false,
                     });
                 }
             });
@@ -749,13 +751,14 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
         shown.join(", ")
     };
     let mut parts: Vec<String> = vec![];
-    if !restored.is_empty() {
-        parts.push(format!("Put back as committed: {}.", take(restored)));
+    let put_back = take(restored);
+    if !put_back.is_empty() {
+        parts.push(format!("Put back as committed: {put_back}."));
     }
-    if !moved.is_empty() {
+    let taken_out = take(moved);
+    if !taken_out.is_empty() {
         parts.push(format!(
-            "Moved out of the copy (the run created them): {}.",
-            take(moved)
+            "Moved out of the copy (created during the run): {taken_out}."
         ));
     }
     let more = if n > 5 {
@@ -770,9 +773,8 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
             if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
+            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
             parts.join(" "),
-            dir.display(),
             dir.display()
         )),
         Owner::None,
@@ -784,9 +786,89 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
 
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
+///
+/// Besides the changed files, the snapshot lists the directories that exist then, under the key
+/// `DIR_KEY<dir>` (every folder with a tracked or visible untracked file in it, and every untracked
+/// folder, empty ones too): a file the run creates in a folder that was not there is the run's own data.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    dirty_entries(ws, Fingerprints::All).await
+    let mut snapshot = dirty_entries(ws, Fingerprints::All).await?;
+    let mut dirs: std::collections::BTreeSet<String> = Default::default();
+    // Every parent folder of a path.
+    fn parents(dirs: &mut std::collections::BTreeSet<String>, path: &str) {
+        let mut at = Path::new(path).parent();
+        while let Some(d) = at.filter(|d| !d.as_os_str().is_empty()) {
+            dirs.insert(d.to_string_lossy().into_owned());
+            at = d.parent();
+        }
+    }
+    if let Ok(listed) = tool::git(
+        ws,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )
+    .await
+    {
+        for p in listed.split('\0').filter(|p| !p.is_empty()) {
+            parents(&mut dirs, p);
+        }
+    }
+    if let Ok(listed) = tool::git(
+        ws,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--directory",
+            "--exclude-standard",
+        ],
+    )
+    .await
+    {
+        for p in listed.split('\0').filter(|p| p.ends_with('/')) {
+            let dir = p.trim_end_matches('/');
+            dirs.insert(dir.to_string());
+            parents(&mut dirs, dir);
+            // git collapses an untracked folder to its top: every folder under it was there too.
+            let (root, top) = (ws.to_path_buf(), dir.to_string());
+            let below = tokio::task::spawn_blocking(move || {
+                let mut found = vec![];
+                let mut todo = vec![top];
+                while let Some(d) = todo.pop() {
+                    if found.len() > 5000 {
+                        break;
+                    }
+                    let Ok(read) = std::fs::read_dir(root.join(&d)) else {
+                        continue;
+                    };
+                    for e in read.flatten() {
+                        if e.file_type().is_ok_and(|t| t.is_dir()) {
+                            let sub = format!("{d}/{}", e.file_name().to_string_lossy());
+                            found.push(sub.clone());
+                            todo.push(sub);
+                        }
+                    }
+                }
+                found
+            })
+            .await
+            .unwrap_or_default();
+            dirs.extend(below);
+        }
+    }
+    snapshot.extend(
+        dirs.into_iter()
+            .map(|d| (format!("{DIR_KEY}{d}"), String::new())),
+    );
+    Some(snapshot)
 }
+
+/// The prefix of a snapshot entry that is a directory, not a changed file.
+const DIR_KEY: &str = "\0dir:";
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
 /// content stays what it left; what an earlier run left and is still there with that content stays
@@ -862,8 +944,35 @@ pub async fn set_aside_run(
             .filter(|p| !before.contains_key(*p) && tracked.contains(*p))
             .cloned()
             .collect();
-        // Untracked, not ignored files the run created: moved out of the copy (the agent's
-        // staging would sweep them into a commit).
+        let candidates = if candidates.len() <= MAX_WROTE {
+            candidates
+        } else {
+            vec![]
+        };
+        let dir = run_dir.join("left");
+        let before_dirs: std::collections::BTreeSet<String> = before
+            .keys()
+            .map(|k| k.strip_prefix(DIR_KEY).unwrap_or(k).to_string())
+            .collect();
+        // One byte budget for the put-back and the moved files together.
+        let mut budget = LEFT_BYTES_MAX;
+        // Tracked files: save each, check it again, then put it back.
+        let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
+        let (saved, left_over) = tokio::task::spawn_blocking(move || {
+            let mut budget = budget;
+            let kept = keep_files(&ws2, &dir2, candidates, &mut budget);
+            (kept, budget)
+        })
+        .await
+        .unwrap_or_default();
+        budget = left_over;
+        restored = put_back(ws, &saved).await;
+        for p in &restored {
+            after.remove(p);
+        }
+        // Untracked, not ignored files the run created, listed AFTER the put-back (a `.gitignore` the
+        // run changed is back by now): moved out of the copy, or the agent's staging would sweep them
+        // into a commit.
         let untracked: std::collections::BTreeSet<String> =
             tool::git(ws, &["ls-files", "-z", "--others", "--exclude-standard"])
                 .await
@@ -874,65 +983,48 @@ pub async fn set_aside_run(
                         .collect()
                 })
                 .unwrap_or_default();
+        let existing_dir = |d: &str| before.contains_key(&format!("{DIR_KEY}{d}"));
+        // Moved only when it is the run's own data: the file lies under a folder that was not there
+        // when the run began, or an earlier run of this worktree already moved or set aside that
+        // path. A new file beside existing ones (the agent's or a subagent's source) stays.
+        let is_runs = |p: &str| {
+            let mut at = Path::new(p).parent();
+            while let Some(d) = at.filter(|d| !d.as_os_str().is_empty()) {
+                if !existing_dir(&d.to_string_lossy()) {
+                    return true;
+                }
+                at = d.parent();
+            }
+            previous.files.contains_key(p) || previous.moved.iter().any(|m| m == p)
+        };
         let created: Vec<String> = after
             .keys()
-            .filter(|p| !before.contains_key(*p) && untracked.contains(*p))
+            .filter(|p| !before.contains_key(*p) && untracked.contains(*p) && is_runs(p))
             .cloned()
             .collect();
-        let candidates = if candidates.len() <= MAX_WROTE {
-            candidates
-        } else {
-            vec![]
-        };
         let created = if created.len() <= MAX_WROTE {
             created
         } else {
             vec![]
         };
-        if !candidates.is_empty() || !created.is_empty() {
-            let dir = run_dir.join("left");
-            let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
-            let before_dirs: std::collections::BTreeSet<String> = before.keys().cloned().collect();
-            // Save each file, then check again that it still is what was saved: what is put back or
-            // taken away is exactly what `left/` holds. One byte budget for both. (Blocking work.)
-            let (saved, saved_new): (Vec<String>, Vec<String>) =
-                tokio::task::spawn_blocking(move || {
-                    let mut total = 0u64;
-                    let mut keep = |list: Vec<String>| {
-                        let mut kept: Vec<(String, String)> = vec![];
-                        for p in list {
-                            let Some((hash, len)) = save_left(&ws2, &dir2, &p) else {
-                                continue;
-                            };
-                            if total + len > LEFT_BYTES_MAX {
-                                // Over the cap: left as it is, stays set aside.
-                                let _ = std::fs::remove_file(dir2.join(&p));
-                                continue;
-                            }
-                            total += len;
-                            kept.push((p, hash));
-                        }
-                        recheck(&ws2, &dir2, kept)
-                    };
-                    let tracked = keep(candidates);
-                    let created = keep(created);
-                    // The moved files leave the copy now (their copies are in `left/`).
-                    let gone: Vec<String> = created
-                        .into_iter()
-                        .filter(|p| remove_moved(&ws2, p, &before_dirs))
-                        .collect();
-                    (tracked, gone)
-                })
-                .await
-                .unwrap_or_default();
-            restored = put_back(ws, &saved).await;
-            for p in restored.iter().chain(saved_new.iter()) {
+        if !created.is_empty() {
+            let (ws3, dir3) = (ws.to_path_buf(), dir.clone());
+            moved = tokio::task::spawn_blocking(move || {
+                let mut budget = budget;
+                let kept = keep_files(&ws3, &dir3, created, &mut budget);
+                // The moved files leave the copy now (their copies are in `left/`).
+                kept.into_iter()
+                    .filter(|p| remove_moved(&ws3, p, &before_dirs))
+                    .collect::<Vec<String>>()
+            })
+            .await
+            .unwrap_or_default();
+            for p in &moved {
                 after.remove(p);
             }
-            moved = saved_new;
-            if !restored.is_empty() || !moved.is_empty() {
-                left_dir = Some(dir);
-            }
+        }
+        if !restored.is_empty() || !moved.is_empty() {
+            left_dir = Some(dir);
         }
     }
     let mut files: std::collections::BTreeMap<String, String> = after
@@ -950,6 +1042,9 @@ pub async fn set_aside_run(
     });
     if note.is_some() {
         files.clear();
+        // Nothing is recorded as the run's: what is dirty may be partly its, so the check must not
+        // call these the agent's own.
+        mark_unrecorded(ctx, ws);
     }
     ctx.store.update(|s| {
         // A record of a worktree that is gone goes with it.
@@ -973,6 +1068,25 @@ pub async fn set_aside_run(
     }
 }
 
+/// Save each file of `list` under `dir`, within the byte budget, and keep those that still are what
+/// was saved when looked at again (`recheck`).
+fn keep_files(ws: &Path, dir: &Path, list: Vec<String>, budget: &mut u64) -> Vec<String> {
+    let mut kept: Vec<(String, String)> = vec![];
+    for p in list {
+        let Some((hash, len)) = save_left(ws, dir, &p) else {
+            continue;
+        };
+        if len > *budget {
+            // Over the cap: left as it is, stays set aside.
+            let _ = std::fs::remove_file(dir.join(&p));
+            continue;
+        }
+        *budget -= len;
+        kept.push((p, hash));
+    }
+    recheck(ws, dir, kept)
+}
+
 /// Take a moved file out of the copy (its saved copy is in `left/`), and the directories it leaves
 /// empty, unless the run's snapshot had a file in them. False when it could not be removed.
 fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String>) -> bool {
@@ -982,7 +1096,10 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
     let mut dir = Path::new(rel).parent();
     while let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
         let prefix = format!("{}/", d.display());
-        if before.iter().any(|b| b.starts_with(&prefix)) || std::fs::remove_dir(ws.join(d)).is_err()
+        // A folder that was there when the run began (even empty) stays.
+        if before.contains(d.to_string_lossy().as_ref())
+            || before.iter().any(|b| b.starts_with(&prefix))
+            || std::fs::remove_dir(ws.join(d)).is_err()
         {
             break;
         }
@@ -1032,16 +1149,21 @@ async fn put_back(ws: &Path, paths: &[String]) -> Vec<String> {
     if batch.is_ok_and(|o| o.ok()) {
         return paths.to_vec();
     }
-    let mut back = vec![];
     for p in paths {
-        if tool::git(ws, &["--literal-pathspecs", "checkout", "--", p])
-            .await
-            .is_ok()
-        {
-            back.push(p.clone());
-        }
+        let _ = tool::git(ws, &["--literal-pathspecs", "checkout", "--", p]).await;
     }
-    back
+    // Which are back, whatever the batch or the single checkouts answered: the ones git no longer
+    // lists as modified or deleted.
+    let still: std::collections::BTreeSet<String> =
+        tool::git(ws, &["ls-files", "-z", "--modified", "--deleted"])
+            .await
+            .map(|o| o.split('\0').map(str::to_owned).collect())
+            .unwrap_or_default();
+    paths
+        .iter()
+        .filter(|p| !still.contains(*p))
+        .cloned()
+        .collect()
 }
 
 /// Every parent of `rel` that exists in `ws` is a real directory (not a file, not a symlink).
@@ -1230,6 +1352,7 @@ async fn prepare(
     let dir = cfg.data_path().join("runs").join(id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| CloudError::new("GIT_FAILED", format!("cannot create the run folder: {e}")))?;
+    harden_runs(&cfg.data_path().join("runs"));
     let engine = crate::check::local_iii_version(&cfg.iii_bin)
         .await
         .unwrap_or_else(|| "unknown".into());
@@ -1391,7 +1514,9 @@ impl Exec {
 
     fn note(&self, line: &str) {
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         if let Ok(mut f) = std::fs::OpenOptions::new()
+            .mode(0o600)
             .create(true)
             .append(true)
             .open(self.dir.join("run.log"))
@@ -1464,10 +1589,13 @@ impl Exec {
                 self.note(&note);
             }
             if !done.restored.is_empty() || !done.moved.is_empty() {
-                self.run.restored = done.restored.clone();
-                self.run.moved = done.moved.clone();
+                // A path can carry a secret (a vault named after a key): said redacted.
+                let restored: Vec<String> = done.restored.iter().map(|p| self.redact(p)).collect();
+                let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
+                self.run.restored = restored.clone();
+                self.run.moved = moved.clone();
                 if let Some(dir) = &done.saved_in {
-                    let problem = restored_problem(&done.restored, &done.moved, dir);
+                    let problem = restored_problem(&restored, &moved, dir);
                     let mut ids = self.followers.lock().unwrap().clone();
                     ids.push(self.check_id.clone());
                     ids.sort();
@@ -1495,6 +1623,8 @@ impl Exec {
             stage,
             code: f.code,
             message: cut(&f.message, 600),
+            owner: None,
+            withheld: false,
         });
     }
 
@@ -2654,6 +2784,8 @@ pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
                     stage,
                     code: "WORKER_RESTARTED".into(),
                     message: "The worker restarted while the run was going.".into(),
+                    owner: None,
+                    withheld: false,
                 });
                 for s in run
                     .stages
@@ -2812,9 +2944,29 @@ pub fn redact_urls(text: &str) -> String {
 
 /// Copy `out` into `file` (appended) a line at a time, each line redacted.
 // ponytail: a value split across a 64 KiB line cut is not caught; values are short.
+/// Run folders are for the person who runs them: 0700, their logs 0600 (new ones and the older
+/// ones, at each run's start).
+fn harden_runs(runs: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(read) = std::fs::read_dir(runs) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        for log in ["run.log", "compose.log"] {
+            let _ = std::fs::set_permissions(dir.join(log), std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
 async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Arc<Vec<String>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let Ok(mut log) = tokio::fs::OpenOptions::new()
+        .mode(0o600)
         .create(true)
         .append(true)
         .open(&file)

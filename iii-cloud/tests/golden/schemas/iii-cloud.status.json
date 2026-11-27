@@ -1695,6 +1695,13 @@
           },
           "title": {
             "type": "string"
+          },
+          "variable": {
+            "description": "The variable a value problem is about (`SECRET_MISSING`, `EMPTY_DEFAULT_VARIABLE`, `LOCAL_VARIABLE_UNSET`), as the problem itself knows it.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2172,8 +2179,25 @@
           "message": {
             "type": "string"
           },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunOwner"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whose the failure is (`run_code_owner`): the agent fixes it, the person must, or the run was cut short. Set whenever the check is stored."
+          },
           "stage": {
             "$ref": "#/definitions/StageName"
+          },
+          "withheld": {
+            "default": false,
+            "description": "The worker would not send this failure to the agent now: the person has a blocking problem open (a missing value fails the run too), so it is theirs first.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2182,6 +2206,32 @@
           "stage"
         ],
         "type": "object"
+      },
+      "RunOwner": {
+        "description": "Who a failed local run's code belongs to.",
+        "oneOf": [
+          {
+            "description": "The agent fixes it in the worktree.",
+            "enum": [
+              "agent"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The person's: Docker, a tool, the iii binary, or a decision about the routes.",
+            "enum": [
+              "person"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Nobody's fault: the run was cut short; run it again.",
+            "enum": [
+              "interrupted"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "RunStatus": {
         "enum": [

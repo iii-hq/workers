@@ -1725,6 +1725,12 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "export -p",
         "pnpm build && env",
         "FOO=1 exec printenv | sort",
+        "env > /tmp/env.txt",
+        "env >/tmp/x",
+        "env >> /tmp/x 2>&1",
+        "printenv &>/tmp/x",
+        "export",
+        "pnpm build\nenv\npnpm start",
     ] {
         assert!(prints_environment(yes).is_some(), "{yes}");
     }
@@ -1735,6 +1741,9 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "export FOO=1",
         "pnpm env use",
         "echo env",
+        "pnpm build 2>&1 | tee log",
+        "node a.js > out.txt",
+        "export FOO=1\nnode x",
     ] {
         assert!(prints_environment(no).is_none(), "{no}");
     }
@@ -1753,4 +1762,38 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         .map(|p| p.title)
         .collect();
     assert_eq!(titles.len(), 3, "{titles:?}");
+}
+
+#[test]
+fn no_skill_or_agent_file_tells_the_agent_to_stage_everything() {
+    for file in [
+        "skills/SKILL.md",
+        "skills/onboarding.md",
+        "agents/cloud-ready.md",
+    ] {
+        let text =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file)).unwrap();
+        for line in text.lines() {
+            // The sentence that forbids it is the only place that names these forms.
+            if line.contains("never `git add -A`") {
+                continue;
+            }
+            assert!(
+                !line.contains("git add -A")
+                    && !line.contains("git add .")
+                    && !line.contains("commit -a"),
+                "{file}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_value_problem_carries_its_variable_itself() {
+    let problems = plan_problems(&plan_fixture()["plan"]);
+    let secret = problems
+        .iter()
+        .find(|p| p.code == "SECRET_MISSING")
+        .expect("the fixture has one");
+    assert_eq!(secret.variable.as_deref(), Some("SESSION_SECRET"));
 }

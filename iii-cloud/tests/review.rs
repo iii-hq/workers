@@ -639,6 +639,16 @@ async fn more_than_five_hundred_files_from_a_run_are_not_set_aside() {
     );
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    let d = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .and_then(|p| p.detail.clone())
+        .unwrap();
+    assert!(
+        d.contains("Some of these may be what the interrupted local run wrote"),
+        "{d}"
+    );
 }
 
 #[tokio::test]
@@ -710,7 +720,7 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
     assert!(
         d.contains("3 files")
             && d.contains("README.md")
-            && d.contains("If one of them is your own edit, commit it."),
+            && d.contains("Created or edited during the run: if one is the run's own, delete it; if it is yours, commit it."),
         "{d}"
     );
     // None set aside, none named.
@@ -945,7 +955,7 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
     );
     assert!(
         detail.contains("Put back as committed: config/http.yaml, config/queue.yaml.")
-            && detail.contains("Moved out of the copy (the run created them): api/data/a.db.")
+            && detail.contains("Moved out of the copy (created during the run): api/data/a.db.")
             && detail.contains(&run_dir.path().join("left").display().to_string())
     );
     assert!(
@@ -953,10 +963,7 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
         "never a kept file's content"
     );
     assert!(
-        detail.ends_with(&format!(
-            "Compare with `diff {}/<path> <path>`.",
-            run_dir.path().join("left").display()
-        )),
+        detail.ends_with("Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file."),
         "{detail}"
     );
     // Nothing is left to name.
@@ -1172,11 +1179,12 @@ async fn a_file_where_a_tracked_directory_was_is_left_alone_and_a_deleted_direct
     std::fs::remove_dir_all(ws.join("gone")).unwrap();
     let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
     assert_eq!(done.restored, vec!["gone/b"]);
-    // The run's file `p` is moved out with a copy, never deleted without one.
-    assert_eq!(done.moved, vec!["p"]);
+    // The run's file `p` lies in the root, a folder that was there: it stays where it is, set aside.
+    assert!(done.moved.is_empty());
     assert_eq!(
-        std::fs::read_to_string(run_dir.path().join("left/p")).unwrap(),
-        "run data\n"
+        std::fs::read_to_string(ws.join("p")).unwrap(),
+        "run data\n",
+        "never deleted"
     );
     assert!(ws.join("gone/b").exists());
     // `p/a` is a tracked deletion no checkout can undo: it stays set aside.
@@ -1235,7 +1243,7 @@ async fn the_data_a_run_created_leaves_the_copy_so_no_staging_can_sweep_it_into_
         p.detail
             .as_deref()
             .unwrap()
-            .contains("Moved out of the copy (the run created them): api/data/queue/x.json, api/data/secrets/vault.json."),
+            .contains("Moved out of the copy (created during the run): api/data/queue/x.json, api/data/secrets/vault.json."),
     );
     assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
 }
@@ -1267,4 +1275,93 @@ async fn files_over_the_caps_and_the_persons_folder_are_not_moved() {
     std::fs::write(folder.join("typed.txt"), "typed during the run").unwrap();
     let done = iii_cloud::run::set_aside_run(&h.ctx, &folder, &before, Some(run_dir.path())).await;
     assert!(done.moved.is_empty() && folder.join("typed.txt").exists());
+}
+
+#[tokio::test]
+async fn only_the_runs_own_data_directories_are_moved_a_new_file_beside_existing_ones_stays() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::create_dir_all(ws.join("src/api")).unwrap();
+    std::fs::write(ws.join("src/api/old.ts"), "old\n").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "src"]);
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    // The run's data under a new folder, and a new source file beside existing ones.
+    std::fs::create_dir_all(ws.join("data/queue")).unwrap();
+    std::fs::write(ws.join("data/queue/x.json"), "{}").unwrap();
+    std::fs::write(ws.join("src/api/new-route.ts"), "export {}\n").unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(done.moved, vec!["data/queue/x.json"]);
+    assert!(ws.join("src/api/new-route.ts").exists(), "stays");
+    // It is named, as the run's or the agent's to decide.
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let left = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_LEFT_FILES")
+        .expect("what stays is named");
+    let d = left.detail.as_deref().unwrap();
+    assert!(
+        d.contains("src/api/new-route.ts")
+            && d.contains("if one is the run's own, delete it; if it is yours, commit it"),
+        "{d}"
+    );
+    // The second run's file in the now-known run directory is moved (an earlier run moved that path).
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("data/queue")).unwrap();
+    std::fs::write(ws.join("data/queue/x.json"), "{\"again\":1}").unwrap();
+    let run2 = tempfile::tempdir().unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run2.path())).await;
+    assert_eq!(done.moved, vec!["data/queue/x.json"]);
+}
+
+#[tokio::test]
+async fn paths_that_carry_a_secret_are_redacted_and_no_empty_line_is_printed() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx
+        .known_secrets
+        .lock()
+        .unwrap()
+        .push("key-abc-123".into());
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("vault/key-abc-123")).unwrap();
+    std::fs::write(ws.join("vault/key-abc-123/v.json"), "{}").unwrap();
+    iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let d = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_FILES_RESTORED")
+        .and_then(|p| p.detail.clone())
+        .unwrap();
+    assert!(!d.contains("key-abc-123"), "{d}");
+    // Five put-back paths take the whole list: no empty "Moved" line follows.
+    let five: Vec<String> = (0..5).map(|i| format!("f{i}")).collect();
+    let p = iii_cloud::run::restored_problem(
+        &five,
+        &["x".to_string(), "y".to_string()],
+        run_dir.path(),
+    );
+    let d = p.detail.unwrap();
+    assert!(!d.contains("Moved out of the copy"), "{d}");
+    assert!(d.contains("And 2 more."), "{d}");
+}
+
+#[tokio::test]
+async fn a_folder_the_agent_made_before_the_run_stays_when_the_run_writes_in_it() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::create_dir_all(ws.join("data/queue")).unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("data/queue/x.json"), "{}").unwrap();
+    // The file was created during the run in a folder that was already there (empty): the file stays,
+    // set aside, and the folder is never removed.
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert!(done.moved.is_empty());
+    assert!(ws.join("data/queue/x.json").exists());
+    assert!(ws.join("data/queue").is_dir());
 }

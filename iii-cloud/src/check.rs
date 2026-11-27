@@ -114,6 +114,7 @@ pub fn plan_problems(plan: &Value) -> Vec<Problem> {
             let kind = issue.get("kind").and_then(Value::as_str);
             let mut problem = Problem {
                 skipped: false,
+                variable: crate::problems::issue_variable(issue).map(str::to_owned),
                 id: problem_id(
                     Source::CloudPlan,
                     &code,
@@ -582,6 +583,85 @@ pub fn get(ctx: &Ctx, request: CheckGetRequest) -> Res<Check> {
         .ok_or_else(|| CloudError::invalid("no such check (only the latest 20 are kept)"))
 }
 
+/// `iii-cloud::check::read`: a slice of the run's whole log, and a file the worker kept of it, served
+/// by the worker so the agent needs no grant to the data folder. Redacted with everything the
+/// worker knows as a secret.
+pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
+    const LOG_LINES_MAX: u32 = 400;
+    const LEFT_BYTES_MAX: u64 = 256 * 1024;
+    let check = get(
+        ctx,
+        CheckGetRequest {
+            id: request.id.clone(),
+        },
+    )?;
+    let run = check
+        .run
+        .ok_or_else(|| CloudError::invalid("that check has no run"))?;
+    let log_path = run
+        .log_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| CloudError::invalid("that run has no log"))?;
+    let secrets = crate::handoff::env_values(ctx);
+    let log = match request.log {
+        None => None,
+        Some(slice) => {
+            let text = std::fs::read_to_string(&log_path)
+                .map_err(|_| CloudError::invalid("the log of that run is gone"))?;
+            let all: Vec<&str> = text.lines().collect();
+            let from = slice.from_line.unwrap_or(1).max(1);
+            let take = slice.lines.unwrap_or(LOG_LINES_MAX).min(LOG_LINES_MAX);
+            Some(LogLines {
+                from_line: from,
+                total_lines: all.len() as u32,
+                lines: all
+                    .iter()
+                    .skip(from as usize - 1)
+                    .take(take as usize)
+                    .map(|l| crate::run::redact(l, &secrets))
+                    .collect(),
+            })
+        }
+    };
+    let left = match request.left {
+        None => None,
+        Some(path) => {
+            // Only what the worker itself kept for this run: a path of its lists, never another.
+            if !run
+                .restored
+                .iter()
+                .chain(run.moved.iter())
+                .any(|p| *p == path)
+            {
+                return Err(CloudError::invalid(
+                    "that path is not one the run's restored or moved lists name",
+                ));
+            }
+            let file = log_path
+                .parent()
+                .map(|d| d.join("left").join(&path))
+                .ok_or_else(|| CloudError::invalid("that run has no kept files"))?;
+            let meta = std::fs::metadata(&file)
+                .map_err(|_| CloudError::invalid("nothing is kept for that path (a deletion)"))?;
+            if meta.len() > LEFT_BYTES_MAX {
+                return Err(CloudError::invalid("the kept file is over 256 KiB"));
+            }
+            let bytes = std::fs::read(&file)
+                .map_err(|_| CloudError::invalid("the kept file can't be read"))?;
+            let content = String::from_utf8(bytes)
+                .ok()
+                .filter(|t| !t.contains('\0'))
+                .ok_or_else(|| CloudError::invalid("the kept file is not text"))?;
+            Some(LeftFile {
+                path,
+                content: crate::run::redact(&content, &secrets),
+            })
+        }
+    };
+    Ok(CheckRead { log, left })
+}
+
 /// `check {push: true}`: the checked commit goes to the workspace's branch on
 /// origin, replacing an earlier try's (`--force-with-lease`). The commit, not
 /// `HEAD`: a commit made meanwhile is not what this check plans. Only an
@@ -901,6 +981,43 @@ pub async fn fetch_plan(
     Ok((status, body))
 }
 
+/// The cloud answers "try again" for a plan it could not read yet (a repository just made is not
+/// readable for a moment): a 503 with `SOURCE_UNAVAILABLE`, or one whose own `fix` says to try again.
+fn plan_may_come(status: u16, body: &Value) -> bool {
+    status == 503
+        && (body.get("code").and_then(Value::as_str) == Some("SOURCE_UNAVAILABLE")
+            || body
+                .get("fix")
+                .and_then(Value::as_str)
+                .is_some_and(|f| f.to_lowercase().contains("try again")))
+}
+
+/// `fetch_plan`, again when the cloud says to: at most 3 tries, 2 s apart, never past the check's own
+/// `deadline`. The worst this adds is 4 s (two waits) and two more requests.
+async fn fetch_plan_again(
+    ctx: &Ctx,
+    sel: &Selected,
+    commit: &str,
+    manifest: Option<&str>,
+    deadline: Instant,
+) -> Res<(u16, Value)> {
+    let mut tries = 1;
+    loop {
+        let answer = fetch_plan(ctx, sel, commit, manifest).await;
+        match &answer {
+            Ok((status, body))
+                if plan_may_come(*status, body)
+                    && tries < 3
+                    && Instant::now() + ctx.secs(2) < deadline =>
+            {
+                tries += 1;
+                tokio::time::sleep(ctx.secs(2)).await;
+            }
+            _ => return answer,
+        }
+    }
+}
+
 pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let started = Instant::now();
     // The harness drops a call at 300 s: every wait of this one ends by then,
@@ -1063,7 +1180,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             None,
         )
     } else {
-        match fetch_plan(ctx, &sel, &commit, asked.as_deref()).await {
+        match fetch_plan_again(ctx, &sel, &commit, asked.as_deref(), deadline).await {
             Ok((200, body)) => {
                 let (mut part, mut problems) = plan_part(&body);
                 let skipped = crate::values::skipped_of(ctx, &sel.env.id);
@@ -1277,7 +1394,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 match &own_changes {
                     Some(p) => format!(
                         "{}{}. ",
-                        p.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                        p.iter()
+                            .take(5)
+                            .map(|x| crate::run::redact(x, &crate::handoff::env_values(ctx)))
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         if p.len() > 5 { " and more" } else { "" }
                     ),
                     None => String::new(),
@@ -1300,9 +1421,13 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             .map(|w| (w.restored.clone(), w.moved.clone(), w.left_dir.clone()))
     }) && !(restored.is_empty() && moved.is_empty())
     {
+        let secrets = crate::handoff::env_values(ctx);
+        let say = |l: &[String]| -> Vec<String> {
+            l.iter().map(|p| crate::run::redact(p, &secrets)).collect()
+        };
         here_problems.push(crate::run::restored_problem(
-            &restored,
-            &moved,
+            &say(&restored),
+            &say(&moved),
             std::path::Path::new(&dir),
         ));
     }
@@ -1312,7 +1437,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "RUN_LEFT_FILES",
             "The local run left files changed in the worktree".into(),
             Some(format!(
-                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. Created or edited during the run: if one is the run's own, delete it; if it is yours, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
                 set_aside.len(),
                 if set_aside.len() == 1 {
                     "file"
@@ -1322,7 +1447,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 set_aside
                     .iter()
                     .take(5)
-                    .cloned()
+                    .map(|p| crate::run::redact(p, &crate::handoff::env_values(ctx)))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if set_aside.len() > 5 { " and more" } else { "" }
@@ -1625,6 +1750,17 @@ pub fn update_check(ctx: &Ctx, id: &str, f: impl FnOnce(&mut Check)) -> Option<C
     let updated = ctx.store.update(|s| {
         let mut found = s.find_check(id).cloned()?;
         f(&mut found);
+        // The page must not guess whose a failed run is: the worker says (and whether it is held
+        // back because the person has something open first).
+        let persons_open = found
+            .problems
+            .iter()
+            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
+        if let Some(e) = found.run.as_mut().and_then(|r| r.error.as_mut()) {
+            let owner = crate::handoff::run_code_owner(&e.code);
+            e.owner = Some(owner);
+            e.withheld = persons_open && owner != crate::handoff::RunOwner::Person;
+        }
         found.ready = is_ready(
             &found.plan,
             &found.problems,

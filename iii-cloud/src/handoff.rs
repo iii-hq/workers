@@ -279,7 +279,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     });
     // The same kind already exists and its agent is not working (it ended its turn, waits on a
     // wake, or stalled): that one is reused, and sent on.
-    let same = same.or_else(|| {
+    let idle = if same.is_none() {
         ctx.store.read(|s| {
             s.handoffs
                 .iter()
@@ -288,36 +288,67 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
                         && h.kind == request.kind
                         && h.deployment_id == request.deployment_id
                         && h.agent.session_id.is_some()
-                        && match h.agent.state {
-                            AgentPhase::Done => !retired(ctx, h),
-                            AgentPhase::WaitingForYou | AgentPhase::Stalled => true,
-                            _ => false,
-                        }
+                        // The same bound for every idle state: a hand-off quiet for 30 minutes
+                        // is not the one the person means.
+                        && matches!(
+                            h.agent.state,
+                            AgentPhase::Done | AgentPhase::WaitingForYou | AgentPhase::Stalled
+                        )
+                        && !quiet_too_long(ctx, h)
                 })
                 .cloned()
         })
-    });
+    } else {
+        None
+    };
+    // And it must be alive: its chat answers and its worktree is there. Otherwise a new one starts.
+    let idle = match idle {
+        Some(h) if hand_off_alive(ctx, &h).await => Some(h),
+        _ => None,
+    };
+    let same = same.or(idle);
     if let Some(h) = same {
+        // A real ask of the agent's is open: deliver nothing (the page's own sentence would read as
+        // the answer to it).
+        let asks = h.agent.session_id.is_some()
+            && h.agent.state == AgentPhase::WaitingForYou
+            && h.agent.question_source == Some(QuestionSource::Agent);
+        if asks {
+            return Ok(HandoffResponse {
+                id: h.id,
+                marker: h.marker,
+                delivered: false,
+                session_id: h.agent.session_id,
+                reused: true,
+                sent: Some(false),
+                asks: true,
+            });
+        }
         let sent = send_on(ctx, &h).await;
-        let delivered = match (&h.agent.session_id, request.text.as_deref()) {
-            (Some(session), Some(text)) => {
-                deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
+        // The continue went: one message, not two.
+        let delivered = if sent {
+            true
+        } else {
+            match (&h.agent.session_id, request.text.as_deref()) {
+                (Some(session), Some(text)) => {
+                    deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
+                }
+                (Some(_), None) => true,
+                (None, Some(text)) => {
+                    // No chat yet: the text waits and goes in once the chat is found.
+                    let text = text.to_string();
+                    ctx.store.update(|s| {
+                        if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
+                            h2.pending_text = Some(match h2.pending_text.take() {
+                                Some(old) => format!("{old}\n\n{text}"),
+                                None => text,
+                            });
+                        }
+                    });
+                    false
+                }
+                (None, None) => false,
             }
-            (Some(_), None) => true,
-            (None, Some(text)) => {
-                // No chat yet: the text waits and goes in once the chat is found.
-                let text = text.to_string();
-                ctx.store.update(|s| {
-                    if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
-                        h2.pending_text = Some(match h2.pending_text.take() {
-                            Some(old) => format!("{old}\n\n{text}"),
-                            None => text,
-                        });
-                    }
-                });
-                false
-            }
-            (None, None) => false,
         };
         return Ok(HandoffResponse {
             id: h.id,
@@ -326,6 +357,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
             session_id: h.agent.session_id,
             reused: true,
             sent: Some(sent),
+            asks: false,
         });
     }
     let (mut workspace_path, mut branch, checkout, source) = ctx.store.read(|s| {
@@ -423,6 +455,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         session_id: delivered_to,
         reused: false,
         sent: None,
+        asks: false,
     })
 }
 
@@ -692,9 +725,11 @@ pub fn follow(ctx: &Arc<Ctx>, id: String) {
 
 /// A Done hand-off with no activity for 30 minutes.
 pub fn retired(ctx: &Ctx, h: &Handoff) -> bool {
-    if h.agent.state != AgentPhase::Done {
-        return false;
-    }
+    h.agent.state == AgentPhase::Done && quiet_too_long(ctx, h)
+}
+
+/// No activity of the agent's for 30 minutes (since the hand-off began when it has none).
+fn quiet_too_long(ctx: &Ctx, h: &Handoff) -> bool {
     let last = h
         .agent
         .last_activity_at
@@ -1468,6 +1503,19 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
     })
 }
 
+/// The hand-off's chat still answers and its worktree is still there.
+async fn hand_off_alive(ctx: &Ctx, h: &Handoff) -> bool {
+    let Some(session) = h.agent.session_id.as_deref() else {
+        return false;
+    };
+    let chat = ctx
+        .plat
+        .call("session::get", json!({ "session_id": session }))
+        .await
+        .is_ok_and(|m| m.get("meta").is_some_and(|m| !m.is_null()));
+    chat && (h.workspace_path.is_empty() || Path::new(&h.workspace_path).exists())
+}
+
 /// An existing hand-off's agent is not working and the person asks again: send it on with what
 /// the newest check of the environment leaves it (its blocking problems and its failed run).
 /// Nothing for an agent that works, one with a real ask of its own open (the person owes an
@@ -1490,6 +1538,10 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
     }) else {
         return false;
     };
+    // That check was already told (the poll, or this button a moment ago): not twice.
+    if h.person_check_told.as_deref() == Some(check_id.as_str()) {
+        return false;
+    }
     let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
         return false;
     };
@@ -1593,16 +1645,8 @@ fn open_value_names(ctx: &Ctx, handoff: &Handoff) -> Vec<String> {
                 && p.severity == Severity::Block
                 && VALUE_CODES.contains(&p.code.as_str())
         }) {
-            // `LOCAL_VARIABLE_UNSET` names it in the title, the plan's issues in the message.
-            let text = if p.code == "LOCAL_VARIABLE_UNSET" {
-                Some(p.title.as_str())
-            } else {
-                p.detail.as_deref()
-            };
-            if let Some(name) = text
-                .and_then(|t| t.split_whitespace().next())
-                .map(|w| w.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
-                .filter(|w| !w.is_empty())
+            // The variable the problem itself carries, never a word of its text.
+            if let Some(name) = p.variable.as_deref()
                 && !names.iter().any(|n| n == name)
             {
                 names.push(name.to_string());
@@ -1765,7 +1809,10 @@ fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
 }
 
 /// Who a failed local run's code belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum RunOwner {
     /// The agent fixes it in the worktree.
     Agent,

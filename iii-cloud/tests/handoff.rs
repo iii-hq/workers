@@ -623,6 +623,7 @@ async fn an_import_hand_off_needs_no_check_and_the_brief_has_what_the_agent_need
     std::fs::write(ws.join(".env"), "TOKEN=hunter2hunter2\n").unwrap();
     let problem = |owner, title: &str, detail: &str| Problem {
         skipped: false,
+        variable: None,
         id: title.into(),
         source: Source::CheckHere,
         code: "X".into(),
@@ -1259,6 +1260,8 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
                 stage: StageName::Workers,
                 code: "WORKERS_NOT_READY".into(),
                 message: "x".into(),
+                owner: None,
+                withheld: false,
             }),
             reused: false,
             waiting_on: None,
@@ -1361,6 +1364,8 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
                 stage: StageName::Workers,
                 code: "WORKERS_NOT_READY".into(),
                 message: "api did not connect".into(),
+                owner: None,
+                withheld: false,
             }),
             reused: false,
             waiting_on: None,
@@ -1432,6 +1437,7 @@ async fn auto_fix_is_on_by_default_and_the_status_follows_the_config() {
 fn prob(id: &str, code: &str) -> Problem {
     Problem {
         skipped: false,
+        variable: None,
         id: id.into(),
         source: Source::CheckHere,
         code: code.into(),
@@ -2641,6 +2647,8 @@ fn failed_run(check_id: &str, commit: &str) -> Run {
             stage: StageName::Workers,
             code: "WORKERS_NOT_READY".into(),
             message: "api did not connect".into(),
+            owner: None,
+            withheld: false,
         }),
         reused: false,
         waiting_on: None,
@@ -3120,6 +3128,8 @@ async fn the_first_waiting_continue_goes_once_for_its_run_and_does_not_use_the_c
             stage: StageName::Workers,
             code: "WORKERS_NOT_READY".into(),
             message: "api did not connect".into(),
+            owner: None,
+            withheld: false,
         });
     });
     *w.status.lock().unwrap() = "working".into();
@@ -3480,6 +3490,8 @@ async fn a_person_run_that_a_newer_run_replaced_sends_the_agent_nothing() {
         stage: StageName::Workers,
         code: "RUN_REPLACED".into(),
         message: "A newer commit of this workspace started a run, so this one stopped.".into(),
+        owner: None,
+        withheld: false,
     });
     let (_h, told) = person_check_while_waiting(vec![], Some(run), false, 1).await;
     assert!(told.is_empty(), "{told:?}");
@@ -3541,8 +3553,8 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
 
 /// A hand-off whose agent ended its turn with no wake and no run here: "waiting for you", in the
 /// worker's own words (`question_source: check`).
-async fn ended_agent() -> (Harness, std::path::PathBuf, World) {
-    let (h, _s, _r, ws) = setup().await;
+async fn ended_agent() -> (Harness, std::path::PathBuf, World, (MockServer, Repo)) {
+    let (h, s, r, ws) = setup().await;
     clean_manifest(&ws);
     accept_sends(&h);
     let w = world();
@@ -3555,7 +3567,7 @@ async fn ended_agent() -> (Harness, std::path::PathBuf, World) {
     })
     .await;
     assert_eq!(a.question_source, Some(QuestionSource::Check));
-    (h, ws, w)
+    (h, ws, w, (s, r))
 }
 
 fn release_failed() -> Run {
@@ -3564,13 +3576,15 @@ fn release_failed() -> Run {
         stage: StageName::Release,
         code: "RELEASE_FAILED".into(),
         message: "`pnpm db:migrate` exited 1".into(),
+        owner: None,
+        withheld: false,
     });
     run
 }
 
 #[tokio::test]
 async fn a_failed_run_of_the_persons_check_reaches_an_agent_that_ended_its_turn() {
-    let (h, ws, _w) = ended_agent().await;
+    let (h, ws, _w, _keep) = ended_agent().await;
     let check = person_check(&h, vec![], Some(release_failed()), false);
     iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
     for _ in 0..40 {
@@ -3590,7 +3604,7 @@ async fn a_failed_run_of_the_persons_check_reaches_an_agent_that_ended_its_turn(
 
 #[tokio::test]
 async fn an_open_ask_of_the_agent_is_not_overridden_by_the_persons_check() {
-    let (h, ws, w) = ended_agent().await;
+    let (h, ws, w, _keep) = ended_agent().await;
     *w.question.lock().unwrap() = Some("Which role do you want?".into());
     until(&h, "a real ask", |a| {
         a.question_source == Some(QuestionSource::Agent)
@@ -3604,7 +3618,7 @@ async fn an_open_ask_of_the_agent_is_not_overridden_by_the_persons_check() {
 
 #[tokio::test]
 async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
-    let (h, ws, _w) = ended_agent().await;
+    let (h, ws, _w, _keep) = ended_agent().await;
     h.ctx
         .store
         .update(|s| s.handoffs[0].agent.state = AgentPhase::Stopped);
@@ -3617,7 +3631,7 @@ async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
 
 #[tokio::test]
 async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_check_leaves_it() {
-    let (h, _ws, _w) = ended_agent().await;
+    let (h, _ws, _w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     let before = continues(&h).len();
     let again = create(&h.ctx, ready_req()).await.unwrap();
@@ -3633,13 +3647,13 @@ async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_chec
 #[tokio::test]
 async fn fix_with_your_agent_sends_nothing_to_a_working_agent_an_open_ask_or_nothing_open() {
     // Nothing open for the agent: a ready check.
-    let (h, _ws, _w) = ended_agent().await;
+    let (h, _ws, _w, _keep) = ended_agent().await;
     person_check(&h, vec![], None, true);
     let again = create(&h.ctx, ready_req()).await.unwrap();
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
     // A real ask of the agent's is open: the person owes an answer first.
-    let (h, _ws, w) = ended_agent().await;
+    let (h, _ws, w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     *w.question.lock().unwrap() = Some("Which role do you want?".into());
     until(&h, "a real ask", |a| {
@@ -3650,11 +3664,119 @@ async fn fix_with_your_agent_sends_nothing_to_a_working_agent_an_open_ask_or_not
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
     // A working agent.
-    let (h, _ws, w) = ended_agent().await;
+    let (h, _ws, w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     *w.status.lock().unwrap() = "working".into();
     until(&h, "working again", |a| a.state == AgentPhase::Working).await;
     let again = create(&h.ctx, ready_req()).await.unwrap();
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
+}
+
+#[tokio::test]
+async fn an_old_dead_or_homeless_hand_off_is_not_reused_for_a_new_one() {
+    // Quiet for over 30 minutes.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339());
+    });
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(!again.reused && again.id != old_id, "{again:?}");
+    // The chat is gone.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    h.fake.on("session::get", |_| Ok(json!({"meta": null})));
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(!again.reused && again.id != old_id, "{again:?}");
+    // The worktree is gone.
+    let (h, ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    std::fs::remove_dir_all(&ws).unwrap();
+    if let Ok(again) = create(&h.ctx, ready_req()).await {
+        assert!(!again.reused && again.id != old_id, "{again:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_failed_run_carries_whose_it_is_and_whether_the_worker_holds_it_back() {
+    use iii_cloud::handoff::RunOwner;
+    let (h, _s, _r, _ws) = setup().await;
+    let id = h.ctx.store.read(|s| s.check.clone().unwrap().id);
+    let owner_of = |code: &str, person_open: bool| {
+        let mut run = failed_run(&id, "abc");
+        run.error.as_mut().unwrap().code = code.into();
+        let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
+        values.owner = Owner::Person;
+        let c = iii_cloud::check::update_check(&h.ctx, &id, |c| {
+            c.run = Some(run);
+            c.problems = if person_open { vec![values] } else { vec![] };
+        })
+        .unwrap();
+        let e = c.run.unwrap().error.unwrap();
+        (e.owner, e.withheld)
+    };
+    // The agent's code, the person's, and a cut-short run.
+    assert_eq!(
+        owner_of("WORKERS_NOT_READY", false),
+        (Some(RunOwner::Agent), false)
+    );
+    assert_eq!(
+        owner_of("DOCKER_MISSING", false),
+        (Some(RunOwner::Person), false)
+    );
+    assert_eq!(
+        owner_of("WORKER_RESTARTED", false),
+        (Some(RunOwner::Interrupted), false)
+    );
+    // With a value of the person's open, the worker holds the agent's failure back.
+    assert_eq!(
+        owner_of("WORKERS_NOT_READY", true),
+        (Some(RunOwner::Agent), true)
+    );
+    assert_eq!(
+        owner_of("WORKER_RESTARTED", true),
+        (Some(RunOwner::Interrupted), true)
+    );
+    // The person's own code is never "held back from the agent": it was never the agent's.
+    assert_eq!(
+        owner_of("DOCKER_MISSING", true),
+        (Some(RunOwner::Person), false)
+    );
+}
+
+#[tokio::test]
+async fn the_pages_own_text_is_never_delivered_beside_an_open_ask_or_a_continue() {
+    let with_text = || HandoffRequest {
+        text: Some("PAGE TEXT: fix the failed run".into()),
+        ..ready_req()
+    };
+    // A real ask is open: nothing is delivered, and the answer says so.
+    let (h, _ws, w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    *w.question.lock().unwrap() = Some("Which role do you want?".into());
+    until(&h, "a real ask", |a| {
+        a.question_source == Some(QuestionSource::Agent)
+    })
+    .await;
+    let before = sent(&h).len();
+    let again = create(&h.ctx, with_text()).await.unwrap();
+    assert!(
+        again.reused && again.asks && again.sent == Some(false) && !again.delivered,
+        "{again:?}"
+    );
+    assert_eq!(sent(&h).len(), before, "nothing went into the chat");
+    // The continue goes: one message, and the page's text is not a second one.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    let before = sent(&h).len();
+    let again = create(&h.ctx, with_text()).await.unwrap();
+    assert!(
+        again.reused && !again.asks && again.sent == Some(true),
+        "{again:?}"
+    );
+    let new: Vec<String> = sent(&h).into_iter().skip(before).collect();
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(new[0].contains("RELEASE_FAILED") && !new[0].contains("PAGE TEXT"));
 }

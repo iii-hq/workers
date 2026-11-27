@@ -72,6 +72,11 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "description": "`iii-cloud::handoff` output.",
     "properties": {
+      "asks": {
+        "default": false,
+        "description": "With `reused`: the agent has a real ask of its own open. Nothing was delivered, not even the page's `text` (it would read as the answer): the person answers in the chat.",
+        "type": "boolean"
+      },
       "delivered": {
         "description": "False: nothing was sent; the page starts a new chat with the marker.",
         "type": "boolean"

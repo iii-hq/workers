@@ -214,6 +214,51 @@ pub struct CheckGetRequest {
     pub id: String,
 }
 
+/// `iii-cloud::check::read` input: a slice of a check's run's whole redacted log, and/or a file
+/// the worker kept of that run (`left`).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckReadRequest {
+    /// A check's id.
+    pub id: String,
+    /// Lines of the run's log (`run.log_path`'s file), 1-based.
+    #[serde(default)]
+    pub log: Option<LogSlice>,
+    /// A path listed in the run's `restored` or `moved`: what the run left there, kept in `left/`.
+    #[serde(default)]
+    pub left: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LogSlice {
+    /// The first line (1-based; default 1).
+    #[serde(default)]
+    pub from_line: Option<u32>,
+    /// How many (default and most: 400).
+    #[serde(default)]
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckRead {
+    pub log: Option<LogLines>,
+    pub left: Option<LeftFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LogLines {
+    pub from_line: u32,
+    /// All the lines the log has now.
+    pub total_lines: u32,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LeftFile {
+    pub path: String,
+    /// The kept file's text, redacted with the run's secrets.
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretMode {
@@ -325,6 +370,10 @@ pub struct HandoffResponse {
     /// Absent for a new hand-off.
     #[serde(default)]
     pub sent: Option<bool>,
+    /// With `reused`: the agent has a real ask of its own open. Nothing was delivered, not even
+    /// the page's `text` (it would read as the answer): the person answers in the chat.
+    #[serde(default)]
+    pub asks: bool,
 }
 
 /// `iii-cloud::handoff::stop` input.
@@ -975,6 +1024,10 @@ pub struct Problem {
     /// `EMPTY_DEFAULT_VARIABLE` then has severity `info`; `SECRET_MISSING` stays `block`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+    /// The variable a value problem is about (`SECRET_MISSING`, `EMPTY_DEFAULT_VARIABLE`,
+    /// `LOCAL_VARIABLE_UNSET`), as the problem itself knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1112,6 +1165,14 @@ pub struct RunError {
     pub stage: StageName,
     pub code: String,
     pub message: String,
+    /// Whose the failure is (`run_code_owner`): the agent fixes it, the person must, or the run was
+    /// cut short. Set whenever the check is stored.
+    #[serde(default)]
+    pub owner: Option<crate::handoff::RunOwner>,
+    /// The worker would not send this failure to the agent now: the person has a blocking problem
+    /// open (a missing value fails the run too), so it is theirs first.
+    #[serde(default)]
+    pub withheld: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
