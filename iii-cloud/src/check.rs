@@ -981,6 +981,43 @@ pub async fn fetch_plan(
     Ok((status, body))
 }
 
+/// The cloud answers "try again" for a plan it could not read yet (a repository just made is not
+/// readable for a moment): a 503 with `SOURCE_UNAVAILABLE`, or one whose own `fix` says to try again.
+fn plan_may_come(status: u16, body: &Value) -> bool {
+    status == 503
+        && (body.get("code").and_then(Value::as_str) == Some("SOURCE_UNAVAILABLE")
+            || body
+                .get("fix")
+                .and_then(Value::as_str)
+                .is_some_and(|f| f.to_lowercase().contains("try again")))
+}
+
+/// `fetch_plan`, again when the cloud says to: at most 3 tries, 2 s apart, never past the check's own
+/// `deadline`. The worst this adds is 4 s (two waits) and two more requests.
+async fn fetch_plan_again(
+    ctx: &Ctx,
+    sel: &Selected,
+    commit: &str,
+    manifest: Option<&str>,
+    deadline: Instant,
+) -> Res<(u16, Value)> {
+    let mut tries = 1;
+    loop {
+        let answer = fetch_plan(ctx, sel, commit, manifest).await;
+        match &answer {
+            Ok((status, body))
+                if plan_may_come(*status, body)
+                    && tries < 3
+                    && Instant::now() + ctx.secs(2) < deadline =>
+            {
+                tries += 1;
+                tokio::time::sleep(ctx.secs(2)).await;
+            }
+            _ => return answer,
+        }
+    }
+}
+
 pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let started = Instant::now();
     // The harness drops a call at 300 s: every wait of this one ends by then,
@@ -1143,7 +1180,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             None,
         )
     } else {
-        match fetch_plan(ctx, &sel, &commit, asked.as_deref()).await {
+        match fetch_plan_again(ctx, &sel, &commit, asked.as_deref(), deadline).await {
             Ok((200, body)) => {
                 let (mut part, mut problems) = plan_part(&body);
                 let skipped = crate::values::skipped_of(ctx, &sel.env.id);

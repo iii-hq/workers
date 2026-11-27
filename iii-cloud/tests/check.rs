@@ -1617,3 +1617,50 @@ async fn a_check_that_asks_for_no_run_takes_over_the_passed_run_and_never_starts
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn a_plan_the_cloud_cannot_read_yet_is_asked_again_up_to_three_times() {
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    // A repository made a moment ago: the cloud answers 503 twice, then the plan.
+    plan_mock(
+        503,
+        json!({"code": "SOURCE_UNAVAILABLE", "message": "The repository can't be read right now.", "fix": "Try again in a moment."}),
+    )
+    .up_to_n_times(2)
+    .mount(&server)
+    .await;
+    let started = std::time::Instant::now();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_ne!(c.plan.status, PlanStatus::Unavailable, "{:?}", c.plan.error);
+    let asked = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/plan"))
+        .count();
+    assert_eq!(asked, 3);
+    // Two waits of 2 s (a test second is 10 ms): the worst this adds is 4 s.
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+
+    // Still unavailable after three tries: said as before, with no fourth.
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    plan_mock(
+        503,
+        json!({"code": "SOURCE_UNAVAILABLE", "message": "The repository can't be read right now.", "fix": "Try again in a moment."}),
+    )
+    .mount(&server)
+    .await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(c.plan.status, PlanStatus::Unavailable);
+    let asked = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/plan"))
+        .count();
+    assert_eq!(asked, 3);
+}
