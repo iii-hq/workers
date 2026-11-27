@@ -334,7 +334,12 @@ export function needsYou(s: Status, read: Values | null = null) {
   // The agent's question is one more thing for the person, counted here for every screen. Not twice: a question that
   // names a value already counted (the same name asked through `iii-cloud::secret` and in the chat) is that value.
   const q = agentAsks(s) ? (s.agent?.question ?? '') : null
-  const asks = q !== null && ![...names].some((n) => q.includes(n))
+  // Whole names: "Should I rename STRIPE_KEY?" is still a question; a short name inside a word is not that value.
+  const asks =
+    q !== null &&
+    ![...names].some((n) =>
+      new RegExp(`(?<![A-Za-z0-9_])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`).test(q),
+    )
   return {
     items,
     decide,

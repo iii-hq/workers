@@ -388,6 +388,27 @@ describe('Ready', () => {
     expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(false)
   })
 
+  it('a reused run says when it really ran, and "Run it again" forces a real one', async () => {
+    const reused = { ...passed.run, reused: true, finished_at: '2026-11-27T11:30:00.000Z' } as NonNullable<
+      typeof passed.run
+    >
+    const h = await stage({ ...dev, check: { ...passed, run: reused } })
+    expect(text()).toContain('the local run passed at')
+    expect(text()).toContain('(not run again: nothing changed)')
+    await click(btn('Run it again'))
+    await flush()
+    expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({
+      run: true,
+      force: true,
+      from_page: true,
+    })
+    // the Local run part says the same, with the same quiet action
+    await stage({ ...{ ...dev, agent: null, handoff_brief: null }, check: { ...passed, ready: false, run: reused } })
+    const part = el.querySelector('[aria-label="Local run"]')?.textContent ?? ''
+    expect(part).toContain('not run again: nothing changed')
+    expect(part).toContain('Run it again')
+  })
+
   it('a deployment of dev still going locks the button and says so, with Follow', async () => {
     const going = boards['deploy-follow-running'].status.deploys[0]
     const h = await stage({
@@ -1410,6 +1431,50 @@ describe('small things the review found', () => {
     expect(region('Your agent')?.textContent).toContain('Run it with node, or use a runtime image that has bun.')
   })
 
+  it('the title is never empty, and a quiet note without a detail is a plain line', async () => {
+    const note = {
+      ...rcFixing.agent!,
+      state: 'waiting_for_you' as const,
+      question: "Your agent's part is done for now.",
+      question_source: 'check' as const,
+    }
+    const w = { ...rcFixing, agent: note }
+    await stage({ ...w, check: { ...w.check!, problems: [] } })
+    expect((title() ?? '').length).toBeGreaterThan(0)
+    const r = B('deploy-passed')
+    const bare = {
+      ...rcVariables[0],
+      id: 'p-bare',
+      code: 'RUN_LEFT_FILES',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'info' as const,
+      owner: 'none' as const,
+      title: 'The local run left files changed in the worktree',
+      detail: null,
+    }
+    await stage({ ...r, check: { ...r.check!, problems: [...r.check!.problems, bare] } })
+    expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
+    expect(el.querySelector('p.iii-cloud-cs-quiet')?.textContent).toBe(bare.title)
+  })
+
+  it('the worker\'s "Confirm the worktree folder in the chat" text with source "agent" is the person\'s step: counted and shown', async () => {
+    const text = 'Confirm the worktree folder in the chat: the agent waits for your answer.'
+    const ask = {
+      ...rcFixing.agent!,
+      state: 'waiting_for_you' as const,
+      question: text,
+      question_source: 'agent' as const,
+    }
+    const w = { ...rcFixing, agent: ask }
+    const none = { ...w, check: { ...w.check!, problems: [] } }
+    await stage(none)
+    expect(title()).toBe('1 thing needs you')
+    expect(region('Your agent')?.textContent).toContain(text)
+    expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
@@ -1683,6 +1748,32 @@ describe("the run's last lines", () => {
       ['jwt_secret'],
     )
     expect(lower[0]).toContain('jwt_secret')
+  })
+
+  it('a later ERROR line or node error code is not a variable: the line naming JWT_SECRET survives the stack', () => {
+    const log = [
+      "❌ Invalid environment variables: { JWT_SECRET: [ 'Required' ] }",
+      '[worker-x] [12:00:01] ERROR (1): Failed to start',
+      'Error [ERR_MODULE_NOT_FOUND]: Cannot find module',
+      ...Array.from({ length: 6 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      'Node.js v20.18.0',
+      '!! Workers failed: release-control',
+    ]
+    expect(runTail(log)[0]).toContain('JWT_SECRET')
+    // a name matches as a whole word: `port` is not in "report"
+    const t = runTail(
+      [
+        'Invalid value for port',
+        'throw new Error("x")',
+        'the report failed: error',
+        ...Array.from({ length: 6 }, (_, i) => `at f${i}`),
+        'Node',
+        'done',
+      ],
+      6,
+      ['port'],
+    )
+    expect(t[0]).toContain('Invalid value for port')
   })
 
   it('four missing variables: the message and all four names, six lines, no wasted slot', () => {

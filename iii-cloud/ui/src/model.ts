@@ -500,9 +500,13 @@ export function deployOrigin(
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]|\\[[0-9;]*m`, 'g')
 const DRAWING = /^[\s\-=_*#~.\u2500-\u257f]+$/
 const BARE_CODE = new RegExp(`(?<!${String.fromCharCode(27)})\\[[0-9;]*m`, 'g')
-/** An identifier that names a variable: upper case, 3+ characters, with an underscore or all capitals. */
-const VARIABLE = /\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+|[A-Z]{3,})\b/
+/** An identifier that names a variable: upper case with an underscore (`JWT_SECRET`), not a node error code or an HTTP status (`ERR_*`, `HTTP_*`). */
+const VARIABLE = /\b(?!ERR_|HTTP_)[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/
 const FAILURE = /invalid|missing|required|not set|error/i
+
+/** Each name as a whole word, any case: `port` is not in "report". */
+const wholeWords = (names: string[]) =>
+  names.filter(Boolean).map((n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'))
 
 /**
  * The run's last lines that say something, for a stop: no blanks or separators (`[worker] ` prefixes and colour codes
@@ -512,7 +516,7 @@ export function runTail(log: string[], max = 6, names: string[] = []): string[] 
   const kept = log
     .map((raw) => ({
       raw: raw.replace(BARE_CODE, ''),
-      plain: raw.replace(ANSI, '').replace(/^\s*\[[^\]]+\]\s*/, ''),
+      plain: raw.replace(ANSI, '').replace(/^(?:\s*\[[^\]]*\])+\s*/, ''),
     }))
     .filter((l) => l.plain.trim() && !DRAWING.test(l.plain))
   if (kept.length <= max) return kept.map((l) => l.raw)
@@ -520,7 +524,7 @@ export function runTail(log: string[], max = 6, names: string[] = []): string[] 
   // that names a variable (an identifier like `JWT_SECRET`, or one of `names`), else the last run. An earlier "missing
   // peer …" line, or the throw that follows the printed names, then does not take the message's place.
   const hit = (i: number) => FAILURE.test(kept[i].plain)
-  const named = (i: number) => VARIABLE.test(kept[i].plain) || names.some((n) => kept[i].plain.includes(n))
+  const named = (i: number) => VARIABLE.test(kept[i].plain) || wholeWords(names).some((re) => re.test(kept[i].plain))
   const runs: { from: number; named: boolean }[] = []
   for (let i = 0; i <= kept.length - 3; i++) {
     if (!hit(i)) continue
