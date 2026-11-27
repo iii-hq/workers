@@ -66,6 +66,15 @@ export function parseEnv(text: string): { name: string; value: string }[] {
 /** A name with no value in iii cloud the person is asked about (a default in the file is not asked). */
 /** The local run has no value for it (`LOCAL_VARIABLE_UNSET`); never the database, the local run makes its own Postgres. */
 export const unsetHere = (i: ValueItem) => i.here === 'unset' && !i.database
+/** Set in iii cloud, but the run on this machine has no value: only this machine can fix it (an env file, or a skip). Never written to iii cloud from here. */
+export const missingHere = (i: ValueItem) => i.in_cloud === 'set' && unsetHere(i)
+/** The env files the run reads next to the compose file or in the folder, for an environment: `.env.<name>` first. */
+export const runFiles = (env: string) => [
+  ...(/^[a-z0-9-]+$/.test(env) && env !== 'example' ? [`.env.${env}`] : []),
+  '.env.production',
+  '.env.local',
+  '.env',
+]
 export const notSet = (i: ValueItem) => (i.in_cloud !== 'set' && i.need !== 'has_default') || unsetHere(i)
 
 export type ValuesRead = { data: Values | null; error: WorkerError | null; loading: boolean; refetch: () => void }
@@ -194,13 +203,15 @@ function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
     )
   const [tone, dot, label]: ['success' | 'warning' | 'danger', 'ok' | 'warn' | 'alert', string] = saved
     ? ['success', 'ok', 'Saved · just now']
-    : unsetHere(i)
-      ? ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
-      : i.in_cloud === 'set'
-        ? ['success', 'ok', `Set in iii cloud${i.updated_at ? ` · ${ago(i.updated_at)}` : ''}`]
-        : i.in_cloud === 'unknown'
-          ? ['danger', 'alert', "Couldn't read iii cloud"]
-          : ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
+    : missingHere(i)
+      ? ['warning', 'warn', 'Set in iii cloud · missing on this machine']
+      : unsetHere(i)
+        ? ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
+        : i.in_cloud === 'set'
+          ? ['success', 'ok', `Set in iii cloud${i.updated_at ? ` · ${ago(i.updated_at)}` : ''}`]
+          : i.in_cloud === 'unknown'
+            ? ['danger', 'alert', "Couldn't read iii cloud"]
+            : ['warning', 'warn', i.asked ? 'Asked by your agent' : 'Not set']
   return (
     <Chip tone={tone} className="iii-cloud-val-state">
       <Dot tone={dot} />
@@ -212,6 +223,7 @@ function State({ item: i, saved }: { item: ValueItem; saved: boolean }) {
 /** The row's choice before the person makes one: Keep a set name (unless the local run lacks it), else the first preselected source. */
 function initial(i: ValueItem): Pick {
   if (i.skipped) return { source: 'skip' }
+  if (missingHere(i)) return { source: 'none' }
   if (i.in_cloud === 'set' && !unsetHere(i)) return { source: 'keep' }
   if (i.database || i.invalid_name) return { source: 'none' }
   const s = preselected(i)[0]
@@ -222,6 +234,8 @@ function initial(i: ValueItem): Pick {
 
 /** `skip`: "Skip for now" on a row the cloud or the local run needs. */
 function options(i: ValueItem, skip: boolean): { value: string; label: string }[] {
+  // iii cloud already has it: the only choice from here is to skip it on this machine.
+  if (missingHere(i)) return skip ? [{ value: 'skip', label: 'Skip for now' }] : []
   const out: { value: string; label: string }[] = []
   if (i.in_cloud === 'set') out.push({ value: 'keep', label: 'Keep' })
   out.push({ value: 'typed', label: i.in_cloud === 'set' ? 'Replace' : 'Type a value' })
@@ -298,6 +312,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
     picks[i.name] ?? (saved(i) ? { source: 'keep' } : outside[i.name] ? { source: 'typed', value: '' } : initial(i))
   const kindOf = (i: ValueItem): Kind => kinds[i.name] ?? (outside[i.name] ? 'secret' : i.type)
   const toSave = (i: ValueItem): SaveItem | null => {
+    // iii cloud already has it: nothing about it is ever sent to `values::save` from here.
+    if (missingHere(i)) return null
     const p = pickOf(i)
     const file = fileOf(p)
     if (p.source === 'typed') return p.value ? { name: i.name, from: 'typed', type: kindOf(i), value: p.value } : null
@@ -320,6 +336,15 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
         (i) => notSet(i) && !i.database && !i.invalid_name && !i.skipped && !toSave(i) && pickOf(i).source !== 'skip',
       )
     : []
+  const skipHere = async (name: string) => {
+    if (!v) return
+    const out = await call<ValuesSkipped>('skip', 'iii-cloud::values::skip', {
+      environment_id: v.environment_id,
+      names: [name],
+      skip: true,
+    })
+    if (out !== null) read.refetch()
+  }
   const set = (name: string, p: Pick) => setPicks((x) => ({ ...x, [name]: p }))
 
   const save = async () => {
@@ -461,6 +486,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
       onOutside={() => setOutside((x) => ({ ...x, [i.name]: true }))}
       skip={canSkip}
       onUndo={readOnly ? null : () => void undo(i.name)}
+      onSkipHere={readOnly ? null : () => void skipHere(i.name)}
     />
   )
   const list = listed.length ? (
@@ -771,6 +797,7 @@ function ValueRow({
   onOutside,
   skip,
   onUndo,
+  onSkipHere,
 }: {
   item: ValueItem
   env: string
@@ -787,6 +814,8 @@ function ValueRow({
   skip: boolean
   /** Undo a recorded skip (null: read-only). */
   onUndo: (() => void) | null
+  /** "Skip it here" on a name set in iii cloud and missing on this machine (null: read-only). */
+  onSkipHere: (() => void) | null
 }) {
   const url = i.suggestions.find((s) => s.source === 'env_url')
   const file = fileOf(p)
@@ -901,6 +930,17 @@ function ValueRow({
             {value === '' ? shownValue : <Mono>{shownValue}</Mono>}
           </span>
         ) : null
+      ) : missingHere(i) && !i.skipped ? (
+        // iii cloud has it: no Replace, no typing, no empty value, no source. What fixes it is on this machine.
+        <span className="iii-cloud-val-wide iii-cloud-val-note">
+          Add it to an env file of your folder (the run reads {runFiles(env).join(', ')}), or skip it here to run it
+          with an empty value.{' '}
+          {onSkipHere ? (
+            <button type="button" className="iii-cloud-val-link" onClick={onSkipHere}>
+              Skip it here
+            </button>
+          ) : null}
+        </span>
       ) : i.invalid_name ? (
         // iii cloud can't store this name: nothing to pick, nothing to type; why, said faint.
         <span className="iii-cloud-val-wide iii-cloud-val-note">{i.invalid_name}</span>

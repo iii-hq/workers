@@ -1026,6 +1026,40 @@ describe('the check follows the canvas', () => {
       expect(dialog?.textContent).not.toContain('The local run needs')
     })
 
+    it('a name set in iii cloud and missing here is never written to iii cloud: no Replace, no typing, no Leave empty, only Skip it here', async () => {
+      const items = [
+        valueItem('STRIPE_KEY', { need: 'optional', in_cloud: 'set', here: 'unset', updated_at: null }),
+        valueItem('OTHER_OPT', { need: 'optional', suggestions: [] }),
+      ]
+      const h = await stage(quiet, {
+        'iii-cloud::values': answer(items),
+        'iii-cloud::values::save': { environment_id: 'e', results: [] },
+        'iii-cloud::values::skip': { environment_id: 'e', names: [] },
+      })
+      await click(btn('Set values'))
+      const dialog = el.querySelector('[role=dialog]')
+      const row = dialog?.querySelector('[data-name="STRIPE_KEY"]')
+      expect(row?.textContent).toContain('Set in iii cloud · missing on this machine')
+      expect(row?.textContent).toContain('Add it to an env file of your folder (the run reads .env.')
+      expect(row?.textContent).not.toMatch(/Replace|Leave empty|Type a value/)
+      expect(row?.querySelector('input, textarea')).toBeNull()
+      // Even choosing Leave empty for the other name and saving sends nothing about the local one.
+      const other = dialog?.querySelector('[data-name="OTHER_OPT"] select') as HTMLSelectElement
+      await act(async () => {
+        other.value = 'leave_empty'
+        other.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      await click([...(dialog?.querySelectorAll('button') ?? [])].find((b) => /^Save/.test(b.textContent ?? '')))
+      await flush()
+      const saves = h.calls.filter((c) => c.id === 'iii-cloud::values::save')
+      for (const c of saves) expect(JSON.stringify(c.payload)).not.toContain('STRIPE_KEY')
+      await click(btn('Skip it here'))
+      expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
+        names: ['STRIPE_KEY'],
+        skip: true,
+      })
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
