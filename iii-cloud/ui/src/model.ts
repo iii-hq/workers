@@ -765,10 +765,6 @@ export function planCodeWords(s: Status, hint: string | null): string[] {
 /** The deployment row a cloud stage belongs to (`validation` is `plan`). */
 export const stageKeyOf = (name: string) => STAGE_GROUPS.find(([, , names]) => names.includes(name))?.[0] ?? name
 
-/** The variable a problem is about when its detail names a path (`…containers.api.environment.KEY`): `KEY`. */
-export const variableOf = (p: Problem | null): string | null =>
-  p?.detail?.match(/\.environment\.([A-Za-z_]\w*)/)?.[1] ?? null
-
 /** The cloud's message without the `CODE · ` prefix older checks carried. */
 export function problemDetail(p: Problem): string | null {
   const d = p.detail?.startsWith(`${p.code} · `) ? p.detail.slice(p.code.length + 3) : p.detail
@@ -785,6 +781,9 @@ export function hiddenPerson(s: Status, p: Problem): boolean {
   return s.secrets.some((r) => r.name === name && r.mode === 'not_needed')
 }
 
+/** The codes about a variable or a secret of the environment: set where they are listed (Secrets and variables), never rows of the check. */
+export const VALUE_CODES = new Set(['EMPTY_DEFAULT_VARIABLE', 'SECRET_MISSING', 'LOCAL_VARIABLE_UNSET'])
+
 /**
  * The one list every count comes from: the current check's problems that still need someone.
  * Person warnings (decisions with defaults) stop counting once the check is ready.
@@ -796,6 +795,7 @@ export function openProblems(s: Status): Problem[] {
   return c.problems.filter(
     (p) =>
       p.owner !== 'none' &&
+      !VALUE_CODES.has(p.code) &&
       !hiddenPerson(s, p) &&
       !(p.skipped && p.severity !== 'block') &&
       !(c.ready && p.owner === 'person' && p.severity !== 'block'),

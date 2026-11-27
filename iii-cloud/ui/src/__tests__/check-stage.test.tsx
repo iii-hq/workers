@@ -6,11 +6,12 @@ import { act } from 'react'
 import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
+import { findings } from '../findings'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing, rcVariables } from '../fixtures/check'
 import { DEV, live6, serving5 } from '../fixtures/deploy'
-import { devValues } from '../fixtures/values'
+import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -62,8 +63,6 @@ const deployButton = () =>
 const youItems = () => [...el.querySelectorAll('li.iii-cloud-cs-need')]
 const agentLines = () => [...(region('Your agent')?.querySelectorAll('li.iii-cloud-cs-item') ?? [])]
 const countOf = (name: string) => region(name)?.querySelector('.iii-cloud-count')?.textContent
-const save = (row: Element | undefined) =>
-  [...(row?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Save')
 const stopPanel = (headline: string) =>
   [...el.querySelectorAll('[role=status]')].find((p) => p.querySelector('b')?.textContent === headline)
 
@@ -99,14 +98,18 @@ describe('the title is the next thing to do, and its numbers are the lists', () 
   )('%s: N things need you · your agent is fixing M, as many as the lists hold', async (_name, status) => {
     await stage(status)
     const t = title() ?? ''
-    const you = Number(/(\d+) (?:things?|values?) needs? you/.exec(t)?.[1] ?? 0)
+    const you = Number(/(\d+) things? needs? you/.exec(t)?.[1] ?? (/values? to set/.test(t) ? 1 : 0))
     const agentN = Number(
       /(?:fixing|for your agent to fix)/.test(t)
         ? (/(\d+)(?: for your agent| *$)|fixing (\d+)/.exec(t)?.slice(1).find(Boolean) ?? 0)
         : 0,
     )
-    expect(you).toBe(youItems().length)
-    expect(you ? countOf('You') : undefined).toBe(you ? String(you) : undefined)
+    // The values a deploy cannot go without are one more thing, in the values card, never a row of You.
+    const values = findings(status).values.length > 0
+    expect(you).toBe(youItems().length + (values ? 1 : 0))
+    expect(youItems().length ? countOf('You') : undefined).toBe(
+      youItems().length ? String(youItems().length) : undefined,
+    )
     expect(agentN).toBe(agentLines().length)
     expect(agentN ? countOf('Your agent') : undefined).toBe(agentN ? String(agentN) : undefined)
   })
@@ -118,11 +121,12 @@ describe('the title is the next thing to do, and its numbers are the lists', () 
     expect(title()).toBe('1 thing needs you · 1 for your agent to fix')
   })
 
-  it('while the check runs, the title is the check; You already lists what is known to be missing', async () => {
+  it('while the check runs, the title is the check', async () => {
     await stage(B('deploy-checking'))
     expect(title()).toBe('Checking billing for dev')
-    expect(region('You')?.textContent).toContain('STRIPE_SECRET_KEY')
-    expect(region('You')?.textContent).toContain('You can do this while the check runs')
+    // A missing secret is never a row of You, nor a name in the check.
+    expect(region('You')).toBeNull()
+    expect(region('The check')?.textContent).not.toContain('STRIPE_SECRET_KEY')
     const parts = region('The check')
     expect(parts?.querySelector('[aria-label="iii cloud\'s plan"]')).toBeTruthy()
     expect(parts?.querySelector('[aria-label="Local run"]')).toBeTruthy()
@@ -131,55 +135,6 @@ describe('the title is the next thing to do, and its numbers are the lists', () 
 })
 
 describe('You', () => {
-  it('a missing secret is saved from its own row, without leaving the screen, then the check runs again', async () => {
-    const h = await stage(B('deploy-problems'), {
-      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'STRIPE_SECRET_KEY', ok: true }] },
-    })
-    const row = youItems()[0]
-    expect(row.textContent).toContain('STRIPE_SECRET_KEY')
-    expect(row.textContent).toContain('has no value in dev')
-    expect(row.textContent).toContain('Saved to dev only; your agent never sees it.')
-    expect(btn('Open Settings')).toBeNull()
-    await type(row.querySelector('input'), 'sk_live_123')
-    await click(save(row))
-    const saved = h.calls.find((c) => c.id === 'iii-cloud::values::save')
-    expect(saved?.payload).toMatchObject({
-      items: [{ name: 'STRIPE_SECRET_KEY', from: 'typed', type: 'secret', value: 'sk_live_123' }],
-    })
-    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
-    expect(row.textContent).toContain('Saved. The check runs again.')
-    // The value reaches only values::save: never the chat or the hand-off.
-    const rest = h.calls.filter((c) => c.id !== 'iii-cloud::values::save')
-    expect(rest.some((c) => JSON.stringify(c).includes('sk_live_123'))).toBe(false)
-    expect(h.go).not.toHaveBeenCalled()
-  })
-
-  it('a missing secret can be left empty on purpose: values::save leave_empty, then the check runs again', async () => {
-    const h = await stage(B('deploy-problems'), {
-      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'STRIPE_SECRET_KEY', ok: true }] },
-    })
-    const row = youItems()[0]
-    await click([...row.querySelectorAll('button')].find((b) => b.textContent === 'Leave it empty'))
-    expect(h.calls.find((c) => c.id === 'iii-cloud::values::save')?.payload).toMatchObject({
-      items: [{ name: 'STRIPE_SECRET_KEY', from: 'leave_empty' }],
-    })
-    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
-  })
-
-  it('a value that could not be saved says why and stays', async () => {
-    await stage(B('deploy-problems'), {
-      'iii-cloud::values::save': {
-        environment_id: 'e',
-        results: [{ name: 'STRIPE_SECRET_KEY', ok: false, error: { code: 'NOT_SAVED', message: 'x' } }],
-      },
-    })
-    const row = youItems()[0]
-    await type(row.querySelector('input'), 'v')
-    await click(save(row))
-    expect(row.querySelector('input')).toBeTruthy()
-    expect(row.querySelector('.iii-cloud-cs-err')?.textContent).toContain("can't write variables")
-  })
-
   it('a decision: the two ways side by side, each with its effect, the recommended one marked; the choice is the call', async () => {
     const h = await stage(B('deploy-decision'))
     const row = youItems().find((r) => r.textContent?.includes("web was changed in iii cloud's console"))
@@ -225,98 +180,9 @@ describe('You', () => {
   })
 
   it('the note is true for what is in the card', async () => {
-    await stage(B('deploy-problems'))
-    expect(region('You')?.textContent).toContain('Secrets go to dev only. Your agent never sees them.')
     await stage(B('deploy-open-problem'))
     expect(region('You')?.textContent).not.toContain('never sees')
     expect(region('You')?.textContent).toContain("Your agent can't do these")
-  })
-
-  describe('names a file of the folder can fill: one row, the bulk editor in a dialog', () => {
-    const first = () => ({ ...B('deploy-problems'), deploys: [] })
-    const read = (items = devValues.items) => ({
-      'iii-cloud::values': { ...devValues, environment_id: first().project?.environment?.id, items },
-      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'SEARCH_WEIGHT_STARS', ok: true }] },
-    })
-    const fillRow = () =>
-      [...el.querySelectorAll('li.iii-cloud-cs-filled')].find((r) => r.textContent?.includes('can be filled'))
-
-    it('shows the numbers and the files, and counts as one item of You and of the title', async () => {
-      await stage(first(), read(devValues.items.map((i) => ({ ...i, suggestions: [] }))))
-      const n = Number(/^(\d+) (?:thing|value)/.exec(title() ?? '')?.[1])
-      await stage(first(), read())
-      expect(fillRow()?.textContent).toContain(
-        '2 of 4 names your compose file reads can be filled from .env and .env.local.',
-      )
-      expect(fillRow()?.textContent).toContain('Review and save')
-      expect(title()).toMatch(new RegExp(`^${n + 1} (?:things?|values?) `))
-    })
-
-    it('its action opens the dialog; saving calls values::save once, then the check', async () => {
-      const h = await stage(first(), read())
-      expect(el.querySelector('[role=dialog]')).toBeNull()
-      await click(btn('Review and save'))
-      expect(el.querySelector('[role=dialog]')?.textContent).toContain('Secrets and variables for')
-      await click(
-        [...el.querySelectorAll('[role=dialog] button')].find((b) =>
-          /^Save \d+ values? and check again/.test(b.textContent ?? ''),
-        ),
-      )
-      const saves = h.calls.filter((c) => c.id === 'iii-cloud::values::save')
-      expect(saves).toHaveLength(1)
-      expect(saves[0].payload).toMatchObject({
-        items: expect.arrayContaining([
-          { name: 'SEARCH_WEIGHT_STARS', from: 'env_file', type: 'variable', file: '.env' },
-        ]),
-      })
-      const ids = h.calls.map((c) => c.id)
-      expect(ids.lastIndexOf('iii-cloud::check')).toBeGreaterThan(ids.indexOf('iii-cloud::values::save'))
-    })
-
-    it('with nothing fillable the row is absent, and a name no file fills keeps its own row', async () => {
-      await stage(first(), read(devValues.items.map((i) => ({ ...i, suggestions: [] }))))
-      expect(fillRow()).toBeUndefined()
-      expect(youItems().some((r) => r.textContent?.includes('STRIPE_SECRET_KEY'))).toBe(true)
-    })
-  })
-
-  it('the secrets page is one link away, for what the row cannot do', async () => {
-    const h = await stage(B('deploy-problems'))
-    await click(btn('Secrets and variables'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'secrets', env: expect.any(String) })
-  })
-
-  it('the first time: the names filled from .env files, with Review', async () => {
-    const dev = B('deploy-problems')
-    const h = await stage(
-      { ...dev, deploys: [] },
-      {
-        'iii-cloud::values': {
-          environment_id: dev.project?.environment?.id,
-          environment: 'dev',
-          manifest: 'api/worker-compose-prod.yaml',
-          read_from: 'workspace',
-          cloud: 'read',
-          save: 'ok',
-          items: [
-            ...Array.from({ length: 4 }, (_, i) => ({
-              name: `FILLED_${i}`,
-              need: 'required',
-              in_cloud: 'set',
-              here: 'from_file',
-              here_file: 'api/.env.test',
-              suggestions: [],
-            })),
-            { name: 'OPTIONAL_ONE', need: 'optional', in_cloud: 'unset', suggestions: [] },
-          ],
-        },
-      },
-    )
-    expect(region('You')?.textContent).toContain(
-      '4 of 5 names your compose file reads were filled from .env.test, saved as secrets. 1 optional one is empty.',
-    )
-    await click(btn('Review'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'secrets', env: expect.any(String) })
   })
 })
 
@@ -406,7 +272,8 @@ describe('Details', () => {
     expect(el.querySelector('[role=region][aria-label="Skipped"]')).toBeNull()
     await click(fold?.querySelector('button'))
     expect(fold?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
-    expect(fold?.querySelector('[aria-label="Warnings"]')?.textContent).toContain('SENTRY_DSN has no value')
+    // A name is set where it is listed, never reported by the check.
+    expect(fold?.querySelector('[aria-label="Warnings"]')?.textContent).not.toContain('SENTRY_DSN')
     expect(fold?.querySelector('[aria-label="Checks"]')).toBeTruthy()
   })
 })
@@ -978,80 +845,6 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(text()).not.toMatch(/serves #\d+ until/)
     expect(text()).not.toContain('Nothing is live on')
   })
-
-  it('a session that cannot write says who can, with no field: an API key, a Developer on production', async () => {
-    const base = B('deploy-problems')
-    const key = { secret: 'iii_x', team_id: 't', environment_id: 'e' }
-    await stage({ ...base, connection: { ...base.connection, api_key: key, method: 'api_key' } })
-    expect(youItems()[0].querySelector('input')).toBeNull()
-    expect(youItems()[0].textContent).toContain("An API key can't write secrets and variables.")
-    const prod = { ...base.project!, environment: { ...base.project!.environment!, production: true } }
-    const teams = base.connection.teams.map((t) => ({ ...t, role: 'Developer' }))
-    await stage({ ...base, project: prod, connection: { ...base.connection, teams } })
-    expect(youItems()[0].querySelector('input')).toBeNull()
-    expect(youItems()[0].textContent).toContain('takes Owner or Admin. You are Developer.')
-  })
-
-  it('an optional empty name (the worker sends it as the EMPTY_DEFAULT_VARIABLE warning) is skipped from Warnings; a required secret never offers Skip', async () => {
-    const h = await stage(B('setup-fixing-live'), { 'iii-cloud::values::skip': {} })
-    const skip = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Skip for now')
-    expect(skip?.closest('details, [aria-label=Warnings], .iii-cloud-cs-item')).toBeTruthy()
-    await click(skip)
-    expect(h.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({
-      names: [expect.any(String)],
-      skip: true,
-    })
-    expect(lastCall(h.calls)).toMatchObject({ id: 'iii-cloud::check' })
-    // A required secret (SECRET_MISSING blocks) is in You with no Skip, whatever the values read says of its name
-    // (a real read, first deploy, `need` required or even optional: the old rule offered Skip on the latter).
-    for (const need of ['required', 'optional'] as const) {
-      const first = { ...B('deploy-problems'), deploys: [] }
-      await stage(first, {
-        'iii-cloud::values': {
-          environment_id: first.project?.environment?.id,
-          environment: 'dev',
-          manifest: 'api/worker-compose-prod.yaml',
-          read_from: 'workspace',
-          cloud: 'read',
-          save: 'ok',
-          items: [{ name: 'STRIPE_SECRET_KEY', need, in_cloud: 'unset', suggestions: [] }],
-        },
-      })
-      expect(youItems().length).toBeGreaterThan(0)
-      expect(
-        youItems()
-          .flatMap((r) => [...r.querySelectorAll('button')])
-          .some((b) => b.textContent === 'Skip for now'),
-      ).toBe(false)
-    }
-  })
-
-  it('a skipped required secret stays in You (iii cloud still needs a value) with Undo; a skipped optional one is undone from Warnings', async () => {
-    const back = await stage(B('setup-fixing-secret-skipped'), { 'iii-cloud::values::skip': {} })
-    const row = youItems().find((r) => [...r.querySelectorAll('button')].some((b) => b.textContent === 'Undo'))
-    expect(row).toBeTruthy()
-    await click([...(row?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Undo'))
-    expect(back.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({ skip: false })
-    expect(row?.textContent).toContain('Undone. The check runs again.')
-    const skipped = await stage(B('setup-fixing-skipped'), { 'iii-cloud::values::skip': {} })
-    await click(btn('Undo'))
-    expect(skipped.calls.find((c) => c.id === 'iii-cloud::values::skip')?.payload).toMatchObject({ skip: false })
-    expect(lastCall(skipped.calls)).toMatchObject({ id: 'iii-cloud::check' })
-  })
-
-  it('a secret row announces its saved state and its error', async () => {
-    await stage(B('deploy-problems'), {
-      'iii-cloud::values::save': { environment_id: 'e', results: [{ name: 'STRIPE_SECRET_KEY', ok: true }] },
-    })
-    const row = youItems()[0]
-    await type(row.querySelector('input'), 'v')
-    await click(save(row))
-    expect(row.querySelector('[role=status]')?.textContent).toContain('Saved')
-    await stage(B('deploy-problems'), { 'iii-cloud::values::save': () => Promise.reject(new Error('down')) })
-    await type(youItems()[0].querySelector('input'), 'v')
-    await click(save(youItems()[0]))
-    expect(youItems()[0].querySelector('[role=alert]')).toBeTruthy()
-  })
 })
 
 describe('the words', () => {
@@ -1068,20 +861,100 @@ describe('the check follows the canvas', () => {
   const primaries = () =>
     [...el.querySelectorAll('button[data-variant=primary]')].filter((b) => !b.hasAttribute('disabled'))
 
-  it('a row names its variable: twenty warnings read as twenty names, not one title', async () => {
-    const s = noAgent(rcFixing)
-    await stage({ ...s, check: { ...s.check!, problems: rcVariables } })
-    const rows = [...(region('The check')?.querySelectorAll('li.iii-cloud-cs-row') ?? [])].map(
-      (r) => r.textContent ?? '',
-    )
-    const named = rows.filter((r) => r.includes('A variable defaults to empty'))
-    expect(named.length).toBe(rcVariables.length)
-    for (const p of rcVariables) {
-      const name = p.detail?.match(/environment\.(\w+)/)?.[1] as string
-      expect(named.filter((r) => r.startsWith(`${name}: A variable defaults to empty`))).toHaveLength(1)
-    }
-    // A warning is not "needs you": it says what it is, with a note mark.
-    expect(named.every((r) => r.includes('warning') && !r.includes('needs you'))).toBe(true)
+  describe('values have their own card: set, skip or carry on', () => {
+    const base = noAgent(rcFixing)
+    const answer =
+      (items: typeof rcValues.items, over: Partial<typeof rcValues> = {}) =>
+      () => ({
+        ...rcValues,
+        environment_id: base.project?.environment?.id,
+        items,
+        ...over,
+      })
+    const card = () => region('Secrets and variables')
+    const names = (prefix: string, n: number, over = {}) =>
+      Array.from({ length: n }, (_, i) => valueItem(`${prefix}_${i}`, { need: 'optional', suggestions: [], ...over }))
+    const quiet = { ...base, check: { ...base.check!, problems: [] } }
+
+    it('twenty optional unset names: counts only, no row anywhere, not "needs you"; Skip for now is one call, then Undo', async () => {
+      let skipped = false
+      const items = () => names('OPT', 20).map((i) => ({ ...i, skipped }))
+      const h = await stage(
+        { ...base, check: { ...base.check!, problems: rcVariables } },
+        {
+          'iii-cloud::values': () => answer(items())(),
+          'iii-cloud::values::skip': () => {
+            skipped = true
+            return { environment_id: 'e', names: [] }
+          },
+        },
+      )
+      expect(card()?.textContent).toContain('20 optional, not set')
+      expect(card()?.textContent).toContain('Optional ones can wait: you can deploy without them.')
+      expect(text()).not.toContain('OPT_0')
+      expect(text()).not.toContain('A variable defaults to empty')
+      expect(region('You')).toBeNull()
+      expect(title() ?? '').not.toMatch(/need|to set/)
+      await click(btn('Skip for now'))
+      await flush()
+      const calls = h.calls.filter((c) => c.id === 'iii-cloud::values::skip')
+      expect(calls).toHaveLength(1)
+      expect((calls[0].payload as { names: string[]; skip: boolean }).names).toHaveLength(20)
+      expect(calls[0].payload).toMatchObject({ skip: true })
+      expect(card()?.textContent).toContain('20 skipped for now')
+      expect(btn('Undo')).toBeTruthy()
+    })
+
+    it('three required names: line 1 with the names, one thing for the person, Set values opens the editor on them', async () => {
+      const items = names('REQ', 3, { need: 'required', default: null })
+      await stage(quiet, { 'iii-cloud::values': answer(items) })
+      expect(card()?.textContent).toContain('3 required by api/worker-compose-prod.yaml and not set')
+      for (const i of items) expect(card()?.textContent).toContain(i.name)
+      expect(card()?.textContent).toContain(
+        'iii cloud does not deploy without them: set them, or leave them empty on purpose.',
+      )
+      expect(title()).toBe('3 values to set')
+      expect(region('You')).toBeNull()
+      expect(btn('Set values')?.getAttribute('data-variant')).toBe('secondary')
+      await click(btn('Set values'))
+      const dialog = el.querySelector('[role=dialog]')?.textContent ?? ''
+      for (const i of items) expect(dialog).toContain(i.name)
+    })
+
+    it("the agent's secret request is in the card, not in You", async () => {
+      const items = [
+        valueItem('ASKED_KEY', { asked: { request_id: 'r1', description: 'Signs the cookies.' }, suggestions: [] }),
+      ]
+      await stage(quiet, { 'iii-cloud::values': answer(items) })
+      expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(card()?.textContent).toContain('Signs the cookies.')
+      expect(region('You')).toBeNull()
+    })
+
+    it('a session that cannot write: the buttons are off, with the sentence', async () => {
+      await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 2), { save: 'api_key' }) })
+      expect((btn('Set values') as HTMLButtonElement).disabled).toBe(true)
+      expect((btn('Skip for now') as HTMLButtonElement).disabled).toBe(true)
+      expect(card()?.textContent).toContain("An API key can't write secrets and variables.")
+    })
+
+    it('every name set: nothing to do, and the header link goes to the secrets page', async () => {
+      const items = names('OK', 2).map((i) => ({ ...i, in_cloud: 'set' as const }))
+      const h = await stage(quiet, { 'iii-cloud::values': answer(items) })
+      expect(card()?.textContent).toContain('Every name api/worker-compose-prod.yaml reads is set.')
+      expect(card()?.textContent).toContain('2 set')
+      expect(btn('Set values')).toBeNull()
+      await click(btn('All names'))
+      expect(h.go).toHaveBeenCalledWith({ at: 'secrets', env: expect.any(String) })
+    })
+
+    it('a mixed check lists the other problems unchanged', async () => {
+      const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
+      await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
+      const before = text()
+      await stage({ ...base, check: { ...base.check!, problems: others } })
+      expect(text()).toBe(before)
+    })
   })
 
   it("the local run's rows are the canvas's words, with no command", async () => {

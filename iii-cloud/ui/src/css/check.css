@@ -675,3 +675,43 @@
   line-height: 1.5;
   color: var(--color-ink-faint);
 }
+
+/* The values card: a line per fact (counts, never a list of twenty names), then the person's ways out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vfact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vline[data-tone='alert'] {
+  justify-content: flex-start;
+  color: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vnames {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vals .iii-cloud-cs-sub {
+  font-size: 12px;
+}

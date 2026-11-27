@@ -392,31 +392,19 @@ describe('the hand-over between places, end to end', () => {
     expect(text()).not.toContain('iii-cloud/ready-')
   })
 
-  it('the Deploy screen: Secrets and variables, and Review of the filled names, open the secrets page', async () => {
+  it("the Deploy screen's values card: All names opens the secrets page", async () => {
     const b = boards['deploy-problems']
-    await board('deploy-problems')
-    await click(btn('Secrets and variables'))
-    expect(path()).toBe('Projects / registry · dev / Secrets and variables')
-    const filled = {
+    const values = {
       environment_id: b.status.project?.environment?.id,
       environment: 'dev',
       manifest: 'api/worker-compose-prod.yaml',
       read_from: 'workspace',
       cloud: 'read',
       save: 'ok',
-      items: [
-        {
-          name: 'FILLED',
-          need: 'required',
-          in_cloud: 'set',
-          here: 'from_file',
-          here_file: 'api/.env.test',
-          suggestions: [],
-        },
-      ],
+      items: [{ name: 'FILLED', need: 'required', in_cloud: 'set', suggestions: [] }],
     }
-    await mount(b.status, b.context ? ctx(b.context, 2) : {}, { 'iii-cloud::values': filled })
-    await click(btn('Review'))
+    await mount(b.status, b.context ? ctx(b.context) : {}, { 'iii-cloud::values': values })
+    await click(btn('All names'))
     expect(path()).toBe('Projects / registry · dev / Secrets and variables')
   })
 

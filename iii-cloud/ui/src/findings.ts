@@ -1,7 +1,7 @@
 // What the check found, as CheckStage's sections show it: one deduplicated list (every count comes from it),
 // split by owner, then grouped by code and file ("21 variables have no value in iii cloud").
 
-import { checklist, isDatabaseVar, problemDetail, problemTitle, variableName } from './model'
+import { checklist, hiddenPerson, isDatabaseVar, problemDetail, problemTitle, VALUE_CODES, variableName } from './model'
 import type { Problem, SecretRequest, Status, Values } from './types'
 
 export type Item = {
@@ -121,6 +121,8 @@ export type Findings = {
   person: Item[]
   /** "Your agent": the agent's, open and fixed. */
   agent: Item[]
+  /** Values the deploy cannot go without (required, not set): the one "N values need you" row, never a row each. */
+  values: Item[]
   /** Information only: nobody acts on it, never counted. */
   notes: Item[]
   /** "Skipped": one row per name skipped for now, never counted (a skipped SECRET_MISSING stays in `person`). */
@@ -135,7 +137,7 @@ export const valueName = (i: Item) => i.secret ?? i.name ?? variableName(i)
 /** The one list: the hand-off's checklist (fixed rows kept) and the notes, deduplicated, by owner. */
 export function findings(s: Status): Findings {
   const c = s.check
-  if (!c) return { person: [], agent: [], notes: [], skipped: [] }
+  if (!c) return { person: [], agent: [], values: [], notes: [], skipped: [] }
   const byId = new Map(c.problems.map((p) => [p.id, p]))
   const rows = checklist(s).rows.map((r) => {
     const p = r.pid ? (byId.get(r.pid) ?? null) : null
@@ -224,39 +226,67 @@ export function findings(s: Status): Findings {
       secret: name,
       skipped: true,
     }))
+  // A variable or a secret is not a row of the check: only the required ones that are missing, as one count.
+  const isValue = (i: Item) => (!!i.code && VALUE_CODES.has(i.code)) || !!i.secret
+  const shown = [...kept, ...warnings.filter((i) => !(i.code && codes.has(i.code)))]
+  // They come from the check's own problems (the hand-off's checklist leaves them out), and from what the agent asked for.
+  const values = [
+    ...c.problems
+      .filter((p) => VALUE_CODES.has(p.code) && p.severity === 'block' && p.owner !== 'none' && !hiddenPerson(s, p))
+      .map((p) => ({ ...itemOf(p.id, p, { ...p, title: problemTitle(p) }, p.owner, false), secret: variableName(p) })),
+    ...shown.filter((i) => !i.code && i.secret && !i.fixed),
+  ]
   return {
-    person: [...kept, ...warnings.filter((i) => !(i.code && codes.has(i.code)))],
-    agent: all.filter((i) => i.owner === 'agent'),
-    notes: all.filter((i) => i.owner === 'none'),
-    skipped: [...aside, ...byCode],
+    person: shown.filter((i) => !isValue(i)),
+    agent: all.filter((i) => i.owner === 'agent' && !isValue(i)),
+    values,
+    notes: all.filter((i) => i.owner === 'none' && !isValue(i)),
+    skipped: [...aside, ...byCode].filter((i) => !isValue(i)),
   }
 }
 
 /** O2: the workers' config, theirs to copy; a warning. */
 export const configAction = (i: Item) => !!i.code && CONFIG_CODES.has(i.code)
 
+/** The names the compose file reads that iii cloud does not fill in by itself, told apart for the values card. */
+export function valuesPlan(v: Values | null) {
+  const items = (v?.items ?? []).filter((i) => !i.database)
+  const unset = items.filter((i) => i.in_cloud !== 'set' && i.need !== 'has_default')
+  const required = unset.filter((i) => i.need === 'required')
+  const rest = unset.filter((i) => i.need !== 'required')
+  return {
+    items,
+    /** Required by the file and not set: what stops a deploy. */
+    required,
+    /** Asked for by the agent (a secret request), and not already counted as required. */
+    asked: rest.filter((i) => i.asked),
+    optional: rest.filter((i) => !i.asked && !i.skipped),
+    skipped: rest.filter((i) => !i.asked && i.skipped),
+    set: items.filter((i) => i.in_cloud === 'set'),
+    /** Not set, and an env file or this environment's address can give the value: the Secrets screen's "can come from your env files". */
+    offered: items.filter(
+      (i) =>
+        i.in_cloud === 'unset' &&
+        !i.invalid_name &&
+        !i.skipped &&
+        i.suggestions.some((x) => x.source === 'env_file' || x.source === 'env_url'),
+    ),
+  }
+}
+
 /**
  * What only the person can do before this check can pass: its blocking problems (a warning is not one) and the
  * console settings still to decide. The one list the Deploy screen's title and the environment's next action count.
- * `read`: the worker's values read of a first deploy. The names it says a file of the folder (or another
- * environment) can fill are one row ("Review and save"), not one each.
+ * `read`: the worker's values read. The values the deploy cannot go without are ONE thing, the values card; they are
+ * never rows of their own (`values` names them, for the sentence that says how many).
  */
 export function needsYou(s: Status, read: Values | null = null) {
-  const fillable =
-    read?.save === 'ok'
-      ? read.items.filter(
-          (i) =>
-            i.in_cloud === 'unset' &&
-            !i.database &&
-            !i.invalid_name &&
-            i.suggestions.some((x) => x.source === 'env_file' || x.source === 'copy'),
-        )
-      : []
-  const covered = new Set(fillable.map((i) => i.name))
-  const items = findings(s).person.filter(
-    (i) => !i.fixed && i.severity === 'block' && !configAction(i) && !covered.has(valueName(i) ?? ''),
-  )
+  const names = new Set([
+    ...valuesPlan(read).required.map((i) => i.name),
+    ...findings(s).values.map((i) => valueName(i) ?? i.key),
+  ])
+  const items = findings(s).person.filter((i) => !i.fixed && i.severity === 'block' && !configAction(i))
   const chosen = s.override_choices ?? {}
   const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
-  return { items, decide, fillable, count: items.length + decide.length + (fillable.length ? 1 : 0) }
+  return { items, decide, values: [...names], count: items.length + decide.length + (names.size ? 1 : 0) }
 }
