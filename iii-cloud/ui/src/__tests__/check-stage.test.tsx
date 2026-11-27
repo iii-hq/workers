@@ -1035,7 +1035,10 @@ describe('the check follows the canvas', () => {
         owner: 'agent' as const,
         title: 'DATABASE_URL has no value',
       }
-      const s = { ...base, check: { ...base.check!, problems: [db] } }
+      const s = {
+        ...base,
+        check: { ...base.check!, problems: [db], run: { ...base.check!.run!, status: 'passed' as const, error: null } },
+      }
       await stage(s)
       expect(title()).toBe('1 for your agent to fix')
       expect(region('Your agent')?.textContent).toContain('DATABASE_URL has no value')
@@ -1468,7 +1471,10 @@ describe('small things the review found', () => {
       question_source: 'agent' as const,
     }
     const w = { ...rcFixing, agent: ask }
-    const none = { ...w, check: { ...w.check!, problems: [] } }
+    const none = {
+      ...w,
+      check: { ...w.check!, problems: [], run: { ...w.check!.run!, status: 'passed' as const, error: null } },
+    }
     await stage(none)
     expect(title()).toBe('1 thing needs you')
     expect(region('Your agent')?.textContent).toContain(text)
@@ -1494,6 +1500,11 @@ describe('small things the review found', () => {
 
 describe('an agent that ended its turn waiting on a wake', () => {
   const WAKE = 'test environment values/deploy'
+  // A failed run is itself one more thing for the agent: these tests want nothing open for it.
+  const passedRun = (st: Status) => ({
+    ...st,
+    check: { ...st.check!, run: { ...st.check!.run!, status: 'passed' as const, error: null } },
+  })
   const waiting = (none = false) => {
     const w = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'waiting' as const, waiting_for: WAKE } }
     return none ? { ...w, check: { ...w.check!, problems: [] } } : w
@@ -1509,7 +1520,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
   })
 
   it('with nothing for it to fix: "Your agent waits for …"', async () => {
-    await stage(waiting(true))
+    await stage(passedRun(waiting(true)))
     expect(title()).toBe(`Your agent waits: "${WAKE}"`)
     expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
   })
@@ -1608,7 +1619,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
   })
 
   it('the worker\'s own wake texts read "waits for …", a long label is cut at 80 characters', async () => {
-    const w = waiting(true)
+    const w = passedRun(waiting(true))
     await stage({ ...w, agent: { ...w.agent!, waiting_for: 'the check to end' } })
     expect(title()).toBe('Your agent waits for the check to end')
     await stage({ ...w, agent: { ...w.agent!, waiting_for: 'x'.repeat(200) } })
@@ -1791,5 +1802,56 @@ describe("the run's last lines", () => {
   it('a colour code without its escape character is not shown', () => {
     const tail = runTail(['[31mInvalid environment variables:[0m', 'X_KEY: required'])
     expect(tail.join('\n')).toBe('Invalid environment variables:\nX_KEY: required')
+  })
+})
+
+describe("a local run that failed at the release stage is the agent's to fix", () => {
+  const note = {
+    ...rcFixing.agent!,
+    state: 'waiting_for_you' as const,
+    question: 'Your agent stopped before running it here like the cloud.',
+    question_source: 'check' as const,
+  }
+  const release = (agent: typeof note | NonNullable<Status['agent']>) => {
+    const r = rcFixing.check!
+    return {
+      ...rcFixing,
+      agent,
+      check: {
+        ...r,
+        problems: [],
+        run: {
+          ...r.run!,
+          error: { stage: 'release' as const, code: 'RELEASE_FAILED', message: 'pnpm db:migrate exited 1' },
+        },
+      },
+    } as Status
+  }
+  const stop = () =>
+    [...el.querySelectorAll('[role=status]')].find((p) => p.textContent?.includes('stopped at Release'))
+
+  it('the title counts it, the stop offers the agent first, and Run again stays second', async () => {
+    const openScreen = vi.fn()
+    await stage(release(note), marker, { openScreen })
+    expect(title()).toBe('1 for your agent to fix')
+    const buttons = [...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)
+    expect(buttons).toEqual(['Fix with your agent', 'Run again'])
+    // The agent waits in its chat: the same call the screen uses for a waiting agent opens that chat.
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    expect(openScreen).toHaveBeenCalled()
+    // No agent at all: the same button sends the hand-off.
+    const h2 = await stage({ ...release(note), agent: null, handoff_brief: null }, marker)
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(handoffs(h2)).toHaveLength(1)
+    // one row for the card, and not a second "Fix with your agent" beside the stop's
+    expect(region('Your agent')?.textContent).toContain('The local run stopped at Release')
+    expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Fix with your agent')).toHaveLength(1)
+  })
+
+  it('an agent already on it: "Your agent is on it." and no button for it', async () => {
+    await stage(release({ ...rcFixing.agent!, state: 'working' as const }))
+    expect(stop()?.textContent).toContain('Your agent is on it.')
+    expect([...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Run again'])
   })
 })

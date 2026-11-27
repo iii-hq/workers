@@ -1112,6 +1112,22 @@ export function CheckStage(props: CheckStageProps) {
         id: null,
       })),
   ]
+  // A failed local run is the agent's to fix unless it is Docker, a replaced run, or something the person's own values
+  // explain (an open problem of the run here, or a value still missing): the page has no owner for a run's failure, so
+  // it is told the way the run's stop is (`stops` below): by what else is open. It is one more row for the agent.
+  const runError = run?.status === 'failed' && !running ? run.error : null
+  const agentRun =
+    !!runError &&
+    !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
+    !openProblems(s, true).some((x) => x.source === 'check_here') &&
+    !missing.length
+  if (agentRun && runError)
+    lines.push({
+      key: 'run-failed',
+      title: `The local run stopped at ${stageLabel(runError.stage)}`,
+      detail: plainMessage(runError),
+      id: null,
+    })
   // The agent fixing a failed deployment: the passed check is the failed deployment's, not a go-ahead.
   const deployFix = agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix'
   const failedDeploy = deployFix ? s.deploys.find((d) => d.environment_id === envId && isFailedDeploy(d)) : undefined
@@ -1260,10 +1276,19 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
+            {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
           </>
         ),
-        acts: [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+        // The agent's to fix: its hand-off first (unless it is already on it); running again repeats the failure.
+        acts: agentRun
+          ? [
+              ...(agentWorking(s)
+                ? []
+                : [{ label: sendLabel(s, 'ready', 'Fix with your agent'), onClick: ask, disabled: !canAsk }]),
+              { label: 'Run again', onClick: checkAgain, disabled: running },
+            ]
+          : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
@@ -1665,7 +1690,7 @@ export function CheckStage(props: CheckStageProps) {
           end={
             (engaged || asks) && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
-            ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
+            ) : lines.length && !running && !stops.some((x) => x.key === 'stopped' || (x.key === 'run' && agentRun)) ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
               </Button>
