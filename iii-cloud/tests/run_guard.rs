@@ -934,11 +934,13 @@ async fn the_loop_fails_a_container_only_after_two_looks_in_a_row_find_it_dead()
     // A pid that is alive: this test process's.
     std::fs::write(dir.join("alive.json"), rec(std::process::id())).unwrap();
     let bin = dir.join("iii");
-    // Each poll of the engine moves the record on: the 1st call says alive, the rest dead.
+    // Each poll of the engine moves the record on: the 1st call says alive, the rest dead. The record
+    // starts alive: `compose` runs beside the first poll, and a start that wrote "dead" after that poll's
+    // "alive" made two dead looks out of two calls.
     std::fs::write(
         &bin,
         format!(
-            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) mkdir -p '{st}'; cp '{d}/dead.json' '{s}'; exec sleep 20;;\n  call) n=$(cat '{d}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{d}/n'\n    if [ $n = 1 ]; then cp '{d}/alive.json' '{s}'; else cp '{d}/dead.json' '{s}'; fi\n    cat '{d}/workers.json';;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) mkdir -p '{st}'; cp '{d}/alive.json' '{s}'; exec sleep 20;;\n  call) n=$(cat '{d}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{d}/n'\n    if [ $n = 1 ]; then cp '{d}/alive.json' '{s}'; else cp '{d}/dead.json' '{s}'; fi\n    cat '{d}/workers.json';;\nesac\n",
             st = state.parent().unwrap().display(),
             s = state.display(),
             d = dir.display()

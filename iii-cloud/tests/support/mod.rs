@@ -173,12 +173,19 @@ pub struct Harness {
     pub dir: tempfile::TempDir,
 }
 
-/// A context against `cloud_url`, its store in a temp dir, waits of 10 ms.
+/// A context against `cloud_url`, its store in a temp dir, waits of 10 ms. Its `iii` is the test's own, which
+/// reports the engine the fixtures' cloud runs: with the machine's, every check of a runner without iii 0.27
+/// carries `LOCAL_ENGINE_VERSION`, and the tests pass on one machine and fail on the next.
 pub fn harness(cloud_url: &str, fake: Arc<Fake>) -> Harness {
     let dir = tempfile::tempdir().unwrap();
+    let iii = dir.path().join("iii");
+    std::fs::write(&iii, "#!/bin/sh\necho 'iii 0.27.0'\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&iii, std::fs::Permissions::from_mode(0o755)).unwrap();
     let cfg = Config {
         cloud_url: cloud_url.into(),
         data_dir: dir.path().join("data").to_string_lossy().into_owned(),
+        iii_bin: iii.to_string_lossy().into_owned(),
         ..Config::default()
     };
     let store = Arc::new(Store::open(&cfg.data_path()));
