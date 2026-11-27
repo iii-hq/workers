@@ -54,6 +54,16 @@ async fn get_first(server: &MockServer, p: &str, body: Value) {
 /// A browser session, and a cloud with two projects for the repository: `registry`
 /// (production and a `dev` env on its own branch) and a newer `registry-3`.
 async fn cloud(server: &MockServer, p1_deployed: bool) -> Harness {
+    // A project read by its id is alive unless a test says otherwise: a create asks, to tell the answer of
+    // an earlier create of a project deleted since.
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            r"^/api/v1/teams/{TEAM}/projects/[0-9a-f-]{{36}}$"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"delete_after": null})))
+        .with_priority(200)
+        .mount(server)
+        .await;
     get(server, "/me", json!({"user": {"id": "u", "email": "ada@example.test"}, "teams": [{"id": TEAM, "name": "Acme", "slug": "acme", "personal": false, "role": "owner"}]})).await;
     get(server, &format!("/teams/{TEAM}/projects"), json!({"projects": [project(P1, "registry", "2026-11-01T00:00:00Z"), project(P2, "registry-3", "2026-11-20T00:00:00Z")]})).await;
     get(server, &format!("/teams/{TEAM}/projects/{P1}/environments"), json!({"environments": [env(E1, "production", true, "main"), env(E1_DEV, "dev", false, DEV_BRANCH)]})).await;
@@ -466,6 +476,77 @@ async fn an_environment_branch_that_exists_on_origin_is_checked_out_from_there()
 
 fn select(h: &Harness) -> Project {
     h.ctx.store.read(|s| s.project.clone()).unwrap()
+}
+
+/// iii cloud answers a key it has seen with the answer it gave then. A project made with the key and deleted
+/// since comes back as if just made: the create asks again with a new key, once.
+#[tokio::test]
+async fn a_create_that_is_answered_with_a_deleted_project_asks_again_with_a_new_key() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h2 = cloud(&server, true).await;
+    get(&server, &format!("/teams/{TEAM}/github/repositories"), json!({"repositories": [{"id": 77, "full_name": "ada/hello-iii", "default_branch": "main", "private": true, "manifests": [{"path": "worker-compose.yaml", "lock": true, "workers": [], "choosable": true, "issue": null, "suggested_environment": "production"}]}]})).await;
+    get_first(&server, &format!("/teams/{TEAM}/projects"), json!({"projects": [project(P1, "registry", "2026-11-01T00:00:00Z"), project(P3, "hello-iii", "2026-11-26T00:00:00Z")]})).await;
+    get(
+        &server,
+        &format!("/teams/{TEAM}/projects/{P3}/environments"),
+        json!({"environments": [env(E3, "production", true, "main")]}),
+    )
+    .await;
+    get(
+        &server,
+        &format!("/teams/{TEAM}/environments/{E3}"),
+        env(E3, "production", true, "main"),
+    )
+    .await;
+    get(
+        &server,
+        &format!("/teams/{TEAM}/environments/{E3}/deployments"),
+        json!({"deployments": [], "next_cursor": null}),
+    )
+    .await;
+    // The project of the earlier create: deleted since.
+    let old = "aaaaaaa9-0000-4000-8000-000000000009";
+    get_first(
+        &server,
+        &format!("/teams/{TEAM}/projects/{old}"),
+        json!({"id": old, "delete_after": "2026-12-04T00:00:00Z"}),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects")))
+        .and(wiremock::matchers::header_regex("idempotency-key", ":0$"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"project": project(old, "hello-iii", "2026-11-20T00:00:00Z"), "environment": env(E3, "production", true, "main")})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects")))
+        .and(wiremock::matchers::header_regex("idempotency-key", ":1$"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"project": project(P3, "hello-iii", "2026-11-26T00:00:00Z"), "environment": env(E3, "production", true, "main")})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let made = create_project(
+        &h2.ctx,
+        ProjectCreateRequest {
+            path: r.checkout.to_string_lossy().into(),
+            team_id: TEAM.into(),
+            manifest: "worker-compose.yaml".into(),
+            environment_name: "production".into(),
+            production: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(made.project_id.as_deref(), Some(P3));
+    // The key that made it is spent: the next create of the same repository, file and name is a new one.
+    assert_eq!(
+        h2.ctx
+            .store
+            .read(|s| s.create_attempts.values().copied().collect::<Vec<_>>()),
+        vec![2]
+    );
 }
 
 #[tokio::test]
@@ -1498,6 +1579,12 @@ async fn a_new_environment_of_the_candidates_project_is_made_there_and_not_selec
     resolve(&h.ctx, resolve_req(&r2.checkout)).await.unwrap();
     let before = select(&h);
     let new_env = "ccccccc2-0000-4000-8000-000000000010";
+    get(
+        &server,
+        &format!("/teams/{TEAM}/environments/{new_env}"),
+        env(new_env, "staging", false, "main"),
+    )
+    .await;
     get_first(
         &server,
         &format!("/teams/{TEAM}/projects/{P2}/environments"),

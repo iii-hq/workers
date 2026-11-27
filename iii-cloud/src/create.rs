@@ -95,9 +95,22 @@ fn keyed(ctx: &Ctx, key: &str) -> String {
     format!("{key}:{attempt}")
 }
 
-fn failed_attempt(ctx: &Ctx, key: &str) {
+/// The key has had its answer, a refusal or a create that was made: the next create of the same thing gets
+/// a new key. Only an answer that never arrived keeps the key, so a retry cannot make a second one.
+fn spent(ctx: &Ctx, key: &str) {
     ctx.store
         .update(|s| *s.create_attempts.entry(key.to_string()).or_insert(0) += 1);
+}
+
+/// Whether what a create answered with is already deleted in iii cloud. iii cloud answers a key it has
+/// seen with the answer it gave then, so a project or an environment made with that key and deleted since
+/// comes back as if just made (this machine's count of the key is lost with its records).
+async fn deleted(ctx: &Ctx, path: String) -> bool {
+    match ctx.raw(&Req::get(path)).await {
+        Ok((404, _)) => true,
+        Ok((200, v)) => v.get("delete_after").is_some_and(|d| !d.is_null()),
+        _ => false,
+    }
 }
 
 /// `iii-cloud::project::create`: import the repository as a new cloud project.
@@ -174,9 +187,18 @@ pub async fn create_project(ctx: &Arc<Ctx>, request: ProjectCreateRequest) -> Re
         request.team_id, request.manifest, request.environment_name
     );
     post.idempotency_key = Some(keyed(ctx, &key));
-    let (status, body) = ctx.raw(&post).await?;
+    let (mut status, mut body) = ctx.raw(&post).await?;
+    if (200..300).contains(&status)
+        && let Some(id) = body.pointer("/project/id").and_then(Value::as_str)
+        && deleted(ctx, format!("/teams/{}/projects/{id}", request.team_id)).await
+    {
+        // An earlier create's answer, replayed: one new key makes the new project.
+        spent(ctx, &key);
+        post.idempotency_key = Some(keyed(ctx, &key));
+        (status, body) = ctx.raw(&post).await?;
+    }
+    spent(ctx, &key);
     if !(200..300).contains(&status) {
-        failed_attempt(ctx, &key);
         return Err(create_error(status, &body, "PROJECT_NAME_TAKEN"));
     }
     let project_id = body
@@ -332,9 +354,18 @@ pub async fn create_environment(
     );
     let key = format!("iii-cloud:env:{}:{}", cloud.id, request.name);
     post.idempotency_key = Some(keyed(ctx, &key));
-    let (status, answer) = ctx.raw(&post).await?;
+    let (mut status, mut answer) = ctx.raw(&post).await?;
+    if (200..300).contains(&status)
+        && let Some(id) = answer.get("id").and_then(Value::as_str)
+        && deleted(ctx, format!("/teams/{}/environments/{id}", cloud.team.id)).await
+    {
+        // An earlier create's answer, replayed: one new key makes the new environment.
+        spent(ctx, &key);
+        post.idempotency_key = Some(keyed(ctx, &key));
+        (status, answer) = ctx.raw(&post).await?;
+    }
+    spent(ctx, &key);
     if !(200..300).contains(&status) {
-        failed_attempt(ctx, &key);
         return Err(environment_error(status, &answer));
     }
     let environment_id = answer
