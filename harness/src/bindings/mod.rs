@@ -348,7 +348,8 @@ pub struct BindingTarget {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
     /// JSON pointer where the event lands inside the payload (default
-    /// `/event`).
+    /// `/event`). It walks objects by key and arrays by index:
+    /// `/through/0/payload/value` seeds the first step of an `fp::pipe`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_into: Option<String>,
 }
