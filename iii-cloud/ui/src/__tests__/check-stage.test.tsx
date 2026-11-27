@@ -896,7 +896,14 @@ describe('the check follows the canvas', () => {
       let skipped = false
       const items = () => names('OPT', 20).map((i) => ({ ...i, skipped }))
       const h = await stage(
-        { ...base, check: { ...base.check!, problems: rcVariables } },
+        {
+          ...base,
+          check: {
+            ...base.check!,
+            problems: rcVariables,
+            run: { ...base.check!.run!, status: 'passed' as const, error: null },
+          },
+        },
         {
           'iii-cloud::values': () => answer(items())(),
           'iii-cloud::values::skip': () => {
@@ -1089,6 +1096,27 @@ describe('the check follows the canvas', () => {
       expect(title()).toMatch(/to set/)
       await stage({ ...s, skipped_values: ['LOC_0'] })
       expect(title() ?? '').not.toMatch(/to set/)
+    })
+
+    it('when the local run failed the card never says "you can deploy without them", and a missing value explains the stop', async () => {
+      await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 12)) })
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
+      expect(card()?.textContent).toContain(
+        "The local run failed. If the application needs one of the names above, set it: the run's last lines say which.",
+      )
+      expect(btn('Set values')).toBeTruthy()
+      const problem = {
+        ...rcVariables[0],
+        id: 'p-loc2',
+        code: 'LOCAL_VARIABLE_UNSET',
+        source: 'check_here' as const,
+        severity: 'block' as const,
+        owner: 'person' as const,
+        title: 'JWT_SECRET has no value here',
+      }
+      await stage({ ...base, check: { ...base.check!, problems: [problem] } })
+      // The run's own stop would only offer "Run again"; the values card is where it is fixed.
+      expect(text()).not.toContain('The local run stopped at')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

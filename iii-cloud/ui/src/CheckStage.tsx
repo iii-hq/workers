@@ -1203,7 +1203,12 @@ export function CheckStage(props: CheckStageProps) {
           { label: 'How to start Docker', href: DOCKER_DOCS },
         ],
       })
-    } else if (err && err.code !== 'RUN_REPLACED' && !open.some((x) => x.source === 'check_here')) {
+    } else if (
+      err &&
+      err.code !== 'RUN_REPLACED' &&
+      // The person's values count here too: a name the run lacks is why it failed, and the values card says so.
+      !openProblems(s, true).some((x) => x.source === 'check_here')
+    ) {
       stops.push({
         key: 'run',
         variant: 'alert',
@@ -1529,6 +1534,7 @@ export function CheckStage(props: CheckStageProps) {
 
       {!replaced ? (
         <ValuesCard
+          runFailed={run?.status === 'failed'}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {

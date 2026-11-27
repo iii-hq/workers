@@ -21,8 +21,11 @@ export function ValuesCard({
   onSkip,
   onRunWithout,
   onAll,
+  runFailed,
 }: {
   read: ValuesRead
+  /** The check's local run failed: "deploy without them" is not a thing to say then. */
+  runFailed: boolean
   /** "Set values": the review editor over these names (required first, then asked, then optional). */
   onSet: (names: string[]) => void
   /** `values::skip` for these names; resolves when it went through. */
@@ -157,7 +160,12 @@ export function ValuesCard({
             {!toSet.length && !plan.skipped.length ? (
               <p className="iii-cloud-cs-sub">{`Every name ${file} reads is set.`}</p>
             ) : null}
-            {!plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
+            {runFailed && toSet.length ? (
+              <p className="iii-cloud-cs-sub">
+                The local run failed. If the application needs one of the names above, set it: the run's last lines say
+                which.
+              </p>
+            ) : !plan.required.length && !plan.asked.length && plan.optional.length && !plan.local.length ? (
               <p className="iii-cloud-cs-sub">Optional ones can wait: you can deploy without them.</p>
             ) : null}
             {noWrite ? <p className="iii-cloud-cs-sub">{noWrite}</p> : null}
