@@ -1615,7 +1615,7 @@ describe('small things the review found', () => {
         plan: {
           ...r.check!.plan,
           status: 'unavailable' as const,
-          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503', status: 503 },
         },
       },
     }
@@ -1655,6 +1655,29 @@ describe('small things the review found', () => {
     await stage({ ...out, connection: { ...out.connection, status: 'expired' as const } })
     expect(planStop()).toBeUndefined()
     expect(text()).toContain('Your iii cloud sign-in expired')
+  })
+
+  it('a worker message without an end mark gets one, and a 4xx that will not pass is lasting except 408 and 429', async () => {
+    const r = B('deploy-problems')
+    const plan = (error: WorkerError) =>
+      ({
+        ...r,
+        agent: null,
+        handoff_brief: null,
+        check: { ...r.check!, plan: { ...r.check!.plan, status: 'unavailable' as const, error } },
+      }) as Status
+    const planStop = () =>
+      [...el.querySelectorAll('[role=status]')].find((p) =>
+        p.textContent?.includes("iii cloud's plan could not be read"),
+      )
+    // the worker's real strings: no period, and "{message} ({code})"
+    await stage(plan({ code: 'CLOUD_ERROR', message: 'Environment name is invalid (VALIDATION)', status: 422 }))
+    expect(planStop()?.textContent).toContain('Environment name is invalid (VALIDATION).')
+    expect(planStop()?.textContent).not.toContain('in a moment')
+    await stage(plan({ code: 'CLOUD_ERROR', message: 'Too many requests', status: 429 }))
+    expect(planStop()?.textContent).toContain('Too many requests. Check again in a moment.')
+    await stage(plan({ code: 'CLOUD_ERROR', message: 'iii cloud answered 408', status: 408 }))
+    expect(planStop()?.textContent).toContain('in a moment')
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
@@ -2224,7 +2247,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
         plan: {
           ...w.check!.plan,
           status: 'unavailable' as const,
-          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503', status: 503 },
         },
       },
     } as Status

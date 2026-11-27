@@ -143,6 +143,8 @@ const AT_LEAST =
 const UNLOCKS = 'Unlocks when a check passes'
 /** Worker notes about what the local run did to files: a quiet line under Details, never a warning. */
 const QUIET = new Set(['RUN_LEFT_FILES', 'RUN_FILES_RESTORED'])
+/** A sentence with its end mark: the worker's own messages may have none ("iii cloud answered 503"). */
+const sentence = (t: string) => (/[.!?]$/.test(t.trim()) ? t.trim() : `${t.trim()}.`)
 const ACTIVE: AgentState[] = ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled']
 const MARKS = {
   ok: [Done, 'done'],
@@ -1259,14 +1261,14 @@ export function CheckStage(props: CheckStageProps) {
     ) {
       const why = c.plan.error
       // A cause that will not pass by itself (403, 404) says the worker's sentence and what helps; else "in a moment".
-      const lasting = why?.status === 403 || why?.status === 404
+      const lasting = !!why?.status && why.status >= 400 && why.status < 500 && why.status !== 408 && why.status !== 429
       const consoleUrl = envPageUrl(s, '')
       stops.push({
         key: 'plan',
         variant: 'warn',
         headline: "iii cloud's plan could not be read",
         detail: why
-          ? `${why.message}${why.fix ? ` ${why.fix}` : ''}${lasting ? '' : ' Check again in a moment.'}`
+          ? `${sentence(why.message)}${why.fix ? ` ${sentence(why.fix)}` : ''}${lasting ? '' : ' Check again in a moment.'}`
           : "iii cloud couldn't check this commit just now. Check again in a moment.",
         acts: [
           { label: 'Check again', onClick: checkAgain },
