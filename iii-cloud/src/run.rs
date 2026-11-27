@@ -601,7 +601,9 @@ pub async fn start_with(
             }
         }
         // However it ended (passed, failed, stopped): what it left dirty is set aside.
-        set_aside(&ctx2, &check_id, &wrote_ws, &before).await;
+        if let Some(before) = &before {
+            set_aside(&ctx2, &check_id, &wrote_ws, before).await;
+        }
     });
     Ok(run)
 }
@@ -665,8 +667,9 @@ async fn dirty_entries(ws: &Path) -> Option<std::collections::BTreeMap<String, S
 }
 
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
-pub async fn dirty_snapshot(ws: &Path) -> std::collections::BTreeMap<String, String> {
-    dirty_entries(ws).await.unwrap_or_default()
+/// None when git can't say: without a snapshot the run's end records nothing new.
+pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
+    dirty_entries(ws).await
 }
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the

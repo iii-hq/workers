@@ -563,7 +563,7 @@ async fn a_new_directory_beside_the_folders_untracked_directory_of_the_same_name
 
 /// A local run of the worktree left these dirty: a tracked file rewritten, a new directory of data.
 async fn a_run_left_files(ws: &std::path::Path) -> std::collections::BTreeMap<String, String> {
-    let before = iii_cloud::run::dirty_snapshot(ws).await;
+    let before = iii_cloud::run::dirty_snapshot(ws).await.unwrap();
     std::fs::write(ws.join("README.md"), "normalized by the engine\n").unwrap();
     std::fs::create_dir_all(ws.join("api/data")).unwrap();
     std::fs::write(ws.join("api/data/a.db"), "data").unwrap();
@@ -626,7 +626,7 @@ async fn a_file_the_agent_changed_before_the_run_still_counts() {
 async fn more_than_five_hundred_files_from_a_run_are_not_set_aside() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
-    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     std::fs::create_dir_all(ws.join("data")).unwrap();
     for i in 0..501 {
         std::fs::write(ws.join(format!("data/{i}.db")), "x").unwrap();
@@ -656,12 +656,12 @@ async fn a_second_run_keeps_what_the_first_left_and_a_run_that_writes_nothing_dr
     iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
     assert_eq!(counts(&h), 3);
     // A second run rewrites the same bytes: the paths were dirty before it, with what the run left.
-    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     std::fs::write(ws.join("README.md"), "normalized by the engine\n").unwrap();
     iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
     assert_eq!(counts(&h), 3);
     // A run that writes nothing (failed before the engine, stopped, another environment's).
-    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
     assert_eq!(counts(&h), 3);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
@@ -674,7 +674,7 @@ async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
     create(&h.ctx, ready_req()).await.unwrap();
     std::fs::write(ws.join("README.md"), "the agent's edit\n").unwrap();
     // The run starts with that edit in the worktree and rewrites the file.
-    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     std::fs::write(ws.join("README.md"), "the engine's version of it\n").unwrap();
     iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
@@ -712,4 +712,53 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
     git(&ws, &["checkout", "--", "README.md"]);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
+}
+
+#[tokio::test]
+async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::write(ws.join("README.md"), "left by the interrupted run\n").unwrap();
+    // The newest run of the environment ended when the worker restarted.
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        let run = Run {
+            id: "r".into(),
+            check_id: c.id.clone(),
+            commit: c.commit.clone(),
+            engine: "0.27.0".into(),
+            status: RunStatus::Failed,
+            started_at: "t".into(),
+            finished_at: None,
+            stages: vec![],
+            workers: WorkerCount { ready: 0, total: 1 },
+            routes: RouteCount {
+                count: 0,
+                prefix: None,
+            },
+            healthcheck: None,
+            not_covered: vec![],
+            log_tail: vec![],
+            error: Some(RunError {
+                stage: StageName::Workers,
+                code: "WORKER_RESTARTED".into(),
+                message: "restarted".into(),
+            }),
+            reused: false,
+            waiting_on: None,
+        };
+        c.run = Some(run);
+        s.put_check(c);
+    });
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .unwrap();
+    let d = p.detail.as_deref().unwrap();
+    assert!(
+        d.contains("interrupted by a restart") && d.contains("restore those"),
+        "{d}"
+    );
 }
