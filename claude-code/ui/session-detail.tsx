@@ -82,7 +82,7 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
           );
           if ('retry' in data) continue;
           if (data.claude_session_id !== id) throw new Error('Session changed');
-          if (active && !again) {
+          if (active) {
             const unchanged = cursor === data.cursor;
             setView((previous) => ({
               state: 'ready',
@@ -93,10 +93,6 @@ function Follow({ iii, id, configId }: { iii: ExtensionIii; id: string; configId
               },
             }));
             cursor = data.cursor;
-          } else {
-            // Keep the very first boundary; later coalesced reads must not
-            // consume a batch that has not actually been shown.
-            cursor ??= data.cursor;
           }
         } while (active && again);
       } catch {
