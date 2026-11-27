@@ -1349,25 +1349,40 @@ describe('small things the review found', () => {
     for (const st of ['waiting', 'stalled', 'waiting_for_you'] as const) expect(lock(st)).not.toContain('is fixing')
   })
 
-  it("files the run left in the agent's copy are one quiet line, not a warning, and ask nothing of the person", async () => {
+  it("what the run left or rewrote is a quiet line with the worker's title and its detail, never a warning", async () => {
     const r = B('deploy-passed')
-    const left = {
+    const note = (code: string, title: string, detail: string) => ({
       ...rcVariables[0],
-      id: 'p-left',
-      code: 'RUN_LEFT_FILES',
+      id: `p-${code}`,
+      code,
+      file: null,
+      line: null,
       source: 'check_here' as const,
       severity: 'info' as const,
       owner: 'none' as const,
-      title: "The local run left 2 files changed in the agent's copy; they do not count as uncommitted",
-      detail: 'If one of them is your own edit, commit it.',
-    }
-    const withLeft = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left] } }
-    await stage(withLeft)
+      title,
+      detail,
+    })
+    // The worker's real shapes: the count and the paths are in the detail, the title has no number.
+    const left = note(
+      'RUN_LEFT_FILES',
+      'The local run left files changed in the worktree',
+      "The local run left 2 files changed in the agent's copy; they do not count as uncommitted: pnpm-lock.yaml, tsconfig.tsbuildinfo. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them; never commit them.",
+    )
+    const restored = note(
+      'RUN_FILES_RESTORED',
+      'The local run rewrote 3 tracked files; they are back as committed',
+      'api/a.ts, api/b.ts, api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
+    )
+    const withNotes = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left, restored] } }
+    await stage(withNotes)
     expect(region('Details')?.textContent).toMatch(/Warnings 0/)
-    expect(text()).toContain("The local run left 2 files in your agent's copy; they are not part of the commit.")
-    expect(text()).not.toContain('commit it')
+    const lines = [...el.querySelectorAll('details.iii-cloud-cs-quiet')]
+    expect(lines.map((l) => l.querySelector('summary')?.textContent)).toEqual([left.title, restored.title])
+    expect(lines[0].textContent).toContain('pnpm-lock.yaml, tsconfig.tsbuildinfo')
+    expect(lines[1].textContent).toContain('run-leftovers')
     await stage(r)
-    expect(text()).not.toContain('The local run left')
+    expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
