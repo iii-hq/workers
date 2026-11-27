@@ -7,6 +7,7 @@ use image::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::io::Cursor;
 use std::num::{NonZeroU32, NonZeroU64};
 
@@ -432,41 +433,54 @@ fn over_white(img: &DynamicImage) -> DynamicImage {
 
 /// Runs `resize` on colour premultiplied by alpha: Lanczos3 mixes channels as
 /// stored, so the hidden colour of transparent pixels would bleed into edges.
+/// A borrowed image is copied only when some pixel is not opaque.
 fn premultiplied(
-    mut img: DynamicImage,
+    img: Cow<'_, DynamicImage>,
     resize: impl FnOnce(&DynamicImage) -> DynamicImage,
 ) -> DynamicImage {
-    let weighed = weigh_by_alpha(&mut img, false);
-    let mut out = resize(&img);
-    if weighed {
-        weigh_by_alpha(&mut out, true);
+    if !translucent(&img) {
+        return resize(&img);
     }
+    let mut img = img.into_owned();
+    weigh_by_alpha(&mut img, false);
+    let mut out = resize(&img);
+    weigh_by_alpha(&mut out, true);
     out
 }
 
-/// Multiplies colour by alpha in place, or divides it back out with `undo`.
-/// False, with the image untouched, when it has no alpha or, unless `undo`,
-/// every pixel is opaque.
-fn weigh_by_alpha(img: &mut DynamicImage, undo: bool) -> bool {
+/// Whether some pixel is not fully opaque.
+fn translucent(img: &DynamicImage) -> bool {
+    fn any<S: image::Primitive>(px: &[S], channels: usize) -> bool {
+        px.chunks_exact(channels)
+            .any(|p| p[channels - 1] != S::DEFAULT_MAX_VALUE)
+    }
     match img {
-        DynamicImage::ImageLumaA8(b) => weigh(b, 2, undo),
-        DynamicImage::ImageRgba8(b) => weigh(b, 4, undo),
-        DynamicImage::ImageLumaA16(b) => weigh(b, 2, undo),
-        DynamicImage::ImageRgba16(b) => weigh(b, 4, undo),
+        DynamicImage::ImageLumaA8(b) => any(b, 2),
+        DynamicImage::ImageRgba8(b) => any(b, 4),
+        DynamicImage::ImageLumaA16(b) => any(b, 2),
+        DynamicImage::ImageRgba16(b) => any(b, 4),
         // No alpha, or a float image, which decode never makes.
         _ => false,
     }
 }
 
-fn weigh<S>(px: &mut [S], channels: usize, undo: bool) -> bool
+/// Multiplies colour by alpha in place, or divides it back out with `undo`.
+fn weigh_by_alpha(img: &mut DynamicImage, undo: bool) {
+    match img {
+        DynamicImage::ImageLumaA8(b) => weigh(b, 2, undo),
+        DynamicImage::ImageRgba8(b) => weigh(b, 4, undo),
+        DynamicImage::ImageLumaA16(b) => weigh(b, 2, undo),
+        DynamicImage::ImageRgba16(b) => weigh(b, 4, undo),
+        _ => {}
+    }
+}
+
+fn weigh<S>(px: &mut [S], channels: usize, undo: bool)
 where
     S: image::Primitive + Into<u64> + TryFrom<u64>,
 {
     let max: u64 = S::DEFAULT_MAX_VALUE.into();
     let alpha = |p: &[S]| -> u64 { p[channels - 1].into() };
-    if !undo && px.chunks_exact(channels).all(|p| alpha(p) == max) {
-        return false;
-    }
     for p in px.chunks_exact_mut(channels) {
         let a = alpha(p);
         for c in &mut p[..channels - 1] {
@@ -480,7 +494,6 @@ where
             *c = S::try_from(v).unwrap_or(S::DEFAULT_MAX_VALUE);
         }
     }
-    true
 }
 
 /// `w`x`h` shrunk to at most `max` pixels, keeping its aspect ratio; never
@@ -510,7 +523,9 @@ pub fn resize_scale_to_fit(
     if img.width() <= max_w && img.height() <= max_h {
         return img;
     }
-    premultiplied(img, |img| img.resize(max_w, max_h, FilterType::Lanczos3))
+    premultiplied(Cow::Owned(img), |img| {
+        img.resize(max_w, max_h, FilterType::Lanczos3)
+    })
 }
 
 pub fn resize_crop_to_fit(
@@ -539,7 +554,9 @@ pub fn resize_crop_to_fit(
     if (w, h) == (cw, ch) {
         cropped
     } else {
-        premultiplied(cropped, |img| img.resize_exact(w, h, FilterType::Lanczos3))
+        premultiplied(Cow::Owned(cropped), |img| {
+            img.resize_exact(w, h, FilterType::Lanczos3)
+        })
     }
 }
 
@@ -629,7 +646,7 @@ fn encode_within(
                 break;
             }
             // From the first thumbnail each time, so resizes never stack more than two deep.
-            shrunk = Some(premultiplied(img.clone(), |img| {
+            shrunk = Some(premultiplied(Cow::Borrowed(&img), |img| {
                 img.resize_exact(w, h, FilterType::Lanczos3)
             }));
         }
@@ -1542,6 +1559,7 @@ mod tests {
 
     #[test]
     fn transparent_pixels_do_not_bleed_their_hidden_colour() {
+        // Red hidden beside opaque green, and white hidden beside opaque black.
         let rgba8 = DynamicImage::ImageRgba8(RgbaImage::from_fn(40, 20, |x, _| {
             image::Rgba(if x < 20 {
                 [255, 0, 0, 0]
@@ -1549,7 +1567,15 @@ mod tests {
                 [0, 255, 0, 255]
             })
         }));
-        for img in [rgba8.clone(), DynamicImage::ImageRgba16(rgba8.to_rgba16())] {
+        let gray8 = DynamicImage::ImageLumaA8(image::GrayAlphaImage::from_fn(40, 20, |x, _| {
+            image::LumaA(if x < 20 { [255, 0] } else { [0, 255] })
+        }));
+        for img in [
+            rgba8.clone(),
+            DynamicImage::ImageRgba16(rgba8.to_rgba16()),
+            gray8.clone(),
+            DynamicImage::ImageLumaA16(gray8.to_luma_alpha16()),
+        ] {
             let color = img.color();
             for out in [
                 resize_scale_to_fit(img.clone(), 10, 10, None),
@@ -1560,6 +1586,55 @@ mod tests {
                     assert!(p[3] == 0 || p[0] <= 2, "{color:?} ({x}, {y}) is {:?}", p.0);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn max_bytes_shrinks_without_bleeding_hidden_colour() {
+        let mut seed: u32 = 5;
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_fn(300, 300, |x, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            image::Rgba(if x < 150 {
+                [255, 0, 0, 0]
+            } else {
+                [0, 128 | (seed >> 24) as u8, 0, 255]
+            })
+        }));
+        let params = ProcessingParams {
+            output_format: Format::Png,
+            max_bytes: NonZeroU64::new(10_000),
+            ..webp_params(300, 300, 85, Format::Png)
+        };
+        let (_, out, _) = encode_within(img, &params).unwrap();
+        assert!(out.width() < 300, "no shrink");
+        for (x, y, p) in out.to_rgba8().enumerate_pixels() {
+            assert!(p[3] == 0 || p[0] <= 2, "({x}, {y}) is {:?}", p.0);
+        }
+    }
+
+    #[test]
+    fn max_bytes_shrinks_an_opaque_thumbnail_without_copying_it() {
+        let mut seed: u32 = 3;
+        let noise = DynamicImage::ImageRgb8(RgbImage::from_fn(1000, 1000, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [_, r, g, b] = seed.to_le_bytes();
+            image::Rgb([r, g, b])
+        }));
+        let params = ProcessingParams {
+            output_format: Format::Jpeg,
+            max_bytes: NonZeroU64::new(5_000),
+            ..webp_params(1000, 1000, 85, Format::Jpeg)
+        };
+        for img in [DynamicImage::ImageRgba8(noise.to_rgba8()), noise] {
+            let (color, copy) = (img.color(), img.as_bytes().len());
+            largest_alloc::take();
+            let (_, out, _) = encode_within(img, &params).unwrap();
+            let largest = largest_alloc::take();
+            assert!(out.width() < 1000, "no shrink");
+            assert!(
+                largest < copy,
+                "{color:?}: allocated {largest} bytes, a copy"
+            );
         }
     }
 
@@ -1582,21 +1657,22 @@ mod tests {
     fn alpha_weighting_rounds_and_zeroes_transparent_colour() {
         let rgba = |px: Vec<u8>| DynamicImage::ImageRgba8(RgbaImage::from_raw(3, 1, px).unwrap());
         let mut img = rgba(vec![255, 128, 1, 128, 200, 100, 50, 0, 10, 20, 30, 255]);
-        assert!(weigh_by_alpha(&mut img, false));
+        assert!(translucent(&img));
+        weigh_by_alpha(&mut img, false);
         assert_eq!(
             img.as_bytes(),
             [128, 64, 1, 128, 0, 0, 0, 0, 10, 20, 30, 255]
         );
 
         let mut img = rgba(vec![128, 64, 1, 128, 5, 5, 5, 0, 200, 0, 0, 100]);
-        assert!(weigh_by_alpha(&mut img, true));
+        weigh_by_alpha(&mut img, true);
         assert_eq!(
             img.as_bytes(),
             [255, 128, 2, 128, 0, 0, 0, 0, 255, 0, 0, 100]
         );
 
-        let mut opaque = rgba(vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
-        assert!(!weigh_by_alpha(&mut opaque, false));
+        let opaque = rgba(vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
+        assert!(!translucent(&opaque));
     }
 
     #[test]
