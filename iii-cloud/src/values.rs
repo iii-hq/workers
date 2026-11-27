@@ -139,10 +139,11 @@ pub fn fill_here(
 /// The names the run here needs that its own `.env` lacks: `${NAME}` with no
 /// default, never iii's own, a binding or a database URL (the run makes its
 /// databases, and a production one must never be used here).
-fn run_needs(m: &Manifest, have: &[String]) -> Vec<String> {
+fn run_needs(m: &Manifest, have: &[String], cloud_set: &[String]) -> Vec<String> {
     let bindings = m.database_bindings();
     crate::local::required_variables(m)
         .into_iter()
+        .chain(applying_empty_defaults(m, cloud_set))
         .filter(|n| {
             !n.starts_with("IIICLOUD_")
                 && !n.starts_with("III_")
@@ -153,6 +154,26 @@ fn run_needs(m: &Manifest, have: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The names iii cloud has a value for in the plan the check fetched (`variables` with status `set`):
+/// what the cloud will resolve at deploy, so the one source the run, the check and its key share.
+pub fn cloud_set_in(plan: &Value) -> Vec<String> {
+    plan.get("variables")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|v| v.get("status").and_then(Value::as_str) == Some("set"))
+        .filter_map(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// The `${NAME:-}` names iii cloud has a value for: the cloud will give them it, so the run takes it from the folder.
+pub fn applying_empty_defaults(m: &Manifest, cloud_set: &[String]) -> Vec<String> {
+    crate::local::empty_default_variables(m)
+        .into_iter()
+        .filter(|n| cloud_set.contains(n))
+        .collect()
+}
+
 /// What the run here takes from the person's folder for the compose file
 /// `manifest` (default `worker-compose.yaml`) of `workspace`. See [`fill_here`].
 pub fn here_values(
@@ -160,6 +181,7 @@ pub fn here_values(
     workspace: &Path,
     manifest: Option<&str>,
     env: &EnvironmentInfo,
+    cloud_set: &[String],
 ) -> Vec<(String, String, String)> {
     let manifest = manifest.unwrap_or("worker-compose.yaml");
     let Some(m) = Manifest::load(workspace, Some(manifest)) else {
@@ -169,7 +191,7 @@ pub fn here_values(
         .into_iter()
         .map(|(k, _)| k)
         .collect();
-    fill_here(checkout, manifest, env, &run_needs(&m, &have))
+    fill_here(checkout, manifest, env, &run_needs(&m, &have, cloud_set))
 }
 
 /// `.env.<environment>`, when the name is `^[a-z0-9-]+$` (never `.env.example`).
@@ -425,12 +447,23 @@ pub async fn values(ctx: &Arc<Ctx>, request: ValuesRequest) -> Res<Values> {
                 .collect()
         })
         .unwrap_or_default();
-    let wanted: Vec<String> = items
+    // A name with an empty default that iii cloud has a value for is needed here like a required one.
+    let in_cloud: Vec<String> = items
         .iter()
-        .filter(|i| i.need == Need::Required && !i.containers.is_empty())
+        .filter(|i| i.in_cloud == InCloud::Set)
         .map(|i| i.name.clone())
         .collect();
-    let wanted = run_needs(&m, &have)
+    let needed = |i: &ValueItem| {
+        !i.containers.is_empty()
+            && (i.need == Need::Required
+                || (i.need == Need::Optional && in_cloud.contains(&i.name)))
+    };
+    let wanted: Vec<String> = items
+        .iter()
+        .filter(|i| needed(i))
+        .map(|i| i.name.clone())
+        .collect();
+    let wanted = run_needs(&m, &have, &in_cloud)
         .into_iter()
         .filter(|n| wanted.contains(n))
         .collect::<Vec<_>>();
@@ -439,7 +472,10 @@ pub async fn values(ctx: &Arc<Ctx>, request: ValuesRequest) -> Res<Values> {
         .map(|(name, _, file)| (name, file))
         .collect();
     for item in &mut items {
-        (item.here, item.here_file) = if item.need != Need::Required || item.containers.is_empty() {
+        let applies = !item.containers.is_empty()
+            && (item.need == Need::Required
+                || (item.need == Need::Optional && in_cloud.contains(&item.name)));
+        (item.here, item.here_file) = if !applies {
             (Here::NotNeeded, None)
         } else if have.contains(&item.name) {
             (Here::Set, None)

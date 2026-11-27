@@ -654,6 +654,7 @@ fn the_checks_here_find_what_the_cloud_would_trip_on() {
         workspace: dir,
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &settings,
         matrix: Some(&matrix),
         local_iii: Some("0.26.0"),
@@ -732,6 +733,7 @@ fn the_checks_here_find_what_the_cloud_would_trip_on() {
         workspace: dir,
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &settings,
         matrix: Some(&matrix),
         local_iii: Some("0.27.0"),
@@ -883,6 +885,7 @@ fn problems_of_one_code_without_a_file_have_their_own_ids() {
         workspace: dir,
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &settings,
         matrix: None,
         local_iii: None,
@@ -1038,6 +1041,7 @@ fn every_code_the_worker_can_emit_has_a_title_and_a_one_line_fix() {
         workspace: ws.path(),
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &settings,
         matrix: Some(&matrix),
         local_iii: Some("0.26.0"),
@@ -1066,6 +1070,7 @@ fn local(dir: &Path, compose: &str, env: Option<&str>) -> Vec<Problem> {
         workspace: dir,
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &settings,
         matrix: None,
         local_iii: None,
@@ -1237,6 +1242,7 @@ fn only_package_http_is_the_http_worker_and_a_path_one_named_http_is_a_problem()
         workspace: dir,
         manifest: Some(&manifest),
         filled: &[],
+        cloud_set: &[],
         settings: &json!({}),
         matrix: None,
         local_iii: None,
@@ -1599,4 +1605,43 @@ fn an_environment_whose_production_flag_cannot_be_read_counts_as_production() {
     assert!(!read(
         json!({"id": "e", "name": "n", "branch": "b", "production": false})
     ));
+}
+
+#[test]
+fn an_empty_default_the_cloud_has_a_value_for_needs_one_here() {
+    let ws = tempfile::tempdir().unwrap();
+    let dir = ws.path();
+    write(
+        dir,
+        "worker-compose.yaml",
+        "containers:\n  api:\n    worker: package://http\n    environment:\n      FLAG: ${FLAG:-}\n      PORT: ${PORT:-80}\n",
+    );
+    let manifest = Manifest::load(dir, None).unwrap();
+    let unset = |filled: &[String], cloud_set: &[String]| {
+        iii_cloud::local::local_checks(&iii_cloud::local::LocalInput {
+            workspace: dir,
+            manifest: Some(&manifest),
+            filled,
+            cloud_set,
+            settings: &json!({}),
+            matrix: None,
+            local_iii: None,
+            plan_status: PlanStatus::Clean,
+            plan_workers: None,
+        })
+        .into_iter()
+        .filter(|p| p.code == "LOCAL_VARIABLE_UNSET")
+        .map(|p| p.title)
+        .collect::<Vec<_>>()
+    };
+    let both = ["FLAG".to_string(), "PORT".to_string()];
+    assert_eq!(unset(&[], &both), vec!["FLAG has no value here"]);
+    assert!(
+        unset(&["FLAG".into()], &both).is_empty(),
+        "filled or skipped"
+    );
+    assert!(
+        unset(&[], &[]).is_empty(),
+        "the cloud lacks it: empty, as the cloud will"
+    );
 }

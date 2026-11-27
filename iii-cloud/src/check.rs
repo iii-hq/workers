@@ -1109,11 +1109,17 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         .store
         .read(|s| s.project.as_ref().map(|p| PathBuf::from(&p.path)))
         .unwrap_or_else(|| sel.workspace.clone());
+    // What iii cloud will resolve at deploy: the plan just fetched, so no round trip of its own.
+    let cloud_set = plan_value
+        .as_ref()
+        .map(crate::values::cloud_set_in)
+        .unwrap_or_default();
     let from_files = crate::values::here_values(
         &checkout,
         &sel.workspace,
         manifest_path.as_deref(),
         &sel.env,
+        &cloud_set,
     );
     let skipped = crate::values::skipped_of(ctx, &sel.env.id);
     let filled: Vec<String> = from_files
@@ -1126,6 +1132,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         workspace: &sel.workspace,
         manifest: manifest.as_ref(),
         filled: &filled,
+        cloud_set: &cloud_set,
         settings: &settings,
         matrix: matrix.as_ref(),
         local_iii: iii_version.as_deref(),
@@ -1312,6 +1319,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             &sel.env.id,
             &settings,
             &from_files,
+            &cloud_set,
             &skipped,
         )
         .await;
@@ -1400,6 +1408,7 @@ pub async fn run_key(
     env_id: &str,
     settings: &Value,
     from_files: &[(String, String, String)],
+    cloud_set: &[String],
     skipped: &std::collections::BTreeSet<String>,
 ) -> Option<String> {
     let m = manifest?;
@@ -1412,6 +1421,8 @@ pub async fn run_key(
         }
     }
     vars.sort();
+    // Which `${NAME:-}` names the cloud now fills: saving one there changes the key, a failed run is not served again.
+    let applying = crate::values::applying_empty_defaults(m, cloud_set);
     let settings = canonical(settings);
     let mut hash = Sha256::new();
     let mut part = |bytes: &[u8]| {
@@ -1433,6 +1444,10 @@ pub async fn run_key(
     for (name, value) in &vars {
         part(name.as_bytes());
         part(value.as_bytes());
+    }
+    part(b"cloud-set");
+    for name in &applying {
+        part(name.as_bytes());
     }
     Some(hex::encode(hash.finalize()))
 }

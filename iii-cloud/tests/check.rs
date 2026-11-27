@@ -1272,6 +1272,7 @@ async fn each_part_of_the_reuse_key_changes_it() {
                 env,
                 &settings,
                 &[],
+                &[],
                 &skipped,
             )
             .await
@@ -1306,6 +1307,38 @@ async fn each_part_of_the_reuse_key_changes_it() {
         base,
         key("pg:16", "0.27.0", "env-a", json!({})).await,
         "compose file"
+    );
+    // Saving a `${NAME:-}` value in iii cloud changes the key: a failed run is not served again.
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "containers:\n  api:\n    worker: package://http\n    environment:\n      FLAG: ${FLAG:-}\n",
+    )
+    .unwrap();
+    let m = manifest();
+    let with = |cloud_set: &'static [&'static str]| {
+        let (m, skipped) = (&m, std::collections::BTreeSet::new());
+        let cloud_set: Vec<String> = cloud_set.iter().map(|n| n.to_string()).collect();
+        async move {
+            run_key(
+                "pg:16",
+                ws,
+                Some(m),
+                Some("0.27.0"),
+                "env-a",
+                &json!({}),
+                &[],
+                &cloud_set,
+                &skipped,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    assert_ne!(with(&[]).await, with(&["FLAG"]).await, "set in iii cloud");
+    assert_eq!(
+        with(&[]).await,
+        with(&["OTHER"]).await,
+        "a name the file does not default"
     );
 }
 

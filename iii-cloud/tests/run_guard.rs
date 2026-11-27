@@ -243,6 +243,65 @@ async fn a_name_the_runs_env_lacks_comes_from_the_folders_env_file_into_the_proc
     );
 }
 
+const EMPTY_DEFAULT: &str = "containers:\n  api:\n    worker: package://http\n    environment:\n      GH_TOKEN: ${GH_TOKEN:-}\ncloud:\n  release:\n    worker: api\n    command: if printenv GH_TOKEN >/dev/null; then echo \"set:$GH_TOKEN.\" > seen.txt; else echo unset > seen.txt; fi\n";
+
+async fn run_with_plan(variables: serde_json::Value, env_file: Option<&str>) -> (String, String) {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, EMPTY_DEFAULT).await;
+    *h.ctx.cfg.write().await = std::sync::Arc::new(iii_cloud::config::Config {
+        cloud_url: server.uri(),
+        iii_bin: "iii-not-installed-here".into(),
+        data_dir: h.dir.path().join("data").to_string_lossy().into_owned(),
+        ..iii_cloud::config::Config::default()
+    });
+    h.ctx.store.update(|s| {
+        s.project
+            .as_mut()
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .name = "test".into();
+    });
+    iii_cloud::deploy::save_plan(&h.ctx, "chk", &json!({"variables": variables}));
+    if let Some(text) = env_file {
+        std::fs::write(ws.join(".env.test"), text).unwrap();
+    }
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = finished(&h).await;
+    assert!(
+        run.stages
+            .iter()
+            .any(|s| s.name == StageName::Release && s.status == StageStatus::Passed),
+        "{run:?}"
+    );
+    let state = h.ctx.store.read(|s| serde_json::to_string(s).unwrap());
+    (
+        std::fs::read_to_string(ws.join("seen.txt"))
+            .unwrap()
+            .trim()
+            .to_string(),
+        state,
+    )
+}
+
+/// `${NAME:-}` with a value in iii cloud: the run takes it from the folder, as the cloud will give it.
+#[tokio::test]
+async fn an_empty_default_set_in_iii_cloud_takes_its_value_from_the_folder() {
+    let set =
+        json!([{"name": "GH_TOKEN", "type": "secret", "status": "set", "required_by": ["api"]}]);
+    let value = "cloud-set-value-0011";
+    let (seen, state) = run_with_plan(set.clone(), Some(&format!("GH_TOKEN={value}\n"))).await;
+    assert_eq!(seen, format!("set:{value}."));
+    assert!(!state.contains(value), "never stored");
+    // Not in the folder: the process gets the compose file's empty default (the check says it is missing here).
+    let (seen, _) = run_with_plan(set, None).await;
+    assert_eq!(seen, "set:.");
+    // The cloud lacks it: untouched, even with the value in the folder.
+    let (seen, _) = run_with_plan(json!([]), Some("GH_TOKEN=ignored-value-1\n")).await;
+    assert_eq!(seen, "set:.", "the empty string, as the cloud will give it");
+}
+
 /// A name skipped for now reaches the run's processes as `""`, and no file.
 #[tokio::test]
 async fn a_skipped_name_runs_with_an_empty_value() {
