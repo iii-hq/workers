@@ -19,11 +19,13 @@ ships an app end to end: [`docs/sops/native-ui.md`](../../docs/sops/native-ui.md
 **Linked by `workspace:*` inside this repository; published to npm as
 `@iii-dev/native-ui` for apps outside it.** Publishing is automatic:
 [`publish-npm-packages.yml`](../../.github/workflows/publish-npm-packages.yml)
-runs on every push to `main` that touches this folder and publishes a new
-version when the packed files differ from npm's `latest`, versioned from the
-conventional commits since the last release (`feat` → minor, `!` or
-`BREAKING CHANGE` → major, minor below 1.0.0, anything else → patch). To pick
-the version yourself, bump `version` in `package.json` in your PR.
+runs on every push to `main` that touches this folder and stages a new
+version on npm when the packed files differ from npm's `latest`, versioned
+from the conventional commits since the last release (`feat` → minor, `!` or
+`BREAKING CHANGE` → major, minor below 1.0.0, anything else → patch). A
+maintainer approves the stage with 2FA (`npm stage approve <id>`, the id is in
+the run's summary). To pick the version yourself, bump `version` in
+`package.json` in your PR.
 
 ## What is in the package
 

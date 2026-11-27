@@ -2,24 +2,31 @@
 """Decide and record the next npm version of a workspace package.
 
 Used by publish-npm-packages.yml for the packages under packages/ that leave
-the repository (@iii-dev/console-ui, @iii-dev/native-ui). npm is the source of
-truth for what was released; package.json follows it through the same bot
-commit subject sync-manifest-versions.yml pushes.
+the repository (@iii-dev/console-ui, @iii-dev/native-ui). The org's npm token
+can only stage a version (`npm stage publish`); a maintainer approves it with
+2FA, and only then is it on the registry. npm is the source of truth for what
+was released: package.json and the `<name>@<version>` tag follow it once the
+approved version shows up, through the same bot commit subject
+sync-manifest-versions.yml pushes.
 
 Subcommands:
     plan --package-dir D --tarball T [--bump auto|patch|minor|major]
-         [--github-output F]
-        Compare the freshly packed tarball T against the registry's `latest`
-        and print one of:
-          publish  a new version: the shipped files changed (auto bump from
-                   the commits since the last version change), a hand bump in
-                   package.json is ahead of the registry, the package was never
-                   published, or a fixed bump was asked for
-          sync     nothing to ship, but the registry is ahead of package.json
-                   (a publish whose version commit never landed)
-          none     nothing to ship and package.json is current
+         [--staged-json F] [--github-output F]
+        Compare the freshly packed tarball T against the registry's `latest`.
+        `sync` is the registry's latest when package.json is behind it (an
+        approved stage, or a publish whose version commit never landed), else
+        empty. `action` is one of:
+          stage     a new version: the shipped files changed (auto bump from
+                    the commits since the last version change), a hand bump in
+                    package.json is ahead of the registry, the package was
+                    never published, or a fixed bump was asked for
+          awaiting  a staged version still waits for approval or rejection
+          none      nothing to ship
+        F for --staged-json is `npm stage list <name> --json`.
     set-version --package-dir D --version V
         Rewrite package.json's version in place, keeping its formatting.
+    baseline --package-dir D
+        Print the newest commit that changed package.json's version.
 
 Auto bump, from conventional commit messages touching the package directory:
 a breaking change (`type!:` or a `BREAKING CHANGE:` footer) is major (minor
@@ -54,12 +61,17 @@ FEAT_SUBJECT_RE = re.compile(r"^feat(\([^)]*\))?:")
 # dependency ranges (a hand `npm publish` shipped them as literal `catalog:`),
 # and the git head npm may stamp.
 IGNORED_MANIFEST_FIELDS = ("version", "devDependencies", "gitHead")
+# Stage statuses after which a staged version will never be published. An
+# approved stage is published, so it drops out by its version instead; any
+# other status (whatever the registry calls "waiting") counts as pending.
+CLOSED_STAGE_STATUSES = {"rejected", "expired", "cancelled", "canceled", "withdrawn"}
 
 
 @dataclass(frozen=True)
 class Plan:
-    action: str  # publish | sync | none
+    action: str  # stage | awaiting | none
     version: str
+    sync: str  # the registry's latest when package.json is behind it, else ""
     reason: str
 
 
@@ -95,6 +107,21 @@ def bump_kind(messages: list[str]) -> str:
         if FEAT_SUBJECT_RE.match(subject):
             kind = "minor"
     return kind
+
+
+def pending_stages(items: list[dict], name: str, published: set[str]) -> list[str]:
+    """Versions of `name` staged and neither published nor closed."""
+    return sorted(
+        (
+            item["version"]
+            for item in items
+            if item.get("packageName") == name
+            and item.get("version") not in published
+            and str(item.get("status", "")).lower() not in CLOSED_STAGE_STATUSES
+            and VERSION_RE.fullmatch(str(item.get("version", "")))
+        ),
+        key=parse_version,
+    )
 
 
 def read_manifest(package_dir: Path) -> dict:
@@ -195,6 +222,7 @@ def decide(
     current: str,
     latest: str | None,
     published: set[str],
+    pending: list[str],
     same_as_latest: bool | None,
     messages: list[str],
     bump: str,
@@ -203,26 +231,30 @@ def decide(
     parse_version(current)
     if bump not in BUMPS:
         raise ValueError(f"unknown bump {bump!r}")
+    behind = latest is not None and parse_version(latest) > parse_version(current)
+    sync = latest if behind else ""
+    if pending:
+        return Plan(
+            "awaiting", pending[-1], sync, f"{', '.join(pending)} staged; approve or reject it before the next"
+        )
     if bump != "auto":
-        base = current if latest is None or parse_version(current) > parse_version(latest) else latest
+        base = latest if behind else current
         version = bump_version(base, bump)
         if version in published:
             raise ValueError(f"{version} is already on the registry")
-        return Plan("publish", version, f"{bump} bump asked for, from {base}")
+        return Plan("stage", version, sync, f"{bump} bump asked for, from {base}")
     if latest is None:
-        return Plan("publish", current, "first publication")
+        return Plan("stage", current, sync, "first publication")
     if parse_version(current) > parse_version(latest):
         if current in published:
             raise ValueError(
                 f"package.json {current} is published but `latest` is {latest}; fix the dist-tag first"
             )
-        return Plan("publish", current, f"package.json {current} is ahead of the registry's {latest}")
+        return Plan("stage", current, sync, f"package.json {current} is ahead of the registry's {latest}")
     if same_as_latest:
-        if current == latest:
-            return Plan("none", current, f"the packed files match {latest}")
-        return Plan("sync", latest, f"the packed files match {latest}; package.json is behind at {current}")
+        return Plan("none", latest, sync, f"the packed files match {latest}")
     kind = bump_kind(messages)
-    return Plan("publish", bump_version(latest, kind), f"the packed files differ from {latest} ({kind})")
+    return Plan("stage", bump_version(latest, kind), sync, f"the packed files differ from {latest} ({kind})")
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -232,6 +264,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
     document = registry_document(name, args.registry)
     versions = set((document or {}).get("versions", {}))
     latest = ((document or {}).get("dist-tags") or {}).get("latest")
+    staged = json.loads(Path(args.staged_json).read_text(encoding="utf-8") or "[]") if args.staged_json else []
+    if not isinstance(staged, list):
+        raise ValueError("--staged-json must hold the list `npm stage list --json` prints")
 
     same_as_latest = None
     if latest is not None and args.bump == "auto" and parse_version(current) <= parse_version(latest):
@@ -248,6 +283,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         current=current,
         latest=latest,
         published=versions,
+        pending=pending_stages(staged, name, versions),
         same_as_latest=same_as_latest,
         messages=messages,
         bump=args.bump,
@@ -258,7 +294,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "latest": latest or "",
         "action": plan.action,
         "version": plan.version,
-        "tag": f"{name}@{plan.version}",
+        "sync": plan.sync,
         "reason": plan.reason,
     }
     for key, value in outputs.items():
@@ -276,14 +312,24 @@ def cmd_set_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_baseline(args: argparse.Namespace) -> int:
+    sha = release_baseline(Path(args.package_dir).resolve())
+    if not sha:
+        print("error: package.json's version never changed", file=sys.stderr)
+        return 1
+    print(sha)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_plan = sub.add_parser("plan", help="decide whether and as what to publish")
+    p_plan = sub.add_parser("plan", help="decide whether and as what to stage")
     p_plan.add_argument("--package-dir", required=True)
     p_plan.add_argument("--tarball", required=True, help="the output of `pnpm pack` for the package")
     p_plan.add_argument("--bump", choices=BUMPS, default="auto")
+    p_plan.add_argument("--staged-json", help="the output of `npm stage list <name> --json`")
     p_plan.add_argument("--registry", default=REGISTRY)
     p_plan.add_argument("--github-output")
     p_plan.set_defaults(func=cmd_plan)
@@ -292,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("--package-dir", required=True)
     p_set.add_argument("--version", required=True)
     p_set.set_defaults(func=cmd_set_version)
+
+    p_base = sub.add_parser("baseline", help="print the commit that last changed the version")
+    p_base.add_argument("--package-dir", required=True)
+    p_base.set_defaults(func=cmd_baseline)
 
     args = parser.parse_args(argv)
     try:
