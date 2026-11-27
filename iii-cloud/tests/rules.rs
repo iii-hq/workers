@@ -1725,6 +1725,12 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "export -p",
         "pnpm build && env",
         "FOO=1 exec printenv | sort",
+        "env > /tmp/env.txt",
+        "env >/tmp/x",
+        "env >> /tmp/x 2>&1",
+        "printenv &>/tmp/x",
+        "export",
+        "pnpm build\nenv\npnpm start",
     ] {
         assert!(prints_environment(yes).is_some(), "{yes}");
     }
@@ -1735,6 +1741,9 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "export FOO=1",
         "pnpm env use",
         "echo env",
+        "pnpm build 2>&1 | tee log",
+        "node a.js > out.txt",
+        "export FOO=1\nnode x",
     ] {
         assert!(prints_environment(no).is_none(), "{no}");
     }

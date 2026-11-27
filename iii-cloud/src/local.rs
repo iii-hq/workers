@@ -568,9 +568,26 @@ const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
 /// word on (leading `NAME=value` words and `exec` skipped).
 fn command_parts(command: &str) -> Vec<Vec<&str>> {
     command
-        .split(['&', '|', ';'])
+        .split(['&', '|', ';', '\n'])
         .map(|part| {
-            part.split_whitespace()
+            // Redirections are not part of the command: `env > /tmp/x` is `env`.
+            let mut words: Vec<&str> = vec![];
+            let mut skip_target = false;
+            for w in part.split_whitespace() {
+                if skip_target {
+                    skip_target = false;
+                    continue;
+                }
+                let redirect = w.trim_start_matches(|c: char| c.is_ascii_digit());
+                if redirect.starts_with('>') || redirect.starts_with('<') {
+                    // `>`, `>>`, `2>`, `<`: the next word is its target; `>file` carries it.
+                    skip_target = redirect.chars().all(|c| c == '>' || c == '<');
+                    continue;
+                }
+                words.push(w);
+            }
+            words
+                .into_iter()
                 .skip_while(|w| {
                     *w == "exec"
                         || w.split_once('=').is_some_and(|(k, _)| {
@@ -607,7 +624,7 @@ pub fn prints_environment(command: &str) -> Option<String> {
         .find(|w| {
             matches!(
                 w.as_slice(),
-                ["env"] | ["set"] | ["export", "-p"] | ["printenv", ..]
+                ["env"] | ["set"] | ["export"] | ["export", "-p"] | ["printenv", ..]
             )
         })
         .map(|w| w.join(" "))
