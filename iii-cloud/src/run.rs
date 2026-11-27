@@ -1098,7 +1098,8 @@ impl Exec {
         if let Some(before) = self.wrote_before.take()
             && let Some(note) = set_aside(&self.ctx, &self.workspace, &before).await
         {
-            self.run.log_tail.push(note);
+            // Into the run's own log, so the last publish carries it (it rebuilds `log_tail` from there).
+            self.note(&note);
         }
         self.run.finished_at = Some(now());
         self.publish();

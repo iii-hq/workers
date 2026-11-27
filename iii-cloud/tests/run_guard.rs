@@ -1110,3 +1110,28 @@ fn a_graceful_stop_leaves_no_stage_id_in_run_json() {
     assert!(!alive(child), "the stage's group went with the task");
     drop(h);
 }
+
+#[tokio::test]
+async fn a_run_that_leaves_over_five_hundred_files_says_so_in_the_run_it_publishes() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    // A worker's folder, not the person's own: the leftovers of a run there are set aside.
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+    });
+    let bin = fake_iii(&h, BETA_LOG);
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    std::fs::create_dir_all(ws.join("data")).unwrap();
+    for i in 0..501 {
+        std::fs::write(ws.join(format!("data/{i}.db")), "x").unwrap();
+    }
+    let run = ended(&h, "chk").await;
+    assert!(
+        run.log_tail.iter().any(|l| l.contains("more than 500")),
+        "{:?}",
+        run.log_tail
+    );
+}
