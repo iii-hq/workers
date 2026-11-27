@@ -270,11 +270,33 @@ fn decode(
 /// How many times the output size, at least, a JPEG may shrink to while decoding.
 const JPEG_SHRINK_MARGIN: u32 = 2;
 
-/// A baseline YCbCr JPEG of `size` decoded at a half or a quarter of it, the smallest that
-/// stays `JPEG_SHRINK_MARGIN` times `target` on both sides; None when none does, or on any
-/// error, which the full decode then reports.
+/// The colour transform byte of the last Adobe APP14 segment before the first scan.
+fn adobe_transform(bytes: &[u8]) -> Option<u8> {
+    let mut rest = bytes.get(2..)?; // past SOI
+    let mut transform = None;
+    loop {
+        match *rest {
+            [0xFF, 0xFF, ..] => rest = &rest[1..], // fill byte
+            [0xFF, 0xDA, ..] => return transform,
+            [0xFF, marker, hi, lo, ..] => {
+                let end = 2 + usize::from(u16::from_be_bytes([hi, lo]));
+                let body = rest.get(4..end)?;
+                // zune-jpeg's test: "Adobe" and at least the 12 bytes up to the transform.
+                if marker == 0xEE && body.len() >= 12 && body.starts_with(b"Adobe") {
+                    transform = Some(body[11]);
+                }
+                rest = &rest[end..];
+            }
+            _ => return transform,
+        }
+    }
+}
+
+/// A baseline 3-component JPEG of `size` decoded at a half or a quarter of it, the smallest
+/// that stays `JPEG_SHRINK_MARGIN` times `target` on both sides; None when none does, or on
+/// any error, which the full decode then reports.
 fn shrunk_jpeg(bytes: &[u8], (w, h): (u32, u32), (tw, th): (u32, u32)) -> Option<DynamicImage> {
-    use jpeg_decoder::{CodingProcess, Decoder, PixelFormat};
+    use jpeg_decoder::{CodingProcess, ColorTransform, Decoder, PixelFormat};
     let m = JPEG_SHRINK_MARGIN;
     // Not an eighth: it keeps only each block's average, a box that blurs the thumbnail.
     // Whole blocks only, so the shrunk image covers the source exactly.
@@ -296,6 +318,13 @@ fn shrunk_jpeg(bytes: &[u8], (w, h): (u32, u32), (tw, th): (u32, u32)) -> Option
     if size != ((w / d) as u16, (h / d) as u16) {
         return None;
     }
+    // zune-jpeg, the full decode, takes Adobe transform 0 as RGB whatever the component ids
+    // or a JFIF segment say; jpeg-decoder would convert it from YCbCr.
+    if adobe_transform(bytes) == Some(0) {
+        decoder.set_color_transform(ColorTransform::RGB);
+    }
+    // shortcut: decode() runs 3 more threads, one per component, that the per-core permit does not
+    // count (up to 15% less throughput at saturation); go single-threaded once jpeg-decoder can.
     let px = decoder.decode().ok()?;
     RgbImage::from_raw(w / d, h / d, px).map(DynamicImage::ImageRgb8)
 }
@@ -491,10 +520,9 @@ fn first_frame(bytes: &[u8], w: u32, h: u32) -> Option<RgbaImage> {
 }
 
 /// `img` composited over white into opaque RGB.
-fn over_white(img: &DynamicImage) -> DynamicImage {
-    let src = img
-        .as_rgba8()
-        .map_or_else(|| Cow::Owned(img.to_rgba8()), Cow::Borrowed);
+/// Taken by value, so a source that is not RGBA8 is freed before the RGB output is built.
+fn over_white(img: DynamicImage) -> DynamicImage {
+    let src = img.into_rgba8();
     let mut px = Vec::with_capacity(src.len() / 4 * 3);
     for &Rgba([r, g, b, a]) in src.pixels() {
         px.extend_from_slice(&match a {
@@ -715,7 +743,7 @@ pub fn process_image(
     // JPEG has no alpha. Flattening before the resize leaves it an opaque
     // image, which skips the premultiplication.
     if params.output_format == Format::Jpeg && img.color().has_alpha() {
-        img = over_white(&img);
+        img = over_white(img);
     }
 
     let thumbnail = match params.strategy {
@@ -1492,9 +1520,25 @@ mod tests {
 
     #[test]
     fn jpeg_shrinks_while_decoding_to_the_same_thumbnail() {
-        let jpeg = rotated_gradient_jpeg(800);
+        assert_shrinks_to_the_full_decode_thumbnail(&rotated_gradient_jpeg(800));
+    }
+
+    #[test]
+    fn jpeg_with_adobe_transform_0_shrinks_as_rgb_like_the_full_decode() {
+        // An APP14 Adobe segment, transform 0 (RGB), beside the encoder's JFIF and ids 1, 2, 3.
+        let mut jpeg = rotated_gradient_jpeg(800);
+        let app14 = [
+            0xFF, 0xEE, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 0,
+        ];
+        jpeg.splice(2..2, app14);
+        assert_eq!(adobe_transform(&jpeg), Some(0));
+        assert_shrinks_to_the_full_decode_thumbnail(&jpeg);
+    }
+
+    /// The 600x800 `jpeg` shrinks to a quarter for a 100x100 box, to the thumbnail of its full decode.
+    fn assert_shrinks_to_the_full_decode_thumbnail(jpeg: &[u8]) {
         let fit = |w, h| fit_size(w, h, 100, 100, None);
-        let (img, _, size) = decode(&jpeg, ImageFormat::Jpeg, fit).unwrap();
+        let (img, _, size) = decode(jpeg, ImageFormat::Jpeg, fit).unwrap();
         assert_eq!(size, (600, 800));
         // A quarter, twice the 75x100 output, on the rotated axes.
         assert_eq!((img.width(), img.height()), (150, 200));
@@ -1503,13 +1547,13 @@ mod tests {
             output_format: Format::Png,
             ..webp_params(100, 100, 100, Format::Jpeg)
         };
-        let (out, meta) = process_image(&jpeg, &params).unwrap();
+        let (out, meta) = process_image(jpeg, &params).unwrap();
         assert_eq!((meta.source_width, meta.source_height), (600, 800));
         assert_eq!((meta.width, meta.height), (75, 100));
         let out = image::load_from_memory_with_format(&out, ImageFormat::Png)
             .unwrap()
             .to_rgb8();
-        let full = decode(&jpeg, ImageFormat::Jpeg, no_fit).unwrap().0;
+        let full = decode(jpeg, ImageFormat::Jpeg, no_fit).unwrap().0;
         let expected = resize_scale_to_fit(full, 100, 100, None).to_rgb8();
         let diff = out
             .as_raw()
@@ -1940,7 +1984,7 @@ mod tests {
         }));
         let mut expected = RgbaImage::from_pixel(256, 256, Rgba([255; 4]));
         imageops::overlay(&mut expected, &img, 0, 0);
-        let out = over_white(&img);
+        let out = over_white(img);
         assert_eq!(out.color(), image::ColorType::Rgb8);
         assert_eq!(
             out,
