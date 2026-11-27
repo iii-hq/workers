@@ -576,7 +576,7 @@ async fn what_a_local_run_left_in_the_worktree_is_not_the_agents_uncommitted_cha
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(
         !c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"),
@@ -612,7 +612,7 @@ async fn a_file_the_agent_changed_before_the_run_still_counts() {
     create(&h.ctx, ready_req()).await.unwrap();
     std::fs::write(ws.join("mine.txt"), "uncommitted before the run\n").unwrap();
     let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     let p = c
         .problems
@@ -631,7 +631,7 @@ async fn more_than_five_hundred_files_from_a_run_are_not_set_aside() {
     for i in 0..501 {
         std::fs::write(ws.join(format!("data/{i}.db")), "x").unwrap();
     }
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     assert!(
         h.ctx
             .store
@@ -653,16 +653,16 @@ async fn a_second_run_keeps_what_the_first_left_and_a_run_that_writes_nothing_dr
         h
     };
     let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     assert_eq!(counts(&h), 3);
     // A second run rewrites the same bytes: the paths were dirty before it, with what the run left.
     let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     std::fs::write(ws.join("README.md"), "normalized by the engine\n").unwrap();
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     assert_eq!(counts(&h), 3);
     // A run that writes nothing (failed before the engine, stopped, another environment's).
     let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     assert_eq!(counts(&h), 3);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
@@ -676,7 +676,7 @@ async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
     // The run starts with that edit in the worktree and rewrites the file.
     let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
     std::fs::write(ws.join("README.md"), "the engine's version of it\n").unwrap();
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     let p = c
         .problems
@@ -691,7 +691,7 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     let p = c
         .problems
@@ -760,5 +760,49 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
     assert!(
         d.contains("interrupted by a restart") && d.contains("restore those"),
         "{d}"
+    );
+}
+
+#[tokio::test]
+async fn a_run_over_five_hundred_files_says_so_and_a_big_file_is_compared_by_size_and_time() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("data")).unwrap();
+    for i in 0..501 {
+        std::fs::write(ws.join(format!("data/{i}.db")), "x").unwrap();
+    }
+    let note = iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    assert!(note.is_some_and(|n| n.contains("more than 500")));
+    // A file over 4 MiB: set aside by size and time, and counted again once it is rewritten.
+    std::fs::remove_dir_all(ws.join("data")).unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("big.bin"), vec![1u8; 5 * 1024 * 1024]).unwrap();
+    assert!(
+        iii_cloud::run::set_aside(&h.ctx, &ws, &before)
+            .await
+            .is_none()
+    );
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    std::fs::write(ws.join("big.bin"), vec![2u8; 6 * 1024 * 1024]).unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+}
+
+#[tokio::test]
+async fn the_record_of_a_worktree_that_is_gone_is_dropped() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx.store.update(|s| {
+        s.run_wrote
+            .insert("/no/such/worktree".into(), Default::default());
+    });
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    assert!(
+        h.ctx
+            .store
+            .read(|s| !s.run_wrote.contains_key("/no/such/worktree"))
     );
 }

@@ -1298,12 +1298,13 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "RUN_LEFT_FILES",
             "The local run left files changed in the worktree".into(),
             Some(format!(
-                "The local run left {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
-                format!(
-                    "{} file{}",
-                    set_aside.len(),
-                    if set_aside.len() == 1 { "" } else { "s" }
-                ),
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
+                set_aside.len(),
+                if set_aside.len() == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
                 set_aside
                     .iter()
                     .take(5)

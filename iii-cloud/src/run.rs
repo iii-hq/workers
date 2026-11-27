@@ -440,6 +440,8 @@ struct Exec {
     stage_group: Option<u32>,
     /// When that group's leader began (`proc_start`): it names the process itself.
     stage_start: Option<String>,
+    /// What the worktree had changed when the run began (`set_aside` compares at its end).
+    wrote_before: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Start a run for a stored check. One at a time per workspace.
@@ -565,6 +567,7 @@ pub async fn start_with(
     let before = dirty_snapshot(&sel.workspace).await;
     let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
     exec.cancel = cancel_rx;
+    exec.wrote_before = before.clone();
     exec.followers = followers.clone();
     exec.publish();
     let run = exec.run.clone();
@@ -573,10 +576,10 @@ pub async fn start_with(
     tokio::spawn(async move {
         // The workspace is free again however the run ends, a panic included.
         let _guard = guard;
-        if tokio::spawn(async move { exec.drive().await })
+        let panicked = tokio::spawn(async move { exec.drive().await })
             .await
-            .is_err()
-        {
+            .is_err();
+        if panicked {
             let updated = update_check(&ctx2, &check_id, |c| {
                 if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
                     let stage = run
@@ -601,8 +604,9 @@ pub async fn start_with(
             }
         }
         // However it ended (passed, failed, stopped): what it left dirty is set aside.
-        if let Some(before) = &before {
-            set_aside(&ctx2, &check_id, &wrote_ws, before).await;
+        // A run that panicked never reached its own `set_aside`.
+        if panicked && let Some(before) = &before {
+            let _ = set_aside(&ctx2, &wrote_ws, before).await;
         }
     });
     Ok(run)
@@ -635,11 +639,17 @@ impl Drop for ActiveGuard {
 /// The most paths a run's leftovers are kept for; beyond that none are, and the run says so.
 const MAX_WROTE: usize = 500;
 
+/// Over this size a file is compared by size and mtime, not read.
+const HASH_LIMIT: u64 = 4 * 1024 * 1024;
+
 /// Every changed path of the worktree (`status --porcelain -z --untracked-files=all`, so an
-/// untracked directory is its files) with a hash of its content now (`-` when it is gone).
-/// None when git can't say.
-async fn dirty_entries(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    use sha2::{Digest, Sha256};
+/// untracked directory is its files) with a fingerprint of its content now: a hash (`-` when
+/// it is gone; a symlink by its target; a file over `HASH_LIMIT` by size and mtime). With
+/// `hash` false the fingerprints are empty (nothing is read). None when git can't say.
+async fn dirty_entries(
+    ws: &Path,
+    hash: bool,
+) -> Option<std::collections::BTreeMap<String, String>> {
     let out = tool::git(
         ws,
         &["status", "--porcelain", "-z", "--untracked-files=all"],
@@ -647,7 +657,7 @@ async fn dirty_entries(ws: &Path) -> Option<std::collections::BTreeMap<String, S
     .await
     .ok()?;
     let mut entries = out.split('\0').filter(|e| !e.is_empty());
-    let mut found = std::collections::BTreeMap::new();
+    let mut paths = vec![];
     while let Some(e) = entries.next() {
         if e.len() < 4 {
             return None;
@@ -656,20 +666,54 @@ async fn dirty_entries(ws: &Path) -> Option<std::collections::BTreeMap<String, S
         if e.starts_with(['R', 'C']) || e[1..2].starts_with(['R', 'C']) {
             entries.next();
         }
-        let path = e[3..].to_string();
-        let hash = match std::fs::read(ws.join(&path)) {
-            Ok(bytes) => hex::encode(Sha256::digest(bytes)),
+        paths.push(e[3..].to_string());
+    }
+    if !hash {
+        return Some(paths.into_iter().map(|p| (p, String::new())).collect());
+    }
+    let ws = ws.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|p| {
+                let h = fingerprint(&ws.join(&p));
+                (p, h)
+            })
+            .collect()
+    })
+    .await
+    .ok()
+}
+
+fn fingerprint(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return "-".to_string();
+    };
+    if meta.file_type().is_symlink() {
+        return match std::fs::read_link(path) {
+            Ok(t) => format!("link:{}", t.display()),
             Err(_) => "-".to_string(),
         };
-        found.insert(path, hash);
     }
-    Some(found)
+    if meta.len() > HASH_LIMIT {
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
+        return format!("big:{}:{mtime}", meta.len());
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => hex::encode(Sha256::digest(bytes)),
+        Err(_) => "-".to_string(),
+    }
 }
 
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    dirty_entries(ws).await
+    dirty_entries(ws, true).await
 }
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
@@ -679,16 +723,13 @@ pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<Stri
 /// rewrote it. Nothing is deleted or restored. A file the agent edited WHILE the run went is
 /// set aside too (the run can't tell it from its own): the check names every set-aside path
 /// (`RUN_LEFT_FILES`) so one that is the agent's own work is seen. More than `MAX_WROTE` paths
-/// keep none, and the run says so.
+/// keep none, and the line to put in the run's record says so (returned).
 pub async fn set_aside(
     ctx: &Ctx,
-    check_id: &str,
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
-) {
-    let Some(after) = dirty_entries(ws).await else {
-        return;
-    };
+) -> Option<String> {
+    let after = dirty_entries(ws, true).await?;
     let previous = ctx
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
@@ -701,22 +742,23 @@ pub async fn set_aside(
                 .is_none_or(|b| previous.files.get(p) == Some(b))
         })
         .collect();
-    if files.len() > MAX_WROTE {
-        update_check(ctx, check_id, |c| {
-            if let Some(run) = c.run.as_mut() {
-                run.log_tail.push(format!(
-                    "The run left more than {MAX_WROTE} changed files in the worktree; none are set aside, so all of them count as uncommitted changes."
-                ));
-            }
-        });
+    let note = (files.len() > MAX_WROTE).then(|| {
+        format!(
+            "The run left more than {MAX_WROTE} changed files in the worktree; none are set aside, so all of them count as uncommitted changes."
+        )
+    });
+    if note.is_some() {
         files.clear();
     }
     ctx.store.update(|s| {
+        // A record of a worktree that is gone goes with it.
+        s.run_wrote.retain(|p, _| Path::new(p).exists());
         s.run_wrote.insert(
             ws.to_string_lossy().into_owned(),
             crate::store::RunWrote { files },
         );
     });
+    note
 }
 
 /// The changed paths of the worktree that are the agent's: not what the last local run left
@@ -730,9 +772,10 @@ pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
 pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let left = ctx
         .store
-        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
-        .unwrap_or_default();
-    let now = dirty_entries(ws).await?;
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned());
+    // A worktree no run has left anything in: every changed path is the agent's, and nothing is read.
+    let now = dirty_entries(ws, left.is_some()).await?;
+    let left = left.unwrap_or_default();
     let (aside, agent): (Vec<_>, Vec<_>) = now
         .into_iter()
         .partition(|(p, h)| left.files.get(p) == Some(h));
@@ -856,6 +899,7 @@ async fn prepare(
         pg: vec![],
         child: None,
         config_before: None,
+        wrote_before: None,
         stage_started: Instant::now(),
         cancel: watch::channel(false).1,
         followers: Arc::new(Mutex::new(vec![])),
@@ -1014,6 +1058,12 @@ impl Exec {
             }
         }
         self.teardown().await;
+        // What the run left in the worktree is set aside before its last event goes out.
+        if let Some(before) = self.wrote_before.take()
+            && let Some(note) = set_aside(&self.ctx, &self.workspace, &before).await
+        {
+            self.run.log_tail.push(note);
+        }
         self.run.finished_at = Some(now());
         self.publish();
     }
