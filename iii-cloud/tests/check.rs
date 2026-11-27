@@ -945,6 +945,7 @@ async fn a_skipped_name_is_no_local_problem_and_the_check_can_be_ready_until_und
                 restored: vec![],
                 moved: vec![],
                 log_path: None,
+                left_redacted: false,
             }),
             &c.commit,
         )

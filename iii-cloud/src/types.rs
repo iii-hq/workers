@@ -1209,6 +1209,10 @@ pub struct Run {
     /// The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).
     #[serde(default)]
     pub log_path: Option<String>,
+    /// The copies under this run's `left/` were written with the run's secret values replaced.
+    /// Absent (an older run): `check::read` refuses its kept files.
+    #[serde(default)]
+    pub left_redacted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -773,7 +773,7 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
             if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
+            "{}{more} The versions the run left are in {}; values of secrets are replaced in those copies. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
             parts.join(" "),
             dir.display()
         )),
@@ -912,6 +912,17 @@ pub async fn set_aside_run(
     before: &std::collections::BTreeMap<String, String>,
     run_dir: Option<&Path>,
 ) -> SetAside {
+    set_aside_run_with(ctx, ws, before, run_dir, &crate::handoff::env_values(ctx)).await
+}
+
+/// `set_aside_run` with the secret values to replace in the kept copies: the run's own full set.
+pub async fn set_aside_run_with(
+    ctx: &Ctx,
+    ws: &Path,
+    before: &std::collections::BTreeMap<String, String>,
+    run_dir: Option<&Path>,
+    secrets: &[String],
+) -> SetAside {
     // The person's own folder: every change in it is theirs to judge, none is the run's.
     if is_persons_folder(ctx, ws) {
         return SetAside::default();
@@ -957,10 +968,10 @@ pub async fn set_aside_run(
         // One byte budget for the put-back and the moved files together.
         let mut budget = LEFT_BYTES_MAX;
         // Tracked files: save each, check it again, then put it back.
-        let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
+        let (ws2, dir2, secrets2) = (ws.to_path_buf(), dir.clone(), secrets.to_vec());
         let (saved, left_over) = tokio::task::spawn_blocking(move || {
             let mut budget = budget;
-            let kept = keep_files(&ws2, &dir2, candidates, &mut budget);
+            let kept = keep_files(&ws2, &dir2, candidates, &mut budget, &secrets2);
             (kept, budget)
         })
         .await
@@ -1008,10 +1019,10 @@ pub async fn set_aside_run(
             vec![]
         };
         if !created.is_empty() {
-            let (ws3, dir3) = (ws.to_path_buf(), dir.clone());
+            let (ws3, dir3, secrets3) = (ws.to_path_buf(), dir.clone(), secrets.to_vec());
             moved = tokio::task::spawn_blocking(move || {
                 let mut budget = budget;
-                let kept = keep_files(&ws3, &dir3, created, &mut budget);
+                let kept = keep_files(&ws3, &dir3, created, &mut budget, &secrets3);
                 // The moved files leave the copy now (their copies are in `left/`).
                 kept.into_iter()
                     .filter(|p| remove_moved(&ws3, p, &before_dirs))
@@ -1070,10 +1081,16 @@ pub async fn set_aside_run(
 
 /// Save each file of `list` under `dir`, within the byte budget, and keep those that still are what
 /// was saved when looked at again (`recheck`).
-fn keep_files(ws: &Path, dir: &Path, list: Vec<String>, budget: &mut u64) -> Vec<String> {
+fn keep_files(
+    ws: &Path,
+    dir: &Path,
+    list: Vec<String>,
+    budget: &mut u64,
+    secrets: &[String],
+) -> Vec<String> {
     let mut kept: Vec<(String, String)> = vec![];
     for p in list {
-        let Some((hash, len)) = save_left(ws, dir, &p) else {
+        let Some((hash, len)) = save_left(ws, dir, &p, secrets) else {
             continue;
         };
         if len > *budget {
@@ -1084,7 +1101,7 @@ fn keep_files(ws: &Path, dir: &Path, list: Vec<String>, budget: &mut u64) -> Vec
         *budget -= len;
         kept.push((p, hash));
     }
-    recheck(ws, dir, kept)
+    recheck(ws, dir, kept, secrets)
 }
 
 /// Take a moved file out of the copy (its saved copy is in `left/`), and the directories it leaves
@@ -1111,13 +1128,13 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
 /// Right before the checkout: each saved file is hashed again. One whose content changed since its
 /// save is saved again, and put back only if it holds still: `left/` always has the bytes that
 /// the checkout replaces.
-fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>) -> Vec<String> {
+fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>, secrets: &[String]) -> Vec<String> {
     kept.into_iter()
         .filter_map(|(p, hash)| {
             if fingerprint(&ws.join(&p)) == hash {
                 return Some(p);
             }
-            let (again, _) = save_left(ws, dir, &p)?;
+            let (again, _) = save_left(ws, dir, &p, secrets)?;
             (fingerprint(&ws.join(&p)) == again).then_some(p)
         })
         .collect()
@@ -1186,7 +1203,11 @@ fn parents_are_directories(ws: &Path, rel: &str) -> bool {
 /// Keep what the run left of one tracked file under `dir` (0600, folders 0700): the hash of what was
 /// kept (`-` for a deletion: nothing to keep) and its size. None when it can't be kept: the file
 /// then stays as the run left it.
-fn save_left(ws: &Path, dir: &Path, rel: &str) -> Option<(String, u64)> {
+/// The copy is WRITTEN with the run's secret values replaced (a `${…}` the run resolved would
+/// otherwise sit there in the clear, for anyone who reads `left/`); putting a file back uses
+/// `git checkout`, never this copy. The hash returned is of the SOURCE bytes, so the guard that
+/// looks at the file again compares what is really there. A file that is not text is not kept.
+fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(String, u64)> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -1210,13 +1231,15 @@ fn save_left(ws: &Path, dir: &Path, rel: &str) -> Option<(String, u64)> {
         .create(to.parent()?)
         .ok()?;
     let bytes = std::fs::read(&from).ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    let kept = redact(text, secrets);
     std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(&to)
-        .and_then(|mut f| f.write_all(&bytes))
+        .and_then(|mut f| f.write_all(kept.as_bytes()))
         .ok()?;
     Some((hex::encode(Sha256::digest(&bytes)), bytes.len() as u64))
 }
@@ -1389,6 +1412,7 @@ async fn prepare(
         // The whole redacted log (`note` and the output pumps redact with this run's secrets, as
         // `log_tail`, its last lines, does).
         log_path: Some(dir.join("run.log").to_string_lossy().into_owned()),
+        left_redacted: false,
     };
     set_run_live(&dir, true);
     Ok(Exec {
@@ -1577,11 +1601,16 @@ impl Exec {
         self.teardown().await;
         // What the run left in the worktree is set aside before its last event goes out.
         if let Some(before) = self.wrote_before.take() {
-            let done = set_aside_run(
+            // The kept copies are written with every secret this run knows replaced (its `.env`,
+            // the folder's values, the database URL and passwords) and what the worker holds.
+            let mut secrets = self.secrets.clone();
+            secrets.extend(crate::handoff::env_values(&self.ctx));
+            let done = set_aside_run_with(
                 &self.ctx,
                 &self.workspace,
                 &before,
                 Some(self.dir.as_path()),
+                &secrets,
             )
             .await;
             if let Some(note) = done.note {
@@ -1594,6 +1623,7 @@ impl Exec {
                 let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
                 self.run.restored = restored.clone();
                 self.run.moved = moved.clone();
+                self.run.left_redacted = true;
                 if let Some(dir) = &done.saved_in {
                     let problem = restored_problem(&restored, &moved, dir);
                     let mut ids = self.followers.lock().unwrap().clone();
@@ -3085,18 +3115,52 @@ mod tests {
             .map(|p| {
                 (
                     p.to_string(),
-                    save_left(ws.path(), left.path(), p).unwrap().0,
+                    save_left(ws.path(), left.path(), p, &[]).unwrap().0,
                 )
             })
             .collect();
         // The agent edits one of them after it was saved.
         std::fs::write(ws.path().join("a.yaml"), "the agent's edit\n").unwrap();
-        let back = recheck(ws.path(), left.path(), kept);
+        let back = recheck(ws.path(), left.path(), kept, &[]);
         assert_eq!(back, vec!["a.yaml", "b.yaml"]);
         // What the checkout will replace is what `left/` holds.
         assert_eq!(
             std::fs::read_to_string(left.path().join("a.yaml")).unwrap(),
             "the agent's edit\n"
         );
+    }
+
+    #[test]
+    fn the_kept_copy_has_secrets_replaced_and_the_guard_compares_the_source() {
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        let secrets = vec!["pg-pass-xyz".to_string()];
+        std::fs::write(
+            ws.path().join("c.yaml"),
+            "url: postgres://u:pg-pass-xyz@h/db\n",
+        )
+        .unwrap();
+        let (hash, _) = save_left(ws.path(), left.path(), "c.yaml", &secrets).unwrap();
+        let kept = std::fs::read_to_string(left.path().join("c.yaml")).unwrap();
+        assert!(!kept.contains("pg-pass-xyz"), "{kept}");
+        // The source is unchanged: the guard passes, though the copy differs from it.
+        let back = recheck(
+            ws.path(),
+            left.path(),
+            vec![("c.yaml".into(), hash.clone())],
+            &secrets,
+        );
+        assert_eq!(back, vec!["c.yaml"]);
+        // The source changed since the save: caught, saved again (still redacted).
+        std::fs::write(ws.path().join("c.yaml"), "url: other pg-pass-xyz\n").unwrap();
+        let back = recheck(
+            ws.path(),
+            left.path(),
+            vec![("c.yaml".into(), hash)],
+            &secrets,
+        );
+        assert_eq!(back, vec!["c.yaml"]);
+        let kept = std::fs::read_to_string(left.path().join("c.yaml")).unwrap();
+        assert!(kept.contains("other") && !kept.contains("pg-pass-xyz"));
     }
 }

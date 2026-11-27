@@ -420,6 +420,11 @@
           "id": {
             "type": "string"
           },
+          "left_redacted": {
+            "default": false,
+            "description": "The copies under this run's `left/` were written with the run's secret values replaced. Absent (an older run): `check::read` refuses its kept files.",
+            "type": "boolean"
+          },
           "log_path": {
             "default": null,
             "description": "The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).",

@@ -627,6 +627,13 @@ pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
     let left = match request.left {
         None => None,
         Some(path) => {
+            // The copies of an older run were written with no secret replaced: never served.
+            if !run.left_redacted {
+                return Err(CloudError::new(
+                    "NOT_AVAILABLE",
+                    "The kept files of that run are not available to read.",
+                ));
+            }
             // Only what the worker itself kept for this run: a path of its lists, never another.
             if !run
                 .restored

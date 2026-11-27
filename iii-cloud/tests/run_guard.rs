@@ -1351,3 +1351,84 @@ async fn the_agent_reads_the_whole_log_and_a_kept_file_through_the_worker_only()
     assert_eq!(mode(&old), 0o700);
     assert_eq!(mode(&old.join("run.log")), 0o600);
 }
+
+#[tokio::test]
+async fn a_kept_copy_never_holds_a_secret_and_an_older_run_is_not_readable() {
+    use iii_cloud::check::read;
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    std::fs::write(ws.join("app.yaml"), "# committed\nkey: ${KEY}\n").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "app"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    // A value of the run's own `.env`, and one the worker holds in memory.
+    std::fs::write(ws.join(".env"), "KEY=dotenv-secret-value-77\n").unwrap();
+    h.ctx
+        .known_secrets
+        .lock()
+        .unwrap()
+        .push("known-secret-value-88".into());
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    // The engine resolves the template into the file, with both values in it.
+    let bin = fake_iii(
+        &h,
+        "printf 'key: dotenv-secret-value-77\\nother: known-secret-value-88\\n' > app.yaml;",
+    );
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.restored, vec!["app.yaml"]);
+    assert!(run.left_redacted);
+    let dir = std::path::Path::new(run.log_path.as_ref().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let on_disk = std::fs::read_to_string(dir.join("left/app.yaml")).unwrap();
+    assert!(
+        !on_disk.contains("dotenv-secret-value-77") && !on_disk.contains("known-secret-value-88"),
+        "{on_disk}"
+    );
+    // After a restart the worker's memory is empty: what is served has none of them either.
+    h.ctx.known_secrets.lock().unwrap().clear();
+    std::fs::remove_file(ws.join(".env")).unwrap();
+    let served = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: None,
+            left: Some("app.yaml".into()),
+        },
+    )
+    .unwrap()
+    .left
+    .unwrap();
+    assert!(
+        !served.content.contains("secret-value"),
+        "{}",
+        served.content
+    );
+    // A run recorded before the copies were redacted is refused.
+    h.ctx.store.update(|s| {
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            if let Some(r) = c.run.as_mut() {
+                r.left_redacted = false;
+            }
+        }
+    });
+    let err = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: None,
+            left: Some("app.yaml".into()),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "NOT_AVAILABLE");
+}
