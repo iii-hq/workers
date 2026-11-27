@@ -126,8 +126,9 @@ page shows an error that tells you to update the ade worker.
 - EXIF orientation is applied; other metadata is dropped.
 - An embedded RGB colour profile, such as Display P3 or Adobe RGB, is
   converted to sRGB with the relative colorimetric intent, and the output
-  carries no profile. Gray, CMYK, unreadable or over-4-MiB profiles are
-  ignored and the pixels kept as they are.
+  carries no profile. Gray, CMYK, unreadable or over-4-MiB profiles, and
+  ones that list more than 64 tags, are ignored and the pixels kept as they
+  are.
 - WebP output is lossy; use `png` for pixel-exact output such as line art.
 - JPEG output flattens transparency onto white.
 - Images with transparency are resized with premultiplied alpha, so the

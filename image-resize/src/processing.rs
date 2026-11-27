@@ -201,7 +201,9 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec
     }
     let (mut img, orientation, icc) = if format == ImageFormat::WebP {
         let orientation = webp_chunk(bytes, b"EXIF").and_then(Orientation::from_exif_chunk);
-        let icc = webp_chunk(bytes, b"ICCP").map(<[u8]>::to_vec);
+        let icc = webp_chunk(bytes, b"ICCP")
+            .filter(|icc| icc.len() <= MAX_ICC_BYTES)
+            .map(<[u8]>::to_vec);
         (decode_webp(bytes)?, orientation, icc)
     } else {
         let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
@@ -216,7 +218,12 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec
         // JPEG: one APP1 segment, at most 64 KiB. PNG: the eXIf chunk the decoder already holds.
         let orientation = decoder.orientation().ok();
         // JPEG: its APP2 segments, at most 16 MiB. PNG: the iCCP chunk the decoder already holds.
-        let icc = decoder.icc_profile().ok().flatten();
+        // Dropped here when too large, so it is not held through the decode and the resize.
+        let icc = decoder
+            .icc_profile()
+            .ok()
+            .flatten()
+            .filter(|icc| icc.len() <= MAX_ICC_BYTES);
         (
             DynamicImage::from_decoder(decoder).map_err(undecodable)?,
             orientation,
@@ -230,6 +237,11 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec
 /// Largest ICC profile applied; real RGB profiles take a few KiB.
 const MAX_ICC_BYTES: usize = 4 << 20;
 
+/// Most tags an ICC profile applied may list; real ones list 10 to 20.
+/// moxcms parses every entry, repeats included, so a few KiB of entries
+/// naming one large tag would take minutes.
+const MAX_ICC_TAGS: u32 = 64;
+
 /// `img` converted from the colour profile `icc` to sRGB, alpha kept. Any
 /// profile but an RGB one on an RGB image leaves it as it is.
 fn to_srgb(mut img: DynamicImage, icc: &[u8]) -> DynamicImage {
@@ -241,8 +253,13 @@ fn to_srgb(mut img: DynamicImage, icc: &[u8]) -> DynamicImage {
 
 fn convert_to_srgb(img: &mut DynamicImage, icc: &[u8]) -> Result<(), String> {
     use moxcms::{ColorProfile, DataColorSpace, Layout, RenderingIntent, TransformOptions};
-    if icc.len() > MAX_ICC_BYTES {
-        return Err(format!("the profile is {} bytes", icc.len()));
+    // The tag count: a big-endian u32 after the 128-byte header.
+    let tags = icc
+        .get(128..132)
+        .and_then(|n| n.try_into().ok())
+        .map_or(0, u32::from_be_bytes);
+    if tags > MAX_ICC_TAGS {
+        return Err(format!("the profile lists {tags} tags"));
     }
     let profile = ColorProfile::new_from_slice(icc).map_err(|e| format!("bad profile: {e}"))?;
     if profile.color_space != DataColorSpace::Rgb {
@@ -1791,6 +1808,68 @@ mod tests {
             still[12..].to_vec(),
         ]);
         assert_p3_converted(&webp, Format::Webp);
+    }
+
+    /// `icc` with its first tag entry repeated until it lists `count` tags.
+    fn with_tags(icc: &[u8], count: u32) -> Vec<u8> {
+        let listed = u32::from_be_bytes(icc[128..132].try_into().unwrap());
+        let table_end = 132 + 12 * listed as usize;
+        let grown = 12 * (count - listed);
+        let entries: Vec<u8> = icc[132..table_end]
+            .chunks(12)
+            .chain(std::iter::repeat_n(
+                &icc[132..144],
+                (count - listed) as usize,
+            ))
+            .flat_map(|entry| {
+                let offset = u32::from_be_bytes(entry[4..8].try_into().unwrap()) + grown;
+                [&entry[..4], &offset.to_be_bytes(), &entry[8..]].concat()
+            })
+            .collect();
+        let mut out = [
+            &icc[..128],
+            &count.to_be_bytes(),
+            &entries,
+            &icc[table_end..],
+        ]
+        .concat();
+        let size = u32::try_from(out.len()).unwrap();
+        out[..4].copy_from_slice(&size.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn a_profile_listing_too_many_tags_is_not_parsed() {
+        let mut img = make_rgb_image(4, 4, 200, 100, 50);
+        assert_eq!(
+            convert_to_srgb(&mut img, &with_tags(&display_p3(), 64)),
+            Ok(())
+        );
+        assert_eq!(
+            convert_to_srgb(&mut img, &with_tags(&display_p3(), 2000)),
+            Err("the profile lists 2000 tags".into())
+        );
+    }
+
+    #[test]
+    fn oversized_profiles_are_dropped_as_they_are_read() {
+        let oversized = [display_p3(), vec![0; MAX_ICC_BYTES]].concat();
+        let img = make_rgb_image(16, 16, 200, 100, 50);
+        let png = png_with_icc(&img, oversized.clone());
+        assert_eq!(
+            decode(&png, ImageFormat::Png).unwrap().1.map(|p| p.len()),
+            None
+        );
+        let still = encode_webp(&img, 90).unwrap();
+        let webp = riff(&[
+            vp8x(0x20, 16, 16),
+            chunk(b"ICCP", &oversized),
+            still[12..].to_vec(),
+        ]);
+        assert_eq!(
+            decode(&webp, ImageFormat::WebP).unwrap().1.map(|p| p.len()),
+            None
+        );
     }
 
     #[test]
