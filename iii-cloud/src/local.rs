@@ -569,15 +569,12 @@ const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
 pub fn tools_missing_in_image(runtime: &str, command: &str) -> Vec<String> {
     let mut found: Vec<String> = vec![];
     for part in command.split(['&', '|', ';']) {
-        let tool = part
-            .split_whitespace()
-            .skip_while(|w| {
-                *w == "exec"
-                    || w.split_once('=').is_some_and(|(k, _)| {
-                        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    })
-            })
-            .next();
+        let tool = part.split_whitespace().find(|w| {
+            *w != "exec"
+                && !w.split_once('=').is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+        });
         if let Some(t) = tool
             && NOT_IN_IMAGE.iter().any(|(r, x)| *r == runtime && x == &t)
             && !found.iter().any(|f| f == t)
