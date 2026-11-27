@@ -15,7 +15,7 @@ futures-util = "0.3"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
 iii-sdk = "=0.27.0"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libwebp-sys = "0.14"
 # Must stay on the same schemars major as iii-sdk so the derived JsonSchema is the trait the SDK takes.
 schemars = "0.8"

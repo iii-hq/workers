@@ -2,7 +2,9 @@ use iii_sdk::Error;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
 use image::metadata::Orientation;
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
+use image::{
+    DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbImage, Rgba, RgbaImage,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -166,6 +168,15 @@ fn jpeg_truncated(bytes: &[u8]) -> bool {
 /// 16 bytes per source pixel, so this bounds memory per image.
 pub const MAX_PIXELS: u64 = 50_000_000;
 
+fn check_pixels(w: u32, h: u32) -> Result<(), Error> {
+    if u64::from(w) * u64::from(h) > MAX_PIXELS {
+        return Err(invalid(format!(
+            "image is {w}x{h}; the limit is {MAX_PIXELS} pixels"
+        )));
+    }
+    Ok(())
+}
+
 fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
     let undecodable =
         |e: image::ImageError| invalid(format!("could not decode the {format:?} image: {e}"));
@@ -174,29 +185,130 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
             "the JPEG is truncated: its data ends before the end-of-image marker",
         ));
     }
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut limits = Limits::default();
-    // into_decoder does not charge the pixel buffer (checked below); this
-    // bounds what a PNG's ancillary chunks may inflate to.
-    limits.max_alloc = Some(64 << 20);
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder().map_err(undecodable)?;
-    let (w, h) = decoder.dimensions();
-    if u64::from(w) * u64::from(h) > MAX_PIXELS {
-        return Err(invalid(format!(
-            "image is {w}x{h}; the limit is {MAX_PIXELS} pixels"
-        )));
-    }
-    let orientation = match format {
-        // Not decoder.orientation(): image-webp sizes the EXIF buffer from an unchecked chunk header.
-        ImageFormat::WebP => webp_exif(bytes).and_then(Orientation::from_exif_chunk),
+    let (mut img, orientation) = if format == ImageFormat::WebP {
+        let orientation = webp_exif(bytes).and_then(Orientation::from_exif_chunk);
+        (decode_webp(bytes)?, orientation)
+    } else {
+        let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+        let mut limits = Limits::default();
+        // into_decoder does not charge the pixel buffer (checked below); this
+        // bounds what a PNG's ancillary chunks may inflate to.
+        limits.max_alloc = Some(64 << 20);
+        reader.limits(limits);
+        let mut decoder = reader.into_decoder().map_err(undecodable)?;
+        let (w, h) = decoder.dimensions();
+        check_pixels(w, h)?;
         // JPEG: one APP1 segment, at most 64 KiB. PNG: the eXIf chunk the decoder already holds.
-        _ => decoder.orientation().ok(),
-    }
-    .unwrap_or(Orientation::NoTransforms);
-    let mut img = DynamicImage::from_decoder(decoder).map_err(undecodable)?;
-    img.apply_orientation(orientation);
+        let orientation = decoder.orientation().ok();
+        (
+            DynamicImage::from_decoder(decoder).map_err(undecodable)?,
+            orientation,
+        )
+    };
+    img.apply_orientation(orientation.unwrap_or(Orientation::NoTransforms));
     Ok(img)
+}
+
+/// A still WebP, or an animation's first frame on its canvas. libwebp checks
+/// each frame's bitstream against the canvas before it allocates pixels.
+fn decode_webp(bytes: &[u8]) -> Result<DynamicImage, Error> {
+    use libwebp_sys::{VP8StatusCode, WebPBitstreamFeatures};
+    let undecodable = |why: &str| invalid(format!("could not decode the WebP image: {why}"));
+    let mut features = WebPBitstreamFeatures {
+        width: 0,
+        height: 0,
+        has_alpha: 0,
+        has_animation: 0,
+        format: 0,
+        pad: [0; 5],
+    };
+    // SAFETY: libwebp reads at most `bytes.len()` bytes and writes only `features`.
+    let status =
+        unsafe { libwebp_sys::WebPGetFeatures(bytes.as_ptr(), bytes.len(), &mut features) };
+    if status != VP8StatusCode::VP8_STATUS_OK {
+        return Err(undecodable(&format!("{status:?}")));
+    }
+    let (Ok(w), Ok(h)) = (
+        u32::try_from(features.width),
+        u32::try_from(features.height),
+    ) else {
+        return Err(undecodable("negative size"));
+    };
+    check_pixels(w, h)?;
+    if features.has_animation != 0 {
+        return first_frame(bytes, w, h)
+            .map(DynamicImage::ImageRgba8)
+            .ok_or_else(|| undecodable("libwebp rejected the animation"));
+    }
+
+    let alpha = features.has_alpha != 0;
+    let decode_into = if alpha {
+        libwebp_sys::WebPDecodeRGBAInto
+    } else {
+        libwebp_sys::WebPDecodeRGBInto
+    };
+    // check_pixels capped w*h at MAX_PIXELS, so neither product overflows.
+    let stride = w as usize * if alpha { 4 } else { 3 };
+    let mut px = vec![0; stride * h as usize];
+    // SAFETY: `px` is h rows of `stride` bytes, and libwebp writes only inside `px.len()` bytes.
+    let out = unsafe {
+        decode_into(
+            bytes.as_ptr(),
+            bytes.len(),
+            px.as_mut_ptr(),
+            px.len(),
+            stride as std::ffi::c_int,
+        )
+    };
+    if out.is_null() {
+        return Err(undecodable("libwebp rejected its data"));
+    }
+    Ok(if alpha {
+        DynamicImage::ImageRgba8(RgbaImage::from_raw(w, h, px).expect("w*h RGBA pixels"))
+    } else {
+        DynamicImage::ImageRgb8(RgbImage::from_raw(w, h, px).expect("w*h RGB pixels"))
+    })
+}
+
+/// The first frame of an animation whose canvas `decode_webp` measured as `w`x`h`.
+fn first_frame(bytes: &[u8], w: u32, h: u32) -> Option<RgbaImage> {
+    use libwebp_sys::{WEBP_CSP_MODE, WebPAnimDecoder, WebPAnimDecoderOptions, WebPAnimInfo};
+    struct Decoder(*mut WebPAnimDecoder);
+    impl Drop for Decoder {
+        fn drop(&mut self) {
+            // SAFETY: the pointer came from WebPAnimDecoderNew, which may return null (a no-op here).
+            unsafe { libwebp_sys::WebPAnimDecoderDelete(self.0) }
+        }
+    }
+    let options = WebPAnimDecoderOptions {
+        color_mode: WEBP_CSP_MODE::MODE_RGBA,
+        use_threads: 0,
+        padding: [0; 7],
+    };
+    let data = libwebp_sys::WebPData {
+        bytes: bytes.as_ptr(),
+        size: bytes.len(),
+    };
+    // SAFETY: the decoder reads `bytes`, which outlives it: `dec` drops before this returns.
+    let dec = Decoder(unsafe { libwebp_sys::WebPAnimDecoderNew(&data, &options) });
+    if dec.0.is_null() {
+        return None;
+    }
+    let mut info = WebPAnimInfo::default();
+    let mut frame = std::ptr::null_mut();
+    let mut timestamp = 0;
+    // SAFETY: `dec` is live, and both calls write only through the pointers passed.
+    let decoded = unsafe {
+        libwebp_sys::WebPAnimDecoderGetInfo(dec.0, &mut info) != 0
+            && libwebp_sys::WebPAnimDecoderGetNext(dec.0, &mut frame, &mut timestamp) != 0
+    };
+    // The canvas must be the one check_pixels passed, which bounds the copy below.
+    if !decoded || (info.canvas_width, info.canvas_height) != (w, h) {
+        return None;
+    }
+    // SAFETY: `frame` is the decoder's w*h RGBA canvas, valid until `dec` drops.
+    let canvas = unsafe { std::slice::from_raw_parts(frame, w as usize * h as usize * 4) };
+    RgbaImage::from_raw(w, h, canvas.to_vec())
 }
 
 fn over_white(img: &DynamicImage) -> DynamicImage {
@@ -322,7 +434,7 @@ fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageEncoder, RgbImage};
+    use image::ImageEncoder;
 
     fn make_rgb_image(w: u32, h: u32, r: u8, g: u8, b: u8) -> DynamicImage {
         let mut img = RgbImage::new(w, h);
@@ -353,12 +465,7 @@ mod tests {
                     .write_to(&mut cursor, ImageFormat::Png)
                     .unwrap();
             }
-            ImageFormat::WebP => {
-                let mut cursor = Cursor::new(&mut buf);
-                img.to_rgba8()
-                    .write_to(&mut cursor, ImageFormat::WebP)
-                    .unwrap();
-            }
+            ImageFormat::WebP => buf = encode_webp(img, 90).unwrap(),
             _ => panic!("unsupported format in test helper"),
         }
         buf
@@ -628,7 +735,7 @@ mod tests {
             output_format: Format::Webp,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
-        let decoded = image::load_from_memory_with_format(&output, ImageFormat::WebP).unwrap();
+        let decoded = decode(&output, ImageFormat::WebP).unwrap();
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
     }
@@ -657,7 +764,7 @@ mod tests {
             let (out, _) = process_image(&png, &webp_params(256, 256, q, Format::Png)).unwrap();
             assert_eq!(&out[..4], b"RIFF", "q{q}");
             assert_eq!(&out[12..16], b"VP8 ", "q{q} must be lossy");
-            let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
+            let decoded = decode(&out, ImageFormat::WebP).unwrap();
             assert_eq!((decoded.width(), decoded.height()), (256, 256), "q{q}");
             out.len()
         });
@@ -671,7 +778,7 @@ mod tests {
         });
         let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
         let (out, _) = process_image(&png, &webp_params(64, 64, 80, Format::Png)).unwrap();
-        let decoded = image::load_from_memory_with_format(&out, ImageFormat::WebP).unwrap();
+        let decoded = decode(&out, ImageFormat::WebP).unwrap();
         assert!(decoded.to_rgba8().pixels().any(|p| p.0[3] < 255));
     }
 
@@ -876,12 +983,12 @@ mod tests {
 
     #[test]
     fn orientation_is_read_from_webp() {
-        let mut webp = Vec::new();
-        let mut enc = image::codecs::webp::WebPEncoder::new_lossless(&mut webp);
-        enc.set_exif_metadata(tiff_orientation(6)).unwrap();
-        make_rgb_image(2, 1, 1, 2, 3)
-            .write_with_encoder(enc)
-            .unwrap();
+        let still = encode_webp(&make_rgb_image(2, 1, 1, 2, 3), 90).unwrap();
+        let mut webp = riff(&[
+            vp8x(0x08, 2, 1),
+            still[12..].to_vec(),
+            chunk(b"EXIF", &tiff_orientation(6)),
+        ]);
         let out = run(
             &webp,
             Format::Webp,
@@ -902,6 +1009,182 @@ mod tests {
     fn no_exif_is_identity() {
         let out = png_out(&encode_image(&quad(), ImageFormat::Png));
         assert_eq!(out.to_rgba8().into_raw(), [A, B, C, D].concat());
+    }
+
+    // ── WebP containers ──────────────────────────────
+
+    /// A RIFF chunk: fourcc, little-endian size, payload, pad to an even length.
+    fn chunk(fourcc: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(payload.len()).unwrap().to_le_bytes();
+        [fourcc, &size, payload, &vec![0; payload.len() % 2]].concat()
+    }
+
+    fn riff(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let body = chunks.concat();
+        let size = u32::try_from(body.len() + 4).unwrap().to_le_bytes();
+        [b"RIFF".as_slice(), &size, b"WEBP", &body].concat()
+    }
+
+    fn le24(n: u32) -> [u8; 3] {
+        let [a, b, c, _] = n.to_le_bytes();
+        [a, b, c]
+    }
+
+    /// A VP8X chunk for a `w`x`h` canvas; 0x02 marks an animation, 0x08 EXIF.
+    fn vp8x(flags: u8, w: u32, h: u32) -> Vec<u8> {
+        chunk(
+            b"VP8X",
+            &[[flags, 0, 0, 0].as_slice(), &le24(w - 1), &le24(h - 1)].concat(),
+        )
+    }
+
+    /// An ANMF chunk that says it is `w`x`h` at the origin and holds `frame`'s chunks.
+    fn anmf(w: u32, h: u32, frame: &[u8]) -> Vec<u8> {
+        let header = [
+            [0; 6].as_slice(),
+            &le24(w - 1),
+            &le24(h - 1),
+            &[100, 0, 0, 0],
+        ]
+        .concat();
+        chunk(b"ANMF", &[header.as_slice(), frame].concat())
+    }
+
+    fn animation(w: u32, h: u32, frames: &[Vec<u8>]) -> Vec<u8> {
+        riff(&[&[vp8x(0x02, w, h), chunk(b"ANIM", &[0; 6])], frames].concat())
+    }
+
+    /// A lossy 16x16 WebP whose VP8 frame header says `side`x`side`.
+    fn webp_claiming(side: u32) -> Vec<u8> {
+        let mut webp = encode_webp(&make_rgb_image(16, 16, 1, 2, 3), 80).unwrap();
+        assert_eq!(&webp[12..16], b"VP8 ");
+        let side = u16::try_from(side).unwrap().to_le_bytes();
+        // After the chunk header, the 3-byte frame tag and the 3-byte start code.
+        webp[26..30].copy_from_slice(&[side, side].concat());
+        webp
+    }
+
+    /// The largest Rust allocation this thread made since the last `take`.
+    mod largest_alloc {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local!(static LARGEST: Cell<usize> = const { Cell::new(0) });
+
+        fn note(size: usize) {
+            let _ = LARGEST.try_with(|c| c.set(c.get().max(size)));
+        }
+
+        pub fn take() -> usize {
+            LARGEST.with(|c| c.replace(0))
+        }
+
+        struct Probe;
+
+        // SAFETY: every call goes to System unchanged; `note` neither allocates nor panics.
+        unsafe impl GlobalAlloc for Probe {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                note(layout.size());
+                unsafe { System.alloc(layout) }
+            }
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                note(layout.size());
+                unsafe { System.alloc_zeroed(layout) }
+            }
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+                note(size);
+                unsafe { System.realloc(ptr, layout, size) }
+            }
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(ptr, layout) }
+            }
+        }
+
+        #[global_allocator]
+        static PROBE: Probe = Probe;
+    }
+
+    #[test]
+    fn webp_frame_unlike_its_canvas_is_rejected_up_front() {
+        let webp = riff(&[vp8x(0, 1, 1), webp_claiming(16_383)[12..].to_vec()]);
+        largest_alloc::take();
+        let Err(err) = decode(&webp, ImageFormat::WebP) else {
+            panic!("a 16383x16383 frame on a 1x1 canvas must be rejected");
+        };
+        let largest = largest_alloc::take();
+        assert!(is_invalid_args(&err), "{err}");
+        assert!(largest < 1 << 20, "allocated {largest} bytes");
+    }
+
+    #[test]
+    fn webp_over_the_pixel_limit_is_rejected_before_decoding() {
+        let frame = encode_webp(&make_rgb_image(16, 16, 1, 2, 3), 80).unwrap();
+        for webp in [
+            webp_claiming(8000),
+            animation(8000, 8000, &[anmf(16, 16, &frame[12..])]),
+        ] {
+            let Err(err) = decode(&webp, ImageFormat::WebP) else {
+                panic!("an 8000x8000 WebP must be rejected");
+            };
+            assert!(is_invalid_args(&err), "{err}");
+            assert!(err.to_string().contains("8000x8000"), "{err}");
+        }
+    }
+
+    #[test]
+    fn animated_webp_resizes_its_first_frame() {
+        let frame = |r, b| {
+            anmf(
+                8,
+                8,
+                &encode_webp(&make_rgb_image(8, 8, r, 0, b), 90).unwrap()[12..],
+            )
+        };
+        let webp = animation(8, 8, &[frame(255, 0), frame(0, 255)]);
+        let out = run(
+            &webp,
+            Format::Webp,
+            Format::Png,
+            ResizeStrategy::ScaleToFit,
+            4,
+            4,
+            100,
+        );
+        assert_eq!((out.width(), out.height()), (4, 4));
+        for p in out.to_rgba8().pixels() {
+            assert!(p[0] > 200 && p[2] < 50 && p[3] == 255, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn animated_frame_is_sized_by_its_bitstream() {
+        let blue = encode_webp(&make_rgba_image(16, 16, 0, 0, 255, 128), 90).unwrap();
+        assert_eq!(&blue[30..34], b"ALPH", "VP8X, then ALPH and VP8");
+        let webp = animation(16, 16, &[anmf(1, 1, &blue[30..])]);
+        let img = decode(&webp, ImageFormat::WebP).unwrap();
+        assert_eq!((img.width(), img.height()), (16, 16));
+        for p in img.to_rgba8().pixels() {
+            assert!(p[2] > 200 && p[3] == 128, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn webp_input_keeps_alpha() {
+        let half = RgbaImage::from_fn(16, 16, |x, _| {
+            image::Rgba(if x < 8 { [200, 30, 30, 255] } else { [0; 4] })
+        });
+        let webp = encode_webp(&DynamicImage::ImageRgba8(half), 90).unwrap();
+        let out = run(
+            &webp,
+            Format::Webp,
+            Format::Png,
+            ResizeStrategy::ScaleToFit,
+            16,
+            16,
+            100,
+        )
+        .to_rgba8();
+        assert_eq!((out.get_pixel(0, 0)[3], out.get_pixel(15, 15)[3]), (255, 0));
     }
 
     #[test]

@@ -113,6 +113,8 @@ page shows an error that tells you to update the ade worker.
 - JPEG output flattens transparency onto white.
 - The output is always re-encoded, even when the image already fits, so it
   can be larger than the input.
+- An animated WebP is resized from its first frame; the output is a still
+  image.
 - A JPEG must end with its end-of-image marker: one that stops after its
   first scan begins fails with `INVALID_ARGS`, even when only the marker is
   missing. Bytes after the marker are ignored.
@@ -140,6 +142,11 @@ page shows an error that tells you to update the ade worker.
 - `quality` outside 1-100 is an error.
 - A truncated JPEG, one that ends before its end-of-image marker, is rejected
   with `INVALID_ARGS`; it used to decode with the missing rows grey.
+- WebP input is decoded by libwebp instead of image-webp. A frame whose size
+  disagrees with its canvas fails with `INVALID_ARGS` before any pixels are
+  decoded, an animation frame whose header disagrees with its bitstream is
+  sized by the bitstream instead of failing the call, and lossy pixels can
+  differ slightly.
 - Configuration moved to the `configuration` worker: `./config.yaml` is no
   longer read and no longer shipped, `--config` only seeds an empty entry,
   compose's `config_override` now takes effect, and the worker needs the

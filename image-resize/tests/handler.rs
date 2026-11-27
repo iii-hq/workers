@@ -193,12 +193,25 @@ async fn metadata_is_optional() {
 #[tokio::test]
 async fn sniffs_input_format() {
     let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
-    for (format, expected) in [
-        (ImageFormat::Jpeg, Format::Jpeg),
-        (ImageFormat::Png, Format::Png),
-        (ImageFormat::WebP, Format::Webp),
+    let webp = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test-fixtures/sample.webp"
+    ))
+    .unwrap();
+    for (input, format, expected) in [
+        (
+            encode(&img, ImageFormat::Jpeg),
+            ImageFormat::Jpeg,
+            Format::Jpeg,
+        ),
+        (
+            encode(&img, ImageFormat::Png),
+            ImageFormat::Png,
+            Format::Png,
+        ),
+        (webp, ImageFormat::WebP, Format::Webp),
     ] {
-        let call = call(encode(&img, format), None).await;
+        let call = call(input, None).await;
         assert_eq!(call.result.unwrap().format, expected);
         assert_eq!(image::guess_format(&call.bytes).unwrap(), format);
     }
