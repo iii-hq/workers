@@ -658,14 +658,23 @@ pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
                     "The folder of that run is gone (only the latest runs are kept).",
                 ));
             }
-            // A path the listing shows redacted is read by that name: the index maps it back.
-            let real = std::fs::read_to_string(run_dir.join("left/.paths.json"))
+            // A path the listing shows redacted is read by that name: the index maps it back and
+            // says whether the kept copy is text.
+            let entry = std::fs::read_to_string(run_dir.join(crate::run::LEFT_INDEX))
                 .ok()
                 .and_then(|t| {
-                    serde_json::from_str::<std::collections::BTreeMap<String, String>>(&t).ok()
+                    serde_json::from_str::<
+                            std::collections::BTreeMap<String, crate::run::LeftEntry>,
+                        >(&t)
+                        .ok()
                 })
-                .and_then(|m| m.get(&path).cloned())
-                .unwrap_or_else(|| path.clone());
+                .and_then(|mut m| m.remove(&path));
+            if entry.as_ref().is_some_and(|e| !e.text) {
+                return Err(CloudError::invalid(
+                    "the file is kept, not text: it is kept as it was, in the run's folder, for the person",
+                ));
+            }
+            let real = entry.map(|e| e.path).unwrap_or_else(|| path.clone());
             let file = run_dir.join("left").join(&real);
             // A deletion keeps nothing; a link under `left/` is never followed.
             let meta = std::fs::symlink_metadata(&file).map_err(|_| {

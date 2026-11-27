@@ -1507,3 +1507,58 @@ async fn a_kept_file_is_read_by_the_name_the_listing_shows_and_never_through_a_l
     let err = read(&h.ctx, ask(&shown)).unwrap_err();
     assert_eq!(err.code, "NOT_AVAILABLE");
 }
+
+#[tokio::test]
+async fn a_runs_binary_data_leaves_the_copy_and_a_tracked_binary_is_put_back() {
+    use iii_cloud::check::read;
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    std::fs::create_dir_all(ws.join("cfg")).unwrap();
+    std::fs::write(ws.join("cfg/blob.bin"), [0xffu8, 0xfe, 1, 2]).unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "blob"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    // The run rewrites the tracked binary and creates a store file under a new folder.
+    let bin = fake_iii(
+        &h,
+        "printf '\\377\\376new' > cfg/blob.bin; mkdir -p runstore; printf '\\377\\376\\000store' > runstore/data.db;",
+    );
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.restored, vec!["cfg/blob.bin"]);
+    assert_eq!(run.moved, vec!["runstore/data.db"]);
+    // Both are out of the copy: the tracked one as committed, the created one gone.
+    assert_eq!(
+        std::fs::read(ws.join("cfg/blob.bin")).unwrap(),
+        [0xffu8, 0xfe, 1, 2]
+    );
+    assert!(!ws.join("runstore").exists());
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+    // Their bytes are kept, and `read` says so instead of serving them.
+    let dir = std::path::Path::new(run.log_path.as_ref().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert_eq!(
+        std::fs::read(dir.join("left/runstore/data.db")).unwrap(),
+        [0xffu8, 0xfe, 0, b's', b't', b'o', b'r', b'e']
+    );
+    let err = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: None,
+            left: Some("runstore/data.db".into()),
+        },
+    )
+    .unwrap_err();
+    assert!(err.message.contains("kept, not text"), "{}", err.message);
+}
