@@ -3541,8 +3541,8 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
 
 /// A hand-off whose agent ended its turn with no wake and no run here: "waiting for you", in the
 /// worker's own words (`question_source: check`).
-async fn ended_agent() -> (Harness, std::path::PathBuf, World) {
-    let (h, _s, _r, ws) = setup().await;
+async fn ended_agent() -> (Harness, std::path::PathBuf, World, (MockServer, Repo)) {
+    let (h, s, r, ws) = setup().await;
     clean_manifest(&ws);
     accept_sends(&h);
     let w = world();
@@ -3555,7 +3555,7 @@ async fn ended_agent() -> (Harness, std::path::PathBuf, World) {
     })
     .await;
     assert_eq!(a.question_source, Some(QuestionSource::Check));
-    (h, ws, w)
+    (h, ws, w, (s, r))
 }
 
 fn release_failed() -> Run {
@@ -3570,7 +3570,7 @@ fn release_failed() -> Run {
 
 #[tokio::test]
 async fn a_failed_run_of_the_persons_check_reaches_an_agent_that_ended_its_turn() {
-    let (h, ws, _w) = ended_agent().await;
+    let (h, ws, _w, _keep) = ended_agent().await;
     let check = person_check(&h, vec![], Some(release_failed()), false);
     iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
     for _ in 0..40 {
@@ -3590,7 +3590,7 @@ async fn a_failed_run_of_the_persons_check_reaches_an_agent_that_ended_its_turn(
 
 #[tokio::test]
 async fn an_open_ask_of_the_agent_is_not_overridden_by_the_persons_check() {
-    let (h, ws, w) = ended_agent().await;
+    let (h, ws, w, _keep) = ended_agent().await;
     *w.question.lock().unwrap() = Some("Which role do you want?".into());
     until(&h, "a real ask", |a| {
         a.question_source == Some(QuestionSource::Agent)
@@ -3604,7 +3604,7 @@ async fn an_open_ask_of_the_agent_is_not_overridden_by_the_persons_check() {
 
 #[tokio::test]
 async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
-    let (h, ws, _w) = ended_agent().await;
+    let (h, ws, _w, _keep) = ended_agent().await;
     h.ctx
         .store
         .update(|s| s.handoffs[0].agent.state = AgentPhase::Stopped);
@@ -3617,7 +3617,7 @@ async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
 
 #[tokio::test]
 async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_check_leaves_it() {
-    let (h, _ws, _w) = ended_agent().await;
+    let (h, _ws, _w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     let before = continues(&h).len();
     let again = create(&h.ctx, ready_req()).await.unwrap();
@@ -3633,13 +3633,13 @@ async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_chec
 #[tokio::test]
 async fn fix_with_your_agent_sends_nothing_to_a_working_agent_an_open_ask_or_nothing_open() {
     // Nothing open for the agent: a ready check.
-    let (h, _ws, _w) = ended_agent().await;
+    let (h, _ws, _w, _keep) = ended_agent().await;
     person_check(&h, vec![], None, true);
     let again = create(&h.ctx, ready_req()).await.unwrap();
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
     // A real ask of the agent's is open: the person owes an answer first.
-    let (h, _ws, w) = ended_agent().await;
+    let (h, _ws, w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     *w.question.lock().unwrap() = Some("Which role do you want?".into());
     until(&h, "a real ask", |a| {
@@ -3650,11 +3650,37 @@ async fn fix_with_your_agent_sends_nothing_to_a_working_agent_an_open_ask_or_not
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
     // A working agent.
-    let (h, _ws, w) = ended_agent().await;
+    let (h, _ws, w, _keep) = ended_agent().await;
     person_check(&h, vec![], Some(release_failed()), false);
     *w.status.lock().unwrap() = "working".into();
     until(&h, "working again", |a| a.state == AgentPhase::Working).await;
     let again = create(&h.ctx, ready_req()).await.unwrap();
     assert!(again.reused && again.sent == Some(false), "{again:?}");
     assert!(continues(&h).is_empty());
+}
+
+#[tokio::test]
+async fn an_old_dead_or_homeless_hand_off_is_not_reused_for_a_new_one() {
+    // Quiet for over 30 minutes.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339());
+    });
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(!again.reused && again.id != old_id, "{again:?}");
+    // The chat is gone.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    h.fake.on("session::get", |_| Ok(json!({"meta": null})));
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(!again.reused && again.id != old_id, "{again:?}");
+    // The worktree is gone.
+    let (h, ws, _w, _keep) = ended_agent().await;
+    let old_id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    std::fs::remove_dir_all(&ws).unwrap();
+    if let Ok(again) = create(&h.ctx, ready_req()).await {
+        assert!(!again.reused && again.id != old_id, "{again:?}");
+    }
 }

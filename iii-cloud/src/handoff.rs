@@ -279,7 +279,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     });
     // The same kind already exists and its agent is not working (it ended its turn, waits on a
     // wake, or stalled): that one is reused, and sent on.
-    let same = same.or_else(|| {
+    let idle = if same.is_none() {
         ctx.store.read(|s| {
             s.handoffs
                 .iter()
@@ -288,15 +288,25 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
                         && h.kind == request.kind
                         && h.deployment_id == request.deployment_id
                         && h.agent.session_id.is_some()
-                        && match h.agent.state {
-                            AgentPhase::Done => !retired(ctx, h),
-                            AgentPhase::WaitingForYou | AgentPhase::Stalled => true,
-                            _ => false,
-                        }
+                        // The same bound for every idle state: a hand-off quiet for 30 minutes
+                        // is not the one the person means.
+                        && matches!(
+                            h.agent.state,
+                            AgentPhase::Done | AgentPhase::WaitingForYou | AgentPhase::Stalled
+                        )
+                        && !quiet_too_long(ctx, h)
                 })
                 .cloned()
         })
-    });
+    } else {
+        None
+    };
+    // And it must be alive: its chat answers and its worktree is there. Otherwise a new one starts.
+    let idle = match idle {
+        Some(h) if hand_off_alive(ctx, &h).await => Some(h),
+        _ => None,
+    };
+    let same = same.or(idle);
     if let Some(h) = same {
         let sent = send_on(ctx, &h).await;
         let delivered = match (&h.agent.session_id, request.text.as_deref()) {
@@ -692,9 +702,11 @@ pub fn follow(ctx: &Arc<Ctx>, id: String) {
 
 /// A Done hand-off with no activity for 30 minutes.
 pub fn retired(ctx: &Ctx, h: &Handoff) -> bool {
-    if h.agent.state != AgentPhase::Done {
-        return false;
-    }
+    h.agent.state == AgentPhase::Done && quiet_too_long(ctx, h)
+}
+
+/// No activity of the agent's for 30 minutes (since the hand-off began when it has none).
+fn quiet_too_long(ctx: &Ctx, h: &Handoff) -> bool {
     let last = h
         .agent
         .last_activity_at
@@ -1466,6 +1478,19 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
             })
             .unwrap_or_default()
     })
+}
+
+/// The hand-off's chat still answers and its worktree is still there.
+async fn hand_off_alive(ctx: &Ctx, h: &Handoff) -> bool {
+    let Some(session) = h.agent.session_id.as_deref() else {
+        return false;
+    };
+    let chat = ctx
+        .plat
+        .call("session::get", json!({ "session_id": session }))
+        .await
+        .is_ok_and(|m| m.get("meta").is_some_and(|m| !m.is_null()));
+    chat && (h.workspace_path.is_empty() || Path::new(&h.workspace_path).exists())
 }
 
 /// An existing hand-off's agent is not working and the person asks again: send it on with what
