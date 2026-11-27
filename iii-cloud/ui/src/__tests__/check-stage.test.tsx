@@ -7,10 +7,10 @@ import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
 import { findings } from '../findings'
-import { openProblems } from '../model'
+import { checklist, handoffMessage, openProblems } from '../model'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
-import { found, passed, rcFixing, rcVariables } from '../fixtures/check'
+import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/check'
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
@@ -982,6 +982,15 @@ describe('the check follows the canvas', () => {
       expect(title()).toBe('1 for your agent to fix')
       expect(region('Your agent')?.textContent).toContain('DATABASE_URL has no value')
       expect(openProblems(s).map((p) => p.id)).toEqual(['p-db'])
+    })
+
+    it('during a hand-off a value row of the brief is neither "fixed" nor shown, and the message counts it', async () => {
+      const s = rcFixingHere
+      const { rows, fixed } = checklist(s)
+      expect(rows.some((r) => /SESSION_SECRET|LOG_LEVEL/.test(r.title))).toBe(false)
+      expect(fixed).toBe(checklist(rcFixing).fixed)
+      expect(handoffMessage(s)).toContain(`fix the ${openProblems(s, true).length} problems`)
+      expect(openProblems(s, true).length).toBeGreaterThan(openProblems(s).length)
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
