@@ -63,9 +63,10 @@ export const FOLDER_NOTE = 'Confirm the folder in the chat when asked.'
 /** How the last hand-off reached a chat: delivered to the agent's own, started in a new one, or not at all. */
 export type Launch =
   | { kind: 'launching' }
-  | { kind: 'sent' }
+  /** `check`: the check it was pressed for; the sentence about it is shown for that check only. */
+  | { kind: 'sent'; check?: string }
   /** The agent's chat is open, but the worker could not put anything into it: the person tells it. */
-  | { kind: 'told' }
+  | { kind: 'told'; check?: string }
   | { kind: 'waiting' }
   | { kind: 'started' }
   | { kind: 'error'; retry: () => void }

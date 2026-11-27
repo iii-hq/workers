@@ -1929,6 +1929,21 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
   })
 
+  it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
+    const reused = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
+    }
+    await stage(release(note), reused, { openScreen: vi.fn() })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    // an hour later another check fails at Release: nothing was sent for it
+    const next = release(note)
+    await stage({ ...next, check: { ...next.check!, id: 'chk-newer' } })
+    expect(stop()?.textContent).toContain('stopped at Release')
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+  })
+
   it('an agent already on it: "Your agent is on it." and no button for it', async () => {
     await stage(release({ ...rcFixing.agent!, state: 'working' as const }))
     expect(stop()?.textContent).toContain('Your agent is on it.')

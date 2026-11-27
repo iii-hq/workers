@@ -73,7 +73,10 @@ export async function handOff(
   if (made?.reused) {
     if (made.session_id) openChatFor(host, made.session_id)
     // `sent: false`: the chat is open but nothing was put in it: the person tells it.
-    setLaunch(made.sent === false ? { kind: 'told' } : made.session_id ? { kind: 'sent' } : { kind: 'waiting' })
+    const check = status.check?.id
+    setLaunch(
+      made.sent === false ? { kind: 'told', check } : made.session_id ? { kind: 'sent', check } : { kind: 'waiting' },
+    )
     return true
   }
   if (made?.delivered && made.session_id) {

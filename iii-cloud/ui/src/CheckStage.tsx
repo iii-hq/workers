@@ -1296,8 +1296,8 @@ export function CheckStage(props: CheckStageProps) {
           <>
             {plainMessage(err)}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
-            {agentRun && launch?.kind === 'sent' ? " Sent to your agent's chat." : ''}
-            {agentRun && launch?.kind === 'told' ? ' Tell it in the chat.' : ''}
+            {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
+            {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
             {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
