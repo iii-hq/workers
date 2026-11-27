@@ -1222,7 +1222,11 @@ export function CheckStage(props: CheckStageProps) {
   const past = historyOf(s, c, envId)
 
   // The seconds after a page check ends, while the worker may still be sending the agent on.
-  const settling = hubOf(host).checkEndedAt() > 0 && now - hubOf(host).checkEndedAt() < 6000
+  // Only where an idle hand-off exists on this environment can the worker continue an agent; and the wait counts from
+  // the run's own end (it may outlive the call), else from the call's.
+  const idleAgent = !!s.agent && !['starting', 'working'].includes(s.agent.state)
+  const endedMs = run?.finished_at ? Date.parse(run.finished_at) : hubOf(host).checkEndedAt(envId)
+  const settling = idleAgent && endedMs > 0 && now - endedMs < 6000
   const stops: Stop[] = []
   if (c) {
     if (s.connection.status === 'expired' || signInRequired(s)) {

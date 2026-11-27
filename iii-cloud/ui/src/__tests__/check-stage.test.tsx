@@ -2109,15 +2109,25 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
-  it("after a page check ends the button waits six seconds for the worker's own continue", async () => {
+  it("the button waits six seconds from the run's end, only where an idle hand-off exists on this environment", async () => {
+    const justNow = (st: Status) =>
+      ({ ...st, check: { ...st.check!, run: { ...st.check!.run!, finished_at: new Date().toISOString() } } }) as Status
+    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    // an idle agent on this environment, the run just ended
+    await stage(justNow(release(note)), {}, { openScreen: vi.fn() })
+    expect(first().disabled).toBe(true)
+    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+    // no hand-off at all (the first check from Setup): nobody can take it, so no wait
+    await stage({ ...justNow(release(note)), agent: null, handoff_brief: null })
+    expect(first().disabled).toBe(false)
+    expect(stop()?.textContent).not.toContain('Checking whether your agent took it…')
+    // a check that ended on another environment is not this one's wait
     const h = await stage(release(note), {}, { openScreen: vi.fn() })
     await act(async () => {
       hubOf(h.host).checking(1)
-      hubOf(h.host).checking(-1)
+      hubOf(h.host).checking(-1, 'another-environment')
     })
-    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
-    expect(first().disabled).toBe(true)
-    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+    expect(first().disabled).toBe(false)
   })
 
   it("with a hand-off open the call carries no text (the worker's continue is the one message); without one it does", async () => {
