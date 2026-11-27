@@ -1224,7 +1224,7 @@ export function CheckStage(props: CheckStageProps) {
     }
     const err = run?.status === 'failed' ? run.error : null
     // The last lines that say something (not blank, not a separator): what the generic line above does not.
-    const tail = runTail(run?.log_tail ?? [])
+    const tail = runTail(run?.log_tail ?? [], 6, missing)
     if (err?.code === 'DOCKER_MISSING') {
       const cloudN = open.filter((x) => x.source === 'cloud_plan').length
       stops.push({
@@ -1608,7 +1608,7 @@ export function CheckStage(props: CheckStageProps) {
       {!replaced ? (
         <ValuesCard
           runFailed={run?.status === 'failed'}
-          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? []).length > 0}
+          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? [], 6, missing).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {

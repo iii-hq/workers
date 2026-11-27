@@ -500,13 +500,15 @@ export function deployOrigin(
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]|\\[[0-9;]*m`, 'g')
 const DRAWING = /^[\s\-=_*#~.\u2500-\u257f]+$/
 const BARE_CODE = new RegExp(`(?<!${String.fromCharCode(27)})\\[[0-9;]*m`, 'g')
+/** An identifier that names a variable: upper case, 3+ characters, with an underscore or all capitals. */
+const VARIABLE = /\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+|[A-Z]{3,})\b/
 const FAILURE = /invalid|missing|required|not set|error/i
 
 /**
  * The run's last lines that say something, for a stop: no blanks or separators (`[worker] ` prefixes and colour codes
  * do not hide them), at most `max`, from the start of the last run of lines that name the failure.
  */
-export function runTail(log: string[], max = 6): string[] {
+export function runTail(log: string[], max = 6, names: string[] = []): string[] {
   const kept = log
     .map((raw) => ({
       raw: raw.replace(BARE_CODE, ''),
@@ -514,17 +516,21 @@ export function runTail(log: string[], max = 6): string[] {
     }))
     .filter((l) => l.plain.trim() && !DRAWING.test(l.plain))
   if (kept.length <= max) return kept.map((l) => l.raw)
-  // Anchor on the start of the LAST run of failure lines before the final two (those are usually the exit lines), so an
-  // earlier "missing peer …" or "error handlers" line does not take the place of the message; fill from there.
+  // Anchor on the start of a run of failure lines before the final two (those are usually the exit lines): the last run
+  // that names a variable (an identifier like `JWT_SECRET`, or one of `names`), else the last run. An earlier "missing
+  // peer …" line, or the throw that follows the printed names, then does not take the message's place.
   const hit = (i: number) => FAILURE.test(kept[i].plain)
-  let f = -1
-  for (let i = kept.length - 3; i >= 0; i--)
-    if (hit(i)) {
-      f = i
-      break
-    }
-  if (f < 0) return kept.slice(-max).map((l) => l.raw)
-  while (f > 0 && hit(f - 1)) f--
+  const named = (i: number) => VARIABLE.test(kept[i].plain) || names.some((n) => kept[i].plain.includes(n))
+  const runs: { from: number; named: boolean }[] = []
+  for (let i = 0; i <= kept.length - 3; i++) {
+    if (!hit(i)) continue
+    const last = runs.at(-1)
+    if (last && runs.length && hit(i - 1)) last.named ||= named(i)
+    else runs.push({ from: i, named: named(i) })
+  }
+  const pick = [...runs].reverse().find((r) => r.named) ?? runs.at(-1)
+  if (!pick) return kept.slice(-max).map((l) => l.raw)
+  const f = pick.from
   return kept.slice(f, f + max).map((l) => l.raw)
 }
 

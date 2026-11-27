@@ -1630,6 +1630,36 @@ describe("the run's last lines", () => {
     expect(tail.length).toBeLessThanOrEqual(6)
   })
 
+  it('print, then throw: the line that names the variable survives the stack trace', () => {
+    const log = [
+      "❌ Invalid environment variables: { JWT_SECRET: [ 'Required' ] }",
+      '/app/node_modules/@t3-oss/env-core/dist/index.mjs:30',
+      'throw new Error("Invalid environment variables");',
+      '^',
+      'Error: Invalid environment variables',
+      ...Array.from({ length: 6 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      'Node.js v20.18.0',
+      '!! Workers failed: release-control',
+    ]
+    const tail = runTail(log)
+    expect(tail[0]).toContain('JWT_SECRET')
+    expect(tail.length).toBeLessThanOrEqual(6)
+    // a name from the values read counts as naming a variable too
+    const lower = runTail(
+      [
+        'Invalid value for jwt_secret',
+        'x',
+        'throw new Error("boom")',
+        ...Array.from({ length: 6 }, (_, i) => `at f${i}`),
+        'Node',
+        'done',
+      ],
+      6,
+      ['jwt_secret'],
+    )
+    expect(lower[0]).toContain('jwt_secret')
+  })
+
   it('four missing variables: the message and all four names, six lines, no wasted slot', () => {
     const tail = runTail(real(['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']))
     expect(tail).toHaveLength(6)
