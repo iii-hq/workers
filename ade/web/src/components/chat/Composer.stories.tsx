@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
+import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { FileHit } from '@/lib/file-search'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
 import { fixtureMentionRuntime } from '@/lib/mentions/fixtures'
@@ -168,6 +169,7 @@ function seedWithText() {
 function ComposerHarness({
   initialModel = STORY_MODEL_OPTIONS[0].id,
   initialThinkingLevel = 'default',
+  initialPermissionMode = 'manual',
   initialWorkingDir,
   initialContent,
   initialAttachments,
@@ -176,6 +178,7 @@ function ComposerHarness({
 }: {
   initialModel?: ModelId
   initialThinkingLevel?: ThinkingLevel
+  initialPermissionMode?: PermissionMode
   initialWorkingDir?: string
   initialContent?: () => void
   initialAttachments?: Attachment[]
@@ -187,6 +190,9 @@ function ComposerHarness({
   const [thinkingLevel, setThinkingLevel] =
     useState<ThinkingLevel>(initialThinkingLevel)
   const [workingDir, setWorkingDir] = useState(initialWorkingDir)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    initialPermissionMode,
+  )
   return (
     <Composer
       model={model}
@@ -194,14 +200,14 @@ function ComposerHarness({
       functionEntries={STATIC_FUNCTIONS}
       searchFiles={storySearchFiles}
       onOpenFileMention={openFileMention ? fn() : undefined}
-      permissionMode="manual"
+      permissionMode={permissionMode}
       thinkingLevel={thinkingLevel}
       showWorkingDir={initialWorkingDir !== undefined}
       workingDir={workingDir}
       onThinkingLevelChange={setThinkingLevel}
       onModelChange={setModel}
       onWorkingDirChange={setWorkingDir}
-      onPermissionModeChange={fn()}
+      onPermissionModeChange={setPermissionMode}
       onSubmit={fn()}
       onStop={fn()}
       initialContent={initialContent}
@@ -225,6 +231,12 @@ type Story = StoryObj
 export const Default: Story = {
   name: 'default (empty)',
   render: () => <ComposerHarness />,
+}
+
+/** Auto mode carries a gear to the allowlist that decides what it runs. */
+export const AutoPermissions: Story = {
+  name: 'auto permissions',
+  render: () => <ComposerHarness initialPermissionMode="auto" />,
 }
 
 export const PreSeededText: Story = {

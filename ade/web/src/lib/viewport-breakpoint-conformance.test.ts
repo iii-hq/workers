@@ -94,7 +94,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     max: 2,
     reason: 'phone chrome: the input and its button stack as 44px rows',
   },
-  'components/ui/Select.tsx': { max: 6, reason: TOUCH },
+  'components/ui/Select.tsx': {
+    max: 8,
+    reason:
+      'phone chrome: touch sizes and 16px text; the toolbar pill is 40px on touch, 32px on desktop like the model pill',
+  },
   'components/ui/Selector.tsx': { max: 2, reason: TOUCH },
   'components/ui/SettingsDeck.tsx': { max: 4, reason: TOUCH },
   'components/workspace/EmptyPane.tsx': { max: 2, reason: TOUCH },

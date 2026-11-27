@@ -65,7 +65,6 @@ import {
   saveUiSoundsEnabled,
   subscribeUiSoundsPreference,
 } from '@/lib/ui-sounds'
-import { settingsFade } from '../components/motion'
 import {
   SettingsList,
   SettingsPageBody,
@@ -172,6 +171,9 @@ export function ConsoleSettingsTab({
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
+  // True only once the saved defaults are in hand. Until then (and after a
+  // failed load) the mode and allowlist stay read-only: a write made against
+  // the placeholders would replace the real allowlist with an empty one.
   const [loaded, setLoaded] = useState(false)
   const [pendingFull, setPendingFull] = useState(false)
   const [completionBellEnabled, setCompletionBellEnabled] = useState(
@@ -217,13 +219,12 @@ export function ConsoleSettingsTab({
         if (cancelled) return
         setDefaultMode(cfg.defaultMode)
         setAllowlist(cfg.allowlist)
+        setLoaded(true)
       } catch (err) {
         console.error(
           '[console-settings] failed to load approval-gate config',
           err,
         )
-      } finally {
-        if (!cancelled) setLoaded(true)
       }
     })()
     return () => {
@@ -569,6 +570,7 @@ export function ConsoleSettingsTab({
               control={
                 <Select
                   value={loaded ? defaultMode : 'manual'}
+                  disabled={!loaded}
                   onValueChange={(value) =>
                     handleModeChange(value as PermissionMode)
                   }
@@ -590,30 +592,28 @@ export function ConsoleSettingsTab({
                 </Select>
               }
             />
-            {defaultMode === 'auto' ? (
-              <SettingsRow
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={settingsFade}
-                id={GENERAL_ANCHOR.allowlist}
-                label="Auto-mode allowlist"
-                description="Functions that new conversations can run without asking."
-                meta={
-                  allowlist.length === 0
-                    ? 'No functions selected'
-                    : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
-                }
-                action={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setAllowlistOpen(true)}
-                  >
-                    Manage
-                  </Button>
-                }
-              />
-            ) : null}
+            {/* Always on view: a chat switched to Auto from its composer
+                runs this list too, whatever the default mode is. */}
+            <SettingsRow
+              id={GENERAL_ANCHOR.allowlist}
+              label="Auto-mode allowlist"
+              description="Functions a chat in Auto mode runs without asking."
+              meta={
+                allowlist.length === 0
+                  ? 'No functions selected'
+                  : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
+              }
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!loaded}
+                  onClick={() => setAllowlistOpen(true)}
+                >
+                  Manage
+                </Button>
+              }
+            />
           </SettingsList>
         </SettingsSection>
       ) : null}

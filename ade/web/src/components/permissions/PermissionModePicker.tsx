@@ -1,7 +1,10 @@
+import { Settings2, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { Select } from '@/components/ui/Select'
 import { SheetOptionList } from '@/components/ui/SheetNavigation'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { GENERAL_ANCHOR } from '@/pages/Configuration/lib/general-settings-index'
+import { openGeneralSettingsRow } from '@/pages/Configuration/lib/reveal-general-row'
 import { FullModeConfirmDialog } from './FullModeConfirmDialog'
 
 interface PermissionModePickerProps {
@@ -37,31 +40,54 @@ export function PermissionModePicker({
 
   return (
     <>
-      <Select<PermissionMode>
-        value={value}
-        onChange={handleSelect}
-        disabled={disabled}
-        aria-label="approval mode"
-        className="min-w-[92px]"
-        popupClassName="min-w-64"
-        options={[
-          {
-            value: 'manual',
-            label: 'manual',
-            description: 'Asks before each function.',
-          },
-          {
-            value: 'auto',
-            label: 'auto',
-            description: 'Allowed functions run, the rest ask.',
-          },
-          {
-            value: 'full',
-            label: 'full',
-            description: 'Every function runs, no prompts.',
-          },
-        ]}
-      />
+      {/* One pill like the model and agent beside it: icon, label, chevron,
+          quiet until hovered. Auto carries a gear to the allowlist that
+          decides what it runs. */}
+      <span className="inline-flex min-w-0 shrink-0 items-center">
+        <Select<PermissionMode>
+          value={value}
+          onChange={handleSelect}
+          disabled={disabled}
+          aria-label="approval mode"
+          leading={<ShieldCheck className="size-4" />}
+          appearance="pill"
+          popupClassName="min-w-64"
+          options={[
+            {
+              value: 'manual',
+              label: 'Manual',
+              description: 'Asks before each function.',
+            },
+            {
+              value: 'auto',
+              label: 'Auto',
+              description: 'Allowed functions run, the rest ask.',
+            },
+            {
+              value: 'full',
+              label: 'Full',
+              description: 'Every function runs, no prompts.',
+            },
+          ]}
+        />
+        {value === 'auto' ? (
+          <button
+            type="button"
+            aria-label="Configure the Auto mode allowlist"
+            title="Configure the Auto mode allowlist"
+            disabled={disabled}
+            onClick={() =>
+              openGeneralSettingsRow([
+                GENERAL_ANCHOR.allowlist,
+                GENERAL_ANCHOR.permissions,
+              ])
+            }
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <Settings2 aria-hidden className="size-4" />
+          </button>
+        ) : null}
+      </span>
       <FullModeConfirmDialog
         open={pendingFull}
         onOpenChange={setPendingFull}
