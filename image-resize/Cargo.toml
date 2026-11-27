@@ -29,8 +29,9 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+# No env-filter: RUST_LOG is parsed as Targets, which spares the regex crates.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["io-util", "time", "net"] }

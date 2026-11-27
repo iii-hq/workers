@@ -186,6 +186,9 @@ page shows an error that tells you to update the ade worker.
   longer read and no longer shipped, `--config` only seeds an empty entry,
   compose's `config_override` now takes effect, and the worker needs the
   engine's configuration worker to start.
+- `RUST_LOG` takes comma-separated `level` and `target=level` directives
+  only. Span and field-value filters such as `[request{id=7}]=debug` no
+  longer apply: a value that does not parse falls back to `info`.
 
 ## License
 
