@@ -196,6 +196,7 @@ fn passed_run(commit: &str) -> Run {
         error: None,
         reused: false,
         waiting_on: None,
+        restored: vec![],
     }
 }
 
@@ -1650,4 +1651,48 @@ fn an_empty_default_the_cloud_has_a_value_for_needs_one_here() {
         unset(&[], &[]).is_empty(),
         "the cloud lacks it: empty, as the cloud will"
     );
+}
+
+#[test]
+fn a_command_the_runtimes_image_does_not_have_is_found_in_the_run_and_release_commands() {
+    let found = |runtime: &str, run: &str, release: Option<&str>| {
+        let ws = tempfile::tempdir().unwrap();
+        let rel = release
+            .map(|c| format!("  release:\n    worker: api\n    command: {c}\n"))
+            .unwrap_or_default();
+        let compose = format!(
+            "containers:\n  api:\n    worker: path://./workers/api\n    scripts:\n      run: {run}\n  http:\n    worker: package://http\ncloud:\n  runtimes:\n    api: {runtime}\n{rel}"
+        );
+        write(ws.path(), "bun.lock", "");
+        write(ws.path(), "package-lock.json", "{}");
+        write(
+            ws.path(),
+            "workers/api/iii.worker.yaml",
+            "language: typescript\n",
+        );
+        local(ws.path(), &compose, None)
+            .into_iter()
+            .filter(|p| p.code == "RUN_COMMAND_NOT_IN_IMAGE")
+            .map(|p| p.title)
+            .collect::<Vec<_>>()
+    };
+    // The real case.
+    let p = found("node@24", "bun run dist/index-production.js", None);
+    assert_eq!(p, vec!["api runs with bun, but its runtime is node"]);
+    assert_eq!(found("node@24", "FOO=1 exec bun x", None).len(), 1);
+    assert_eq!(
+        found("node@24", "pnpm build && bunx y", None),
+        vec!["api runs with bunx, but its runtime is node"]
+    );
+    assert_eq!(
+        found("node@24", "node a.js | tee log; bun b", None).len(),
+        1
+    );
+    // The release command tied to the worker.
+    assert_eq!(found("node@24", "node x", Some("bun migrate")).len(), 1);
+    // What is fine, or not known, raises nothing.
+    assert!(found("node@24", "node x", None).is_empty());
+    assert!(found("bun@1", "bun x", None).is_empty());
+    assert!(found("mystery@1", "bun x", None).is_empty());
+    assert!(found("node@24", "echo bun is nice", None).is_empty());
 }

@@ -1150,11 +1150,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     });
     let mut here_problems = here_problems;
     // A rebase, merge or checkout stops on the files a local run left in tracked paths.
-    let restore_first = ctx.store.read(|s| {
-        s.run_wrote
-            .get(&sel.workspace.to_string_lossy().into_owned())
-            .is_some_and(|w| !w.files.is_empty())
-    });
+    let restore_first = crate::run::tracked_aside_dirty(ctx, &sel.workspace).await;
     let restore_note = if restore_first {
         " Restore the local run's files first."
     } else {
@@ -1295,6 +1291,18 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             )),
             Owner::Agent,
             None,
+        ));
+    }
+    // The tracked files the last run rewrote and the worker put back: said once per check.
+    if let Some((restored, Some(dir))) = ctx.store.read(|s| {
+        s.run_wrote
+            .get(&sel.workspace.to_string_lossy().into_owned())
+            .map(|w| (w.restored.clone(), w.left_dir.clone()))
+    }) && !restored.is_empty()
+    {
+        here_problems.push(crate::run::restored_problem(
+            &restored,
+            std::path::Path::new(&dir),
         ));
     }
     // What a local run left is not counted; one of those could still be the agent's own edit.
@@ -1452,6 +1460,50 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 }
             }
             tokio::time::sleep(ctx.secs(1).min(Duration::from_millis(500))).await;
+        }
+    } else if !dirty
+        && !check
+            .problems
+            .iter()
+            .any(|p| p.code == "LOCAL_ENGINE_VERSION")
+        && ctx.store.read(|s| {
+            s.checks.iter().any(|c| {
+                c.run
+                    .as_ref()
+                    .is_some_and(|r| r.status == RunStatus::Passed)
+            })
+        })
+    {
+        // No run asked for: the passed run of the same commit and inputs still stands (the
+        // worker's fast check after a turn, a "Check again" on nothing new). Never starts one.
+        let key = run_key(
+            &ctx.config().await.postgres_image,
+            &sel.workspace,
+            manifest.as_ref(),
+            iii_version.as_deref(),
+            &sel.env.id,
+            &settings,
+            &from_files,
+            &cloud_set,
+            &skipped,
+        )
+        .await;
+        let head = git(&sel.workspace, &["rev-parse", "HEAD"])
+            .await
+            .map(|h| h.trim().to_string())
+            .unwrap_or_default();
+        if let Some(old) = key.and_then(|k| passed_run(ctx, &k, &head)) {
+            let id = check.id.clone();
+            let kept = update_check(ctx, &id, |c| {
+                c.run = Some(Run {
+                    check_id: id.clone(),
+                    reused: true,
+                    ..old
+                })
+            });
+            if let Some(c) = kept {
+                check = c;
+            }
         }
     }
     // A check the person started on a hand-off's worktree: an agent that waits on a wake hears of it.

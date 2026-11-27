@@ -351,6 +351,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
             working_on: vec![],
             note: None,
             waiting_for: None,
+            question_source: None,
         },
         checked: false,
         pending_text: None,
@@ -1164,7 +1165,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             } else if !theirs.is_empty() {
                 // Nothing left for the agent: these wait for the person.
                 phase = AgentPhase::WaitingForYou;
-                question = Some(problem_lines(&theirs));
+                question = Some(waits_for_person_text(&theirs));
             } else if !passed_run_here(ctx, &handoff) {
                 // Done is a ready check and a run here that passed for its commit.
                 phase = AgentPhase::WaitingForYou;
@@ -1181,6 +1182,13 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         current
     };
     agent.current = current.map(|c| crate::run::redact(&c, &secrets));
+    agent.question_source = question.as_ref().map(|q| {
+        if obs.question.as_ref() == Some(q) {
+            QuestionSource::Agent
+        } else {
+            QuestionSource::Check
+        }
+    });
     agent.question = question.map(|q| crate::run::redact(&q, &secrets));
     agent.last_activity_at = obs.last_activity_ms.map(rfc3339);
     agent.waiting_for = waiting_for;
@@ -1456,6 +1464,53 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
         }
         Some(lines)
     })
+}
+
+/// The codes of problems that are a value only the person can give (the page's `VALUE_CODES`).
+const VALUE_CODES: [&str; 3] = [
+    "EMPTY_DEFAULT_VARIABLE",
+    "SECRET_MISSING",
+    "LOCAL_VARIABLE_UNSET",
+];
+
+/// What waits for the person, in the person's voice: no codes, no repeats. Values only: one
+/// sentence with their number. Anything else: one line per distinct title (a count in front when
+/// it repeats), at most four lines and "and N more".
+pub fn waits_for_person_text(theirs: &[(String, String)]) -> String {
+    if theirs
+        .iter()
+        .all(|(code, _)| VALUE_CODES.contains(&code.as_str()))
+    {
+        let n = theirs.len();
+        return format!(
+            "Your agent's part is done for now. It waits for {n} value{}: set {} in Secrets and variables.",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "it" } else { "them" }
+        );
+    }
+    let mut lines: Vec<(String, usize)> = vec![];
+    for (_, title) in theirs {
+        match lines.iter_mut().find(|(t, _)| t == title) {
+            Some((_, n)) => *n += 1,
+            None => lines.push((title.clone(), 1)),
+        }
+    }
+    let more = lines.len().saturating_sub(4);
+    let mut out: Vec<String> = lines
+        .iter()
+        .take(4)
+        .map(|(t, n)| {
+            if *n > 1 {
+                format!("{n} × {t}")
+            } else {
+                t.clone()
+            }
+        })
+        .collect();
+    if more > 0 {
+        out.push(format!("and {more} more"));
+    }
+    out.join("\n")
 }
 
 /// One `<CODE>: <title>` per line.

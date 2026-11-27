@@ -749,6 +749,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             error: None,
             reused: false,
             waiting_on: None,
+            restored: vec![],
         };
         c.run = Some(run);
         s.put_check(c);
@@ -873,4 +874,194 @@ async fn the_rebase_advice_says_to_restore_the_runs_files_first_when_a_run_left_
             .unwrap()
             .ends_with("Restore the local run's files first.")
     );
+}
+
+/// Two tracked config files, committed, as the engine's seed files are.
+fn commit_seed_files(ws: &std::path::Path) {
+    std::fs::create_dir_all(ws.join("config")).unwrap();
+    std::fs::write(ws.join("config/http.yaml"), "# comment\nport: ${PORT}\n").unwrap();
+    std::fs::write(ws.join("config/queue.yaml"), "# queue\nname: q\n").unwrap();
+    git(ws, &["add", "."]);
+    git(ws, &["commit", "-q", "-m", "seed files"]);
+}
+
+#[tokio::test]
+async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
+    use std::os::unix::fs::PermissionsExt;
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    commit_seed_files(&ws);
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    // The engine normalizes the two files and the workers write data.
+    std::fs::write(ws.join("config/http.yaml"), "port: 8080\n").unwrap();
+    std::fs::write(ws.join("config/queue.yaml"), "name: q\n").unwrap();
+    std::fs::create_dir_all(ws.join("api/data")).unwrap();
+    std::fs::write(ws.join("api/data/a.db"), "data").unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(done.restored, vec!["config/http.yaml", "config/queue.yaml"]);
+    // Only the new directory is left, and git says so.
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "?? api/");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("config/http.yaml")).unwrap(),
+        "# comment\nport: ${PORT}\n"
+    );
+    // The rewritten versions are kept, private.
+    let kept = run_dir.path().join("left/config/http.yaml");
+    assert_eq!(std::fs::read_to_string(&kept).unwrap(), "port: 8080\n");
+    assert_eq!(
+        std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(run_dir.path().join("left/config"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    // The next check: nothing uncommitted, one info about the restore, one about what is left.
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    let restored: Vec<_> = c
+        .problems
+        .iter()
+        .filter(|p| p.code == "RUN_FILES_RESTORED")
+        .collect();
+    assert_eq!(restored.len(), 1);
+    let (title, detail) = (&restored[0].title, restored[0].detail.as_deref().unwrap());
+    assert_eq!(
+        title,
+        "The local run rewrote 2 tracked files; they are back as committed"
+    );
+    assert!(
+        detail.contains("config/http.yaml")
+            && detail.contains(&run_dir.path().join("left").display().to_string())
+    );
+    assert!(
+        !detail.contains("port: 8080"),
+        "never a kept file's content"
+    );
+    let left = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_LEFT_FILES")
+        .unwrap();
+    assert!(
+        left.detail.as_deref().unwrap().contains("api/data/a.db")
+            && !left.detail.as_deref().unwrap().contains("config/")
+    );
+}
+
+#[tokio::test]
+async fn a_file_dirty_before_the_run_is_not_put_back_and_a_deletion_is() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    commit_seed_files(&ws);
+    std::fs::write(ws.join("config/queue.yaml"), "the agent's edit\n").unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("config/queue.yaml"), "rewritten by the run\n").unwrap();
+    std::fs::remove_file(ws.join("config/http.yaml")).unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(done.restored, vec!["config/http.yaml"]);
+    assert!(
+        ws.join("config/http.yaml").exists(),
+        "the deletion is undone"
+    );
+    assert!(
+        !run_dir.path().join("left/config/http.yaml").exists(),
+        "nothing to keep of a deletion"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("config/queue.yaml")).unwrap(),
+        "rewritten by the run\n",
+        "a file that was dirty before the run is never touched"
+    );
+}
+
+#[tokio::test]
+async fn in_the_persons_own_folder_nothing_is_put_back_and_a_big_file_stays_set_aside() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    commit_seed_files(&ws);
+    // The person's folder: untouched.
+    let folder = repo.checkout.clone();
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = folder.to_string_lossy().into_owned();
+    });
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&folder).await.unwrap();
+    std::fs::write(folder.join("README.md"), "typed by the person\n").unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &folder, &before, Some(run_dir.path())).await;
+    assert!(done.restored.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("README.md")).unwrap(),
+        "typed by the person\n"
+    );
+    // A worktree: a tracked file over 4 MiB is left where it is, and set aside.
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+    });
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("config/http.yaml"), vec![b'x'; 5 * 1024 * 1024]).unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert!(done.restored.is_empty());
+    assert!(h.ctx.store.read(|s| {
+        s.run_wrote
+            .values()
+            .any(|w| w.files.contains_key("config/http.yaml"))
+    }));
+}
+
+#[tokio::test]
+async fn a_newer_run_replaces_what_the_older_one_kept() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    commit_seed_files(&ws);
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    for (dir, text) in [(&one, "first\n"), (&two, "second\n")] {
+        let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+        std::fs::write(ws.join("config/http.yaml"), text).unwrap();
+        let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(dir.path())).await;
+        assert_eq!(done.restored.len(), 1);
+    }
+    assert!(
+        !one.path().join("left").exists(),
+        "the older run's copy is gone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(two.path().join("left/config/http.yaml")).unwrap(),
+        "second\n"
+    );
+}
+
+#[tokio::test]
+async fn the_restore_first_advice_is_for_set_aside_files_that_are_tracked_and_dirty_now() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    // Only untracked data was set aside: a rebase is not stopped by it.
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("api/data")).unwrap();
+    std::fs::write(ws.join("api/data/a.db"), "d").unwrap();
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", repo.origin.to_str().unwrap(), "c"],
+    );
+    let c = t.path().join("c");
+    std::fs::write(c.join("other.txt"), "o").unwrap();
+    git(&c, &["add", "."]);
+    git(&c, &["commit", "-m", "other"]);
+    git(&c, &["push", "-q", "origin", "HEAD:main"]);
+    let checked = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let d = checked
+        .problems
+        .iter()
+        .find(|p| p.code == "BASE_NOT_IN_HISTORY")
+        .and_then(|p| p.detail.clone())
+        .unwrap();
+    assert!(!d.contains("Restore the local run's files first"), "{d}");
 }

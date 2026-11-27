@@ -979,6 +979,7 @@ fn remember_worktree(
     if start == Start::Fresh {
         // What an earlier run left in a worktree at this path is not this one's.
         s.run_wrote.remove(&w.path);
+        s.run_unrecorded.remove(&w.path);
         s.worktree_started
             .insert(format!("{}\n{}", w.path, w.branch), now());
         if let Some(base) = base {

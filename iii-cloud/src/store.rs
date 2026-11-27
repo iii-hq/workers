@@ -28,6 +28,12 @@ pub struct PendingMerge {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunWrote {
     pub files: std::collections::BTreeMap<String, String>,
+    /// The tracked files the last run rewrote that were put back, and the folder holding their
+    /// rewritten versions (inside that run's folder).
+    #[serde(default)]
+    pub restored: Vec<String>,
+    #[serde(default)]
+    pub left_dir: Option<String>,
 }
 
 /// One `override::choose`, for the values it was made for.

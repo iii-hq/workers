@@ -88,6 +88,18 @@
               "null"
             ]
           },
+          "question_source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/QuestionSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Where `question` comes from: a real ask from the agent's session, or text this worker made from the check's open problems. Absent when there is no question."
+          },
           "session_id": {
             "type": [
               "string",
@@ -1871,6 +1883,24 @@
         ],
         "type": "object"
       },
+      "QuestionSource": {
+        "oneOf": [
+          {
+            "description": "An ask the agent made in its session.",
+            "enum": [
+              "agent"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The worker's own words about what the check leaves open.",
+            "enum": [
+              "check"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "RecentProject": {
         "description": "A project the person used before, to switch back with `project::use {path, cloud_project_id, environment_id, mode}` (no `resolve` needed first).",
         "properties": {
@@ -2054,6 +2084,14 @@
             "type": "array"
           },
           "not_covered": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restored": {
+            "default": [],
+            "description": "The tracked files the run rewrote and the worker put back as committed when it ended (at most 500; their rewritten versions are kept in the run's `left/` folder).",
             "items": {
               "type": "string"
             },
