@@ -1150,9 +1150,12 @@ export function CheckStage(props: CheckStageProps) {
   const warnings: Item[] = [
     ...f.person.filter((i) => !i.fixed && !needItems.includes(i)),
     ...f.agent.filter((i) => !i.fixed && !agentItems.includes(i)),
-    ...f.notes,
+    ...f.notes.filter((i) => i.code !== 'RUN_LEFT_FILES'),
     ...f.skipped,
   ]
+  // What the run left in the agent's copy is a quiet note, not a warning: nothing for the person to do or to commit.
+  const leftFiles = f.notes.find((i) => i.code === 'RUN_LEFT_FILES')
+  const leftN = Number(leftFiles?.title.match(/\d+/)?.[0] ?? 0)
   const fixed = [...f.person, ...f.agent].filter((i) => i.fixed)
   const past = historyOf(s, c, envId)
 
@@ -1799,6 +1802,14 @@ export function CheckStage(props: CheckStageProps) {
           ]
             .filter(Boolean)
             .join(' ')}
+        </p>
+      ) : null}
+
+      {leftFiles ? (
+        <p className="iii-cloud-cs-foot">
+          {leftN
+            ? `The local run left ${plural(leftN, 'file')} in your agent's copy; they are not part of the commit.`
+            : "The local run left files in your agent's copy; they are not part of the commit."}
         </p>
       ) : null}
 

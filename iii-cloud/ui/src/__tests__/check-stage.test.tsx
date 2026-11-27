@@ -1327,6 +1327,27 @@ describe('small things the review found', () => {
     for (const st of ['waiting', 'stalled', 'waiting_for_you'] as const) expect(lock(st)).not.toContain('is fixing')
   })
 
+  it("files the run left in the agent's copy are one quiet line, not a warning, and ask nothing of the person", async () => {
+    const r = B('deploy-passed')
+    const left = {
+      ...rcVariables[0],
+      id: 'p-left',
+      code: 'RUN_LEFT_FILES',
+      source: 'check_here' as const,
+      severity: 'info' as const,
+      owner: 'none' as const,
+      title: "The local run left 2 files changed in the agent's copy; they do not count as uncommitted",
+      detail: 'If one of them is your own edit, commit it.',
+    }
+    const withLeft = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left] } }
+    await stage(withLeft)
+    expect(region('Details')?.textContent).toMatch(/Warnings 0/)
+    expect(text()).toContain("The local run left 2 files in your agent's copy; they are not part of the commit.")
+    expect(text()).not.toContain('commit it')
+    await stage(r)
+    expect(text()).not.toContain('The local run left')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
