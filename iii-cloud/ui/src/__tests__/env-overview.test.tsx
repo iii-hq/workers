@@ -207,7 +207,7 @@ describe('the next-action card: one state for each combination of Env2', () => {
 })
 
 describe('the next-action card: the same count and the same agent states as the Deploy screen', () => {
-  it('a first deploy with names a .env can fill: the card counts the one row the Deploy title counts, or prints no number', () => {
+  it('missing required values count as one thing, the one the Deploy title counts, or no number before the read', () => {
     const person = problems.find((p) => p.owner === 'person')!
     const secrets = ['NAME_A', 'NAME_B', 'NAME_C'].map((n) => ({
       ...person,
@@ -220,34 +220,10 @@ describe('the next-action card: the same count and the same agent states as the 
     const s = dev({ check: { ...needsYou, problems: secrets }, deploys: [] })
     const total = youOf(s).count
     expect(next(s).title).toMatch(new RegExp(`^${total} things? (needs|need) you`))
-    const names = youOf(s).items.flatMap((i) => valueName(i) ?? [])
-    const read = {
-      environment_id: DEV.id,
-      environment: 'dev',
-      manifest: 'api/worker-compose-prod.yaml',
-      read_from: 'workspace' as const,
-      cloud: 'read' as const,
-      save: 'ok' as const,
-      items: names.map((name) => ({
-        name,
-        need: 'required' as const,
-        default: null,
-        type: 'secret' as const,
-        database: false,
-        containers: [],
-        line: 1,
-        in_cloud: 'unset' as const,
-        value: null,
-        updated_at: null,
-        asked: null,
-        suggestions: [{ source: 'env_file' as const, file: '.env', preselect: true, local: false }],
-      })),
-    }
-    // Every nameable need is fillable: they collapse into one row, as in the Deploy title.
-    expect(names.length).toBeGreaterThan(1)
-    const grouped = next(s, { values: read })
-    expect(youOf(s, read).count).toBeLessThan(total)
-    expect(grouped.title).toMatch(new RegExp(`^${youOf(s, read).count} things? `))
+    // Three missing required values are ONE thing, whoever knows them, and are not rows of the list.
+    expect(total).toBe(1)
+    expect(youOf(s).items.flatMap((i) => valueName(i) ?? [])).toEqual([])
+    expect(youOf(s).values).toHaveLength(3)
     // The read has not arrived: no number the card cannot stand behind.
     expect(next(s, { valuesPending: true }).title).toMatch(/^Things need you before dev can get /)
   })

@@ -23,7 +23,7 @@ import { AgentControls } from './AgentRow'
 import { useDeployments } from './api'
 import { askedAt, clock, FOLDER_NOTE, useFolderNote, useLaunch } from './asked'
 import { ConfigImportDialog } from './ConfigImport'
-import { configAction, findings, type Item, location, needsYou, valueName } from './findings'
+import { configAction, findings, type Item, location, needsYou } from './findings'
 import { canOpenChat, handOff, openAgentChat } from './handoff'
 import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom } from './hub'
 import {
@@ -65,7 +65,6 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
-  variableOf,
   wayOf,
   workingOnIds,
 } from './model'
@@ -83,7 +82,8 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, Deploy, Problem, Status, ValuesSaved, WorkerError } from './types'
+import type { AgentState, Check, Deploy, Status, WorkerError } from './types'
+import { ValuesCard } from './ValuesCard'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
 export type CheckStageProps = {
@@ -193,19 +193,6 @@ export function checkPayload(s: Status, manifest = appFile(s).path): Record<stri
 export function retryPayload(host: Host, s: Status): Record<string, unknown> {
   const picked = hubOf(host).pickedManifest(s.project?.environment?.id ?? '')
   return checkPayload(s, picked ?? undefined)
-}
-
-/** A problem's title with the variable it names in front ("STRIPE_KEY: A variable defaults to empty"): twenty rows of one title tell apart. */
-function named(title: string, p: Problem | null): ReactNode {
-  const name = variableOf(p)
-  return name && !title.includes(name) ? (
-    <>
-      <Mono>{name}</Mono>
-      {`: ${title}`}
-    </>
-  ) : (
-    title
-  )
 }
 
 function MarkIcon({ mark, label }: { mark: Mark; label?: string }) {
@@ -510,7 +497,7 @@ function cloudPart(s: Status, c: Check): Part {
       key: p.id,
       // Only a blocking problem is a ✕ that needs someone; a warning is a note, said so in its own row.
       mark: p.severity === 'block' ? 'bad' : 'note',
-      label: named(problemTitle(p), p),
+      label: problemTitle(p),
       state: p.severity !== 'block' ? 'warning' : p.owner === 'person' ? 'needs you' : 'needs your agent',
     }))
   if (plan.status === 'clean') {
@@ -615,95 +602,6 @@ function Rows({ rows }: { rows: Row[] }) {
 /* ── You ───────────────────────────────────────────────────────────── */
 
 type Override = Check['plan']['confirmations']['overrides'][number]
-
-/** A missing secret, typed where it is asked: the field and Save in the item itself. The value goes only to `values::save`. */
-function SecretField({
-  name,
-  env,
-  why,
-  save,
-  blocked,
-  undo,
-}: {
-  name: string
-  env: string
-  why: string | null
-  /** The error to show, or null once it is saved. No value: left empty on purpose. */
-  save: (value: string | null) => Promise<string | null>
-  /** Who can write it, when this session can't: no field then. */
-  blocked: string | null
-  /** A required secret that was skipped (iii cloud still needs a value): "Undo" the skip (null: not skipped). A
-   *  required secret is never offered "Skip for now". */
-  undo: (() => Promise<string | null>) | null
-}) {
-  const [value, setValue] = useState('')
-  const [done, setDone] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const submit = async (job: () => Promise<string | null>, said: string) => {
-    setBusy(true)
-    const out = await job()
-    setBusy(false)
-    setError(out)
-    if (out === null) {
-      setValue('')
-      setDone(said)
-    }
-  }
-  return (
-    <li className="iii-cloud-cs-need">
-      <span className="iii-cloud-cs-label">
-        <Mono>{name}</Mono> {`has no value in ${env}`}
-      </span>
-      <span className="iii-cloud-cs-detail">
-        {[why, `Saved to ${env} only; your agent never sees it.`].filter(Boolean).join(' ')}
-      </span>
-      {blocked ? (
-        <span className="iii-cloud-cs-detail">{blocked}</span>
-      ) : done ? (
-        <span className="iii-cloud-cs-saved" role="status">
-          <MarkIcon mark="ok" label="saved" />
-          {done}
-        </span>
-      ) : (
-        <span className="iii-cloud-cs-field">
-          <Input
-            aria-label={`Value of ${name}`}
-            type="password"
-            autoComplete="off"
-            placeholder="Paste the secret"
-            value={value}
-            onChange={setValue}
-          />
-          <Button
-            variant="secondary"
-            disabled={!value || busy}
-            onClick={() => void submit(() => save(value), 'Saved. The check runs again.')}
-          >
-            Save
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() => void submit(() => save(null), 'Saved empty. The check runs again.')}
-          >
-            Leave it empty
-          </Button>
-          {undo ? (
-            <Button variant="ghost" disabled={busy} onClick={() => void submit(undo, 'Undone. The check runs again.')}>
-              Undo
-            </Button>
-          ) : null}
-        </span>
-      )}
-      {error ? (
-        <span className="iii-cloud-cs-err" role="alert">
-          {error}
-        </span>
-      ) : null}
-    </li>
-  )
-}
 
 /** A console setting that differs from the compose file: the two ways on, side by side, each with its effect. */
 function DecisionRow({
@@ -1099,9 +997,9 @@ export function CheckStage(props: CheckStageProps) {
   const ask = () => void handOff(host, s, 'ready')
   const canAsk = !!host.chat?.compose && !launching
 
-  const first = !s.deploys.some((d) => d.environment_id === envId)
-  const values = useValues(host, s, first && c ? { manifest: c.manifest || null } : null)
-  const [editing, setEditing] = useState(false)
+  const values = useValues(host, s, c ? { manifest: c.manifest || null } : null)
+  // The review editor over these names (the values card's "Set values"); null: closed.
+  const [editing, setEditing] = useState<string[] | null>(null)
 
   if (!c && !running) {
     return (
@@ -1138,24 +1036,17 @@ export function CheckStage(props: CheckStageProps) {
   const open = openProblems(s)
 
   // The two lists the title counts: what only the person can do, and what the agent fixes.
-  // The first time: names not in iii cloud that a file of the folder (or another environment) can fill are one row,
-  // opened in the bulk editor; only the names nothing can fill keep a row each.
+  // A variable or a secret is never a row of the check: the names the deploy cannot go without are one row ("N values
+  // need you"), opened in the values review. Optional ones are listed on Secrets and variables, where they are set.
   const read = values.data
-  const { items: needItems, decide, fillable, count: needN } = needsYou(s, read)
-  const fillFiles = [
-    ...new Set(
-      fillable.flatMap((i) =>
-        i.suggestions.flatMap((x) => (x.source === 'env_file' ? [x.file.split('/').at(-1)] : [])),
-      ),
-    ),
-  ]
+  const { items: needItems, decide, values: missing, count: needN } = needsYou(s, c?.ready ? null : read)
   const decisions = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] !== 'file') : []
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
   const agentItems = f.agent.filter((i) => !i.fixed && i.severity === 'block')
   const lines: Line[] = [
     ...agentItems.map((i) => ({
       key: i.key,
-      title: named(i.title, i.problem),
+      title: i.title,
       detail: i.detail ?? i.fix,
       id: i.problem?.id ?? null,
     })),
@@ -1390,8 +1281,8 @@ export function CheckStage(props: CheckStageProps) {
   // The local run never ran on a commit iii cloud's plan accepts (a failed run has its own stop).
   const runPending = !!c && !running && c.plan.status === 'clean' && !run && !agentItems.length && !needN && !c.ready
 
-  const secretsOnly =
-    (needItems.length > 0 || fillable.length > 0) && !decide.length && needItems.every((i) => valueName(i))
+  const youN = needItems.length + decide.length
+  const secretsOnly = missing.length > 0 && !youN
   // The header: the next thing to do, said with the lists' own lengths.
   const title = replaced
     ? `Check ${source} for ${env}`
@@ -1404,7 +1295,9 @@ export function CheckStage(props: CheckStageProps) {
           : needN || lines.length || working
             ? [
                 needN
-                  ? `${plural(needN, secretsOnly ? 'value' : 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
+                  ? secretsOnly
+                    ? `${plural(missing.length, 'value')} to set`
+                    : `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
                   : null,
                 lines.length
                   ? working
@@ -1522,47 +1415,9 @@ export function CheckStage(props: CheckStageProps) {
   const left = spentNow != null && took.length ? took[Math.floor(took.length / 2)] - spentNow : 0
   const progress =
     spentNow != null ? ` · ${elapsed(spentNow)} so far${left >= 1000 ? `, about ${elapsed(left)} left` : ''}` : ''
-  const youNote = running
-    ? 'You can do this while the check runs'
-    : secretsOnly
-      ? `Secrets go to ${env} only. Your agent never sees them.`
-      : "Your agent can't do these"
+  const youNote = running ? 'You can do this while the check runs' : "Your agent can't do these"
 
-  // The first-time line: names filled from the folder's .env files, saved as secrets.
-  const filled = read?.items.filter((i) => i.here === 'from_file' && i.in_cloud === 'set') ?? []
-  const files = [...new Set(filled.map((i) => i.here_file?.split('/').at(-1)).filter(Boolean))]
-  const empty = read?.items.filter((i) => i.need === 'optional' && i.in_cloud !== 'set').length ?? 0
-  const filledText = filled.length
-    ? `${filled.length} of ${read?.items.length} names your compose file reads were filled from ${files.join(' and ')}, saved as secrets.${empty ? ` ${empty} optional ${empty === 1 ? 'one is' : 'ones are'} empty.` : ''}`
-    : null
-
-  const saveSecret = async (name: string, value: string | null): Promise<string | null> => {
-    const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
-      environment_id: envId,
-      ...(c?.manifest ? { manifest: c.manifest } : {}),
-      items: [value === null ? { name, from: 'leave_empty' } : { name, from: 'typed', type: 'secret', value }],
-    })
-    if (!out) return 'It could not be saved. Try again.'
-    const bad = out.results.find((r) => !r.ok)
-    if (bad) return bad.error ? plainMessage(bad.error) : `${name} could not be saved. Try again.`
-    checkAgain()
-    return null
-  }
-  // The session that can't write secrets and variables says who can; no field, no failing Save.
-  const role = roleOf(s)
-  const blocked = s.connection.api_key
-    ? "An API key can't write secrets and variables. Set it in iii cloud's console, or sign in with the browser."
-    : production && role && !/^(owner|admin)$/i.test(role)
-      ? `Changing production's secrets and variables takes Owner or Admin. You are ${role}.`
-      : null
-  // "Skip for now" and its Undo: a name (`values::skip`) or the workers' config warning (`problem::skip`); then the
-  // check runs again, which moves it between You and Warnings.
-  const skipNames = async (names: string[], on: boolean): Promise<string | null> => {
-    const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip: on })
-    if (out === null) return 'It could not be skipped. Try again.'
-    checkAgain()
-    return null
-  }
+  // "Skip for now" and its Undo: the workers' config warning (`problem::skip`); then the check runs again.
   const skipConfig = async (on: boolean) => {
     const out = await call('skip', 'iii-cloud::problem::skip', {
       environment_id: envId,
@@ -1585,7 +1440,7 @@ export function CheckStage(props: CheckStageProps) {
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)
-  const doneN = fixed.length + fromFile.length + (!needN && filledText ? 1 : 0)
+  const doneN = fixed.length + fromFile.length
   // Passed: who did what is the news ("You did 2 · your agent fixed 2"); before that, one count of what is done.
   const agentFixed = fixed.filter((i) => i.owner === 'agent').length
   const summary = [
@@ -1633,52 +1488,12 @@ export function CheckStage(props: CheckStageProps) {
         />
       ))}
 
-      {needN && !replaced ? (
-        <SectionCard
-          title="You"
-          count={needN}
-          note={youNote}
-          end={
-            secretsOnly ? (
-              <button
-                type="button"
-                className="iii-cloud-linkbtn iii-cloud-small"
-                onClick={() => go({ at: 'secrets', env: envId })}
-              >
-                Secrets and variables
-              </button>
-            ) : null
-          }
-          flush
-        >
+      {youN && !replaced ? (
+        <SectionCard title="You" count={youN} note={youNote} flush>
           <ul className="iii-cloud-cs-needs">
-            {fillable.length ? (
-              <li className="iii-cloud-cs-filled">
-                <MarkIcon mark="bad" label="can be filled" />
-                <span>
-                  {`${fillable.length} of ${read?.items.length} names your compose file reads can be filled from ${fillFiles.length ? fillFiles.join(' and ') : 'another environment'}. Nothing leaves this machine until you save.`}
-                </span>
-                <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => setEditing(true)}>
-                  Review and save
-                </button>
-              </li>
-            ) : null}
-            {needItems.map((i) => {
-              const name = valueName(i)
-              return name ? (
-                <SecretField
-                  key={i.key}
-                  name={name}
-                  env={env}
-                  why={i.detail ?? i.fix}
-                  save={(v) => saveSecret(name, v)}
-                  blocked={blocked}
-                  undo={i.skipped ? () => skipNames([name], false) : null}
-                />
-              ) : (
-                <PlainNeed key={i.key} item={i} />
-              )
-            })}
+            {needItems.map((i) => (
+              <PlainNeed key={i.key} item={i} />
+            ))}
             {decide.map((o) => (
               <DecisionRow
                 key={o.setting}
@@ -1689,21 +1504,20 @@ export function CheckStage(props: CheckStageProps) {
                 pick={(ch) => choose(o, ch)}
               />
             ))}
-            {filledText ? (
-              <li className="iii-cloud-cs-filled">
-                <MarkIcon mark="ok" label="filled" />
-                <span>{filledText}</span>
-                <button
-                  type="button"
-                  className="iii-cloud-linkbtn iii-cloud-small"
-                  onClick={() => go({ at: 'secrets', env: envId })}
-                >
-                  Review
-                </button>
-              </li>
-            ) : null}
           </ul>
         </SectionCard>
+      ) : null}
+
+      {!replaced ? (
+        <ValuesCard
+          read={values}
+          onSet={(names) => setEditing(names)}
+          onSkip={async (names, skip) => {
+            const out = await call('skip', 'iii-cloud::values::skip', { environment_id: envId, names, skip })
+            if (out !== null) values.refetch()
+          }}
+          onAll={() => go({ at: 'secrets', env: envId })}
+        />
       ) : null}
 
       {!replaced && (lines.length || (a && working)) ? (
@@ -1802,7 +1616,6 @@ export function CheckStage(props: CheckStageProps) {
                 title={`At deploy, ${o.setting} comes from your compose file.`}
               />
             ))}
-            {!needN && filledText ? <Fact mark="ok" title={filledText} /> : null}
           </Group>
           <Group title="Warnings" count={warnings.length}>
             {warnings.map((i) => (
@@ -1819,9 +1632,7 @@ export function CheckStage(props: CheckStageProps) {
                         size="sm"
                         variant="ghost"
                         disabled={busy === 'skip'}
-                        onClick={() =>
-                          void (configAction(i) ? skipConfig(false) : skipNames([valueName(i) ?? ''], false))
-                        }
+                        onClick={() => void skipConfig(false)}
                       >
                         Undo
                       </Button>
@@ -1842,19 +1653,6 @@ export function CheckStage(props: CheckStageProps) {
                       {envPageUrl(s, 'config') ? (
                         <LinkButton href={envPageUrl(s, 'config') as string}>Open in iii cloud</LinkButton>
                       ) : null}
-                    </span>
-                  ) : i.code === 'EMPTY_DEFAULT_VARIABLE' && valueName(i) ? (
-                    // The worker sends an optional empty name as this warning (a required one blocks, and is never
-                    // skipped): "Skip for now" is here, beside the name it is about.
-                    <span className="iii-cloud-cs-acts-row">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy === 'skip'}
-                        onClick={() => void skipNames([valueName(i) ?? ''], true)}
-                      >
-                        Skip for now
-                      </Button>
                     </span>
                   ) : null
                 }
@@ -1903,13 +1701,14 @@ export function CheckStage(props: CheckStageProps) {
       ) : null}
       {editing ? (
         <ValuesDialog
+          only={editing}
           host={host}
           status={s}
           narrow={narrow}
           manifest={c?.manifest || null}
           read={values}
           after="and check again"
-          onClose={() => setEditing(false)}
+          onClose={() => setEditing(null)}
           onSaved={checkAgain}
         />
       ) : null}
