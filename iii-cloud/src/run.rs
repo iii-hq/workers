@@ -747,7 +747,7 @@ pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
             if restored.len() == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it.",
+            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
             restored
                 .iter()
                 .take(5)
@@ -755,6 +755,7 @@ pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
                 .collect::<Vec<_>>()
                 .join(", "),
             if restored.len() > 5 { " and more" } else { "" },
+            dir.display(),
             dir.display()
         )),
         Owner::None,

@@ -943,6 +943,13 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
         !detail.contains("port: 8080"),
         "never a kept file's content"
     );
+    assert!(
+        detail.ends_with(&format!(
+            "Compare with `diff {}/<path> <path>`.",
+            run_dir.path().join("left").display()
+        )),
+        "{detail}"
+    );
     let left = c
         .problems
         .iter()

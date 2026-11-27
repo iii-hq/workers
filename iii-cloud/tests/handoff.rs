@@ -3503,7 +3503,7 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
         .map(|_| p("SECRET_MISSING", "A secret has no value"))
         .collect();
     assert_eq!(
-        waits_for_person_text(&values),
+        waits_for_person_text(&values, &[]),
         "Your agent's part is done for now. It waits for 8 values: set them in Secrets and variables."
     );
     // Not only values: one line per distinct title, a count when it repeats, four lines at most.
@@ -3517,7 +3517,16 @@ fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
         p("D", "d"),
     ];
     assert_eq!(
-        waits_for_person_text(&mixed),
+        waits_for_person_text(&mixed, &[]),
         "2 × A secret has no value\nDocker is not running\na\nb\nand 2 more"
+    );
+    // Names, not problems: two problems about one unset name are one value.
+    let two = vec![
+        p("SECRET_MISSING", "A secret has no value"),
+        p("LOCAL_VARIABLE_UNSET", "STRIPE_KEY has no value here"),
+    ];
+    assert_eq!(
+        waits_for_person_text(&two, &["STRIPE_KEY".to_string()]),
+        "Your agent's part is done for now. It waits for 1 value: set it in Secrets and variables."
     );
 }
