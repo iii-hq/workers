@@ -701,7 +701,7 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
     assert!(
         d.contains("3 files")
             && d.contains("README.md")
-            && d.ends_with("If one of them is your own edit, commit it."),
+            && d.contains("If one of them is your own edit, commit it."),
         "{d}"
     );
     // None set aside, none named.
@@ -825,4 +825,35 @@ async fn in_the_persons_own_folder_nothing_a_run_overlaps_is_set_aside() {
     let dirty = iii_cloud::run::dirty_split(&h.ctx, &folder).await.unwrap();
     assert_eq!(dirty.0, vec!["README.md".to_string()]);
     assert!(dirty.1.is_empty());
+}
+
+#[tokio::test]
+async fn the_rebase_advice_says_to_restore_the_runs_files_first_when_a_run_left_some() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let before = a_run_left_files(&ws).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    // The base moves on.
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", repo.origin.to_str().unwrap(), "c"],
+    );
+    let c = t.path().join("c");
+    std::fs::write(c.join("other.txt"), "o").unwrap();
+    git(&c, &["add", "."]);
+    git(&c, &["commit", "-m", "other"]);
+    git(&c, &["push", "-q", "origin", "HEAD:main"]);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "BASE_NOT_IN_HISTORY")
+        .expect("the base moved");
+    assert!(
+        p.detail
+            .as_deref()
+            .unwrap()
+            .ends_with("Restore the local run's files first.")
+    );
 }

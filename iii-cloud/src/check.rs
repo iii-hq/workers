@@ -1149,6 +1149,17 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         plan_workers: plan_workers.as_deref(),
     });
     let mut here_problems = here_problems;
+    // A rebase, merge or checkout stops on the files a local run left in tracked paths.
+    let restore_first = ctx.store.read(|s| {
+        s.run_wrote
+            .get(&sel.workspace.to_string_lossy().into_owned())
+            .is_some_and(|w| !w.files.is_empty())
+    });
+    let restore_note = if restore_first {
+        " Restore the local run's files first."
+    } else {
+        ""
+    };
     // Ready pins what gets merged: the base is in the commit's history, and
     // the worktree has nothing uncommitted (the run's own files are excluded).
     match &base_head {
@@ -1158,7 +1169,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                     "BASE_NOT_IN_HISTORY",
                     format!("{} has commits this branch does not have", sel.env.branch),
                     Some(format!(
-                        "Merge or rebase origin/{} into the branch, then check again.",
+                        "Merge or rebase origin/{} into the branch, then check again.{restore_note}",
                         sel.env.branch
                     )),
                     Owner::Agent,
@@ -1221,7 +1232,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "BROUGHT_FILES_COMMIT",
             "A commit holds files copied from your folder".into(),
             Some(format!(
-                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Drop only that commit and keep the rest: `git rebase --onto {sha}^ {sha}`, then check again."
+                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Drop only that commit and keep the rest: `git rebase --onto {sha}^ {sha}`, then check again.{restore_note}"
             )),
             Owner::Agent,
             None,
@@ -1298,7 +1309,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "RUN_LEFT_FILES",
             "The local run left files changed in the worktree".into(),
             Some(format!(
-                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
                 set_aside.len(),
                 if set_aside.len() == 1 {
                     "file"
