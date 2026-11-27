@@ -646,11 +646,9 @@ async fn a_second_run_keeps_what_the_first_left_and_a_run_that_writes_nothing_dr
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     let counts = |h: &Harness| {
-        let h = h
-            .ctx
+        h.ctx
             .store
-            .read(|s| s.run_wrote.values().map(|w| w.files.len()).sum::<usize>());
-        h
+            .read(|s| s.run_wrote.values().map(|w| w.files.len()).sum::<usize>())
     };
     let before = a_run_left_files(&ws).await;
     iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
