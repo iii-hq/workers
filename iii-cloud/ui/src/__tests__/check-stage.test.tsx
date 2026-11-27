@@ -2147,6 +2147,25 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     copyFlash.state = 'idle'
   })
 
+  it('"sent" follows what went into the chat: the page\'s own text counts, "Tell it" only when nothing did', async () => {
+    const press = async (reply: object) => {
+      await stage(
+        release(note),
+        { 'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, session_id: 'sess-1', ...reply } },
+        { openScreen: vi.fn() },
+      )
+      await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+      await flush()
+    }
+    // the worker could not send the open problems (already told) but delivered the page's text: something went in
+    await press({ sent: false, delivered: true })
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    expect(stop()?.textContent).not.toContain('Tell it in the chat.')
+    // nothing went in
+    await press({ sent: false, delivered: false })
+    expect(stop()?.textContent).toContain('Tell it in the chat.')
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
