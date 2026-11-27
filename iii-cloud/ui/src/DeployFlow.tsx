@@ -494,7 +494,11 @@ function Follow({
   // the worker's own markers say this page started it: a commit that matches proves nothing (a push by hand of the
   // checked commit makes the check's base the branch head, and the worker refuses its Confirm as MAIN_MOVED).
   const elsewhere = heldElsewhere(d)
-  const ours = !!c && !elsewhere && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
+  // A deployment this page started names the check it came from, but every new check has a new id: a passed check of
+  // the same commit is what lets it be confirmed (the worker checks the commit that landed against the check's).
+  const ours = !!c && !elsewhere && (d.check_id === c.id || d.commit.sha === c.commit)
+  // It carries this page's own marks: it was started here, and no passed check matches it any more.
+  const startedHere = !!d.check_id || d.approved_by_worker
   const confirmable = !!c?.ready && ours
   // Held, and its plan has blocking problems (an error of the validation stage): it can never be confirmed.
   const blocked = held && d.error?.stage === 'validation'
@@ -566,6 +570,15 @@ function Follow({
       ) : null}
     </span>
   )
+  // What stays live is iii cloud's list (a rollback in the console moves it), never the worker's memory.
+  const serving = servingNamed(status, envId, feed.data?.deployments)
+  const servingSays = serving
+    ? `${env.name} keeps serving #${serving.number}.`
+    : feed.data
+      ? listMayHideServing(feed.data)
+        ? `${env.name} keeps serving a deployment iii cloud's list does not show.`
+        : `Nothing is live on ${env.name}, so nothing changes for your users.`
+      : `iii cloud's list of ${env.name} is not read yet.`
   const cloudLog = d.console_url || envPageUrl(status, 'deployments', env.name)
   const chatOpen = activeSameKind(status, 'deploy_fix')
 
@@ -689,8 +702,12 @@ function Follow({
       ) : held ? (
         <Notice
           variant="warn"
-          headline="iii cloud holds it for your approval"
-          detail={`It was not started from this page, so nothing here has checked ${sha}. Check ${env.name} first: when a check of ${sha} passes, you confirm here.`}
+          headline={startedHere ? 'No passed check matches it' : 'iii cloud holds it for your approval'}
+          detail={
+            startedHere
+              ? `No passed check of ${sha} matches deployment #${d.number} any more. Check ${env.name} here: if that check passes on ${sha}, you confirm here; if it checks another commit, approve or cancel it in iii cloud.`
+              : `It was not started from this page, so nothing here has checked ${sha}. Check ${env.name} first: when a check of ${sha} passes, you confirm here.`
+          }
           action={
             <div className="iii-cloud-cs-decide">
               <Choice line="Runs iii cloud's plan and the local run on this environment. Nothing is deployed.">
@@ -821,7 +838,7 @@ function Follow({
           title={`Cancel deployment #${d.number}?`}
           description={
             held
-              ? `iii cloud drops it. ${prev ? `${env.name} keeps serving #${prev.number}.` : `Nothing is live on ${env.name}, so nothing changes for your users.`} Nothing is deleted.`
+              ? `iii cloud drops it. ${servingSays} Nothing is deleted.`
               : 'iii cloud stops it at the stage it is in. Nothing is deleted.'
           }
           confirmLabel={`Cancel deployment #${d.number}`}
