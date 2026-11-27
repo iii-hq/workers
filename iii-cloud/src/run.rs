@@ -801,8 +801,9 @@ pub struct SetAside {
 /// that it rewrote or deleted is saved under `<run folder>/left/<path>` (0600, folders 0700) and
 /// put back with `git checkout -- <path>`, only once the save worked. Never in the person's own
 /// folder; a file over `HASH_LIMIT`, or more than `MAX_WROTE` files, stay set aside as they are;
-/// a path dirty before the run is never touched; untracked files are not deleted. What an older
-/// run kept in its `left/` goes when this one ends.
+/// a path dirty before the run is never touched; untracked files are not deleted. What a run kept in
+/// its `left/` goes with its folder (the prune of old run folders), not before: the agent's next run
+/// must not take away a version it has not looked at yet.
 pub async fn set_aside_run(
     ctx: &Ctx,
     ws: &Path,
@@ -888,12 +889,6 @@ pub async fn set_aside_run(
     });
     if note.is_some() {
         files.clear();
-    }
-    // Only the newest run of a worktree keeps its rewritten versions.
-    if let Some(old) = previous.left_dir.as_deref()
-        && left_dir.as_deref().is_none_or(|n| n != Path::new(old))
-    {
-        let _ = std::fs::remove_dir_all(old);
     }
     ctx.store.update(|s| {
         // A record of a worktree that is gone goes with it.
@@ -1392,10 +1387,10 @@ impl Exec {
                     ids.sort();
                     ids.dedup();
                     for id in ids {
+                        // This run's notice replaces the one a check carried from the run before.
                         update_check(&self.ctx, &id, |c| {
-                            if !c.problems.iter().any(|p| p.code == problem.code) {
-                                c.problems.push(problem.clone());
-                            }
+                            c.problems.retain(|p| p.code != problem.code);
+                            c.problems.push(problem.clone());
                         });
                     }
                 }

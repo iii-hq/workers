@@ -1016,7 +1016,7 @@ async fn in_the_persons_own_folder_nothing_is_put_back_and_a_big_file_stays_set_
 }
 
 #[tokio::test]
-async fn a_newer_run_replaces_what_the_older_one_kept() {
+async fn a_newer_run_does_not_take_away_what_the_older_one_kept() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     commit_seed_files(&ws);
