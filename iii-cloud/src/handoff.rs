@@ -428,13 +428,21 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     // that chat streams.
     let mut handoff = handoff;
     let mut delivered_to = None;
-    let previous = ctx.store.read(|s| {
-        s.handoffs
+    let (previous, ask_open) = ctx.store.read(|s| {
+        let old = s
+            .handoffs
             .iter()
-            .find(|h| h.environment_id == handoff.environment_id)
-            .and_then(|h| h.agent.session_id.clone())
+            .find(|h| h.environment_id == handoff.environment_id);
+        (
+            old.and_then(|h| h.agent.session_id.clone()),
+            // A real ask of the agent's is open there: the page's sentence would read as its answer.
+            old.is_some_and(|h| {
+                h.agent.state == AgentPhase::WaitingForYou
+                    && h.agent.question_source == Some(QuestionSource::Agent)
+            }),
+        )
     });
-    if let (Some(session), Some(text)) = (previous, request.text.as_deref())
+    if let (Some(session), Some(text), false) = (previous, request.text.as_deref(), ask_open)
         && deliver(ctx, &session, &format!("{marker}\n{text}"), &id).await
     {
         handoff.agent.session_id = Some(session.clone());
@@ -455,7 +463,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         session_id: delivered_to,
         reused: false,
         sent: None,
-        asks: false,
+        asks: ask_open,
     })
 }
 

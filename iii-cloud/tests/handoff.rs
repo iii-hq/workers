@@ -3811,3 +3811,30 @@ async fn asking_again_for_a_check_already_told_answers_that_something_went() {
     assert!(again.reused && again.sent == Some(true), "{again:?}");
     assert_eq!(continues(&h).len(), before, "no second message");
 }
+
+#[tokio::test]
+async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_chat() {
+    // The old hand-off is quiet for over 30 minutes (not reused) with a real ask still open.
+    let (h, _ws, w, _keep) = ended_agent().await;
+    *w.question.lock().unwrap() = Some("Which role do you want?".into());
+    until(&h, "a real ask", |a| {
+        a.question_source == Some(QuestionSource::Agent)
+    })
+    .await;
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339());
+    });
+    let before = sent(&h).len();
+    let made = create(
+        &h.ctx,
+        HandoffRequest {
+            text: Some("PAGE TEXT".into()),
+            ..ready_req()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!made.reused && made.asks && !made.delivered, "{made:?}");
+    assert_eq!(sent(&h).len(), before, "nothing went into the old chat");
+}
