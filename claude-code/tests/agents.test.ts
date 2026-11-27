@@ -644,6 +644,29 @@ describe('claude::agents::stop', () => {
     expect(commands(fake).some((c) => String(c).includes(' stop '))).toBe(false);
   });
 
+  it('stops the live background row advertised after a stopped duplicate', async () => {
+    const snapshot = [
+      background(BG, 'stopped', { id: 'deadbeef' }),
+      background(BG, 'working', { pid: 7, id: 'abcdef01' }),
+    ];
+    const fake = host(
+      (command) =>
+        command.includes('agents --json')
+          ? ok(snapshot)()
+          : { stdout: '', stderr: '', exit_code: 0 },
+      { external: true },
+    );
+    expect((await list(fake)).agents).toMatchObject([
+      { id: BG, alive: true, short_id: 'abcdef01' },
+    ]);
+    expect(await stop(fake)).toEqual({ id: BG, stopped: true });
+    expect(commands(fake)).toEqual([
+      "'/opt/claude bin/claude' agents --json",
+      "'/opt/claude bin/claude' agents --json",
+      "'/opt/claude bin/claude' stop abcdef01",
+    ]);
+  });
+
   it('lists and acts on a fresh grant even if ordinary settings still say off', async () => {
     await withSyntheticHost(async (s) => {
       s.host.config = async () => ({ external_sessions: false });

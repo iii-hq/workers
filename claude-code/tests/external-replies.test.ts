@@ -638,7 +638,7 @@ async function setPermission(s: SyntheticHost, enabled: boolean) {
   await s.refresh();
 }
 
-describe('standalone terminal fork authorization', () => {
+describe('standalone terminal describe authorization', () => {
   function reconnect(s: SyntheticHost, answered: boolean) {
     // Active-to-active replay does not notify the SDK's state listeners.
     s.host.connectionEpoch++;
@@ -665,6 +665,28 @@ describe('standalone terminal fork authorization', () => {
       });
       expect(s.host.calls[acknowledged]?.function_id).toBe('claude::terminal::describe');
       expect(s.host.calls[acknowledged + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.some((c) => c.function_id === 'shell::pty::open')).toBe(false);
+    });
+  });
+
+  it('recovers repeated no-mode calls after acknowledged reconnect without another API', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.cli[0] = { ...s.host.cli[0], kind: 'background', pid: 7, id: 'deadbeef' };
+      const describeLegacy = () =>
+        s.client.call({ function_id: 'claude::terminal::describe', payload: { session: id } });
+      expect((await s.list()).agents).toHaveLength(1);
+      reconnect(s, false);
+      await expect(describeLegacy()).rejects.toThrow(/^no session with that id is listed$/);
+      s.host.configWatchAnswered = true;
+      const before = s.host.calls.length;
+      for (let i = 0; i < 2; i++) {
+        await expect(describeLegacy()).resolves.toMatchObject({
+          program: 'fixture-cli',
+          args: ['attach', 'deadbeef'],
+          cwd: '/fixture',
+        });
+      }
+      expect(s.host.calls[before + 1]?.function_id).toBe('configuration::get');
       expect(s.host.calls.some((c) => c.function_id === 'shell::pty::open')).toBe(false);
     });
   });
@@ -737,9 +759,10 @@ describe('authorization', () => {
       const recovered = await operation();
       if (entry === 'lookup' || entry === 'viewer')
         expect(recovered).toMatchObject({ last_reply: { id: recordId(2) } });
-      await s.poll(); // A new generation takes a fresh baseline, even if polling missed the outage.
       expect(seen(s, 'original')).toEqual([]);
+      // The recovery call has returned, but no subsequent poll has had a chance to baseline.
       await appendFile(s.file, lines(answer(3, 2, 'after recovery')));
+      await s.poll();
       await s.poll();
       expect(seen(s, 'original')).toEqual([{ id: recordId(3), text: 'after recovery' }]);
       if (entry === 'watch') expect(seen(s, 'new')).toEqual(seen(s, 'original'));

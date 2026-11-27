@@ -64,7 +64,7 @@ type OpenRequest = { mode: 'fork'; claude_session_id: string };
 export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenSpec>;
 export type OpenVisibility = {
   (): number | null;
-  (request: OpenRequest): number | null | Promise<number | null>;
+  (mode: 'legacy' | 'fork'): number | null | Promise<number | null>;
 };
 
 const ListPayloadSchema = z.object({
@@ -128,6 +128,21 @@ function headlessStatus(record: SessionRecord, alive: boolean): AgentRow['status
   return 'done';
 }
 
+// For duplicate conversation rows, keep the first live row (or the first
+// row if none is live). Stop must use the same row as the listing.
+function selectCliRows(rows: CliRow[]) {
+  const selected = new Map<string, CliRow>();
+  for (const row of rows) {
+    const id = str(row.sessionId);
+    if (!id) continue;
+    const previous = selected.get(id);
+    if (!previous || (typeof previous.pid !== 'number' && typeof row.pid === 'number')) {
+      selected.set(id, row);
+    }
+  }
+  return selected;
+}
+
 export function mergeInventory(input: {
   records: SessionRecord[];
   isLive: (sessionId: string) => boolean;
@@ -166,11 +181,10 @@ export function mergeInventory(input: {
   // claude_sessions is never pruned: newest first, so a recent run is on screen.
   headless.sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0));
 
-  const cli = new Map<string, AgentRow>();
-  for (const row of input.cliRows) {
-    const sessionId = str(row.sessionId);
+  const cli: AgentRow[] = [];
+  for (const [sessionId, row] of selectCliRows(input.cliRows)) {
     // A headless run shows up in the CLI listing too; its headless row stands for it.
-    if (!sessionId || (ours.has(sessionId) && !inTerminal.has(sessionId))) continue;
+    if (ours.has(sessionId) && !inTerminal.has(sessionId)) continue;
     const kind = row.kind === 'background' ? 'background' : 'interactive';
     const status = cliStatus(row);
     const waitingFor = status === 'waiting' ? str(row.waitingFor) : undefined;
@@ -194,12 +208,11 @@ export function mergeInventory(input: {
       ...(waitingFor ? { waiting_for: waitingFor } : {}),
       ...(typeof row.startedAt === 'number' ? { started_at_ms: row.startedAt } : {}),
     };
-    const seen = cli.get(sessionId);
-    if (!seen || (!seen.alive && agent.alive)) cli.set(sessionId, agent);
+    cli.push(agent);
   }
 
   let hidden = 0;
-  const visible = [...cli.values()].filter((agent) => {
+  const visible = cli.filter((agent) => {
     if (ours.has(agent.id) || agent.pty_session_id || input.known(agent.id)) return true;
     if (input.external) {
       if (input.markExternal) agent.external_only = true;
@@ -447,8 +460,8 @@ export function registerAgents(
       // a stale one could name a session that has since been replaced.
       const snapshot = await cliSnapshot(iii, prepared, false);
       if (!authorized()) return refuse(INVENTORY_UNAVAILABLE);
-      const row = snapshot.rows.find((r) => r.sessionId === id && r.kind === 'background');
-      if (!row) {
+      const row = selectCliRows(snapshot.rows).get(id);
+      if (row?.kind !== 'background') {
         return refuse(snapshot.detail ?? 'no background session with that id on the terminal host');
       }
       if (typeof row.pid !== 'number') return refuse('the background session is not running');
@@ -480,11 +493,13 @@ export function registerAgents(
   );
 
   function openVisibility(): number | null;
-  function openVisibility(request: OpenRequest): Promise<number | null>;
-  function openVisibility(request?: OpenRequest) {
-    // An explicit fork admits itself, even after silent observer replay on a
-    // new connection. Later checks only read the grant picked at admission.
-    return request ? access.confirm() : access.epoch;
+  function openVisibility(mode: 'legacy' | 'fork'): number | null | Promise<number | null>;
+  function openVisibility(mode?: 'legacy' | 'fork') {
+    // A listed-session describe can admit itself after silent observer replay.
+    // Publication checks only read the grant picked at admission.
+    if (mode === 'fork') return access.confirm();
+    const epoch = access.epoch;
+    return mode === 'legacy' && epoch === null ? access.confirm() : epoch;
   }
 
   const resolveOpen: ResolveOpen = async (id, request) => {

@@ -1,7 +1,7 @@
 import { type Call, type IIIClient, type Observer, ObserveRejection } from 'iii-sdk';
 import { z } from 'zod';
 import type { AgentRow } from './agents.js';
-import { type ReplyAccess, replyLease } from './configuration.js';
+import { replyLease, type ReplyPermission } from './configuration.js';
 import { jsonSchema } from './run.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
 
@@ -34,7 +34,7 @@ type Group = {
  * share a poll; a later admission never advances an earlier observer. */
 export function registerExternalReplies(
   iii: IIIClient,
-  permission: ReplyAccess,
+  permission: ReplyPermission,
   rowFor: Row,
   schedule: Schedule = schedulePoll,
 ) {
@@ -121,8 +121,31 @@ export function registerExternalReplies(
     }
   }
 
-  async function poll(id: string, g: Group) {
-    const lease = await acquire();
+  permission.onConfirmedRecovery(async (epoch) => {
+    const needsBaseline = (w: Watch) => w.active && w.epoch !== epoch;
+    const baselines = [];
+    for (const [id, g] of groups) {
+      if (![...g.watches.values()].some(needsBaseline)) continue;
+      baselines.push(
+        serialize(g, async () => {
+          const recovering = [...g.watches.values()].filter(needsBaseline);
+          if (!recovering.length) return;
+          const lease = replyLease(permission, epoch);
+          const { env } = await lease.read(() => rowFor(id));
+          const next = await lease.read(() => readTranscript(iii, env, id, 'baseline'));
+          for (const w of recovering) {
+            w.cursor = next.cursor;
+            w.epoch = epoch;
+          }
+        }).catch(() => {
+          // Keep the stale epoch so a later authorized poll can rebaseline.
+        }),
+      );
+    }
+    await Promise.all(baselines);
+  });
+
+  async function poll(id: string, g: Group, lease: ReturnType<typeof replyLease>) {
     const { epoch } = lease;
     const batches = new Map<string, Array<[string, Watch]>>();
     for (const entry of g.watches) {
@@ -168,7 +191,9 @@ export function registerExternalReplies(
     if (g.cancel || !Array.from(g.watches.values()).some((w) => w.active)) return;
     const cancel = schedule(async () => {
       try {
-        await serialize(g, () => poll(id, g));
+        // Confirmation can itself queue a recovery baseline on this group.
+        const lease = await acquire();
+        await serialize(g, () => poll(id, g, lease));
       } catch {
         // No cursor advance on a failed read. Never log host or delivery errors.
       } finally {

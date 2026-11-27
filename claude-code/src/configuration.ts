@@ -135,6 +135,7 @@ export class ReplyPermission {
   private refreshConnection: number | null = null;
   private reloading = false;
   private confirmation?: Promise<number | null>;
+  private recoverWatches?: (epoch: number) => Promise<void>;
   private watch?: { iii: IIIClient; handle: ObserverHandle };
 
   trackWatch(iii: IIIClient, handle: ObserverHandle) {
@@ -177,6 +178,10 @@ export class ReplyPermission {
     this.confirmation = undefined;
   }
 
+  onConfirmedRecovery(recover: (epoch: number) => Promise<void>) {
+    this.recoverWatches = recover;
+  }
+
   // An explicit probe, admission or poll can recover on the same connection.
   // Concurrent readers share a probe; a config event always supersedes it.
   async confirm(): Promise<number | null> {
@@ -186,15 +191,21 @@ export class ReplyPermission {
     if (!this.confirmation) {
       const generation = this.generation;
       this.refreshConnection = connection;
-      this.confirmation = fetchRuntime(this.watch.iii).then((runtime) => {
+      this.confirmation = fetchRuntime(this.watch.iii).then(async (runtime) => {
         if (generation !== this.generation) return null;
-        this.confirmation = undefined;
         if (connection !== this.watchConnection() || runtime?.external_sessions !== true) {
           this.invalidate();
           return null;
         }
         this.currentEpoch = generation;
-        return generation;
+        try {
+          // Set the grant before host reads, but do not return a confirmed
+          // probe before retained watches have attempted to skip the gap.
+          await this.recoverWatches?.(generation);
+          return this.epoch === generation ? generation : null;
+        } finally {
+          if (generation === this.generation) this.confirmation = undefined;
+        }
       });
     }
     return this.confirmation;
