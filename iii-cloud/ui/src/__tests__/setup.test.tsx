@@ -391,10 +391,10 @@ describe('the button: the calls in order, then the Deploy place', () => {
     expect(path()).toBe('Projects / registry · dev / Deploy')
   })
 
-  it('the recommended file is not sent: the check plans the environment’s own', async () => {
+  it('the check always names the file the row shows, the environment’s own included', async () => {
     const h = await board('setup-existing')
     await click(primary())
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: FILE }])
   })
 
   it('a new project: create, use the made ids, check; its first environment is the one checked', async () => {
@@ -431,7 +431,7 @@ describe('the button: the calls in order, then the Deploy place', () => {
         mode: 'worktree',
       },
     ])
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: FILE }])
   })
 
   it('a new environment in the project: create_environment copies a trial environment, then use, then check', async () => {
@@ -647,7 +647,7 @@ describe('no folder known yet, and adding a project', () => {
     expect(of(h, 'iii-cloud::project::use')).toEqual([
       { path: '/home/you/workspaces/billing', cloud_project_id: 'p-billing', environment_id: 'e-b', mode: 'worktree' },
     ])
-    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
+    expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: 'worker-compose.yaml' }])
     expect(path()).toContain('Deploy')
   })
 
