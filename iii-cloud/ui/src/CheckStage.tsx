@@ -30,6 +30,7 @@ import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom 
 import {
   ASSISTED,
   activeSameKind,
+  agentAsks,
   agentWorking,
   appFile,
   CHECK_AGAIN,
@@ -136,6 +137,8 @@ const DOCKER_DOCS = 'https://docs.docker.com/get-started/get-docker/'
 const AT_LEAST =
   'iii cloud stops at the first thing it cannot accept, so more can show up after the first round is fixed.'
 const UNLOCKS = 'Unlocks when a check passes'
+/** Worker notes about what the local run did to files: a quiet line under Details, never a warning. */
+const QUIET = new Set(['RUN_LEFT_FILES', 'RUN_FILES_RESTORED'])
 const ACTIVE: AgentState[] = ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled']
 const MARKS = {
   ok: [Done, 'done'],
@@ -1122,7 +1125,7 @@ export function CheckStage(props: CheckStageProps) {
   const waits = engaged && s.agent?.state === 'waiting'
   const stalled = engaged && s.agent?.state === 'stalled'
   // Its question stays on screen on a ready check too.
-  const asks = fixing(s) && s.agent?.state === 'waiting_for_you'
+  const asks = fixing(s) && agentAsks(s)
   const working = engaged && agentWorking(s)
   const a = s.agent
 
@@ -1150,12 +1153,11 @@ export function CheckStage(props: CheckStageProps) {
   const warnings: Item[] = [
     ...f.person.filter((i) => !i.fixed && !needItems.includes(i)),
     ...f.agent.filter((i) => !i.fixed && !agentItems.includes(i)),
-    ...f.notes.filter((i) => i.code !== 'RUN_LEFT_FILES'),
+    ...f.notes.filter((i) => !QUIET.has(i.code ?? '')),
     ...f.skipped,
   ]
-  // What the run left in the agent's copy is a quiet note, not a warning: nothing for the person to do or to commit.
-  const leftFiles = f.notes.find((i) => i.code === 'RUN_LEFT_FILES')
-  const leftN = Number(leftFiles?.title.match(/\d+/)?.[0] ?? 0)
+  // What the run left or rewrote is a quiet line, not a warning: the worker's title, and its detail on expanding.
+  const quiet = f.notes.filter((i) => QUIET.has(i.code ?? ''))
   const fixed = [...f.person, ...f.agent].filter((i) => i.fixed)
   const past = historyOf(s, c, envId)
 
@@ -1222,7 +1224,7 @@ export function CheckStage(props: CheckStageProps) {
     }
     const err = run?.status === 'failed' ? run.error : null
     // The last lines that say something (not blank, not a separator): what the generic line above does not.
-    const tail = runTail(run?.log_tail ?? [])
+    const tail = runTail(run?.log_tail ?? [], 6, missing)
     if (err?.code === 'DOCKER_MISSING') {
       const cloudN = open.filter((x) => x.source === 'cloud_plan').length
       stops.push({
@@ -1606,7 +1608,7 @@ export function CheckStage(props: CheckStageProps) {
       {!replaced ? (
         <ValuesCard
           runFailed={run?.status === 'failed'}
-          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? []).length > 0}
+          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? [], 6, missing).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {
@@ -1635,7 +1637,9 @@ export function CheckStage(props: CheckStageProps) {
                 ? `${a.last_activity_at ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at))}` : 'waiting'}${waitsFor(a)}`
                 : asks
                   ? 'waiting for your answer'
-                  : null
+                  : a?.state === 'waiting_for_you'
+                    ? 'done for now'
+                    : null
           }
           end={
             (engaged || asks) && a ? (
@@ -1805,13 +1809,12 @@ export function CheckStage(props: CheckStageProps) {
         </p>
       ) : null}
 
-      {leftFiles ? (
-        <p className="iii-cloud-cs-foot">
-          {leftN
-            ? `The local run left ${plural(leftN, 'file')} in your agent's copy; they are not part of the commit.`
-            : "The local run left files in your agent's copy; they are not part of the commit."}
-        </p>
-      ) : null}
+      {quiet.map((i) => (
+        <details key={i.key} className="iii-cloud-cs-foot iii-cloud-cs-quiet">
+          <summary>{i.title}</summary>
+          <p>{i.problem?.detail ?? i.detail}</p>
+        </details>
+      ))}
 
       <ActionBar narrow={narrow} action={action} note={barNote} />
       {importing ? (

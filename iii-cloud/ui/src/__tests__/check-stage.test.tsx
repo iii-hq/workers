@@ -13,7 +13,7 @@ import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
-import { checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
+import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -1214,6 +1214,28 @@ describe('the check follows the canvas', () => {
       expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({ from_page: true })
     })
 
+    it('the worker\'s own text about the check is a note, not a question: 8 values stay "8 values to set"', async () => {
+      const text8 = "Your agent's part is done for now. It waits for 8 values: set them in Secrets and variables."
+      const agentNote = {
+        ...rcFixing.agent!,
+        state: 'waiting_for_you' as const,
+        question: text8,
+        question_source: 'check' as const,
+      }
+      const items = names('REQ', 8, { need: 'required', default: null })
+      await stage({ ...quiet, agent: agentNote }, { 'iii-cloud::values': answer(items) })
+      expect(title()).toBe('8 values to set')
+      const t = region('Your agent')?.textContent ?? ''
+      expect(t.split(text8).length - 1).toBe(1)
+      expect(t).toContain('done for now')
+      expect(t).not.toContain('waiting for your answer')
+      // a real ask still counts as one more thing; no source: a problem-code prefix is the worker's text
+      expect(agentAsks({ ...quiet, agent: { ...agentNote, question_source: 'agent' } })).toBe(true)
+      const bare = { ...agentNote, question_source: undefined }
+      expect(agentAsks({ ...quiet, agent: { ...bare, question: 'SECRET_MISSING: 8 values' } })).toBe(false)
+      expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
@@ -1327,25 +1349,65 @@ describe('small things the review found', () => {
     for (const st of ['waiting', 'stalled', 'waiting_for_you'] as const) expect(lock(st)).not.toContain('is fixing')
   })
 
-  it("files the run left in the agent's copy are one quiet line, not a warning, and ask nothing of the person", async () => {
+  it("what the run left or rewrote is a quiet line with the worker's title and its detail, never a warning", async () => {
     const r = B('deploy-passed')
-    const left = {
+    const note = (code: string, title: string, detail: string) => ({
       ...rcVariables[0],
-      id: 'p-left',
-      code: 'RUN_LEFT_FILES',
+      id: `p-${code}`,
+      code,
+      file: null,
+      line: null,
       source: 'check_here' as const,
       severity: 'info' as const,
       owner: 'none' as const,
-      title: "The local run left 2 files changed in the agent's copy; they do not count as uncommitted",
-      detail: 'If one of them is your own edit, commit it.',
-    }
-    const withLeft = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left] } }
-    await stage(withLeft)
+      title,
+      detail,
+    })
+    // The worker's real shapes: the count and the paths are in the detail, the title has no number.
+    const left = note(
+      'RUN_LEFT_FILES',
+      'The local run left files changed in the worktree',
+      "The local run left 2 files changed in the agent's copy; they do not count as uncommitted: pnpm-lock.yaml, tsconfig.tsbuildinfo. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them; never commit them.",
+    )
+    const restored = note(
+      'RUN_FILES_RESTORED',
+      'The local run rewrote 3 tracked files; they are back as committed',
+      'api/a.ts, api/b.ts, api/c.ts. The rewritten versions are kept in ~/.iii-cloud/run-leftovers.',
+    )
+    const withNotes = { ...r, check: { ...r.check!, problems: [...r.check!.problems, left, restored] } }
+    await stage(withNotes)
     expect(region('Details')?.textContent).toMatch(/Warnings 0/)
-    expect(text()).toContain("The local run left 2 files in your agent's copy; they are not part of the commit.")
-    expect(text()).not.toContain('commit it')
+    const lines = [...el.querySelectorAll('details.iii-cloud-cs-quiet')]
+    expect(lines.map((l) => l.querySelector('summary')?.textContent)).toEqual([left.title, restored.title])
+    expect(lines[0].textContent).toContain('pnpm-lock.yaml, tsconfig.tsbuildinfo')
+    expect(lines[1].textContent).toContain('run-leftovers')
     await stage(r)
-    expect(text()).not.toContain('The local run left')
+    expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
+  })
+
+  it('a code the page has never heard of (RUN_COMMAND_NOT_IN_IMAGE) is an ordinary agent-owned row, counted', async () => {
+    const mk = (id: string, over: object) => ({
+      ...rcVariables[0],
+      id,
+      code: 'RUN_COMMAND_NOT_IN_IMAGE',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'agent' as const,
+      title: 'release-control runs with bun, but its runtime is node',
+      detail: 'The image has no bun binary.',
+      fix: 'Run it with node, or use a runtime image that has bun.',
+      ...over,
+    })
+    const w = { ...rcFixing, agent: null, handoff_brief: null }
+    await stage({ ...w, check: { ...w.check!, problems: [mk('p-bun', {})] } })
+    expect(title()).toBe('1 for your agent to fix')
+    const row = region('Your agent')?.textContent ?? ''
+    expect(row).toContain('release-control runs with bun, but its runtime is node')
+    expect(row).toContain('The image has no bun binary.')
+    await stage({ ...w, check: { ...w.check!, problems: [mk('p-bun2', { detail: null })] } })
+    expect(region('Your agent')?.textContent).toContain('Run it with node, or use a runtime image that has bun.')
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
@@ -1591,6 +1653,36 @@ describe("the run's last lines", () => {
     expect(tail.join('\n')).toContain('JWT_SECRET: required')
     expect(tail.join('\n')).toContain('Exiting with error code 1')
     expect(tail.length).toBeLessThanOrEqual(6)
+  })
+
+  it('print, then throw: the line that names the variable survives the stack trace', () => {
+    const log = [
+      "❌ Invalid environment variables: { JWT_SECRET: [ 'Required' ] }",
+      '/app/node_modules/@t3-oss/env-core/dist/index.mjs:30',
+      'throw new Error("Invalid environment variables");',
+      '^',
+      'Error: Invalid environment variables',
+      ...Array.from({ length: 6 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      'Node.js v20.18.0',
+      '!! Workers failed: release-control',
+    ]
+    const tail = runTail(log)
+    expect(tail[0]).toContain('JWT_SECRET')
+    expect(tail.length).toBeLessThanOrEqual(6)
+    // a name from the values read counts as naming a variable too
+    const lower = runTail(
+      [
+        'Invalid value for jwt_secret',
+        'x',
+        'throw new Error("boom")',
+        ...Array.from({ length: 6 }, (_, i) => `at f${i}`),
+        'Node',
+        'done',
+      ],
+      6,
+      ['jwt_secret'],
+    )
+    expect(lower[0]).toContain('jwt_secret')
   })
 
   it('four missing variables: the message and all four names, six lines, no wasted slot', () => {

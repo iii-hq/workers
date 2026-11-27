@@ -265,6 +265,17 @@ describe('the next-action card: the same count and the same agent states as the 
     }
   })
 
+  it('a ready check whose agent asks something is "Ready to deploy" here too, and a pull-request hand-off\'s question is not counted', () => {
+    const ask = { ...agent('waiting_for_you'), question: 'Keep path:// for http?', question_source: 'agent' as const }
+    const n = next(dev({ check: { ...passed, ready: true }, agent: ask }))
+    expect(n.title).toBe('Ready to deploy; your agent has a question')
+    expect(n.detail).toContain('Keep path://')
+    // no card shows a pull-request hand-off's question: nothing counts it
+    const before = youOf(dev({ check: needsYou })).count
+    expect(youOf(dev({ check: needsYou, agent: { ...ask, kind: 'pull_request' as const } })).count).toBe(before)
+    expect(youOf(dev({ check: needsYou, agent: ask })).count).toBe(before + 1)
+  })
+
   it('"Your agent is fixing N problems meanwhile" only while it works, not while it waits, stalls or asks', () => {
     const needs = { ...needsYou }
     for (const state of ['waiting', 'stalled', 'waiting_for_you'] as const) {
