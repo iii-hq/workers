@@ -22,6 +22,14 @@ pub struct PendingMerge {
     pub merged_at: Option<String>,
 }
 
+/// What the last local run of a worktree left dirty in it (path to a hash of the content it
+/// left): the engine and the workers rewrite seed files and write data there. They are
+/// not the agent's changes, as long as their content is still what the run left.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWrote {
+    pub files: std::collections::BTreeMap<String, String>,
+}
+
 /// One `override::choose`, for the values it was made for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredChoice {
@@ -65,6 +73,8 @@ pub struct State {
     pub create_attempts: std::collections::BTreeMap<String, u32>,
     /// The compose file this worker last switched each environment to (by id). It
     /// is dropped when a newer check of the environment is kept.
+    #[serde(default)]
+    pub run_wrote: std::collections::BTreeMap<String, RunWrote>,
     #[serde(default)]
     pub env_switched: std::collections::BTreeMap<String, String>,
     /// The base branch and sha when each fresh worktree was made (key as `worktree_started`).

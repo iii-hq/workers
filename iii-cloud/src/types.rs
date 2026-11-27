@@ -473,6 +473,13 @@ pub struct Handoff {
     /// per run, never counted against the cap, and judged no more while it goes on.
     #[serde(default)]
     pub waited_run: Option<String>,
+    /// A check the person started on this hand-off's worktree ended while the agent
+    /// waited on a wake: the poll judges it once (`person_check_told` is the last
+    /// one it did), and sends the agent what it owns.
+    #[serde(default)]
+    pub person_check: Option<String>,
+    #[serde(default)]
+    pub person_check_told: Option<String>,
 }
 
 impl Handoff {

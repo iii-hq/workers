@@ -66,6 +66,7 @@ and the base in history.
   `iii-cloud::secret` is a literal credential you replaced with `${NAME}` in the
   compose file (`LITERAL_CREDENTIAL`), and only for that one name. Never for a
   decision, a worker, a group, a setting: those go in the `harness::ask` card.
+- An empty string is a value. Before you write `${NAME:-}`, read how the app parses that name: if it is parsed as a number or a boolean, or validated, the app starts with `""` and exits. Give it the app's own default (`${NAME:-8}`, `${NAME:-false}`), or leave the variable out of the compose file; keep `${NAME:-}` only for a name the app reads as an optional string.
 - If the person pastes a value in chat, do not repeat it, store it, or put it in
   a command. Tell them to type it on the page.
 - Never read a `.env` file or print a token.

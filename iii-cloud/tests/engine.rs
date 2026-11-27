@@ -491,6 +491,8 @@ async fn probe_a_live_session_prints_only_the_derived_agent_state() {
             continue_refused: false,
             check_failures: 0,
             waited_run: None,
+            person_check: None,
+            person_check_told: None,
         });
     });
     let state = iii_cloud::handoff::poll_now(&ctx, "probe")
@@ -576,6 +578,8 @@ async fn a_follow_up_handoff_is_delivered_with_harness_send() {
             continue_refused: false,
             check_failures: 0,
             waited_run: None,
+            person_check: None,
+            person_check_told: None,
         });
     });
     register_all(&iii, &ctx);
