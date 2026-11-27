@@ -3678,3 +3678,45 @@ async fn only_a_manual_deployment_this_worker_did_not_make_is_from_the_console()
         assert_eq!(d.from_console, d.id == manual, "{}", d.id);
     }
 }
+
+/// A check made while another environment was selected has its compose file on record
+/// and no source: the console's change is still seen, the source half does not apply.
+#[tokio::test]
+async fn a_check_made_while_another_environment_was_selected_is_guarded_by_its_compose_file() {
+    let s = setup(plan(false)).await;
+    s.h.ctx.store.update(|st| {
+        for c in st.check.iter_mut().chain(st.checks.iter_mut()) {
+            c.manifest = Some("worker-compose.yaml".into());
+        }
+        st.check_sources.insert(
+            "chk".into(),
+            iii_cloud::store::CheckedFor {
+                source: None,
+                source_sha: None,
+                workspace: false,
+                compose: Some("worker-compose.yaml".into()),
+            },
+        );
+        // A source on the workspace now is nothing the check was recorded for.
+        st.project
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .source = Some("feat-x".into());
+    });
+    // The cloud's file is the check's: it goes past the guard.
+    let ok = deploy_chk(&s).await.unwrap_err();
+    assert_ne!(ok.code, "SOURCE_CHANGED");
+    // The console changes the file: refused, and the environment is not switched back.
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": "console/y.yaml", "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    assert_eq!(deploy_chk(&s).await.unwrap_err().code, "SOURCE_CHANGED");
+    let requests = s.server.received_requests().await.unwrap();
+    assert!(!requests.iter().any(|r| r.method.as_str() == "PATCH"));
+}

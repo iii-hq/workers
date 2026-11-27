@@ -1457,3 +1457,43 @@ async fn a_check_records_the_cloud_s_compose_file_not_the_cached_one() {
         .unwrap();
     assert_eq!(made_for.compose.as_deref(), Some("z-compose.yaml"));
 }
+
+/// A hand-off's check made while another environment is selected still records the cloud's compose file.
+#[tokio::test]
+async fn a_hand_offs_check_of_another_environment_still_records_its_compose_file() {
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    let first = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let created = iii_cloud::handoff::create(
+        &h.ctx,
+        HandoffRequest {
+            check_id: Some(first.id.clone()),
+            kind: HandoffKind::Ready,
+            deployment_id: None,
+            text: None,
+            candidate: None,
+        },
+    )
+    .await
+    .unwrap();
+    // The page now shows another environment.
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().environment.as_mut().unwrap().id = "other-env".into();
+    });
+    let c = check(
+        &h.ctx,
+        CheckRequest {
+            handoff_id: Some(created.id),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let rec = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .expect("a record");
+    assert_eq!(rec.compose.as_deref(), Some("worker-compose.yaml"));
+    assert!(!rec.workspace);
+}

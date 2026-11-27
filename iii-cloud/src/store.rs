@@ -40,6 +40,10 @@ pub struct CheckedFor {
     /// switched in the person's checkout changes it with no name given).
     #[serde(default)]
     pub source_sha: Option<String>,
+    /// The source above was read from the selected workspace. A check made while
+    /// another environment was selected has none: the source half does not apply.
+    #[serde(default)]
+    pub workspace: bool,
     pub compose: Option<String>,
 }
 
@@ -195,6 +199,7 @@ impl State {
         Some(CheckedFor {
             source: w.and_then(|w| w.source.clone()),
             source_sha: w.and_then(|w| w.source_sha.clone()),
+            workspace: true,
             compose: e.manifest.clone(),
         })
     }
@@ -217,7 +222,7 @@ impl State {
         };
         // The compose file is compared in `deploy`, against the cloud's current one:
         // this cache is only as new as the last refresh.
-        now.source == rec.source && now.source_sha == rec.source_sha
+        !rec.workspace || (now.source == rec.source && now.source_sha == rec.source_sha)
     }
 
     /// Put a used project first; one entry per folder and cloud project.

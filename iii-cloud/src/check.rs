@@ -981,10 +981,14 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         })
         .filter(|m| env_manifest.as_deref() != Some(m.as_str()));
     // What this check is for: the file the cloud has now, not the cache.
-    let made_for = made_for.map(|mut m| {
-        m.compose = env_manifest.clone();
-        m
+    // Recorded whatever is selected: a hand-off's check of another environment still has its file.
+    let mut made_for = made_for.unwrap_or(crate::store::CheckedFor {
+        source: None,
+        source_sha: None,
+        workspace: false,
+        compose: None,
     });
+    made_for.compose = env_manifest.clone();
     let manifest_path = asked.clone().or(env_manifest);
 
     let mut plan_value: Option<Value> = None;
@@ -1185,9 +1189,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         // The latest of the environment only when it is the selected one.
         let latest = s.environment_id() == Some(check.environment_id.as_str());
         s.put_check_for(check.clone(), latest);
-        if let Some(made_for) = made_for {
-            s.check_sources.insert(check.id.clone(), made_for);
-        }
+        s.check_sources.insert(check.id.clone(), made_for);
     });
     if let Some(plan) = &plan_value {
         crate::deploy::save_plan(ctx, &check.id, plan);
