@@ -394,9 +394,10 @@ export const Breadcrumb = ({ items }: P) => (
 )
 export const DropdownMenuGroup = ({ children }: P) => <div data-group>{children}</div>
 export const DropdownMenuLabel = ({ children }: P) => <div>{children}</div>
-export const DirectoryPicker = ({ value, onChange }: P) => (
+export const DirectoryPicker = ({ value, onChange, emptyLabel }: P) => (
   <input
     aria-label="Folder"
+    placeholder={emptyLabel as string | undefined}
     data-directory-picker
     value={(value as string) ?? ''}
     onChange={(e) => cb(onChange)(e.target.value)}

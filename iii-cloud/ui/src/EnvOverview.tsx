@@ -12,6 +12,7 @@ import {
   fixBranch,
   isDirectEnv,
   isFailedDeploy,
+  liveOf,
   minutesLabel,
   needsAction,
   plural,
@@ -23,7 +24,7 @@ import {
   when,
   withAppFile,
 } from './model'
-import { Dot, ErrorPanel, Mono, SectionCard as Section, StatePill } from './parts'
+import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
 import type { CloudDeployment, DeploymentList, Members, Status, Values, WorkerError } from './types'
 
@@ -328,9 +329,9 @@ export function NextCard({
       data-failed={next.state === 'failed' ? '' : undefined}
     >
       <div className="iii-cloud-next-text">
-        <span className="iii-cloud-desc">Next</span>
-        <h3 className="iii-cloud-next-title">{next.title}</h3>
-        <p className="iii-cloud-desc">{next.detail}</p>
+        <span className="iii-cloud-next-label">Next</span>
+        <h3 className="iii-cloud-next-title">{monoShas(next.title)}</h3>
+        <p className="iii-cloud-desc">{monoShas(next.detail)}</p>
       </div>
       {act?.kind === 'link' ? (
         <Button variant={variant} asChild>
@@ -376,8 +377,11 @@ export function LiveNow({
   status,
   envId,
   feed,
+  narrow,
 }: Pick<EnvTabProps, 'host' | 'status' | 'envId'> & {
   feed: { data: DeploymentList | null; error: WorkerError | null }
+  /** A phone: one compact card (chip, address, what serves, how many workers are up). */
+  narrow?: boolean
 }) {
   const p = status.project
   const env = p?.environments.find((e) => e.id === envId)
@@ -386,6 +390,39 @@ export function LiveNow({
   if (!env) return null
   const h = health.data ? healthOf(health.data, env.name) : null
   const direct = isDirectEnv(status, env)
+  if (narrow) {
+    const live = liveOf(feed.data?.deployments, feed.data?.next_cursor)
+    const url = p?.environment?.id === envId ? p.environment.url : null
+    return (
+      <Panel className="iii-cloud-panel iii-cloud-livecard" role="region" aria-label="Live now">
+        <span className="iii-cloud-row">
+          {live ? <StatePill state={live} /> : null}
+          {url ? (
+            <a className="iii-cloud-mono iii-cloud-url iii-cloud-link" href={url} target="_blank" rel="noreferrer">
+              {url.replace(/^https?:\/\//, '')}
+            </a>
+          ) : null}
+        </span>
+        {feed.error ? (
+          <ErrorPanel error={feed.error} />
+        ) : !feed.data && !serving ? (
+          <Skeleton className="iii-cloud-skeleton-row" />
+        ) : serving ? (
+          <>
+            <span className="iii-cloud-text">
+              <Mono>{sha7(serving.sha)}</Mono> {serving.message?.split('\n')[0] ?? ''}
+            </span>
+            <span className="iii-cloud-desc">
+              deployment #{serving.number}, since {when(serving.since)}
+              {h ? ` · ${h.text}` : ''}
+            </span>
+          </>
+        ) : (
+          <span className="iii-cloud-text">Nothing is live yet</span>
+        )}
+      </Panel>
+    )
+  }
   return (
     <Panel className="iii-cloud-panel iii-cloud-live" role="region" aria-label="Live now">
       <div className="iii-cloud-cell">
@@ -416,7 +453,7 @@ export function LiveNow({
         ) : h && health.data ? (
           <>
             <span className="iii-cloud-cell-value">
-              <Dot tone={h.tone} /> {h.text}
+              {h.tone === 'ok' ? null : <Dot tone={h.tone} />} {h.text}
             </span>
             <span className="iii-cloud-desc">checked {clock(health.data.checked_at)}</span>
           </>

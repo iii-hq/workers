@@ -11,10 +11,10 @@ import type { Deploy, Members, Status } from './types'
 
 const message = (d: Deploy) => d.commit.message?.split('\n')[0]
 
-/** What a deployment is called in the list: the commit's message, a failed one its cause, else its short sha (the number is the first column). */
-function titleOf(d: Deploy): string {
+/** What a deployment is called in the list: the commit's message, a failed one its cause, else its short sha in mono (the number is the first column). */
+function titleOf(d: Deploy): ReactNode {
   if (isFailedDeploy(d)) return failureTitle(d)
-  return message(d) ?? sha7(d.commit.sha)
+  return message(d) ?? <Mono>{sha7(d.commit.sha)}</Mono>
 }
 
 /**
@@ -101,7 +101,10 @@ export function Deployments({
               <span className="iii-cloud-mono iii-cloud-dnum">#{d.number}</span>
               <StateChip live={deployState(d, live)} />
               <span className="iii-cloud-dep-text">
-                <span className="iii-cloud-dep-title">{titleOf(d)}</span>
+                <span className="iii-cloud-dep-title">
+                  <span className="iii-cloud-dep-num">#{d.number} · </span>
+                  {titleOf(d)}
+                </span>
                 <span className="iii-cloud-desc">{deployMeta(status, d, cloud, members)}</span>
               </span>
               {isFailedDeploy(d) || needsAction(d) ? (

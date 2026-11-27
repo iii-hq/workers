@@ -44,13 +44,13 @@ const showHome = async (status: Status, cloud = homeCloud, answers = {}) => {
 }
 
 describe('the sidebar', () => {
-  it('lists each environment with its state line and the production mark; the selected one is the page', async () => {
+  it('lists each environment with its state line and no mark; the selected one is the page', async () => {
     await board('manage-home')
     await settle()
     const side = el.querySelector('aside[aria-label="registry"]')
     expect(side).not.toBeNull()
     expect(row('production')?.textContent).toBe('productionNot deployed yet')
-    expect(row('production')?.querySelector('[aria-label=Production]')).not.toBeNull()
+    expect(row('production')?.querySelector('[aria-label=Production]')).toBeNull()
     expect(row('dev')?.textContent).toBe(`devLive · ${LIVE_SHA.slice(0, 7)}`)
     expect(row('dev')?.querySelector('[data-dot=ok]')).not.toBeNull()
     expect(row('dev')?.querySelector('[aria-label=Production]')).toBeNull()
@@ -131,6 +131,23 @@ describe('the sidebar', () => {
     expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('registry · dev')
     await click(btn('Back to Projects'))
     expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('Projects')
+  })
+})
+
+describe('the environment page on a phone (Phone-Env)', () => {
+  it('Live now is one compact card with the chip, the address and the deployment number; the bar has no chip or address', async () => {
+    ui.narrow = true
+    await board('manage-home')
+    await settle()
+    const card = el.querySelector('section[aria-label="Live now"]')
+    expect(card?.querySelector('.iii-cloud-state')).not.toBeNull()
+    expect(card?.querySelector('a.iii-cloud-mono')?.textContent).toMatch(/\./)
+    expect(card?.textContent).toMatch(/deployment #\d+, since /)
+    expect(card?.querySelectorAll('.iii-cloud-cell')).toHaveLength(0)
+    expect(el.querySelector('[role=toolbar] .iii-cloud-state')).toBeNull()
+    // Each deployment row leads with its number; the footer is the two phone links.
+    expect(el.querySelector('.iii-cloud-dep-title .iii-cloud-dep-num')?.textContent).toMatch(/^#\d+ · $/)
+    expect(el.querySelector('.iii-cloud-envfoot')?.textContent).toContain('More in iii cloud')
   })
 })
 

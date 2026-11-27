@@ -3,13 +3,12 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { Button, EmptyState, List, ListItem, PageMain, Skeleton } from '@iii-dev/console-ui'
-import { ChevronRight, Cloud } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { Cloud } from 'lucide-react'
+import { Fragment, type ReactNode, useCallback, useEffect, useState } from 'react'
 import { useCloud } from './api'
 import { ConnectView } from './ConnectView'
 import { useActions, useLocked } from './hub'
 import {
-  ago,
   deletionsUrl,
   liveOf,
   minutesLabel,
@@ -22,6 +21,7 @@ import {
   type Tone,
   tilde,
   whatWaits,
+  when,
 } from './model'
 import {
   ErrorPanel,
@@ -128,22 +128,36 @@ type Deletions = {
   deletions: { kind: string; project?: { id: string } | null; restorable: boolean; restorable_until: string | null }[]
 }
 
-/** What the environment serves or is doing, from its first page of deployments: "dev · serves 9c04e7f · deployment #6 · 2h ago". */
-function liveLine(env: string, list: DeploymentList['deployments']): string {
+/** What the environment serves or is doing, from its first page of deployments: "dev · serves 9c04e7f · deployment #6 · 14:34". The sha is mono. */
+function liveLine(env: string, list: DeploymentList['deployments'], notServed: number): ReactNode {
   const newest = list[0]
   const current = list.find((d) => d.current)
   const fresh = newest && newest !== current ? newest : null
-  const what =
-    fresh && (fresh.status === 'queued' || fresh.status === 'in_progress')
-      ? `deployment #${fresh.number} is running`
-      : fresh?.status === 'needs_action'
-        ? `deployment #${fresh.number} needs your action`
-        : fresh?.status === 'failed'
-          ? `deployment #${fresh.number} failed ${ago(fresh.finished_at ?? fresh.created_at)}${current ? ` · still serves #${current.number}` : ''}`
-          : current
-            ? `serves ${sha7(current.commit.sha)} · deployment #${current.number} · ${ago(current.finished_at ?? current.created_at)}`
-            : 'not deployed yet'
-  return [env, what].join(' · ')
+  const parts: ReactNode[] = [env]
+  if (fresh && (fresh.status === 'queued' || fresh.status === 'in_progress'))
+    parts.push(`deployment #${fresh.number} is running`)
+  else if (fresh?.status === 'needs_action') parts.push(`deployment #${fresh.number} needs your action`)
+  else if (fresh?.status === 'failed') {
+    parts.push(`deployment #${fresh.number} failed`)
+    if (current) parts.push(`still serves #${current.number}`)
+  } else if (current) {
+    parts.push(
+      <>
+        serves <Mono>{sha7(current.commit.sha)}</Mono>
+      </>,
+      `deployment #${current.number}`,
+      when(current.finished_at ?? current.created_at),
+    )
+    if (notServed)
+      parts.push(`${plural(notServed, 'commit')} in your folder ${notServed === 1 ? "isn't" : "aren't"} on ${env}`)
+  } else parts.push('not deployed yet')
+  return parts.map((x, i) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: a fixed, ordered list of words
+    <Fragment key={i}>
+      {i ? ' · ' : null}
+      {x}
+    </Fragment>
+  ))
 }
 
 /** The environment's state as the pill says it: the shared words, with "Needs you" and "Not deployed yet". */
@@ -223,7 +237,13 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       (place.current ? !m.other : m.path === place.path && (!place.cp || m.cloudProject === place.cp)),
   )
   const run = going?.deploy
-  const waits = place.current ? whatWaits(status) : []
+  // A deployment iii cloud holds for approval: the current project's is in `whatWaits`, another project's is named here.
+  const held = place.current
+    ? undefined
+    : moving(status).find(
+        (m) => needsAction(m.deploy) && m.path === place.path && (!place.cp || m.cloudProject === place.cp),
+      )
+  const waits = place.current ? whatWaits(status) : held ? ['a held deployment'] : []
 
   let line1: ReactNode
   if (gone) {
@@ -232,6 +252,8 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       rec?.restorable && rec.restorable_until
         ? `restorable until ${shortDate(rec.restorable_until)}`
         : 'deleted in iii cloud'
+  } else if (held && !going) {
+    line1 = `${held.env ?? env?.name ?? 'deploying'} · deployment #${held.deploy.number} needs your action`
   } else if (going && run) {
     line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far`
   } else if (offline) line1 = "Sign in to see what's live"
@@ -239,15 +261,14 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   else if (!team) line1 = place.envName ? `${place.envName} · open it to see what's live` : "Open it to see what's live"
   else if (readError) line1 = <span className="iii-cloud-faint">What is live isn't known yet</span>
   else if (env && list) {
-    line1 = liveLine(env.name, list)
-    if (waits.length) line1 = `${line1} · ${waits.join(', ')}`
+    const notServed = place.current ? (p?.checkout.not_served?.length ?? 0) : 0
+    line1 = liveLine(env.name, list, notServed)
+    if (waits.length) line1 = <>{line1} · {waits.join(', ')}</>
   } else if (listed && !env) line1 = 'no environment yet'
   else line1 = <Skeleton className="iii-cloud-skeleton-row" />
 
   const teamWord = place.teamName ? ` · team ${place.teamName}` : ''
-  const line2 = narrow ? (
-    `${tilde(place.path)}${teamWord}`
-  ) : (
+  const line2 = (
     <>
       <Mono>{tilde(place.path)}</Mono>
       {teamWord}
@@ -287,19 +308,19 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
 
   const label = (
     <span className="iii-cloud-row iii-cloud-start-name">
-      {name}
-      {narrow ? null : pill}
+      <span className="iii-cloud-start-title">{name}</span>
+      {pill}
     </span>
   )
   const description = (
     <span className="iii-cloud-start-lines">
-      <span>{line1}</span>
-      <span className="iii-cloud-faint">{line2}</span>
+      <span className="iii-cloud-start-state">{line1}</span>
+      <span className="iii-cloud-start-path">{line2}</span>
     </span>
   )
 
   if (narrow && !gone) {
-    // On a phone the whole row opens the project; the pill says its state.
+    // On a phone the whole row opens the project; the chip on the name's line says its state.
     return (
       <ListItem
         className="iii-cloud-start-row"
@@ -308,12 +329,6 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
         disabled={off}
         label={label}
         description={description}
-        trailing={
-          <span className="iii-cloud-start-word">
-            {pill}
-            <ChevronRight aria-hidden />
-          </span>
-        }
         onClick={doOpen}
       />
     )
@@ -396,7 +411,7 @@ function Account({ host, status }: { host: Host; status: Status }) {
 const FOOTNOTE =
   "Opening a project doesn't stop the others. A check, a deploy and your agent keep going, and the project's row says what they are doing."
 const FOOTNOTE_PHONE =
-  'The whole row opens the project. A check, a deploy and your agent keep going on this machine, and the row says what they are doing.'
+  'The whole row opens the project. Checks, deploys and your agent run on the computer; this phone follows them and answers what needs you.'
 
 /** The projects on this machine: desktop one column, phone one row per project. */
 export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt<'start'>>) {
@@ -454,9 +469,6 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
     <PageMain className="iii-cloud-main">
       <PathBar
         path={pathOf(route, status)}
-        host={host}
-        status={status}
-        route={route}
         go={go}
         narrow={narrow}
         rule
@@ -491,11 +503,11 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
             }
           />
         ) : null}
-        {narrow && !offline && !key ? <p className="iii-cloud-desc">{`Signed in as ${whoIs(status)}`}</p> : null}
+        {narrow && !offline && !key ? <p className="iii-cloud-desc">{`On this computer · ${whoIs(status)}`}</p> : null}
         {places.length ? (
           narrow ? (
             <>
-              {list}
+              <div className="iii-cloud-start-card">{list}</div>
               {key ? null : <div className="iii-cloud-start-adds">{add('lg', 'secondary')}</div>}
             </>
           ) : (

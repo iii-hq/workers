@@ -50,7 +50,7 @@ describe('Projects (desktop)', () => {
     expect(names()).toEqual(['registry', 'billing', 'registry-3', 'old', 'registry-eu'])
     // Line 2: the folder (mono) and the team.
     expect(lines('billing')[1]).toBe('~/workspaces/billing · team acme')
-    expect(place('registry')?.querySelector('.iii-cloud-start-lines .iii-cloud-mono')?.textContent).toBe(
+    expect(place('registry')?.querySelector('.iii-cloud-start-path .iii-cloud-mono')?.textContent).toBe(
       '~/workspaces/registry',
     )
     expect(text()).toContain("Opening a project doesn't stop the others.")
@@ -90,9 +90,12 @@ describe('Projects (desktop)', () => {
   it('first line from iii cloud: what the env serves, what runs, what failed; nothing invented', async () => {
     const h = await board('start')
     await settle()
-    expect(lines('registry')[0]).toMatch(/^production · serves 1a2b3c4 · deployment #40 · .+/)
+    expect(lines('registry')[0]).toMatch(/^production · serves 1a2b3c4 · deployment #40 · (\d\d:\d\d|\d+ \w{3})$/)
+    // The sha is mono; the time is the clock, never "2h ago" (the environment page says the same).
+    expect(place('registry')?.querySelector('.iii-cloud-start-state .iii-cloud-mono')?.textContent).toBe('1a2b3c4')
+    expect(lines('registry')[0]).not.toMatch(/ago/)
     expect(lines('billing')[0]).toBe('dev · deployment #8 is running')
-    expect(lines('registry-eu')[0]).toMatch(/^eu · deployment #3 failed .+/)
+    expect(lines('registry-eu')[0]).toMatch(/^eu · deployment #3 failed( · still serves #\d+)?$/)
     // registry-3's environment is gone: its row reads production.
     expect(lines('registry-3')[0]).toBe('production · not deployed yet')
     expect(reads(h)).toContain(`/teams/${ACME.id}/projects/p-billing/environments`)
@@ -276,19 +279,26 @@ describe('Projects (desktop)', () => {
 })
 
 describe('Projects (phone)', () => {
-  it('one column of rows that open whole, the pill and a chevron at the end, one add button below', async () => {
+  it('one card of rows that open whole, the chip on the name line and no chevron, one add button below', async () => {
     ui.narrow = true
     const h = await board('start')
     await settle()
     expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('Projects')
-    expect(text()).toContain('Signed in as ana@iii.dev · teams iii, acme')
-    expect(el.querySelector('[role=toolbar]')?.textContent).not.toMatch(/as of \d/)
-    expect(place('registry')?.querySelector('.iii-cloud-start-word .iii-cloud-state')?.textContent).toBe('Live')
-    expect(place('billing')?.querySelector('.iii-cloud-start-word svg')).not.toBeNull()
+    expect(text()).toContain('On this computer · ana@iii.dev · teams iii, acme')
+    expect(el.querySelector('[role=toolbar]')?.textContent).toMatch(/as of \d/)
+    expect(el.querySelector('.iii-cloud-start-card [aria-label="Projects on this machine"]')).not.toBeNull()
+    expect(place('registry')?.querySelector('.iii-cloud-start-name .iii-cloud-state')?.textContent).toBe('Live')
+    expect(place('billing')?.querySelector('svg')).toBeNull()
+    // The folder is mono here too.
+    expect(place('billing')?.querySelector('.iii-cloud-start-path .iii-cloud-mono')?.textContent).toBe(
+      '~/workspaces/billing',
+    )
     // No button inside a row: the row is the action.
     expect(place('billing')?.querySelector('button button')).toBeNull()
     expect(lines('billing')[1]).toBe('~/workspaces/billing · team acme')
-    expect(text()).toContain('The whole row opens the project.')
+    expect(text()).toContain(
+      'The whole row opens the project. Checks, deploys and your agent run on the computer; this phone follows them and answers what needs you.',
+    )
     expect([...el.querySelectorAll('.iii-cloud-start-adds button')].map((b) => b.textContent)).toEqual([
       'Add a project',
     ])

@@ -162,7 +162,19 @@ function ElsewhereEnv({ host, status, route, go }: ManageProps) {
 }
 
 /** An environment: what to do next, what is live, its deployments, and the way to its secrets and variables. */
-function EnvHome({ host, status, envId, go }: { host: Host; status: Status; envId: string; go: (r: Route) => void }) {
+function EnvHome({
+  host,
+  status,
+  envId,
+  go,
+  narrow,
+}: {
+  host: Host
+  status: Status
+  envId: string
+  go: (r: Route) => void
+  narrow: boolean
+}) {
   const feed = useDeployments(host, status, envId)
   const cloud = feed.data
   const members = useMembers(host, status, cloud)
@@ -182,20 +194,26 @@ function EnvHome({ host, status, envId, go }: { host: Host; status: Status; envI
   return (
     <>
       <NextCard host={host} status={status} envId={envId} next={next} go={go} />
-      <LiveNow host={host} status={status} envId={envId} feed={feed} />
+      <LiveNow host={host} status={status} envId={envId} feed={feed} narrow={narrow} />
       <Deployments host={host} status={status} envId={envId} cloud={cloud} go={go} />
       <p className="iii-cloud-desc iii-cloud-envfoot">
         <button type="button" className="iii-cloud-linkbtn" onClick={() => go({ at: 'secrets', env: envId })}>
           Secrets and variables
         </button>
         {url ? (
-          <span>
-            Machines, domains, rollback and a new environment are in{' '}
+          narrow ? (
             <a className="iii-cloud-link" href={url} target="_blank" rel="noreferrer">
-              iii cloud's console
+              More in iii cloud
             </a>
-            .
-          </span>
+          ) : (
+            <span>
+              Machines, domains, rollback and a new environment are in{' '}
+              <a className="iii-cloud-link" href={url} target="_blank" rel="noreferrer">
+                iii cloud's console
+              </a>
+              .
+            </span>
+          )
         ) : null}
       </p>
     </>
@@ -227,22 +245,20 @@ function EnvPage(props: ManageProps) {
   ) : route.deploy ? (
     <DeploymentRecord host={host} status={status} envId={route.env} deployId={route.deploy} narrow={narrow} go={go} />
   ) : (
-    <EnvHome host={host} status={status} envId={route.env} go={go} />
+    <EnvHome host={host} status={status} envId={route.env} go={go} narrow={narrow} />
   )
   const chip = record ? deployState(record, servingId(status, route.env, feed.data?.deployments)) : home ? live : null
   return (
     <>
       <PathBar
         path={pathOf(route, status)}
-        host={host}
-        status={status}
-        route={route}
         go={go}
         narrow={narrow}
         rule={!tabs}
         end={<Fresh host={host} status={status} narrow={narrow} />}
       >
-        {chip ? <StateChip live={chip} /> : null}
+        {/* A phone's home carries the chip and the address in its Live now card. */}
+        {chip && !(narrow && home) ? <StateChip live={chip} /> : null}
         {url && home && !narrow ? (
           <a className="iii-cloud-mono iii-cloud-url iii-cloud-link" href={url} target="_blank" rel="noreferrer">
             {url.replace(/^https?:\/\//, '')}

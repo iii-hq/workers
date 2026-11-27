@@ -4,7 +4,7 @@ import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useActions } from './hub'
-import { deviceLabel, mmss, parseEnvironmentIds } from './model'
+import { deviceLabel, parseEnvironmentIds } from './model'
 import { Dot, ErrorPanel, StepLink, useNow } from './parts'
 import type { Connection } from './types'
 
@@ -17,6 +17,10 @@ function DeviceCode({ connection, onCancel }: { connection: Connection; onCancel
   const copy = useCopyFlash(device?.user_code ?? '')
   if (!device) return null
   const left = (Date.parse(device.expires_at) - now) / 1000
+  const expiry =
+    left <= 0
+      ? 'the code expired'
+      : `the code expires in ${left < 60 ? 'under a minute' : `${Math.floor(left / 60)} min`}`
   const page = deviceLabel(device.verification_uri)
   return (
     <>
@@ -32,7 +36,7 @@ function DeviceCode({ connection, onCancel }: { connection: Connection; onCancel
         </div>
         <span className="iii-cloud-device-wait" aria-live="polite">
           <Dot tone="live" />
-          Waiting for your approval · {left > 0 ? `the code expires in ${mmss(left)}` : 'the code expired'}
+          Waiting for your approval · {expiry}
         </span>
         <div className="iii-cloud-row">
           <Button variant="secondary" size="sm" asChild>
@@ -134,7 +138,7 @@ export function ConnectView({
           onClick={() => setShowKey(!keyOpen)}
         >
           {keyOpen ? <ChevronDown /> : <ChevronRight />}
-          Can't use a browser? Use an API key
+          Can't use a browser here? Use an API key
         </Button>
         {keyOpen ? (
           <div className="iii-cloud-signin-form">
