@@ -191,7 +191,13 @@ export function checkPayload(s: Status, manifest = appFile(s).path): Record<stri
  * check's own. (After a refused check the shown one is of the replaced source, so its file is not what to retry.)
  */
 export function retryPayload(host: Host, s: Status): Record<string, unknown> {
-  const picked = hubOf(host).pickedManifest(s.project?.environment?.id ?? '')
+  const envId = s.project?.environment?.id ?? ''
+  const hub = hubOf(host)
+  // The pick is the person's ask for the check that replaces the one they moved from. Once any newer check of the
+  // environment exists it has been answered, and the work's own file rules: the agent may have taken the work to
+  // another file since, and a pick that outlived that would send every later check back to the old one.
+  const c = s.check?.environment_id === envId ? s.check : null
+  const picked = !c || hub.movedFrom(envId) === c.id ? hub.pickedManifest(envId) : null
   return checkPayload(s, picked ?? undefined)
 }
 

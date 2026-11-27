@@ -5,7 +5,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
-import { CheckStage } from '../CheckStage'
+import { CheckStage, retryPayload } from '../CheckStage'
 import { findings } from '../findings'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
@@ -725,6 +725,21 @@ describe('the review: what a check that is not ready still offers', () => {
     const sub = el.querySelector('.iii-cloud-stephead-sub, .iii-cloud-cs-sub')?.textContent ?? ''
     expect(sub).toContain('api/worker-compose.staging.yaml')
     expect(sub).not.toMatch(/\d+ commits?/)
+  })
+
+  it('a pick made before any check of the environment does not outlive its first check', async () => {
+    const s = B('deploy-passed')
+    const h = await stage(s)
+    const env = s.check!.environment_id
+    // First-time Confirm on a new environment: there was no check to move from, and the pick is its own file.
+    await act(async () => hubOf(h.host).setPickedManifest(env, 'api/worker-compose-prod.yaml'))
+    expect(hubOf(h.host).movedFrom(env)).toBeNull()
+    // The agent took the work to another file since: a later "check again" stays on the work's file.
+    expect(retryPayload(h.host, { ...s, work_file: 'api/worker-compose-cloud.yaml' }).manifest).toBe(
+      'api/worker-compose-cloud.yaml',
+    )
+    // While no check of the environment exists yet, the pick is what gets checked.
+    expect(retryPayload(h.host, { ...s, check: null, work_file: null }).manifest).toBe('api/worker-compose-prod.yaml')
   })
 
   it("a stalled agent says why when the worker did: its question is the card's text and the environment card's", async () => {

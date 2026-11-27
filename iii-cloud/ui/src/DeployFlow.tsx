@@ -72,6 +72,7 @@ import {
   PathBar,
   SectionCard,
   StatePill,
+  secretsNote,
   uncommittedCount,
   useNow,
 } from './parts'
@@ -310,6 +311,7 @@ function ChangePanel({
   const files = status.compose_files ?? []
   const current = composeFile(env.manifest)
   const changed = uncommittedCount(p.checkout.changed_files)
+  const secrets = secretsNote(p.checkout.changed_files)
   const sources = env.production ? null : sourcesOf(p, env.name)
   const chosen = sources ? (sources.find((o) => o.value === source) ?? sources.find((o) => o.default)) : undefined
   const serving = servingNamed(status, envId, feed.data?.deployments)
@@ -388,9 +390,16 @@ function ChangePanel({
                     : `The check starts from ${p.checkout.branch ?? sha7(p.checkout.head)}.`}
                 </p>
               )}
-              {!env.production && (chosen?.folder ?? true) && changed ? (
+              {!env.production && (chosen?.folder ?? true) && (changed || secrets) ? (
                 <p className="iii-cloud-cs-sub">
-                  {`The ${plural(changed, 'uncommitted change')} in your folder ${one ? 'stays' : 'stay'} there: commit ${one ? 'it to include it' : 'them to include them'}.`}
+                  {[
+                    changed
+                      ? `The ${plural(changed, 'uncommitted change')} in your folder ${one ? 'stays' : 'stay'} there: commit ${one ? 'it to include it' : 'them to include them'}.`
+                      : null,
+                    secrets,
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                 </p>
               ) : null}
             </fieldset>
