@@ -19,6 +19,7 @@ import {
 import { errorCode, errorMessage } from '@iii-dev/console-ui/format'
 import { CircleAlert } from 'lucide-react'
 import { Fragment, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { preselected } from './findings'
 import { useActions } from './hub'
 import { ago, envPageUrl, plainMessage, plural, valueMessage, workerError } from './model'
 import { Dot, ErrorPanel, Mono, Notice, Spinner, StepHeader, StepLink } from './parts'
@@ -154,6 +155,8 @@ export type ValuesEditorProps = {
   disabled?: boolean
   /** A read the caller already holds. */
   read?: ValuesRead
+  /** The dialog's description when `only` is given (the check's default says the local run needs them). */
+  describe?: string
   /** Only these names (the check's "values the local run needs"); every name the file reads when none of them is listed. */
   only?: string[]
   /** step: the line under the step's title (its header holds the forward action: Save N values and check, or Check). */
@@ -211,7 +214,7 @@ function initial(i: ValueItem): Pick {
   if (i.skipped) return { source: 'skip' }
   if (i.in_cloud === 'set' && !unsetHere(i)) return { source: 'keep' }
   if (i.database || i.invalid_name) return { source: 'none' }
-  const s = i.need === 'has_default' ? undefined : i.suggestions.find((x) => x.preselect)
+  const s = preselected(i)[0]
   if (s?.source === 'env_file') return { source: `env_file:${s.file}` }
   if (s?.source === 'env_url') return { source: 'env_url' }
   return { source: 'typed', value: '' }
@@ -504,7 +507,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
           {v ? (
             <DialogDescription>
               {some.length ? (
-                `The local run needs ${some.length === 1 ? 'this name' : `these ${some.length} names`} on this machine.`
+                (props.describe ??
+                `The local run needs ${some.length === 1 ? 'this name' : `these ${some.length} names`} on this machine.`)
               ) : (
                 <>
                   <Mono>{v.manifest}</Mono> reads {plural(items.length, 'name')};{' '}

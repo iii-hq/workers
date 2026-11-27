@@ -34,6 +34,7 @@ import { Ellipsis } from 'lucide-react'
 import { Fragment, type ReactNode, useId, useState } from 'react'
 import { cloudWrite, useCloud } from './api'
 import { clock } from './asked'
+import { preselected, valuesPlan } from './findings'
 import { useActions } from './hub'
 import { plainMessage, plural, servingDeploy, valueMessage, when } from './model'
 import { ErrorPanel, Mono, Notice } from './parts'
@@ -229,15 +230,8 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
   const optional = rows.filter((r) => !r.set && r.optional).length
   const missing = rows.filter((r) => !r.set && !r.optional && r.kind !== 'managed').length
   const reads = rows.find((r) => r.required_by.length > 0)
-  // Names not in iii cloud whose value an env file or this environment's address can give; the worker decides which.
-  const offered = (v?.items ?? []).filter(
-    (i) =>
-      i.in_cloud === 'unset' &&
-      !i.database &&
-      !i.invalid_name &&
-      !i.skipped &&
-      i.suggestions.some((x) => x.source === 'env_file' || x.source === 'env_url'),
-  )
+  // Exactly what the review dialog will offer to save: one rule, `preselected`.
+  const offered = valuesPlan(v).offered
 
   const done = () => {
     setOpen(null)
@@ -312,8 +306,9 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
         kind={open?.kind ?? 'secret'}
         disabled={readOnly}
         onSaved={done}
-      />
-      {entry(r)}
+      >
+        {entry(r)}
+      </Offers>
     </>
   )
   const entry = (r: Row) =>
@@ -512,6 +507,7 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
           manifest={v.manifest}
           read={values}
           only={offered.map((i) => i.name)}
+          describe={`Each value is read from your env file when you save, and saved to ${v.environment}. Nothing is written until you save.`}
           onClose={() => setReviewing(false)}
           onSaved={vars.refetch}
         />
@@ -535,8 +531,9 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
 type Choice = { key: string; label: string; file?: string; save: SaveItem }
 
 /**
- * The choices a name's own editor offers next to its input: each env file, and this environment's address. A choice
- * saves at once through `values::save` with no value (the worker reads the file); the input stays for typing.
+ * The sources a name's own editor offers beside its input, only for a name iii cloud has no value for and only
+ * the ones the worker itself would preselect. A click selects one (the input says where the value will come from,
+ * never the value); the row's Save then writes it through `values::save` with no value, once. Cancel writes nothing.
  */
 function Offers({
   host,
@@ -545,6 +542,7 @@ function Offers({
   kind,
   disabled,
   onSaved,
+  children,
 }: {
   host: Host
   values: Values | null
@@ -552,60 +550,77 @@ function Offers({
   kind: Kind
   disabled: boolean
   onSaved: () => void
+  children: ReactNode
 }) {
   const { busy, call } = useActions(host)
+  const [chosen, setChosen] = useState<Choice | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
-  if (!v || !item || item.database || item.invalid_name) return null
-  const choices = item.suggestions.flatMap<Choice>((x) =>
-    x.source === 'env_file'
-      ? [
-          {
-            key: x.file,
-            label: `From ${x.file}`,
-            file: x.file,
-            save: { name: item.name, from: 'env_file', type: kind, file: x.file } as SaveItem,
-          },
-        ]
-      : x.source === 'env_url'
-        ? [
-            {
-              key: 'url',
-              label: "This environment's address",
-              file: undefined,
-              save: { name: item.name, from: 'env_url' } as SaveItem,
-            },
-          ]
-        : [],
-  )
-  if (!choices.length) return null
-  const pick = async (c: Choice) => {
+  const id = useId()
+  const choices =
+    v && item && item.in_cloud === 'unset'
+      ? preselected(item).flatMap<Choice>((x) =>
+          x.source === 'env_file'
+            ? [
+                {
+                  key: x.file,
+                  label: `From ${x.file}`,
+                  file: x.file,
+                  save: { name: item.name, from: 'env_file', type: kind, file: x.file },
+                },
+              ]
+            : x.source === 'env_url'
+              ? [{ key: 'url', label: "This environment's address", save: { name: item.name, from: 'env_url' } }]
+              : [],
+        )
+      : []
+  if (!v || !item || !choices.length) return <>{children}</>
+  const save = async () => {
+    if (!chosen) return
     setFailed(null)
+    // The kind of an env-file item is the row's now, not the one it was chosen with.
+    const it: SaveItem = chosen.save.from === 'env_file' ? { ...chosen.save, type: kind } : chosen.save
     const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
       environment_id: v.environment_id,
       manifest: v.manifest,
-      items: [c.save],
+      items: [it],
     })
     if (out === null) return
     const bad = (out.results ?? []).find((r) => !r.ok)
     if (!bad) return onSaved()
     const why = bad.error ?? { code: 'NOT_SAVED', message: '' }
-    setFailed(valueMessage(why, { env: v.environment, name: item.name, file: c.file }))
+    setFailed(valueMessage(why, { env: v.environment, name: item.name, file: chosen.file }))
   }
   return (
     <div className="iii-cloud-set-offers">
-      <span className="iii-cloud-row">
-        {choices.map((c) => (
-          <Button
-            key={c.key}
-            size="sm"
-            variant="secondary"
-            disabled={disabled || busy === 'save'}
-            onClick={() => void pick(c)}
-          >
-            {c.label}
-          </Button>
-        ))}
-      </span>
+      {chosen ? (
+        <div className="iii-cloud-secret">
+          <label className="iii-cloud-lbl" htmlFor={id}>
+            <Mono>{item.name}</Mono>
+          </label>
+          <div className="iii-cloud-row">
+            <div className="iii-cloud-grow">
+              <Input id={id} value={chosen.label} disabled onChange={() => undefined} />
+            </div>
+            <Button variant="primary" disabled={disabled || busy === 'save'} onClick={() => void save()}>
+              Save
+            </Button>
+            <Button variant="secondary" disabled={busy === 'save'} onClick={() => setChosen(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <span className="iii-cloud-row">
+            {choices.map((c) => (
+              <Button key={c.key} size="sm" variant="secondary" disabled={disabled} onClick={() => setChosen(c)}>
+                {c.label}
+              </Button>
+            ))}
+          </span>
+          {children}
+        </>
+      )}
       {failed ? <Notice variant="alert" headline={`${item.name} did not save`} detail={failed} /> : null}
     </div>
   )

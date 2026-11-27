@@ -565,12 +565,21 @@ describe('values that can come from env files', () => {
     expect(dialog?.textContent).toContain('api/.env.test no longer has ASSET_BUCKET_KEY')
   })
 
-  it("a row's editor offers each env file and the address; a choice saves that item with no typing", async () => {
+  it("a row's editor offers only the preselected sources; a click selects, Save writes once", async () => {
     const h = await open({}, offered, {}, saved(['ASSET_BUCKET_KEY']))
     await settle()
     await click(btn('Set ASSET_BUCKET_KEY'))
-    expect(btn('From api/.env')).toBeTruthy()
+    // api/.env is not preselected by the worker: only the review dialog offers it.
+    expect(btn('From api/.env')).toBeNull()
     await click(btn('From api/.env.test'))
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
+    const input = el.querySelector('input') as HTMLInputElement
+    expect(input.value).toBe('From api/.env.test')
+    // Cancel writes nothing and brings the choices back.
+    await click(btn('Cancel'))
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
+    await click(btn('From api/.env.test'))
+    await click(btn('Save'))
     await settle()
     expect(of(h, 'iii-cloud::values::save')).toEqual([
       {
@@ -581,8 +590,59 @@ describe('values that can come from env files', () => {
     ])
     await click(btn('Set PUBLIC_URL'))
     await click(btn("This environment's address"))
+    expect(of(h, 'iii-cloud::values::save')).toHaveLength(1)
+    await click(btn('Save'))
     await settle()
     expect(of(h, 'iii-cloud::values::save')[1]).toMatchObject({ items: [{ name: 'PUBLIC_URL', from: 'env_url' }] })
+  })
+
+  it('no choices on a row that is set, or whose only source is not preselected', async () => {
+    const values: Values = {
+      ...offered,
+      items: [
+        ...offered.items.filter((i) => i.name !== 'STRIPE_SECRET_KEY' && i.name !== 'ASSET_BUCKET_KEY'),
+        valueItem('STRIPE_SECRET_KEY', {
+          containers: ['search'],
+          in_cloud: 'set',
+          suggestions: [file('api/.env', false)],
+        }),
+        valueItem('ASSET_BUCKET_KEY', { containers: ['search'], suggestions: [file('api/.env', false)] }),
+      ],
+    }
+    const h = await open({}, values)
+    await settle()
+    await click(btn('Replace STRIPE_SECRET_KEY'))
+    expect(btn('From api/.env')).toBeNull()
+    await click(btn('Set ASSET_BUCKET_KEY'))
+    expect(btn('From api/.env')).toBeNull()
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
+  })
+
+  it('the count is what the dialog offers: names with a default and a localhost-only value are not counted', async () => {
+    const values: Values = {
+      ...devSecretValues,
+      items: [
+        ...devSecretValues.items.filter((i) => i.name !== 'ASSET_BUCKET_KEY'),
+        valueItem('LOG_LEVEL', {
+          containers: ['search'],
+          need: 'has_default',
+          default: 'info',
+          suggestions: [file('api/.env', true)],
+        }),
+        valueItem('LOCAL_ONLY', { containers: ['search'], suggestions: [file('api/.env', false)] }),
+        valueItem('NORMAL', { containers: ['search'], suggestions: [file('api/.env.test', true)] }),
+      ],
+    }
+    const h = await open({}, values, {}, saved(['NORMAL']))
+    await settle()
+    expect(text()).toContain('1 value can come from your env files')
+    await click(btn('Review and save'))
+    // The description is this screen's, not the check's "local run" sentence.
+    const dialog = el.querySelector('[role=dialog]')?.textContent ?? ''
+    expect(dialog).toContain('saved to dev. Nothing is written until you save.')
+    expect(dialog).not.toContain('The local run needs')
+    expect(btn('Save 1 value')).toBeTruthy()
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
   })
 
   it('a connection that cannot write sees the row disabled', async () => {
