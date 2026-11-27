@@ -516,7 +516,15 @@ function cloudPart(s: Status, c: Check): Part {
   if (cloudPending(c)) {
     return {
       status: plan.status === 'unavailable' ? 'unavailable' : 'check pending',
-      rows: [{ key: 'pending', mark: 'wait', label: cloudPendingNote(s) ?? '', state: '' }],
+      // An unreadable plan is said once, in its stop above.
+      rows: [
+        {
+          key: 'pending',
+          mark: 'wait',
+          label: plan.status === 'unavailable' ? 'The reason is in the panel above.' : (cloudPendingNote(s) ?? ''),
+          state: '',
+        },
+      ],
     }
   }
   const rows: Row[] = openProblems(s)
@@ -1222,7 +1230,11 @@ export function CheckStage(props: CheckStageProps) {
   const past = historyOf(s, c, envId)
 
   // The seconds after a page check ends, while the worker may still be sending the agent on.
-  const settling = hubOf(host).checkEndedAt() > 0 && now - hubOf(host).checkEndedAt() < 6000
+  // Only where an idle hand-off exists on this environment can the worker continue an agent; and the wait counts from
+  // the run's own end (it may outlive the call), else from the call's.
+  const idleAgent = !!s.agent && !['starting', 'working'].includes(s.agent.state)
+  const endedMs = run?.finished_at ? Date.parse(run.finished_at) : hubOf(host).checkEndedAt(envId)
+  const settling = idleAgent && endedMs > 0 && now - endedMs < 6000
   const stops: Stop[] = []
   if (c) {
     if (s.connection.status === 'expired' || signInRequired(s)) {
@@ -1237,13 +1249,29 @@ export function CheckStage(props: CheckStageProps) {
         lock: 'Sign in again first.',
       })
     }
-    if (c.plan.status === 'unavailable' && !running && !replaced) {
+    // The sign-in stop is the only one when the person is signed out: the plan could not be read because of it.
+    if (
+      c.plan.status === 'unavailable' &&
+      !running &&
+      !replaced &&
+      s.connection.status !== 'expired' &&
+      !signInRequired(s)
+    ) {
+      const why = c.plan.error
+      // A cause that will not pass by itself (403, 404) says the worker's sentence and what helps; else "in a moment".
+      const lasting = why?.status === 403 || why?.status === 404
+      const consoleUrl = envPageUrl(s, '')
       stops.push({
         key: 'plan',
         variant: 'warn',
         headline: "iii cloud's plan could not be read",
-        detail: c.plan.message ?? "iii cloud couldn't check this commit just now. Check again in a moment.",
-        acts: [{ label: 'Check again', onClick: checkAgain }],
+        detail: why
+          ? `${why.message}${why.fix ? ` ${why.fix}` : ''}${lasting ? '' : ' Check again in a moment.'}`
+          : "iii cloud couldn't check this commit just now. Check again in a moment.",
+        acts: [
+          { label: 'Check again', onClick: checkAgain },
+          ...(lasting && consoleUrl ? [{ label: 'Open in iii cloud', href: consoleUrl }] : []),
+        ],
       })
     }
     if (staleSource && !running) {
@@ -1308,12 +1336,23 @@ export function CheckStage(props: CheckStageProps) {
           { label: 'How to start Docker', href: DOCKER_DOCS },
         ],
       })
+    } else if (err?.owner === 'replaced') {
+      // A newer run took its place: nothing to fix and nothing to offer; the newer run speaks for itself.
+      stops.push({
+        key: 'run',
+        variant: 'info',
+        headline: 'A newer run replaced this one.',
+        detail: '',
+        acts: [],
+      })
     } else if (
       err &&
       err.code !== 'RUN_REPLACED' &&
       // The person's values count here too: a name the run lacks is why it failed, and the values card says so.
       !openProblems(s, true).some((x) => x.source === 'check_here')
     ) {
+      // The plan stop already says "Check again": the same button is not offered twice.
+      const planStop = stops.some((x) => x.key === 'plan')
       stops.push({
         key: 'run',
         variant: 'alert',
@@ -1352,9 +1391,11 @@ export function CheckStage(props: CheckStageProps) {
                         disabled: !canAsk || settling,
                       },
                     ]),
-              { label: 'Run again', onClick: checkAgain, disabled: running },
+              ...(planStop ? [] : [{ label: 'Run again', onClick: checkAgain, disabled: running }]),
             ]
-          : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+          : planStop
+            ? []
+            : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
@@ -1658,18 +1699,31 @@ export function CheckStage(props: CheckStageProps) {
   // The values you set since the hand-off began: names its brief listed as the person's to set that the values read
   // now reports as set. Without a brief or a read there is nothing to count, so "You did" is left out, never 0.
   const setNow = new Set(valuesPlan(read).set.map((i) => i.name))
-  const valuesYouSet = (s.handoff_brief?.person_problems ?? [])
+  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it.
+  const briefNow =
+    s.handoff_brief?.kind === 'ready' && !!c?.handoff_id && c.handoff_id === s.handoff_brief.handoff_id
+      ? s.handoff_brief
+      : null
+  const valuesYouSet = (briefNow?.person_problems ?? [])
     .filter((b) => b.code && VALUE_CODES.has(b.code))
     .map((b) => variableName({ title: b.title, detail: b.detail, code: b.code ?? null }))
     .filter((n): n is string => !!n && setNow.has(n))
   const youDid = doneN - agentFixed + new Set(valuesYouSet).size
   const summary = [
     ready
-      ? [youDid > 0 ? `You did ${youDid}` : null, `your agent fixed ${agentFixed}`].filter(Boolean).join(' · ')
+      ? // A zero part is dropped, and the line starts with a capital whichever part comes first.
+        [
+          youDid > 0 ? `You did ${youDid}` : null,
+          agentFixed > 0 ? `${youDid > 0 ? 'your' : 'Your'} agent fixed ${agentFixed}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : `Done ${doneN}`,
     `Warnings ${warnings.length}`,
     `Checks ${past.length}${lastCheck && !ready ? ` (last ${clock(lastCheck.checked_at)}, ${duration(lastCheck.duration_ms)})` : ''}`,
-  ].join(' · ')
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <div className="iii-cloud-cs" data-narrow={narrow ? '' : undefined}>

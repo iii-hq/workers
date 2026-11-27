@@ -12,7 +12,7 @@ import type { ValuesRead } from './ValuesEditor'
 /** Where the application starts: the stages a missing value can make fail. */
 const APP_STAGES = new Set(['workers', 'healthcheck'])
 /** The release command and the compose start run with the run's values too: a value may explain them, or the agent's part does. */
-const COMMAND_STAGES = new Set(['release', 'compose_up'])
+const COMMAND_STAGES = new Set(['release', 'compose_up', 'routes'])
 const NO_WRITE = {
   api_key:
     "An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser.",

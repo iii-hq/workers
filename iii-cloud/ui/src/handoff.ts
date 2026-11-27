@@ -75,14 +75,19 @@ export async function handOff(
     if (made.session_id) openChatFor(host, made.session_id)
     // `sent: false`: the chat is open but nothing was put in it: the person tells it.
     const check = status.check?.id
+    // Something went into the chat when the worker sent the open problems (`sent`) or delivered the page's text
+    // (`delivered`); "tell it" only when nothing did.
+    const went = made.sent === true || made.delivered === true
     setLaunch(
       made.asks
         ? { kind: 'asks', check }
-        : made.sent === false
-          ? { kind: 'told', check }
-          : made.session_id
-            ? { kind: 'sent', check }
-            : { kind: 'waiting' },
+        : went
+          ? { kind: 'sent', check }
+          : made.sent === false
+            ? { kind: 'told', check }
+            : made.session_id
+              ? { kind: 'sent', check }
+              : { kind: 'waiting' },
     )
     return true
   }

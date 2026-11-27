@@ -16,7 +16,7 @@ import { hubOf, useStatus } from '../hub'
 import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
-import type { ChangeEvent, Status } from '../types'
+import type { ChangeEvent, Status, WorkerError } from '../types'
 import { copyFlash } from './hooks-mock'
 import { fakeHost } from './host'
 import { btn, click, cloudAnswers, el, flush, lastCall, root, text, type, usePage } from './util'
@@ -31,7 +31,7 @@ function Live({ narrow = false, ...props }: { host: Host; go: (r: Route) => void
   const { status } = useStatus(props.host, { poll: false })
   return status ? (
     <>
-      <LaunchNote />
+      <LaunchNote check={status.check?.id} />
       <CheckStage {...props} status={status} narrow={narrow} />
     </>
   ) : null
@@ -1347,7 +1347,7 @@ describe('the check follows the canvas', () => {
     expect(text()).not.toContain('Pinned to the plan')
     expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
     await stage(B('deploy-passed'))
-    expect(region('Details')?.textContent).toMatch(/your agent fixed \d+/)
+    expect(region('Details')?.textContent).toMatch(/[Yy]our agent fixed \d+/)
     // nothing the person did can be counted here: no "You did 0"
     expect(region('Details')?.textContent).not.toContain('You did 0')
   })
@@ -1570,8 +1570,16 @@ describe('small things the review found', () => {
     }
     const items = names8.map((n) => valueItem(n, { need: 'required', default: null, in_cloud: 'set', suggestions: [] }))
     const answers = { 'iii-cloud::values': () => ({ ...rcValues, environment_id: r.project?.environment?.id, items }) }
-    await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
+    const mine = { ...r, check: { ...r.check!, handoff_id: brief.handoff_id } }
+    await stage({ ...mine, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
+    expect(region('Details')?.textContent).toMatch(/^Details(You did 8|Your agent fixed)/)
     expect(region('Details')?.textContent).toMatch(/You did 8/)
+    // an old hand-off of another kind, or one that is not this check's, counts nothing
+    await stage({ ...mine, handoff_brief: { ...brief, kind: 'pull_request' as const } }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    await stage({ ...r, handoff_brief: brief }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    expect(text()).not.toContain('agent fixed 0')
     // without the read nothing is invented
     await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } })
     expect(text()).not.toContain('You did')
@@ -1585,14 +1593,18 @@ describe('small things the review found', () => {
       handoff_brief: null,
       check: {
         ...r.check!,
-        plan: { ...r.check!.plan, status: 'unavailable' as const, message: 'The cloud answered 503.' },
+        plan: {
+          ...r.check!.plan,
+          status: 'unavailable' as const,
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+        },
       },
     }
     const h = await stage(partial)
     const stopBlock = [...el.querySelectorAll('[role=status]')].find((p) =>
       p.textContent?.includes("iii cloud's plan could not be read"),
     )
-    expect(stopBlock?.textContent).toContain('The cloud answered 503.')
+    expect(stopBlock?.textContent).toContain('iii cloud answered 503. Check again in a moment.')
     expect([...(stopBlock?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Check again'])
     expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Check again')).toHaveLength(1)
     // the first-time flow: a check that ends with agent problems but no plan does not start the agent
@@ -1602,6 +1614,28 @@ describe('small things the review found', () => {
     await fire(h, { kind: 'check', id: 'chk-partial', terminal: true, summary: '', record: ended } as ChangeEvent)
     await flush()
     expect(handoffs(h)).toHaveLength(0)
+  })
+
+  it('a plan that fails for a lasting reason says the worker\'s sentence and what helps, never "in a moment"; signed out, only the sign-in stop', async () => {
+    const r = B('deploy-problems')
+    const plan = (error: WorkerError) => ({
+      ...r,
+      agent: null,
+      handoff_brief: null,
+      check: { ...r.check!, plan: { ...r.check!.plan, status: 'unavailable' as const, error } },
+    })
+    const planStop = () =>
+      [...el.querySelectorAll('[role=status]')].find((p) =>
+        p.textContent?.includes("iii cloud's plan could not be read"),
+      )
+    await stage(plan({ code: 'NOT_FOUND', message: 'No such environment in iii cloud.', status: 404 }))
+    expect(planStop()?.textContent).toContain('No such environment in iii cloud.')
+    expect(planStop()?.textContent).not.toContain('in a moment')
+    // signed out: the sign-in stop is the only one
+    const out = plan({ code: 'SIGN_IN_REQUIRED', message: 'You need to sign in to iii cloud again.', status: 401 })
+    await stage({ ...out, connection: { ...out.connection, status: 'expired' as const } })
+    expect(planStop()).toBeUndefined()
+    expect(text()).toContain('Your iii cloud sign-in expired')
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
@@ -2003,7 +2037,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
   })
 
   const owned = (
-    owner: 'agent' | 'person' | 'interrupted',
+    owner: 'agent' | 'person' | 'interrupted' | 'replaced',
     over: object = {},
     withheld = false,
     problems: object[] = [],
@@ -2083,15 +2117,25 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
-  it("after a page check ends the button waits six seconds for the worker's own continue", async () => {
+  it("the button waits six seconds from the run's end, only where an idle hand-off exists on this environment", async () => {
+    const justNow = (st: Status) =>
+      ({ ...st, check: { ...st.check!, run: { ...st.check!.run!, finished_at: new Date().toISOString() } } }) as Status
+    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    // an idle agent on this environment, the run just ended
+    await stage(justNow(release(note)), {}, { openScreen: vi.fn() })
+    expect(first().disabled).toBe(true)
+    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+    // no hand-off at all (the first check from Setup): nobody can take it, so no wait
+    await stage({ ...justNow(release(note)), agent: null, handoff_brief: null })
+    expect(first().disabled).toBe(false)
+    expect(stop()?.textContent).not.toContain('Checking whether your agent took it…')
+    // a check that ended on another environment is not this one's wait
     const h = await stage(release(note), {}, { openScreen: vi.fn() })
     await act(async () => {
       hubOf(h.host).checking(1)
-      hubOf(h.host).checking(-1)
+      hubOf(h.host).checking(-1, 'another-environment')
     })
-    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
-    expect(first().disabled).toBe(true)
-    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+    expect(first().disabled).toBe(false)
   })
 
   it("with a hand-off open the call carries no text (the worker's continue is the one message); without one it does", async () => {
@@ -2121,6 +2165,78 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     copyFlash.state = 'idle'
   })
 
+  it('"sent" follows what went into the chat: the page\'s own text counts, "Tell it" only when nothing did', async () => {
+    const press = async (reply: object) => {
+      await stage(
+        release(note),
+        { 'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, session_id: 'sess-1', ...reply } },
+        { openScreen: vi.fn() },
+      )
+      await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+      await flush()
+    }
+    // the worker could not send the open problems (already told) but delivered the page's text: something went in
+    await press({ sent: false, delivered: true })
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    expect(stop()?.textContent).not.toContain('Tell it in the chat.')
+    // nothing went in
+    await press({ sent: false, delivered: false })
+    expect(stop()?.textContent).toContain('Tell it in the chat.')
+  })
+
+  it('replaced: a newer run took its place, nothing to fix and no action', async () => {
+    await stage(owned('replaced', { code: 'RUN_REPLACED', message: 'A newer run replaced this one.' }))
+    const replaced = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('A newer run replaced this one.'),
+    )
+    expect(replaced).toBeTruthy()
+    expect(replaced?.querySelectorAll('button')).toHaveLength(0)
+    expect(title() ?? '').not.toContain('for your agent to fix')
+  })
+
+  it('a plan that could not be read is said once, with one button when the run also failed; routes may be a value too', async () => {
+    const w = release(note)
+    const both = {
+      ...w,
+      agent: null,
+      handoff_brief: null,
+      check: {
+        ...w.check!,
+        plan: {
+          ...w.check!.plan,
+          status: 'unavailable' as const,
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+        },
+      },
+    } as Status
+    await stage(both)
+    const t = text()
+    expect(t.split('iii cloud answered 503.').length - 1).toBe(1)
+    expect(t).not.toContain("iii cloud couldn't check this commit just now")
+    const buttons = [...el.querySelectorAll('[role=status] button')]
+      .map((b) => b.textContent)
+      .filter((x) => /Check again|Run again/.test(x ?? ''))
+    expect(buttons).toEqual(['Check again'])
+  })
+
+  it('routes is a command stage too: a prefix read from a variable may be the cause', async () => {
+    const atRoutes = owned('agent', {
+      stage: 'routes',
+      code: 'ROUTE_OUTSIDE_PREFIX',
+      message: 'A route is outside its prefix.',
+    })
+    const answers = {
+      'iii-cloud::values': () => ({
+        ...rcValues,
+        environment_id: atRoutes.project?.environment?.id,
+        items: [valueItem('BASE_PATH', { suggestions: [] })],
+      }),
+    }
+    await stage(atRoutes, answers)
+    expect(region('Secrets and variables')?.textContent ?? '').toContain('If that command reads one of the names above')
+    expect(region('Secrets and variables')?.textContent ?? '').not.toContain('values are not the cause')
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
@@ -2134,6 +2250,8 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await stage({ ...next, check: { ...next.check!, id: 'chk-newer' } })
     expect(stop()?.textContent).toContain('stopped at Release')
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+    // ...nor in the page header
+    expect(text()).not.toContain("Sent to your agent's chat")
   })
 
   it('an agent already on it: "Your agent is on it." and no button for it', async () => {
