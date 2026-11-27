@@ -5,6 +5,8 @@ import { vi } from 'vitest'
 
 export const ui = { narrow: false, panes: {} as Record<string, unknown> }
 export const useContainerNarrow = () => ({ ref: () => undefined, narrow: ui.narrow })
-export const useCopyFlash = () => ({ state: 'idle', copy: vi.fn() })
+/** A test sets `copyFlash.state = 'failed'` to see the failure. */
+export const copyFlash = { state: 'idle' as 'idle' | 'copied' | 'failed' }
+export const useCopyFlash = () => ({ state: copyFlash.state, copy: vi.fn() })
 export const usePaneState = <T>(key: string, initial: T) =>
   useState<T>(key in ui.panes ? (ui.panes[key] as T) : initial)

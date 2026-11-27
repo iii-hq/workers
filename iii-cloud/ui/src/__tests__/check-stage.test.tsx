@@ -17,6 +17,7 @@ import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } fr
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
+import { copyFlash } from './hooks-mock'
 import { fakeHost } from './host'
 import { btn, click, cloudAnswers, el, flush, lastCall, root, text, type, usePage } from './util'
 
@@ -2051,6 +2052,18 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
     await flush()
     expect(h2.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toHaveProperty('text')
+  })
+
+  it('one voice: no "Tell it in the chat, or check again" beside the stop\'s Fix button, and a failed copy says so', async () => {
+    const w = release({ ...note, state: 'waiting' as const, waiting_for: 'the check to end' } as never)
+    const r = w.check!
+    await stage({ ...w, check: { ...r, run: { ...r.run!, log_path: '/home/you/.iii-cloud/runs/x.log' } } })
+    expect(region('Your agent')?.textContent).not.toContain('Tell it in the chat, or check again')
+    expect(buttonsOf()).toContain('Fix with your agent')
+    copyFlash.state = 'failed'
+    await stage({ ...w, check: { ...r, run: { ...r.run!, log_path: '/home/you/.iii-cloud/runs/x.log' } } })
+    expect(stop()?.textContent).toContain('Could not copy: select the text.')
+    copyFlash.state = 'idle'
   })
 
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {

@@ -618,7 +618,7 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
 
 /** The run's whole log on this machine: one quiet line, selectable, with a copy button. */
 function LogPath({ path }: { path?: string | null }) {
-  const copy = useCopyFlash(path ?? '')
+  const copy = useCopyFlash(path ?? '', 5000)
   if (!path) return null
   return (
     <p className="iii-cloud-cs-foot iii-cloud-cs-logpath">
@@ -626,6 +626,7 @@ function LogPath({ path }: { path?: string | null }) {
       <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={copy.copy}>
         {copy.state === 'copied' ? 'Copied' : 'Copy'}
       </button>
+      {copy.state === 'failed' ? <span role="alert"> Could not copy: select the text.</span> : null}
     </p>
   )
 }
@@ -1621,17 +1622,20 @@ export function CheckStage(props: CheckStageProps) {
   const nudge: { line: string; chat: boolean } | null =
     !stuck || !(lines.length > 0 || run?.status === 'failed')
       ? null
-      : // Only a waiting agent is continued when a check ends; a stalled one has no wake armed.
-        running && a?.state === 'waiting'
-        ? { line: 'Your agent goes on when the check ends.', chat: false }
-        : !lines.length && missing.length
-          ? {
-              line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
-              chat: false,
-            }
-          : a?.session_id && canOpenChat(host)
-            ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
-            : { line: 'Your agent is not working on this: check again.', chat: false }
+      : // A failed run of the agent's has the stop's own voice (and its button): no second line beside it.
+        agentRun
+        ? null
+        : // The worker continues a waiting, done or check-noted agent when a check ends; a stalled one is not continued.
+          running && a?.state === 'waiting'
+          ? { line: 'Your agent goes on when the check ends.', chat: false }
+          : !lines.length && missing.length
+            ? {
+                line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
+                chat: false,
+              }
+            : a?.session_id && canOpenChat(host)
+              ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
+              : { line: 'Your agent is not working on this: check again.', chat: false }
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)

@@ -738,3 +738,8 @@
   justify-content: space-between;
   gap: 8px 12px;
 }
+
+/* The run's log path: a long path with no spaces wraps instead of running past the panel. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-logpath {
+  overflow-wrap: anywhere;
+}
