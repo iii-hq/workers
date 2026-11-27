@@ -589,6 +589,35 @@ pub async fn skip_problem(ctx: &Arc<Ctx>, request: ProblemSkip) -> Res<ProblemsS
     })
 }
 
+/// Await spawned tasks in the order given. A task that panicked or was cancelled
+/// answers `lost(index)`; the others keep theirs.
+async fn join_in_order<T>(
+    tasks: Vec<(usize, tokio::task::JoinHandle<T>)>,
+    lost: impl Fn(usize) -> T,
+) -> Vec<T> {
+    let mut done = vec![];
+    for (i, task) in tasks {
+        done.push(task.await.unwrap_or_else(|_| lost(i)));
+    }
+    done
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_in_order;
+
+    #[tokio::test]
+    async fn a_task_that_panics_loses_only_its_own_answer() {
+        let tasks = vec![
+            (0, tokio::spawn(async { "zero" })),
+            (1, tokio::spawn(async { panic!("a write blew up") })),
+            (2, tokio::spawn(async { "two" })),
+        ];
+        let done = join_in_order(tasks, |_| "lost").await;
+        assert_eq!(done, vec!["zero", "lost", "two"]);
+    }
+}
+
 fn failed(code: &str, message: impl Into<String>, status: Option<u16>) -> WorkerError {
     WorkerError {
         code: code.into(),
@@ -799,76 +828,88 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             }
             continue;
         }
-        let mut tasks = tokio::task::JoinSet::new();
+        let mut tasks = vec![];
         for &i in chunk {
             let (ctx, sel, manifest) = (ctx.clone(), sel.clone(), manifest.clone());
             let project_path = project.path.clone();
             let item = request.items[i].clone();
-            tasks.spawn(async move {
-                let (ctx, sel) = (&ctx, &sel);
-                let item = &item;
-                let name = item.name();
-                let chosen: Result<(ValueKind, String), WorkerError> = match item {
-                    SaveItem::Typed { kind, value, .. } => Ok((*kind, value.clone())),
-                    SaveItem::EnvFile { kind, file, .. } => {
-                        // Read again now: the file may have changed since the page listed it.
-                        match read_env(Path::new(&project_path), file)
-                            .and_then(|lines| lines.into_iter().find(|(n, _)| n == name))
-                        {
-                            None => Err(failed(
-                                "FILE_CHANGED",
-                                format!("{name} is no longer in {file}."),
-                                None,
-                            )),
-                            Some((_, value)) if value.len() > MAX_VALUE || value.contains('\0') => {
-                                Err(failed(
-                                    "INVALID_REQUEST",
-                                    format!("{name} in {file} is over 64 KiB or holds a NUL."),
+            tasks.push((
+                i,
+                tokio::spawn(async move {
+                    let (ctx, sel) = (&ctx, &sel);
+                    let item = &item;
+                    let name = item.name();
+                    let chosen: Result<(ValueKind, String), WorkerError> = match item {
+                        SaveItem::Typed { kind, value, .. } => Ok((*kind, value.clone())),
+                        SaveItem::EnvFile { kind, file, .. } => {
+                            // Read again now: the file may have changed since the page listed it.
+                            match read_env(Path::new(&project_path), file)
+                                .and_then(|lines| lines.into_iter().find(|(n, _)| n == name))
+                            {
+                                None => Err(failed(
+                                    "FILE_CHANGED",
+                                    format!("{name} is no longer in {file}."),
                                     None,
-                                ))
+                                )),
+                                Some((_, value))
+                                    if value.len() > MAX_VALUE || value.contains('\0') =>
+                                {
+                                    Err(failed(
+                                        "INVALID_REQUEST",
+                                        format!("{name} in {file} is over 64 KiB or holds a NUL."),
+                                        None,
+                                    ))
+                                }
+                                Some((_, value)) => Ok((*kind, value)),
                             }
-                            Some((_, value)) => Ok((*kind, value)),
+                        }
+                        SaveItem::EnvUrl { .. } => sel
+                            .env
+                            .url
+                            .clone()
+                            .map(|url| (ValueKind::Variable, url))
+                            .ok_or_else(|| {
+                                failed(
+                                    "NO_URL",
+                                    format!("{} has no address yet.", sel.env.name),
+                                    None,
+                                )
+                            }),
+                        SaveItem::LeaveEmpty { .. } => Ok((ValueKind::Variable, String::new())),
+                        SaveItem::Copy { .. } => unreachable!("copies are above"),
+                    };
+                    match chosen {
+                        Err(e) => (i, Err(e)),
+                        Ok((kind, value)) => {
+                            let written = crate::secret::write_value(
+                                ctx,
+                                sel,
+                                name,
+                                kind.as_str(),
+                                &value,
+                                Some(manifest.as_str()),
+                                false,
+                            )
+                            .await;
+                            (i, Ok((value, written)))
                         }
                     }
-                    SaveItem::EnvUrl { .. } => sel
-                        .env
-                        .url
-                        .clone()
-                        .map(|url| (ValueKind::Variable, url))
-                        .ok_or_else(|| {
-                            failed(
-                                "NO_URL",
-                                format!("{} has no address yet.", sel.env.name),
-                                None,
-                            )
-                        }),
-                    SaveItem::LeaveEmpty { .. } => Ok((ValueKind::Variable, String::new())),
-                    SaveItem::Copy { .. } => unreachable!("copies are above"),
-                };
-                match chosen {
-                    Err(e) => (i, Err(e)),
-                    Ok((kind, value)) => {
-                        let written = crate::secret::write_value(
-                            ctx,
-                            sel,
-                            name,
-                            kind.as_str(),
-                            &value,
-                            Some(manifest.as_str()),
-                            false,
-                        )
-                        .await;
-                        (i, Ok((value, written)))
-                    }
-                }
-            });
+                }),
+            ));
         }
-        // Awaited in the request's order, whichever write ends first.
-        let mut done = vec![];
-        while let Some(joined) = tasks.join_next().await {
-            done.push(joined.expect("a value write task ended without an answer"));
-        }
-        done.sort_by_key(|(i, _)| *i);
+        // Awaited in the request's order, whichever write ends first. A task that
+        // panicked has no answer: that name is not saved, the others keep theirs.
+        let done = join_in_order(tasks, |i| {
+            (
+                i,
+                Err(failed(
+                    "NOT_SAVED",
+                    "The write stopped unexpectedly, so this value may not be saved. Try again.",
+                    None,
+                )),
+            )
+        })
+        .await;
         for (i, outcome) in done {
             let item = &request.items[i];
             let (value, written) = match outcome {

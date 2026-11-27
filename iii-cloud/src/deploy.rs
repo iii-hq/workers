@@ -174,6 +174,13 @@ fn find_push(list: &Value, target: &str, since: Since, old: &[String]) -> Option
         .into_iter()
         .flatten()
         .filter(|d| d.get("status").and_then(Value::as_str) != Some("replaced"))
+        // Only a push deployment is the push's: a teammate's console redeploy of the
+        // same commit, made after the list was read, is not.
+        .filter(|d| {
+            d.get("type")
+                .and_then(Value::as_str)
+                .is_none_or(|t| t == "push")
+        })
         .filter(|d| {
             let id = d.get("id").and_then(Value::as_str).unwrap_or_default();
             !old.iter().any(|o| o == id)

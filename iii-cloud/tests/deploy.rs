@@ -3140,7 +3140,7 @@ async fn a_failed_or_canceled_deployment_of_the_commit_is_never_adopted() {
         Mock::given(method("GET"))
             .and(path(dep_base()))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "deployments": [deployment(DEP_ID, &target, status, "manual")], "next_cursor": null
+                "deployments": [deployment(DEP_ID, &target, status, "push")], "next_cursor": null
             })))
             .mount(&s.server)
             .await;
@@ -4703,4 +4703,34 @@ async fn status_writes_nothing_when_nothing_changed() {
         std::fs::metadata(&file).unwrap().modified().unwrap(),
         before
     );
+}
+
+#[tokio::test]
+async fn a_manual_deployment_of_the_commit_that_appears_meanwhile_is_not_this_deploys_own() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    // A teammate redeploys the commit from the console once the environment follows the branch.
+    let sha = s.check.commit.clone();
+    let (origin, branch) = (s.repo.origin.clone(), f.branch.clone());
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(move |_: &Request| {
+            let follows = *branch.lock().unwrap() == OWN
+                && git(
+                    &origin,
+                    &["rev-parse", "--verify", "-q", &format!("refs/heads/{OWN}")],
+                ) == sha;
+            let all: Vec<Value> = follows
+                .then(|| deployment(DEP_ID, &sha, "ready", "manual"))
+                .into_iter()
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"deployments": all, "next_cursor": null}))
+        })
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
 }
