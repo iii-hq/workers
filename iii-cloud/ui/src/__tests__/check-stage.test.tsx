@@ -1685,6 +1685,32 @@ describe("the run's last lines", () => {
     expect(lower[0]).toContain('jwt_secret')
   })
 
+  it('a later ERROR line or node error code is not a variable: the line naming JWT_SECRET survives the stack', () => {
+    const log = [
+      "❌ Invalid environment variables: { JWT_SECRET: [ 'Required' ] }",
+      '[worker-x] [12:00:01] ERROR (1): Failed to start',
+      'Error [ERR_MODULE_NOT_FOUND]: Cannot find module',
+      ...Array.from({ length: 6 }, (_, i) => `    at frame${i} (file.js:${i})`),
+      'Node.js v20.18.0',
+      '!! Workers failed: release-control',
+    ]
+    expect(runTail(log)[0]).toContain('JWT_SECRET')
+    // a name matches as a whole word: `port` is not in "report"
+    const t = runTail(
+      [
+        'Invalid value for port',
+        'throw new Error("x")',
+        'the report failed: error',
+        ...Array.from({ length: 6 }, (_, i) => `at f${i}`),
+        'Node',
+        'done',
+      ],
+      6,
+      ['port'],
+    )
+    expect(t[0]).toContain('Invalid value for port')
+  })
+
   it('four missing variables: the message and all four names, six lines, no wasted slot', () => {
     const tail = runTail(real(['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']))
     expect(tail).toHaveLength(6)
