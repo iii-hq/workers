@@ -251,25 +251,28 @@ async fn read_project(ctx: &Arc<Ctx>, request: ResolveRequest) -> Res<Project> {
     Ok(project)
 }
 
-/// The environments of the selected environment's project as iii cloud has them
-/// now (the store's list may be older than a console edit).
+/// The environments of a project that follow a branch, as iii cloud has them
+/// now (the store's list may be older than a console edit): the ones the push
+/// webhook deploys, so not one that is deleting or whose destroy failed.
 pub async fn live_environments(
     ctx: &Ctx,
     team_id: &str,
-    environment_id: &str,
+    project_id: &str,
 ) -> Res<Vec<EnvironmentInfo>> {
-    let env = ctx
+    let envs = ctx
         .call(&Req::get(format!(
-            "/teams/{team_id}/environments/{environment_id}"
+            "/teams/{team_id}/projects/{project_id}/environments"
         )))
         .await?;
-    let project_id = str_of(&env, "project_id").ok_or_else(|| {
-        CloudError::new(
-            "CLOUD_ERROR",
-            "iii cloud sent an environment without its project.",
-        )
-    })?;
-    read_environments(ctx, team_id, &project_id).await
+    Ok(envs
+        .get("environments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|e| !is_removed(e))
+        .filter(|e| e.get("status").and_then(Value::as_str) != Some("destroy_failed"))
+        .filter_map(env_info)
+        .collect())
 }
 
 /// The repository's default branch as origin has it now (`ls-remote --symref`).

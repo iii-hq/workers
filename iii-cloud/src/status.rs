@@ -16,6 +16,14 @@ use crate::types::*;
 /// A waiting request for a database URL the cloud provides is not needed: it
 /// becomes `not_needed` (noted) unless the person chose an outside database.
 fn settle_database_requests(ctx: &Ctx) {
+    // Nothing to settle: no write (the page polls status).
+    if !ctx.store.read(|s| {
+        s.secrets.iter().any(|r| {
+            r.state == SecretState::Waiting && !r.external && crate::local::database_shaped(&r.name)
+        })
+    }) {
+        return;
+    }
     let changed: Vec<SecretRequest> = ctx.store.update(|s| {
         let mut out = vec![];
         for r in s.secrets.iter_mut() {
@@ -45,8 +53,15 @@ fn settle_database_requests(ctx: &Ctx) {
 pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
     settle_database_requests(ctx);
     // Requests stored before `secret` refused them: a name that is not a variable name is no secret.
-    ctx.store
-        .update(|s| s.secrets.retain(|r| crate::secret::valid_name(&r.name)));
+    // Written only when one is dropped: the page polls this.
+    if ctx.store.read(|s| {
+        s.secrets
+            .iter()
+            .any(|r| !crate::secret::valid_name(&r.name))
+    }) {
+        ctx.store
+            .update(|s| s.secrets.retain(|r| crate::secret::valid_name(&r.name)));
+    }
     if request.refresh.unwrap_or(false) {
         refresh(ctx).await;
     }
@@ -174,6 +189,11 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
                     }
                 })
                 .collect(),
+            work_file: s.project.as_ref().and_then(|p| {
+                p.environment
+                    .as_ref()
+                    .and_then(|e| s.work_file(&e.id, e.manifest.as_deref()))
+            }),
             skipped_problems: env
                 .as_deref()
                 .and_then(|e| s.skipped_problems.get(e))
@@ -222,6 +242,16 @@ pub async fn refresh_environment(
     ctx: &Arc<Ctx>,
     sel: &crate::check::Selected,
 ) -> Option<EnvironmentInfo> {
+    refresh_environment_of_project(ctx, sel)
+        .await
+        .map(|(env, _)| env)
+}
+
+/// The same, with the id of the project the environment belongs to.
+pub async fn refresh_environment_of_project(
+    ctx: &Arc<Ctx>,
+    sel: &crate::check::Selected,
+) -> Option<(EnvironmentInfo, Option<String>)> {
     let body = ctx
         .call(&Req::get(format!(
             "/teams/{}/environments/{}",
@@ -231,6 +261,10 @@ pub async fn refresh_environment(
         .ok()?;
     let fresh = crate::project::env_info(&body)?;
     let removed = crate::project::is_removed(&body);
+    let project_id = body
+        .get("project_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     ctx.store.update(|s| {
         // The branch and name wherever the store copied them: a hand-off's brief
         // and `selected_for` read these, not the selection.
@@ -265,7 +299,7 @@ pub async fn refresh_environment(
             p.environment = Some(fresh.clone());
         }
     });
-    Some(fresh)
+    Some((fresh, project_id))
 }
 
 /// `store.variables`: the environment's variables as iii cloud lists them,

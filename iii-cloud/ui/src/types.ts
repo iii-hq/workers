@@ -43,6 +43,8 @@ export type Status = {
   candidate?: Project | null
   /** The names the person skipped for now (`values::skip`) in the selected environment, sorted. */
   skipped_values?: string[]
+  /** The compose file the environment's work is on when it is not the environment's own; null: the environment's. */
+  work_file?: string | null
   /** Every deploy still moving (`outcome: 'running'`, which includes `needs_action`), of every project and environment, newest first. `deploys` has only the selected environment's. */
   running_deploys?: RunningDeploy[]
   /** The person's choice per console override of the selected environment (`override::choose`), by setting. Only
