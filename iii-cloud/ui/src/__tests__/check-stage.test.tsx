@@ -1489,6 +1489,14 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(region('Your agent')?.textContent).not.toContain('open its chat')
   })
 
+  it('a question stays on screen on a ready check', async () => {
+    const r = B('deploy-passed')
+    const asking = { ...agent('waiting_for_you'), question: 'Keep path:// for http and storage?' }
+    await stage({ ...r, agent: asking })
+    expect(title()).toBe('Ready to deploy to dev')
+    expect(region('Your agent')?.textContent).toContain('Keep path:// for http and storage?')
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)

@@ -1064,7 +1064,13 @@ export function CheckStage(props: CheckStageProps) {
   // A variable or a secret is never a row of the check: the names the deploy cannot go without are one row ("N values
   // need you"), opened in the values review. Optional ones are listed on Secrets and variables, where they are set.
   const read = values.data
-  const { items: needItems, decide, values: missing, count: needN } = needsYou(s, c?.ready ? null : read)
+  const {
+    items: needItems,
+    decide,
+    values: missing,
+    asks: needsAsk,
+    count: needN,
+  } = needsYou(s, c?.ready ? null : read)
   const decisions = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] !== 'file') : []
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
   const agentItems = f.agent.filter((i) => !i.fixed && i.severity === 'block')
@@ -1106,7 +1112,8 @@ export function CheckStage(props: CheckStageProps) {
   const engaged = fixing(s) && !ready
   const waits = engaged && s.agent?.state === 'waiting'
   const stalled = engaged && s.agent?.state === 'stalled'
-  const asks = engaged && s.agent?.state === 'waiting_for_you'
+  // Its question stays on screen on a ready check too.
+  const asks = fixing(s) && s.agent?.state === 'waiting_for_you'
   const working = engaged && agentWorking(s)
   const a = s.agent
 
@@ -1331,7 +1338,7 @@ export function CheckStage(props: CheckStageProps) {
   const runPending = !!c && !running && c.plan.status === 'clean' && !run && !agentItems.length && !needN && !c.ready
 
   const youN = needItems.length + decide.length
-  const secretsOnly = missing.length > 0 && !youN
+  const secretsOnly = missing.length > 0 && !youN && !needsAsk
   // The header: the next thing to do, said with the lists' own lengths.
   const title = replaced
     ? `Check ${source} for ${env}`
@@ -1344,10 +1351,10 @@ export function CheckStage(props: CheckStageProps) {
           : needN || lines.length || engaged
             ? [
                 // The agent's question is something the person must answer: it counts as one more thing.
-                needN + (asks ? 1 : 0)
-                  ? secretsOnly && !asks
+                needN
+                  ? secretsOnly && !needsAsk
                     ? `${plural(missing.length, 'value')} to set`
-                    : `${plural(needN + (asks ? 1 : 0), 'thing')} ${needN + (asks ? 1 : 0) === 1 ? 'needs' : 'need'} you`
+                    : `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
                   : null,
                 lines.length
                   ? working
@@ -1605,7 +1612,7 @@ export function CheckStage(props: CheckStageProps) {
         />
       ) : null}
 
-      {!replaced && (lines.length || (a && engaged)) ? (
+      {!replaced && (lines.length || (a && (engaged || asks))) ? (
         <SectionCard
           title="Your agent"
           count={lines.length}
@@ -1619,7 +1626,7 @@ export function CheckStage(props: CheckStageProps) {
                   : null
           }
           end={
-            engaged && a ? (
+            (engaged || asks) && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
@@ -1629,7 +1636,7 @@ export function CheckStage(props: CheckStageProps) {
           }
           flush
         >
-          {a && engaged && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
+          {a && (engaged || asks) && (a.state === 'waiting_for_you' || a.state === 'stalled' || folder) ? (
             <p className="iii-cloud-cs-agentnote">
               {a.state === 'waiting_for_you'
                 ? (a.question ?? 'Your agent has a question in its chat.')

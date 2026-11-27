@@ -322,5 +322,15 @@ export function needsYou(s: Status, read: Values | null = null) {
   const items = findings(s).person.filter((i) => !i.fixed && i.severity === 'block' && !configAction(i))
   const chosen = s.override_choices ?? {}
   const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
-  return { items, decide, values: [...names], count: items.length + decide.length + (names.size ? 1 : 0) }
+  // The agent's question is one more thing for the person, counted here for every screen. Not twice: a question that
+  // names a value already counted (the same name asked through `iii-cloud::secret` and in the chat) is that value.
+  const q = s.agent?.state === 'waiting_for_you' ? (s.agent.question ?? '') : null
+  const asks = q !== null && ![...names].some((n) => q.includes(n))
+  return {
+    items,
+    decide,
+    values: [...names],
+    asks,
+    count: items.length + decide.length + (names.size ? 1 : 0) + (asks ? 1 : 0),
+  }
 }
