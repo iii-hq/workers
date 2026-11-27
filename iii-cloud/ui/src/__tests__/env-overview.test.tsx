@@ -244,6 +244,13 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(next(s, { valuesPending: true }).title).toMatch(/^Things need you before dev can get /)
   })
 
+  it('an agent waiting on a wake is not "working": the card says what it waits for', () => {
+    const n = next(dev({ agent: { ...agent('waiting'), waiting_for: 'the run here to end' } }))
+    expect(n.title).toBe('Your agent waits for the run here to end')
+    expect(n.detail).toContain('Waiting')
+    expect(n.detail).not.toContain('Working')
+  })
+
   it.each([
     'waiting_for_you',
     'stalled',

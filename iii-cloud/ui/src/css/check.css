@@ -729,3 +729,12 @@
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* The agent is not working and the next step is its chat: the line, and the button beside it. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}

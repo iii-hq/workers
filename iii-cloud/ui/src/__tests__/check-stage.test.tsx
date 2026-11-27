@@ -1301,3 +1301,69 @@ describe('small things the review found', () => {
       expect(secretLike(f), f).toBe(true)
   })
 })
+
+describe('an agent that ended its turn waiting on a wake', () => {
+  const WAKE = 'test environment values/deploy'
+  const waiting = (none = false) => {
+    const w = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'waiting' as const, waiting_for: WAKE } }
+    return none ? { ...w, check: { ...w.check!, problems: [] } } : w
+  }
+
+  it('is not "working": the title, the card and the footer say it waits', async () => {
+    await stage(waiting())
+    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits for ${WAKE}$`))
+    expect(title()).not.toMatch(/is fixing|checking its fix/)
+    const note = region('Your agent')?.textContent ?? ''
+    expect(note).toMatch(new RegExp(`waiting \\d+ min for ${WAKE}`))
+    expect(note).not.toContain('working')
+  })
+
+  it('with nothing for it to fix: "Your agent waits for …"', async () => {
+    await stage(waiting(true))
+    expect(title()).toBe(`Your agent waits for ${WAKE}`)
+    expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
+  })
+
+  it('offers the next step beside the sentence: Open chat as a button, with one line', async () => {
+    const openScreen = vi.fn()
+    await stage(waiting(), {}, { openScreen })
+    const t = region('Your agent')?.textContent ?? ''
+    expect(t).toContain('Your agent is not working on this. Tell it in the chat, or check again.')
+    const open = [...el.querySelectorAll('button')].filter((b) => b.textContent === 'Open chat')
+    expect(open).toHaveLength(1)
+    await click(open[0])
+    expect(openScreen).toHaveBeenCalled()
+    // A working agent has no such line.
+    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).not.toContain('is not working on this')
+  })
+
+  it("the run's stop shows the last meaningful lines, not blanks or separators, six at most", async () => {
+    const w = waiting(true)
+    const log = [
+      '',
+      '-----',
+      ...Array.from({ length: 8 }, (_, i) => `line ${i}`),
+      'JWT_SECRET is empty',
+      'REDIS_URL is not set',
+      '=====',
+      '',
+    ]
+    await stage({ ...w, check: { ...w.check!, run: { ...w.check!.run!, log_tail: log } } })
+    const stop = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('The local run stopped at'),
+    )
+    const t = stop?.textContent ?? ''
+    expect(t).toContain('JWT_SECRET is empty')
+    expect(t).toContain('REDIS_URL is not set')
+    expect(t).not.toContain('-----')
+    expect(t).not.toContain('=====')
+    expect(t).not.toContain('line 0')
+    expect((t.match(/line \d/g) ?? []).length + 2).toBeLessThanOrEqual(6)
+  })
+
+  it('an agent that works still says it works', async () => {
+    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
+    expect(title()).toMatch(/your agent is fixing/)
+  })
+})

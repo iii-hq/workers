@@ -19,6 +19,7 @@ import {
   sha7,
   sourceLabel,
   type Tone,
+  waitsFor,
   wayOf,
   when,
   withAppFile,
@@ -199,6 +200,17 @@ export function nextAction(
           ? (s.agent.question ?? 'Your agent has a question in its chat.')
           : (s.agent.question ??
             'Your agent made no progress for a while. Open the check to read what it tried, or stop it.'),
+      action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
+    }
+  }
+  if (a?.state === 'waiting') {
+    // An ended turn that armed a wake is not work: say what it waits for, and that the chat or a new check moves it.
+    return {
+      state: 'agent',
+      wait: false,
+      primary: false,
+      title: `Your agent waits${waitsFor(a)}`,
+      detail: `Waiting ${minutesLabel(now - Date.parse(a.last_activity_at ?? a.started_at))}. Open the check: tell it in the chat, or check again.`,
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }

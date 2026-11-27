@@ -53,8 +53,20 @@ function StopButton({
 }
 
 /** "Open chat" and a visible "Stop": the end of the Your agent card's header. */
-export function AgentControls({ host, agent, branch }: { host: Host; agent: AgentRun; branch?: string | null }) {
-  const open = agent.session_id && canOpenChat(host) ? () => openChatFor(host, agent.session_id as string) : null
+export function AgentControls({
+  host,
+  agent,
+  branch,
+  chat = true,
+}: {
+  host: Host
+  agent: AgentRun
+  branch?: string | null
+  /** The "Open chat" link (false: the screen already has a button for it). */
+  chat?: boolean
+}) {
+  const open =
+    chat && agent.session_id && canOpenChat(host) ? () => openChatFor(host, agent.session_id as string) : null
   return (
     <span className="iii-cloud-agent-acts">
       {open ? (
