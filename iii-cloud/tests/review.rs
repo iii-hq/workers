@@ -1065,3 +1065,81 @@ async fn the_restore_first_advice_is_for_set_aside_files_that_are_tracked_and_di
         .unwrap();
     assert!(!d.contains("Restore the local run's files first"), "{d}");
 }
+
+#[tokio::test]
+async fn a_path_with_pattern_characters_is_put_back_alone() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    // Names a glob or pathspec magic would read as more than themselves.
+    let names = [
+        "app/[id]/page.tsx",
+        "app/i/page.tsx",
+        "s*.yaml",
+        "sx.yaml",
+        "q?.yaml",
+        "qa.yaml",
+        ":colon.yaml",
+        "colon.yaml",
+    ];
+    for n in names {
+        std::fs::create_dir_all(ws.join(n).parent().unwrap()).unwrap();
+        std::fs::write(ws.join(n), "committed\n").unwrap();
+    }
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "names"]);
+    // The agent's own edits, made before the run: the siblings a glob would also reach.
+    for n in ["app/i/page.tsx", "sx.yaml", "qa.yaml", "colon.yaml"] {
+        std::fs::write(ws.join(n), "the agent's edit\n").unwrap();
+    }
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    for n in ["app/[id]/page.tsx", "s*.yaml", "q?.yaml", ":colon.yaml"] {
+        std::fs::write(ws.join(n), "rewritten by the run\n").unwrap();
+    }
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    let mut got = done.restored.clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![":colon.yaml", "app/[id]/page.tsx", "q?.yaml", "s*.yaml"]
+    );
+    for n in ["app/[id]/page.tsx", "s*.yaml", "q?.yaml", ":colon.yaml"] {
+        assert_eq!(
+            std::fs::read_to_string(ws.join(n)).unwrap(),
+            "committed\n",
+            "{n}"
+        );
+    }
+    for n in ["app/i/page.tsx", "sx.yaml", "qa.yaml", "colon.yaml"] {
+        assert_eq!(
+            std::fs::read_to_string(ws.join(n)).unwrap(),
+            "the agent's edit\n",
+            "{n} was dirty before the run and is never touched"
+        );
+    }
+}
+
+#[tokio::test]
+async fn one_runs_kept_copies_stop_at_64_mib_and_the_rest_stay_set_aside() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let big = |text: u8| vec![text; 4 * 1024 * 1024 - 16];
+    for i in 0..18 {
+        std::fs::write(ws.join(format!("big{i:02}.bin")), big(b'a')).unwrap();
+    }
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "big files"]);
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    for i in 0..18 {
+        std::fs::write(ws.join(format!("big{i:02}.bin")), big(b'b')).unwrap();
+    }
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(done.restored.len(), 16, "64 MiB of 4 MiB files");
+    let left = h
+        .ctx
+        .store
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
+        .unwrap();
+    assert_eq!(left.files.len(), 2, "the rest stay set aside");
+}

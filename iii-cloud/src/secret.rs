@@ -308,7 +308,13 @@ pub async fn write_value(
     let untracked = || async {
         tool::run(
             "git",
-            &["ls-files", "--error-unmatch", &env_file.to_string_lossy()],
+            // Literal: the folder's name may hold `[` or `*`.
+            &[
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                &env_file.to_string_lossy(),
+            ],
             Some(&sel.workspace),
             None,
             "TOOL_MISSING",
