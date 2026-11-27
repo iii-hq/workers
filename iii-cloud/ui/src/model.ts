@@ -120,14 +120,32 @@ export function stageTime(r: Run, s: Stage): string {
   return duration(s.duration_ms)
 }
 
+/** The local run's rows as the canvas words them: what the stage proves, not the command it runs. */
+const RUN_ROWS: Record<Stage['name'], string> = {
+  install: 'Install exactly what the lock file says',
+  build: 'Build the workers',
+  release: 'Database, with the rights iii cloud gives your app',
+  compose_up: 'Start the workers',
+  workers: 'Workers register their functions',
+  routes: 'Every route answers',
+  healthcheck: 'Health answers',
+}
+
+/** A row of the local run: the canvas's words; the command only under a stage that failed, where it says what broke. */
 export function stageText(r: Run, s: Stage, postgres = false): { label: string; mono: string | null; note?: string } {
-  if (s.name === 'routes') return { label: 'Routes under', mono: r.routes.prefix }
-  if (s.name === 'healthcheck')
-    return { label: 'Healthcheck', mono: r.healthcheck?.path ? `GET ${r.healthcheck.path}` : null }
-  if (s.name === 'compose_up') return { label: s.detail ? `Compose up: ${s.detail}` : 'Compose up', mono: null }
+  const mono =
+    s.name === 'routes'
+      ? r.routes.prefix
+      : s.name === 'healthcheck'
+        ? r.healthcheck?.path
+          ? `GET ${r.healthcheck.path}`
+          : null
+        : s.name === 'compose_up'
+          ? null
+          : s.detail
   return {
-    label: stageLabel(s.name),
-    mono: s.detail,
+    label: RUN_ROWS[s.name] ?? stageLabel(s.name),
+    mono: s.status === 'failed' ? mono : null,
     note: s.name === 'release' && postgres ? 'Local Postgres with pgvector, for this run only' : undefined,
   }
 }
@@ -614,6 +632,74 @@ export function deployRows(d: Deploy): DeployRow[] {
   return rows
 }
 
+/** The canvas's five stages: the cloud's seven steps (config, secrets and the release command share one). */
+const STAGE_GROUPS: [key: string, short: string, names: string[]][] = [
+  ['plan', 'Plan', ['validation']],
+  ['build', 'Build', ['build']],
+  ['data', 'Database and secrets', ['resources', 'config_secrets', 'release']],
+  ['workers', 'Workers', ['workers']],
+  ['routes', 'Address', ['routes_tls']],
+]
+
+export type StageRow = { key: string; short: string; tone: RowTone; detail: string | null; time: string }
+/** A deployment's stages as the canvas has them (`Plan · Build · Database and secrets · Workers · Address`). */
+export function stageRows(d: Deploy): StageRow[] {
+  const failed = isFailedDeploy(d)
+  const steps = [
+    ...d.stages.map((s) => ({
+      name: s.name,
+      tone: stageTone(s.status),
+      detail: s.detail,
+      ms: s.started_at && s.finished_at ? Date.parse(s.finished_at) - Date.parse(s.started_at) : null,
+    })),
+    ...(d.release_row
+      ? [
+          {
+            name: 'release',
+            tone: stageTone(d.release_row.status),
+            detail: null,
+            ms: d.release_row.duration_ms,
+          },
+        ]
+      : []),
+  ]
+  const known = new Set(STAGE_GROUPS.flatMap(([, , names]) => names))
+  const groups = [
+    ...STAGE_GROUPS,
+    ...steps
+      .filter((x) => !known.has(x.name))
+      .map((x): (typeof STAGE_GROUPS)[number] => [x.name, cloudStageLabel(x.name), [x.name]]),
+  ]
+  return groups.flatMap(([key, short, names]) => {
+    const part = steps.filter((x) => names.includes(x.name))
+    if (!part.length) return []
+    const tones = part.map((x) => x.tone)
+    const tone: RowTone = tones.includes('alert')
+      ? 'alert'
+      : tones.includes('live')
+        ? 'live'
+        : tones.every((t) => t === 'ok')
+          ? 'ok'
+          : tones.includes('warn')
+            ? 'warn'
+            : tones.includes('ok') && !failed
+              ? 'live'
+              : 'edge'
+    const detail = part.find((x) => x.detail)?.detail ?? null
+    const ms = part.reduce((sum, x) => sum + (x.ms ?? 0), 0)
+    const took = part.some((x) => x.ms != null) ? duration(ms) : null
+    const time =
+      tone === 'live'
+        ? 'running'
+        : tone === 'edge'
+          ? failed
+            ? 'not run'
+            : 'next'
+          : [detail, tone === 'alert' ? null : took].filter(Boolean).join(' · ')
+    return [{ key, short, tone, detail, time }]
+  })
+}
+
 const FAILURE_WORDS: Record<string, string> = {
   OOMKilled: 'ran out of memory',
   CrashLoopBackOff: 'keeps crashing',
@@ -644,6 +730,22 @@ export function problemTitle(p: Problem): string {
   const words = p.code.toLowerCase().replace(/_/g, ' ')
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
+
+/** A cloud plan's blocking codes named in a hint ("…issues: LOCK_MISSING, INVALID_COMPOSE_FILE."), in the page's words. */
+export function planCodeWords(s: Status, hint: string | null): string[] {
+  const codes = hint?.match(/issues?:\s*([A-Z][A-Z0-9_]*(?:,\s*[A-Z][A-Z0-9_]*)*)/)?.[1].split(/,\s*/) ?? []
+  return codes.map((code) => {
+    const p = s.check?.problems.find((x) => x.code === code)
+    return p ? problemTitle(p) : problemTitle({ code, title: code } as Problem)
+  })
+}
+
+/** The deployment row a cloud stage belongs to (`validation` is `plan`). */
+export const stageKeyOf = (name: string) => STAGE_GROUPS.find(([, , names]) => names.includes(name))?.[0] ?? name
+
+/** The variable a problem is about when its detail names a path (`…containers.api.environment.KEY`): `KEY`. */
+export const variableOf = (p: Problem | null): string | null =>
+  p?.detail?.match(/\.environment\.([A-Za-z_]\w*)/)?.[1] ?? null
 
 /** The cloud's message without the `CODE · ` prefix older checks carried. */
 export function problemDetail(p: Problem): string | null {
@@ -817,6 +919,16 @@ export function typicalDeployMs(s: Status, envId: string): number | null {
     .map((d) => Date.parse(d.finished_at as string) - Date.parse(d.created_at))
     .sort((a, b) => a - b)
   return took.length ? took[Math.floor(took.length / 2)] : null
+}
+
+/** "4 to 6": the spread, in whole minutes, of the environment's last five deploys that went live; null when they agree. */
+export function recentDeployRange(s: Status, envId: string): string | null {
+  const mins = s.deploys
+    .filter((d) => d.environment_id === envId && d.outcome === 'ready' && d.finished_at)
+    .slice(0, 5)
+    .map((d) => Math.max(1, Math.round((Date.parse(d.finished_at as string) - Date.parse(d.created_at)) / 60_000)))
+  const [lo, hi] = [Math.min(...mins), Math.max(...mins)]
+  return mins.length > 1 && lo !== hi ? `${lo} to ${hi}` : null
 }
 
 export const minutesLabel = (ms: number) => {

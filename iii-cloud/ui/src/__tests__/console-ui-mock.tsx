@@ -235,7 +235,7 @@ export const ListItem = ({ leading, label, description, trailing, onClick, selec
     aria-disabled={(disabled as boolean) || (p['aria-disabled'] as boolean)}
     aria-current={p['aria-current'] as 'page'}
     aria-label={p['aria-label'] as string}
-    data-selected={selected ? '' : undefined}
+    data-selected={selected || p['data-selected'] !== undefined ? '' : undefined}
     data-step={p['data-step'] as string}
     onClick={disabled ? undefined : (onClick as () => void)}
   >

@@ -154,9 +154,7 @@ describe("a failed deployment's record (Env3)", () => {
     expect(cells[1]).toMatch(/^Started.* · a push to GitHub by a teammate$/)
     expect(cells[2]).toBe('Checked firstNo.')
     expect(t).toContain('Where it stopped')
-    expect(t).toContain(
-      'Validation ✓ · Build ✓ · Resources ✓ · Config and secrets ✓ · Workers × · Routes and healthcheck not run',
-    )
+    expect(t).toContain('Plan ✓ · Build ✓ · Database and secrets ✓ · Workers ✕ · Address not run')
     expect(el.querySelector('pre.iii-cloud-log')?.textContent).toContain('group app has no http package')
     expect(byText('a', 'Full log in iii cloud')?.getAttribute('href')).toContain('/deployments/2')
     expect(el.querySelector('aside')).toBeNull()
@@ -234,7 +232,7 @@ describe('on a narrow pane (Phone-Failed)', () => {
     await settle()
     const cells = [...el.querySelectorAll('.iii-cloud-cell')].map((c) => c.textContent)
     expect(cells).toHaveLength(4)
-    expect(cells[3]).toBe('Stopped atWorkers, stage 5 of 6')
+    expect(cells[3]).toBe('Stopped atWorkers, the fourth of five stages')
     const bar = el.querySelector('.iii-cloud-recbar')
     expect(bar?.querySelector('button')?.textContent).toBe('Fix with your agent')
     expect(el.querySelector('.iii-cloud-rec-head button')).toBeNull()
@@ -251,7 +249,7 @@ describe('on a narrow pane (Phone-Failed)', () => {
 })
 
 describe('Open on a row', () => {
-  it('each Open names its deployment; a held one opens the Deploy screen, where Confirm is; a failed one its record', async () => {
+  it('each Open names its deployment; a held one opens the Deploy screen, where it says what to do; a failed one its record', async () => {
     const held = { ...devDeploys[0], status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
     const status = { ...envPageStatus, deploys: [held, ...devDeploys.slice(1)] }
     await mount(status, ctx({ at: 'env', env: DEV.id }), cloud)
@@ -260,7 +258,9 @@ describe('Open on a row', () => {
     await click(btn(`Open deployment #${held.number}`))
     await settle()
     expect(path()).toBe('Projects / registry · dev / Deploy')
-    expect(btn('Confirm deploy')).toBeTruthy()
+    // No passed check matches it: it says to check first, with no Confirm to press.
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(btn(`Check ${held.commit.sha.slice(0, 7)} here`)).toBeTruthy()
     await mount(envPageStatus, ctx({ at: 'env', env: DEV.id }, 2), cloud)
     await settle()
     await click(btn('Open deployment #2'))

@@ -52,6 +52,7 @@ import {
   postgresNote,
   problemTitle,
   RESOURCE_KIND,
+  recentDeployRange,
   roleOf,
   sendLabel,
   servingNamed,
@@ -64,6 +65,7 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
+  variableOf,
   workingOnIds,
 } from './model'
 import {
@@ -80,7 +82,7 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, Deploy, Status, ValuesSaved, WorkerError } from './types'
+import type { AgentState, Check, Deploy, Problem, Status, ValuesSaved, WorkerError } from './types'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
 export type CheckStageProps = {
@@ -128,7 +130,7 @@ type Stop = {
 const DOCKER_DOCS = 'https://docs.docker.com/get-started/get-docker/'
 const AT_LEAST =
   'iii cloud stops at the first thing it cannot accept, so more can show up after the first round is fixed.'
-const UNLOCKS = 'Unlocks when a check passes on the commit you deploy.'
+const UNLOCKS = 'Unlocks when a check passes'
 const ACTIVE: AgentState[] = ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled']
 const MARKS = {
   ok: [Done, 'done'],
@@ -190,6 +192,19 @@ export function checkPayload(s: Status, manifest = appFile(s).path): Record<stri
 export function retryPayload(host: Host, s: Status): Record<string, unknown> {
   const picked = hubOf(host).pickedManifest(s.project?.environment?.id ?? '')
   return checkPayload(s, picked ?? undefined)
+}
+
+/** A problem's title with the variable it names in front ("STRIPE_KEY: A variable defaults to empty"): twenty rows of one title tell apart. */
+function named(title: string, p: Problem | null): ReactNode {
+  const name = variableOf(p)
+  return name && !title.includes(name) ? (
+    <>
+      <Mono>{name}</Mono>
+      {`: ${title}`}
+    </>
+  ) : (
+    title
+  )
 }
 
 function MarkIcon({ mark, label }: { mark: Mark; label?: string }) {
@@ -315,7 +330,12 @@ export function MergeConflict({ host, status, error }: { host: Host; status: Sta
       error={error}
       variant="warn"
       action={
-        <Button size="sm" variant="primary" disabled={!status.check || !host.chat?.compose || launching} onClick={ask}>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!status.check || !host.chat?.compose || launching}
+          onClick={ask}
+        >
           {open ? 'Ask your agent to finish the merge' : 'Ask your agent to bring your commits in'}
         </Button>
       }
@@ -345,7 +365,7 @@ export function ActionError({
         error={error}
         variant="warn"
         action={
-          <Button size="sm" variant="primary" disabled={checking} onClick={checkAgain}>
+          <Button size="sm" variant="secondary" disabled={checking} onClick={checkAgain}>
             Check again
           </Button>
         }
@@ -487,9 +507,10 @@ function cloudPart(s: Status, c: Check): Part {
     .filter((p) => p.source === 'cloud_plan')
     .map((p) => ({
       key: p.id,
-      mark: 'bad',
-      label: problemTitle(p),
-      state: p.owner === 'person' ? 'needs you' : 'needs your agent',
+      // Only a blocking problem is a ✕ that needs someone; a warning is a note, said so in its own row.
+      mark: p.severity === 'block' ? 'bad' : 'note',
+      label: named(problemTitle(p), p),
+      state: p.severity !== 'block' ? 'warning' : p.owner === 'person' ? 'needs you' : 'needs your agent',
     }))
   if (plan.status === 'clean') {
     const sum = plan.summary
@@ -754,7 +775,7 @@ function PlainNeed({ item: i }: { item: Item }) {
 
 /* ── Your agent ────────────────────────────────────────────────────── */
 
-type Line = { key: string; title: string; detail: string | null; id: string | null }
+type Line = { key: string; title: ReactNode; detail: string | null; id: string | null }
 
 /* ── Details ───────────────────────────────────────────────────────── */
 
@@ -808,7 +829,11 @@ function Group({ title, count, children }: { title: string; count: number; child
 function Fact({ mark, title, sub, end }: { mark: Mark; title: ReactNode; sub?: ReactNode; end?: ReactNode }) {
   return (
     <li className="iii-cloud-cs-item" data-mark={mark}>
-      <MarkIcon mark={mark} />
+      {mark === 'work' || mark === 'wait' ? (
+        <span className="iii-cloud-ring" data-mark={mark} role="img" aria-label={MARKS[mark][1]} />
+      ) : (
+        <MarkIcon mark={mark} />
+      )}
       <div className="iii-cloud-cs-body">
         <span className="iii-cloud-cs-label">{title}</span>
         {sub ? <span className="iii-cloud-cs-detail">{sub}</span> : null}
@@ -819,6 +844,15 @@ function Fact({ mark, title, sub, end }: { mark: Mark; title: ReactNode; sub?: R
 }
 
 /* ── Ready: what this deploy does ──────────────────────────────────── */
+
+/** A link to GitHub, as the canvas draws it: text, underlined, no button. */
+function TextLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a className="iii-cloud-link iii-cloud-small" href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  )
+}
 
 function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const p = s.project
@@ -834,6 +868,7 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   // Named by iii cloud's list (a rollback in the console moves it); until the list is read, none is named.
   const serving = servingNamed(s, env.id, feed.data?.deployments)
   const typical = typicalDeployMs(s, env.id)
+  const range = recentDeployRange(s, env.id)
   const branch = p.workspace?.source ?? p.checkout.branch
   // Whose commits (newest first): the agent's down to `from_head`, the checkout's from it. No `from_head`: all the agent's.
   const commits = c.commits ?? []
@@ -844,10 +879,7 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const whose =
     agent === null
       ? null
-      : [
-          mine > 0 ? `${mine} of yours` : null,
-          agent ? `${plural(agent, 'fix', 'fixes')} by your agent` : null,
-        ]
+      : [mine > 0 ? `${mine} of yours` : null, agent ? `${plural(agent, 'fix', 'fixes')} by your agent` : null]
           .filter(Boolean)
           .join(', ')
   const release = c.run?.stages.find((x) => x.name === 'release' && x.status === 'passed' && x.detail)
@@ -870,9 +902,9 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
           label="Code"
           note={whose}
           action={
-            <LinkButton href={github(s, c.base ? `compare/${c.base}...${c.commit}` : `commit/${c.commit}`)}>
+            <TextLink href={github(s, c.base ? `compare/${c.base}...${c.commit}` : `commit/${c.commit}`)}>
               See changes
-            </LinkButton>
+            </TextLink>
           }
         >
           {c.commits
@@ -884,7 +916,7 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
         <DetailRow
           label="Compose file"
           note={file.note}
-          action={<LinkButton href={github(s, `blob/${c.commit}/${file.path}`)}>See the file</LinkButton>}
+          action={<TextLink href={github(s, `blob/${c.commit}/${file.path}`)}>See the file</TextLink>}
         >
           <Mono>{file.path}</Mono>
           {sum ? `: ${plural(sum.workers, 'worker')} in ${plural(sum.groups.length, 'group')}` : ''}
@@ -961,11 +993,9 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
                 ? `${env.name} serves a deployment iii cloud's list does not show; its console names it.`
                 : `Nothing is live on ${env.name} yet.`
               : null,
-          typical ? `It takes about ${minutesLabel(typical)}.` : null,
+          typical ? `It takes about ${minutesLabel(typical)}${range ? `; the last deploys took ${range}` : ''}.` : null,
           "Only you can confirm this; your agent can't.",
-          pr || direct
-            ? 'Pinned to the plan the check saw: if it plans differently, nothing is deployed and you see why.'
-            : null,
+          'A new commit before you confirm runs the check again.',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -1054,7 +1084,6 @@ export function CheckStage(props: CheckStageProps) {
           title={`Check ${source} for ${env}`}
           sub={<GoesSub s={s} c={null} env={env} onChange={onChange} />}
           action={<PageAction onClick={() => undefined} disabled>{`Deploy to ${env}`}</PageAction>}
-          note={UNLOCKS}
           narrow={narrow}
         />
         {panel}
@@ -1064,7 +1093,7 @@ export function CheckStage(props: CheckStageProps) {
           headline="Not checked yet"
           detail="A check runs iii cloud's plan and the local run on this commit. Nothing is deployed."
           action={
-            <Button variant="primary" onClick={checkAgain}>
+            <Button variant="secondary" onClick={checkAgain}>
               Check
             </Button>
           }
@@ -1098,7 +1127,12 @@ export function CheckStage(props: CheckStageProps) {
   const fromFile = c ? c.plan.confirmations.overrides.filter((o) => chosen[o.setting] === 'file') : []
   const agentItems = f.agent.filter((i) => !i.fixed && i.severity === 'block')
   const lines: Line[] = [
-    ...agentItems.map((i) => ({ key: i.key, title: i.title, detail: i.detail ?? i.fix, id: i.problem?.id ?? null })),
+    ...agentItems.map((i) => ({
+      key: i.key,
+      title: named(i.title, i.problem),
+      detail: i.detail ?? i.fix,
+      id: i.problem?.id ?? null,
+    })),
     ...decisions
       .filter((o) => chosen[o.setting] === 'console')
       .map((o) => ({
@@ -1330,6 +1364,8 @@ export function CheckStage(props: CheckStageProps) {
   // The local run never ran on a commit iii cloud's plan accepts (a failed run has its own stop).
   const runPending = !!c && !running && c.plan.status === 'clean' && !run && !agentItems.length && !needN && !c.ready
 
+  const secretsOnly =
+    (needItems.length > 0 || fillable.length > 0) && !decide.length && needItems.every((i) => valueName(i))
   // The header: the next thing to do, said with the lists' own lengths.
   const title = replaced
     ? `Check ${source} for ${env}`
@@ -1341,7 +1377,9 @@ export function CheckStage(props: CheckStageProps) {
           ? `iii cloud's plan accepts ${sha7(c?.commit ?? '')}; the local run is left`
           : needN || lines.length || working
             ? [
-                needN ? `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you` : null,
+                needN
+                  ? `${plural(needN, secretsOnly ? 'value' : 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
+                  : null,
                 lines.length
                   ? working
                     ? `your agent is fixing ${lines.length}`
@@ -1360,14 +1398,28 @@ export function CheckStage(props: CheckStageProps) {
     <StatusChip tone="success">Passed</StatusChip>
   ) : null
   const ranAt = run?.reused ? c?.checked_at : (run?.finished_at ?? c?.checked_at)
+  // The checks of the agent's hand-off, from the first one's start to the last one's end.
+  const spent =
+    past.length > 1
+      ? Date.parse(past[past.length - 1].checked_at) - (Date.parse(past[0].checked_at) - past[0].duration_ms)
+      : 0
   const sub = ready ? (
-    <>
-      <p className="iii-cloud-cs-sub">
-        <Mono>{c ? sha7(c.commit) : ''}</Mono>
-        {` passed iii cloud's plan${run ? ' and the local run' : ''} at ${clock(ranAt ?? '')}${past.length > 1 ? ` · ${past.length} checks` : ''}`}
-      </p>
-      <GoesSub s={s} c={c} env={env} onChange={onChange} />
-    </>
+    <p className="iii-cloud-cs-sub">
+      <Mono>{c ? sha7(c.commit) : ''}</Mono>
+      {` passed iii cloud's plan${run ? ' and the local run' : ''} at ${clock(ranAt ?? '')}${past.length > 1 ? ` · ${past.length} checks${spent > 0 ? `, ${minutesLabel(spent)}` : ''}` : ''}`}
+      {onChange ? (
+        <>
+          {' · '}
+          <button
+            type="button"
+            className="iii-cloud-linkbtn iii-cloud-small"
+            onClick={(e) => onChange(e.currentTarget)}
+          >
+            Change
+          </button>
+        </>
+      ) : null}
+    </p>
   ) : (
     <GoesSub
       s={s}
@@ -1379,8 +1431,13 @@ export function CheckStage(props: CheckStageProps) {
     />
   )
 
+  // On a replaced source nothing of the old check offers work: only the source notice and the sign-in stay.
+  const shownStops = replaced ? stops.filter((x) => x.key === 'source' || x.key === 'signin') : stops
+  // `note` is the reason under the header's action (only a lock says one: the canvas draws no line otherwise);
+  // `barNote` is the phone bar's line under the same action.
   let action: ReactNode
   let note: ReactNode = null
+  let barNote: ReactNode = null
   if (ready || runPending) {
     // The same lock reason as every other control that sends `iii-cloud::deploy` (`deployLock`), plus this action's own.
     const off = ready ? (lock ?? prLock ?? deployLock) : undefined
@@ -1395,27 +1452,31 @@ export function CheckStage(props: CheckStageProps) {
         Start the local run
       </PageAction>
     )
-    note = off ?? (ready ? "Only you can confirm this; your agent can't." : null)
+    note = off ?? null
+    barNote = off ?? (ready ? "Only you can confirm this; your agent can't." : null)
   } else {
     // Not ready and no check in flight: checking again is always on screen. With nothing else for the person to do
     // (the agent has nothing, no list for them) it is the primary action; otherwise it sits beside the locked Deploy.
     const idle = !running && !hubChecking
     const nothingElse = replaced || (!needN && !lines.length && !working)
     const deployOff = <PageAction onClick={() => undefined} disabled>{`Deploy to ${env}`}</PageAction>
-    action =
-      idle && nothingElse ? (
-        <PageAction onClick={checkAgain}>Check again</PageAction>
-      ) : idle ? (
-        <span className="iii-cloud-row">
-          <Button variant="secondary" onClick={checkAgain}>
-            Check again
-          </Button>
-          {deployOff}
-        </span>
-      ) : (
-        deployOff
-      )
-    note = UNLOCKS
+    // A panel below that checks again is the one place for it: the header does not say it twice.
+    const panelChecks = shownStops.some((x) => x.key === 'outdated' || x.acts.some((a) => a.onClick === checkAgain))
+    action = panelChecks ? (
+      deployOff
+    ) : idle && nothingElse ? (
+      <PageAction onClick={checkAgain}>Check again</PageAction>
+    ) : idle ? (
+      <span className="iii-cloud-row">
+        <Button variant="secondary" onClick={checkAgain}>
+          Check again
+        </Button>
+        {deployOff}
+      </span>
+    ) : (
+      deployOff
+    )
+    barNote = UNLOCKS
   }
 
   const parts =
@@ -1426,10 +1487,15 @@ export function CheckStage(props: CheckStageProps) {
         }
       : null
   const pending = c && !running && !ready && !replaced ? cloudPendingNote(s) : null
-  // On a replaced source nothing of the old check offers work: only the source notice and the sign-in stay.
-  const shownStops = replaced ? stops.filter((x) => x.key === 'source' || x.key === 'signin') : stops
-  const secretsOnly =
-    (needItems.length > 0 || fillable.length > 0) && !decide.length && needItems.every((i) => valueName(i))
+  // " · 14 s so far, about 20 s left": while it runs; the time left is the median of this environment's earlier checks.
+  const took = (s.checks ?? [])
+    .filter((x) => x.environment_id === envId && x.id !== c?.id && x.duration_ms > 0)
+    .map((x) => x.duration_ms)
+    .sort((x, y) => x - y)
+  const spentNow = running && run?.status === 'running' ? now - Date.parse(run.started_at) : null
+  const left = spentNow != null && took.length ? took[Math.floor(took.length / 2)] - spentNow : 0
+  const progress =
+    spentNow != null ? ` · ${elapsed(spentNow)} so far${left >= 1000 ? `, about ${elapsed(left)} left` : ''}` : ''
   const youNote = running
     ? 'You can do this while the check runs'
     : secretsOnly
@@ -1494,10 +1560,12 @@ export function CheckStage(props: CheckStageProps) {
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)
   const doneN = fixed.length + fromFile.length + (!needN && filledText ? 1 : 0)
+  // Passed: who did what is the news ("You did 2 · your agent fixed 2"); before that, one count of what is done.
+  const agentFixed = fixed.filter((i) => i.owner === 'agent').length
   const summary = [
-    `Done ${doneN}`,
+    ready ? `You did ${doneN - agentFixed} · your agent fixed ${agentFixed}` : `Done ${doneN}`,
     `Warnings ${warnings.length}`,
-    `Checks ${past.length}${lastCheck ? ` (last ${clock(lastCheck.checked_at)}, ${duration(lastCheck.duration_ms)})` : ''}`,
+    `Checks ${past.length}${lastCheck && !ready ? ` (last ${clock(lastCheck.checked_at)}, ${duration(lastCheck.duration_ms)})` : ''}`,
   ].join(' · ')
 
   return (
@@ -1514,8 +1582,8 @@ export function CheckStage(props: CheckStageProps) {
           headline={x.headline}
           detail={x.detail}
           action={
-            <span className="iii-cloud-row">
-              {x.acts.map((act, i) =>
+            <span className="iii-cloud-cs-acts">
+              {x.acts.map((act) =>
                 act.href ? (
                   <Button key={act.label} asChild size="sm" variant="secondary">
                     <a href={act.href} target="_blank" rel="noreferrer">
@@ -1526,7 +1594,7 @@ export function CheckStage(props: CheckStageProps) {
                   <Button
                     key={act.label}
                     size="sm"
-                    variant={i === 0 ? 'primary' : 'secondary'}
+                    variant="secondary"
                     disabled={act.disabled || (act.deploys && deployLocked)}
                     onClick={act.onClick}
                   >
@@ -1625,7 +1693,7 @@ export function CheckStage(props: CheckStageProps) {
             working && a ? (
               <AgentControls host={host} agent={a} branch={p?.workspace?.branch} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
-              <Button size="sm" variant="primary" disabled={!canAsk} onClick={ask}>
+              <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
               </Button>
             ) : null
@@ -1659,39 +1727,29 @@ export function CheckStage(props: CheckStageProps) {
       ) : null}
 
       {parts ? (
-        <>
-          <SectionCard title="The check" note={c && !cloudPending(c) ? `commit ${sha7(c.commit)}` : null} flush>
-            <div className="iii-cloud-cs-parts">
-              {(
-                [
-                  ["iii cloud's plan", parts.cloud],
-                  ['Local run', parts.here],
-                ] as const
-              ).map(([name, part]) => (
-                <section key={name} className="iii-cloud-cs-part" aria-label={name}>
-                  <h3>
-                    <span>{name}</span>
-                    <span className="iii-cloud-cs-state">{part.status}</span>
-                  </h3>
-                  <Rows rows={part.rows} />
-                  {part.foot ? <p className="iii-cloud-cs-foot">{part.foot}</p> : null}
-                </section>
-              ))}
-            </div>
-          </SectionCard>
-          {running ? (
-            <p className="iii-cloud-cs-foot">
-              {[
-                auto
-                  ? 'Your agent starts on what it can fix as soon as the check finds it, in a separate copy of your code.'
-                  : null,
-                'Deploy unlocks when a check passes. You can leave this page; the console tells you when something needs you.',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            </p>
-          ) : null}
-        </>
+        <SectionCard
+          title="The check"
+          note={c && !cloudPending(c) ? `commit ${sha7(c.commit)}${progress}` : null}
+          flush
+        >
+          <div className="iii-cloud-cs-parts">
+            {(
+              [
+                ["iii cloud's plan", parts.cloud],
+                ['Local run', parts.here],
+              ] as const
+            ).map(([name, part]) => (
+              <section key={name} className="iii-cloud-cs-part" aria-label={name}>
+                <h3>
+                  <span>{name}</span>
+                  <span className="iii-cloud-cs-state">{part.status}</span>
+                </h3>
+                <Rows rows={part.rows} />
+                {part.foot ? <p className="iii-cloud-cs-foot">{part.foot}</p> : null}
+              </section>
+            ))}
+          </div>
+        </SectionCard>
       ) : null}
 
       {ready && c && !runPending ? <Ready s={s} c={c} host={host} /> : null}
@@ -1789,7 +1847,22 @@ export function CheckStage(props: CheckStageProps) {
         </Details>
       ) : null}
 
-      <ActionBar narrow={narrow} action={action} note={note} />
+      {!ready && !replaced && (running || needN > 0 || lines.length > 0) ? (
+        <p className="iii-cloud-cs-foot">
+          {[
+            running && auto
+              ? 'Your agent starts on what it can fix as soon as the check finds it, in a separate copy of your code.'
+              : null,
+            'Deploy unlocks when a check passes.',
+            !running && (working || lines.length > 0) ? 'Every fix by your agent runs the check again.' : null,
+            'You can leave this page; the console tells you when something needs you.',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        </p>
+      ) : null}
+
+      <ActionBar narrow={narrow} action={action} note={barNote} />
       {importing ? (
         <ConfigImportDialog
           host={host}

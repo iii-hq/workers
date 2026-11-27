@@ -10,7 +10,23 @@ import { DEV, live6, running6, serving5 } from '../fixtures/deploy'
 import { forgetHubMemory, hubOf } from '../hub'
 import type { BranchRef, Status } from '../types'
 import { type Call, fakeHost } from './host'
-import { board, btn, byText, click, cloudAnswers, ctx, el, flush, lastCall, mount, root, text, type, usePage } from './util'
+import {
+  board,
+  btn,
+  byText,
+  click,
+  cloudAnswers,
+  ctx,
+  el,
+  flush,
+  lastCall,
+  mount,
+  root,
+  text,
+  type,
+  ui,
+  usePage,
+} from './util'
 
 vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
@@ -65,7 +81,10 @@ describe('one screen, no step rail', () => {
     expect(worker(h.calls)).toEqual([])
     expect(btn('Deploy to dev')?.hasAttribute('disabled')).toBe(true)
     await click(btn('Check'))
-    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' } })
+    expect(lastCall(h.calls)).toEqual({
+      id: 'iii-cloud::check',
+      payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
+    })
   })
 
   it('Ready: Deploy, then the same screen follows the deployment', async () => {
@@ -102,7 +121,7 @@ describe('Change', () => {
     expect(el.querySelectorAll('[aria-label="Compose files in this folder"] [role=radio]')).toHaveLength(3)
     expect(radio('api/workers-compose.yaml')?.getAttribute('aria-disabled')).toBe('true')
     // The environment is not changed here: it says to open the other one, and that control is on screen.
-    expect(panel?.textContent).toContain('to deploy somewhere else, open that environment from Projects')
+    expect(panel?.textContent).toContain('to deploy somewhere else, open that environment from the sidebar or Projects')
     await click(btn('Cancel'))
     expect(region('What goes to dev')).toBeNull()
     expect(worker(h.calls)).toEqual([])
@@ -173,14 +192,78 @@ describe('Change', () => {
   })
 })
 
+describe('the canvas: Change and the deployment', () => {
+  it('Change: a label column, the chosen option framed, Cancel a link, and the sentence about the running check', async () => {
+    await board('deploy-what', {}, cloudList())
+    await click(btn('Change'))
+    const panel = region('What goes to dev')
+    expect([...(panel?.querySelectorAll('.iii-cloud-cs-clabel') ?? [])].map((l) => l.textContent)).toEqual([
+      'Code',
+      'Compose file',
+      'Environment',
+    ])
+    // The chosen file shows as chosen, not only by its icon; the others do not.
+    expect(radio('api/worker-compose-prod.yaml')?.hasAttribute('data-selected')).toBe(true)
+    expect(radio('api/worker-compose.staging.yaml')?.hasAttribute('data-selected')).toBe(false)
+    expect(btn('Cancel')?.className).toContain('iii-cloud-linkbtn')
+    expect(btn('Cancel')?.getAttribute('data-variant')).toBeNull()
+    expect(text()).toContain('Until you confirm a change, the check that is running goes on.')
+  })
+
+  it('one uncommitted change reads in the singular', async () => {
+    const s = boards['deploy-what'].status
+    const p = s.project as NonNullable<Status['project']>
+    await mount({ ...s, project: { ...p, checkout: { ...p.checkout, changed_files: ['a.ts'] } } }, ctx(route))
+    await click(btn('Change'))
+    expect(region('What goes to dev')?.textContent).toContain(
+      'The 1 uncommitted change in your folder stays there: commit it to include it.',
+    )
+  })
+
+  it('failed: What happened is inline with the log link at its foot, the failed stage is tinted, the one not run says so', async () => {
+    await board('deploy-follow-failed')
+    const cause = region('What happened')
+    expect(cause?.querySelector('[role=toolbar], header, .iii-cloud-panel-head')).toBeNull()
+    expect(cause?.querySelector('.iii-cloud-cs-causefoot a')?.textContent).toBe('Full log in iii cloud')
+    const rows = [...(region('Deployment stages')?.querySelectorAll('li') ?? [])]
+    expect(rows.map((r) => r.getAttribute('data-tone'))).toEqual(['ok', 'ok', 'ok', 'alert', 'edge'])
+    expect(rows.at(-1)?.textContent).toContain('not run')
+    expect(rows.at(-1)?.textContent).not.toContain('not reached')
+    // One primary on the view, and the header carries no extra line under it.
+    expect(el.querySelectorAll('button[data-variant=primary]')).toHaveLength(1)
+    expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
+  })
+
+  it('a phone: the bar names the place "Deploy to dev"', async () => {
+    ui.narrow = true
+    await board('deploy-what')
+    expect(el.querySelector('.iii-cloud-head-name')?.textContent).toBe('Deploy to dev')
+  })
+
+  it('live: the address in mono, one proven row, no goes line, and the roll back sentence', async () => {
+    await board('deploy-follow-live')
+    expect(el.querySelectorAll('.iii-cloud-cs-facts li')).toHaveLength(1)
+    expect(el.querySelector('.iii-cloud-stephead-sub')?.textContent).not.toContain('to dev ·')
+    expect(text()).toContain('While a deploy runs, this screen shows the same stages with the running one marked')
+  })
+})
+
 describe('the deployment', () => {
   it('running: the stages with the release row, the live log from the cloud, and dev keeps serving #5', async () => {
     await board('deploy-follow-running')
     expect(title()).toBe('Deploying 9c04e7f to dev')
     expect(text()).toMatch(/Deployment #6 · started \d\d:\d\d · \d+ min so far/)
-    const stages = [...(region('Stages')?.querySelectorAll('[role=row]') ?? [])].map((r) => r.textContent)
-    expect(stages).toHaveLength(7)
-    expect(stages.some((s) => s?.startsWith('Release command'))).toBe(true)
+    // The canvas's five stages, no "Stages" header; config, secrets and the release command are one of them.
+    const rows = [...(region('Deployment stages')?.querySelectorAll('li') ?? [])]
+    expect(rows.map((r) => r.querySelector('.iii-cloud-cs-slabel')?.textContent)).toEqual([
+      "Pushed 9c04e7f to dev's branch and started #6",
+      'Built the image',
+      'Database, secrets and settings',
+      'Starting the workers',
+      'Address and certificate',
+    ])
+    expect(region('Deployment stages')?.previousElementSibling?.textContent ?? '').not.toContain('Stages')
+    expect(text()).not.toMatch(/Validation|Config and secrets|Routes and healthcheck/)
     expect(text()).toContain('search: loading trigram index (1.2M rows)')
     expect(text()).toContain('dev keeps serving #5 until #6 is live.')
     expect(btn('Back to dev')).toBeNull()
@@ -208,7 +291,9 @@ describe('the deployment', () => {
     await board('deploy-follow-live')
     expect(title()).toBe('dev is serving 9c04e7f')
     expect(text()).toMatch(/Deployment #6 · live at \d\d:\d\d/)
-    const address = region('https://registry-2-dev.iii.cloud')
+    const address = region('After the deploy')
+    // The address is the card's first line, in mono; Open is a link to it.
+    expect(address?.querySelector('.iii-cloud-cs-addr')?.textContent).toBe('https://registry-2-dev.iii.cloud')
     expect(address?.querySelector('a')?.getAttribute('href')).toBe('https://registry-2-dev.iii.cloud')
     expect(address?.textContent).toContain('Copy')
     expect(address?.textContent).toContain("iii cloud says it's healthy")
@@ -293,6 +378,93 @@ describe('the deployment', () => {
   it('the stages say Deployments, never Deploys', async () => {
     await board('deploy-follow-live')
     expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)
+  })
+})
+
+describe('a deployment iii cloud holds says why and what to do next', () => {
+  const heldBase = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, finished_at: null }
+  const sha = (d: { commit: { sha: string } }) => d.commit.sha.slice(0, 7)
+  const blocked = {
+    ...heldBase,
+    check_id: null,
+    approved_by_worker: false,
+    checked_ready: false,
+    from_console: false,
+    stages: [{ name: 'validation', status: 'failed', detail: null, started_at: null, finished_at: null }],
+    error: {
+      code: 'LOCK_MISSING',
+      stage: 'validation',
+      worker: null,
+      action: null,
+      hint: 'The plan has 3 blocking issues: LOCK_MISSING, INVALID_COMPOSE_FILE. Resolve them on the plan, or push a fix and re-scan.',
+    },
+  }
+  const at = ctx({ ...route, deploy: 'dep-6' })
+  const status = (d: object) => ({ ...boards['deploy-review'].status, agent: null, deploys: [d, serving5] }) as Status
+  const links = () => [...el.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])
+  const primaries = () => [...el.querySelectorAll('button[data-variant=primary]')].map((b) => b.textContent)
+
+  it("1. a plan with blocking problems: can't start, fix or check, no Confirm, cancel with the confirm", async () => {
+    const h = await mount(status(blocked), at, {
+      'iii-cloud::handoff': { id: 'ho-5', marker: '[iii-cloud handoff ho-5]', delivered: false },
+      'iii-cloud::api::write': { status: 202, body: {} },
+      'iii-cloud::check': {},
+    })
+    expect(title()).toBe("Deployment #6 can't start as it is")
+    const t = text()
+    expect(t).toContain(`iii cloud's plan for ${sha(blocked)} has blocking problems`)
+    expect(t).toContain('Lock missing; Invalid compose file.')
+    expect(t).toContain(
+      'A deployment like this is never started: it waits until you cancel it or a fixed commit replaces it.',
+    )
+    expect(t).toContain(
+      `Your agent checks ${sha(blocked)} for dev in a clean copy, fixes what is its to fix and tells you what is yours.`,
+    )
+    expect(t).toContain('Lists every problem with its file and line. Nothing is deployed.')
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(primaries()).toEqual(['Fix with your agent'])
+    // The failed stage says why beside it.
+    expect(region('Deployment stages')?.textContent).toContain('The plan has 3 blocking issues')
+    expect(links()).toContainEqual(['Open it in iii cloud', blocked.console_url])
+    await click(btn(`Check ${sha(blocked)} here`))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
+    await click(btn('Cancel deployment #6'))
+    expect(text()).toContain('dev keeps serving #5.')
+    await click([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Cancel deployment #6').at(-1))
+    await flush()
+    expect(h.calls.find((c) => c.id === 'iii-cloud::api::write')?.payload).toMatchObject({
+      method: 'POST',
+      path: expect.stringContaining('/deployments/dep-6/cancel'),
+    })
+    await click(btn('Fix with your agent'))
+    await flush()
+    expect(h.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toMatchObject({
+      kind: 'deploy_fix',
+      deployment_id: 'dep-6',
+    })
+  })
+
+  it('2. held and a passed check of that commit: Confirm deploy is the one primary, with Cancel and the console link', async () => {
+    await mount(status(heldBase), at, { 'iii-cloud::deploy': {} })
+    expect(title()).toBe('Deployment #6 needs your action')
+    expect(primaries()).toEqual(['Confirm deploy'])
+    expect(btn('Cancel deployment #6')).toBeTruthy()
+    expect(links()).toContainEqual(['Open it in iii cloud', heldBase.console_url])
+  })
+
+  it('3. held with no passed check of that commit: check it first, no Confirm, approve or cancel in the links', async () => {
+    const other = { ...heldBase, check_id: null, from_console: false, commit: { sha: 'a'.repeat(40), message: null } }
+    const h = await mount(status(other), at, { 'iii-cloud::check': {} })
+    expect(title()).toBe('Deployment #6 waits for your approval')
+    expect(text()).toContain(
+      'It was not started from this page, so nothing here has checked aaaaaaa. Check it first: when it passes, you confirm here.',
+    )
+    expect(btn('Confirm deploy')).toBeNull()
+    expect(primaries()).toEqual(['Check aaaaaaa here'])
+    expect(links()).toContainEqual(['Approve it in iii cloud', other.console_url])
+    expect(btn('Cancel deployment #6')).toBeTruthy()
+    await click(btn('Check aaaaaaa here'))
+    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
   })
 })
 
