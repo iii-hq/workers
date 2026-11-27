@@ -6,8 +6,8 @@ import { describe, expect, it, vi } from 'vitest'
 import envCases from '../../../tests/fixtures/env-parse.json'
 import { rcFixing, TEST_ENV } from '../fixtures/check'
 import { devValues, RC_PROD, RC_URL, rcSkippedValues, rcValues, valueItem } from '../fixtures/values'
-import type { Status, Values } from '../types'
 import { Destinations } from '../SecretEntry'
+import type { Status, Values } from '../types'
 import { parseEnv, ValuesEditor, type ValuesEditorProps } from '../ValuesEditor'
 import { type Call, fakeHost } from './host'
 import { btn, byText, click, el, flush, root, text, type, ui, usePage } from './util'
@@ -351,7 +351,7 @@ describe('Paste a .env', () => {
 })
 
 describe('Destinations', () => {
-  it('an API key points at the environment\'s config page, not at a variables page', async () => {
+  it("an API key points at the environment's config page, not at a variables page", async () => {
     const s = { ...rcFixing, connection: { ...rcFixing.connection, method: 'api_key' as const } }
     await act(async () => root.render(<Destinations status={s} saved={false} />))
     expect(byText('a', "Set it in iii cloud's console too")?.getAttribute('href')).toMatch(/\/test\/config$/)

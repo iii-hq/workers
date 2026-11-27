@@ -369,7 +369,13 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
           <Button size="sm" variant="secondary" disabled={!v || readOnly} onClick={() => setPasting(true)}>
             Paste a .env
           </Button>
-          <Button size="sm" variant="primary" disabled={readOnly} aria-expanded={adding} onClick={() => setAdding(!adding)}>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={readOnly}
+            aria-expanded={adding}
+            onClick={() => setAdding(!adding)}
+          >
             Add
           </Button>
         </span>

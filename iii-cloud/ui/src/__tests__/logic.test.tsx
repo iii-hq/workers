@@ -2,9 +2,9 @@
 import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import setup from '../../page'
 // The shared cases the worker's Rust rule reads too.
 import wayCases from '../../../tests/fixtures/deploy-way.json'
+import setup from '../../page'
 import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'

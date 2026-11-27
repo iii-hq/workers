@@ -493,7 +493,10 @@ describe('values that can come from env files', () => {
     ...devSecretValues,
     items: [
       ...devSecretValues.items.filter((i) => i.name !== 'ASSET_BUCKET_KEY'),
-      valueItem('ASSET_BUCKET_KEY', { containers: ['search'], suggestions: [file('api/.env.test', true), file('api/.env', false)] }),
+      valueItem('ASSET_BUCKET_KEY', {
+        containers: ['search'],
+        suggestions: [file('api/.env.test', true), file('api/.env', false)],
+      }),
       valueItem('PUBLIC_URL', {
         containers: ['search'],
         type: 'variable',
@@ -539,15 +542,20 @@ describe('values that can come from env files', () => {
   })
 
   it('an item that failed stays in the review with its reason; the others are saved', async () => {
-    const h = await open({}, offered, {}, {
-      'iii-cloud::values::save': {
-        environment_id: DEV.id,
-        results: [
-          { name: 'ASSET_BUCKET_KEY', ok: false, error: { code: 'FILE_CHANGED', message: 'gone' } },
-          { name: 'PUBLIC_URL', ok: true },
-        ],
+    const h = await open(
+      {},
+      offered,
+      {},
+      {
+        'iii-cloud::values::save': {
+          environment_id: DEV.id,
+          results: [
+            { name: 'ASSET_BUCKET_KEY', ok: false, error: { code: 'FILE_CHANGED', message: 'gone' } },
+            { name: 'PUBLIC_URL', ok: true },
+          ],
+        },
       },
-    })
+    )
     await settle()
     await click(btn('Review and save'))
     await click(btn('Save 2 values'))

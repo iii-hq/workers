@@ -25,15 +25,7 @@ import {
 import { Fragment, type ReactNode, useEffect, useState } from 'react'
 import { clock } from './asked'
 import { hubOf, useActions, useLocked, useStale } from './hub'
-import {
-  envName,
-  needsAction,
-  plainDetail,
-  plainMessage,
-  type RowTone,
-  type Tone,
-  whatWaits,
-} from './model'
+import { envName, needsAction, plainDetail, plainMessage, type RowTone, type Tone, whatWaits } from './model'
 import type { PathItem, Route } from './route'
 import type { Deploy, Project, Status, WorkerError } from './types'
 
@@ -325,12 +317,7 @@ export function PathBar({
   const up = path.slice(0, -1)
   const parent = up.filter((p) => p.to).at(-1)
   return (
-    <Toolbar
-      aria-label={here.label}
-      className="iii-cloud-envhead"
-      data-rule={rule ? '' : undefined}
-      end={end}
-    >
+    <Toolbar aria-label={here.label} className="iii-cloud-envhead" data-rule={rule ? '' : undefined} end={end}>
       {narrow ? (
         <>
           {parent?.to ? (

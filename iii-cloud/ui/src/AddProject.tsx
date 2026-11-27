@@ -104,7 +104,9 @@ export function AddStart({
           className="iii-cloud-choice"
           disabled={existing !== null}
           label="Use a project already in iii cloud"
-          description={existing ?? 'Pick the project, then its folder on this machine. Add an environment or deploy from here.'}
+          description={
+            existing ?? 'Pick the project, then its folder on this machine. Add an environment or deploy from here.'
+          }
           onClick={onExisting}
         />
         <ListItem
@@ -143,13 +145,14 @@ export function ProjectList({
 }) {
   const [q, setQ] = useState('')
   const needle = q.trim().toLowerCase()
-  const shown = needle
-    ? projects.filter((p) => `${p.name} ${p.repository}`.toLowerCase().includes(needle))
-    : projects
+  const shown = needle ? projects.filter((p) => `${p.name} ${p.repository}`.toLowerCase().includes(needle)) : projects
   const teams = new Set(projects.map((p) => p.team.id)).size
   return (
     <>
-      <Head title="Which project?" lead="The projects of your teams in iii cloud. Next you pick its folder on this machine." />
+      <Head
+        title="Which project?"
+        lead="The projects of your teams in iii cloud. Next you pick its folder on this machine."
+      />
       {error && !projects.length ? (
         <Notice variant="alert" headline="iii cloud's projects could not be read" detail={error.message} />
       ) : null}
@@ -251,11 +254,7 @@ export function FolderStep({
           {actions.busy === 'resolve' ? <span className="iii-cloud-desc">Reading the folder…</span> : null}
         </div>
       </div>
-      {shown ? (
-        <Refusal error={shown} onPath={read} />
-      ) : err ? (
-        <Notice variant="alert" headline={err.message} />
-      ) : null}
+      {shown ? <Refusal error={shown} onPath={read} /> : err ? <Notice variant="alert" headline={err.message} /> : null}
       <div className="iii-cloud-row">
         <StepLink onClick={onBack}>Back</StepLink>
       </div>

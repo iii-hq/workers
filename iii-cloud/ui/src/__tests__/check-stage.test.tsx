@@ -462,7 +462,12 @@ describe('Ready', () => {
       },
       ...(brief === undefined
         ? {}
-        : { handoff_brief: { ...(dev.handoff_brief ?? ({} as NonNullable<Status['handoff_brief']>)), pushes_directly: brief } }),
+        : {
+            handoff_brief: {
+              ...(dev.handoff_brief ?? ({} as NonNullable<Status['handoff_brief']>)),
+              pushes_directly: brief,
+            },
+          }),
     }
   }
 
@@ -498,8 +503,13 @@ describe('Ready', () => {
       created_at: serving5.created_at,
       finished_at: null,
     }
-    await stage({ ...s, deploys: [serving5] }, cloudAnswers({ [apiPath('/deployments', env)]: { deployments: [serving] } }))
-    expect(region('What this deploy does')?.textContent).toContain('After this deploy, a merge into main no longer deploys test.')
+    await stage(
+      { ...s, deploys: [serving5] },
+      cloudAnswers({ [apiPath('/deployments', env)]: { deployments: [serving] } }),
+    )
+    expect(region('What this deploy does')?.textContent).toContain(
+      'After this deploy, a merge into main no longer deploys test.',
+    )
   })
 
   it('a local run that was reused is still a pass', async () => {

@@ -186,7 +186,7 @@ const PLAIN: Record<string, string> = {
   NO_ACCESS: "You don't have access to that in iii cloud.",
   PUSH_REFUSED: 'GitHub refused the push.',
   PUSH_UNKNOWN: "Couldn't tell whether the push reached GitHub.",
-  OWN_BRANCH_TAKEN: 'GitHub already has a branch of the environment\'s own name with other commits. Nothing changed.',
+  OWN_BRANCH_TAKEN: "GitHub already has a branch of the environment's own name with other commits. Nothing changed.",
   BRANCH_NOT_MOVED: 'The environment could not move to its own branch. Nothing was deployed. Deploy again to retry.',
   CLOUD_ERROR: 'iii cloud had a problem. Try again in a moment.',
   PROJECT_DELETED: 'That project no longer exists in iii cloud.',

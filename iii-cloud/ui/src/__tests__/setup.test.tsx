@@ -332,7 +332,9 @@ describe('Change: each row opens in place, one at a time', () => {
     expect(hint()).toBe('Its first assisted deploy gives it its own branch, iii-cloud/staging. main is never pushed.')
     // A branch another environment follows (dev's).
     await type(branch, 'develop')
-    expect(hint()).toBe('Its first assisted deploy gives it its own branch, iii-cloud/staging. develop is never pushed.')
+    expect(hint()).toBe(
+      'Its first assisted deploy gives it its own branch, iii-cloud/staging. develop is never pushed.',
+    )
     // A branch nobody follows.
     await type(branch, 'feature')
     expect(hint()).toBe(
@@ -580,7 +582,9 @@ describe('no folder known yet, and adding a project', () => {
   ]
   const cloud = cloudAnswers({ [projectsOf(TEAM.id)]: { projects: listed } })
   const pick = async (label: string) => {
-    const r = [...el.querySelectorAll('.iii-cloud-add-choices [role=row]')].find((x) => x.textContent?.startsWith(label))
+    const r = [...el.querySelectorAll('.iii-cloud-add-choices [role=row]')].find((x) =>
+      x.textContent?.startsWith(label),
+    )
     await click(r ?? null)
   }
   const folder = async (dir: string) => {
@@ -619,10 +623,9 @@ describe('no folder known yet, and adding a project', () => {
     })
     await pick('Use a project already in iii cloud')
     expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Which project?')
-    expect([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')].map((r) => r.textContent)).toEqual([
-      'billingBuilt from iii-hq/billing',
-      'docs-siteBuilt from iii-hq/docs-site',
-    ])
+    expect(
+      [...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')].map((r) => r.textContent),
+    ).toEqual(['billingBuilt from iii-hq/billing', 'docs-siteBuilt from iii-hq/docs-site'])
     expect(el.querySelector('input[aria-label="Filter projects"]')).toBeNull()
     await click([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')][0])
     expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Where is it on this machine?')
@@ -653,7 +656,12 @@ describe('no folder known yet, and adding a project', () => {
       new Error('This folder is iii-hq/notes. billing is built from iii-hq/billing: pick a folder of that repository.'),
       { code: 'REPOSITORY_MISMATCH' },
     )
-    await mount(stale, add, { ...cloud, 'iii-cloud::project::resolve': () => { throw mismatch } })
+    await mount(stale, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': () => {
+        throw mismatch
+      },
+    })
     await pick('Use a project already in iii cloud')
     await click([...el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')][0])
     await folder('/home/you/workspaces/notes')
@@ -686,7 +694,7 @@ describe('no folder known yet, and adding a project', () => {
 
   it('option 2 with a repository iii cloud does not have: straight to the confirmation, ending in the same check', async () => {
     const fresh = { ...candidate, cloud_project: null, cloud_projects: [], environments: [] }
-    const h = await mount({ ...base, candidate: fresh }, add, {
+    await mount({ ...base, candidate: fresh }, add, {
       ...cloud,
       'iii-cloud::project::resolve': () => fresh,
       'iii-cloud::project::create': () => ({ project_id: 'p-new', environment_id: 'e-new', cloud_projects: [] }),
@@ -718,7 +726,11 @@ describe('no folder known yet, and adding a project', () => {
   })
 
   it('more than eight projects: a filter', async () => {
-    const many = Array.from({ length: 9 }, (_, i) => ({ id: `p${i}`, name: `app-${i}`, repository: { full_name: `o/r${i}` } }))
+    const many = Array.from({ length: 9 }, (_, i) => ({
+      id: `p${i}`,
+      name: `app-${i}`,
+      repository: { full_name: `o/r${i}` },
+    }))
     await mount(stale, add, cloudAnswers({ [projectsOf(TEAM.id)]: { projects: many } }))
     await pick('Use a project already in iii cloud')
     const input = el.querySelector('input[aria-label="Filter projects"]')
@@ -727,7 +739,7 @@ describe('no folder known yet, and adding a project', () => {
     expect(el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')).toHaveLength(1)
   })
 
-  it('the old context with newProject lands on option 2\'s folder step', async () => {
+  it("the old context with newProject lands on option 2's folder step", async () => {
     const h = await mount(stale, ctx({ at: 'setup', newProject: true }), cloud)
     expect(el.querySelector('[data-directory-picker]')).not.toBeNull()
     expect(of(h, 'iii-cloud::project::resolve')).toEqual([])

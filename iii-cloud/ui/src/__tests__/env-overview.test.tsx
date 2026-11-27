@@ -3,12 +3,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { clock } from '../asked'
 import { type Next, nextAction } from '../EnvOverview'
-import { appFile, withAppFile } from '../model'
 import { valueName, needsYou as youOf } from '../findings'
 import { agent, apiPath, base, check, DEPLOY_BASE, ENV, pr, problems, ready, T } from '../fixtures/base'
 import { DEV, devDeploys } from '../fixtures/deploys'
 import { NEW_SHA } from '../fixtures/manage'
 import { envPageStatus } from '../fixtures/overview'
+import { appFile, withAppFile } from '../model'
 import type { Deploy, Status } from '../types'
 import { board, btn, byText, click, cloudAnswers, ctx, el, flush, mount, text, usePage } from './util'
 
@@ -336,12 +336,16 @@ describe('the environment page', () => {
     expect(el.querySelector('section[aria-label="Live now"] [data-dot]')).toBeNull()
     expect(card()?.querySelector('.iii-cloud-mono')?.textContent).toBe('2be71d0')
     expect(card()?.querySelector('.iii-cloud-next-label')?.textContent).toBe('Next')
-    expect(liveNow).toContain("Deploys froman assisted deployto dev; a push to it from anywhere else deploys without the check")
+    expect(liveNow).toContain(
+      'Deploys froman assisted deployto dev; a push to it from anywhere else deploys without the check',
+    )
     expect(text()).toContain('Secrets and variables')
     expect(text()).toContain("Machines, domains, rollback and a new environment are in iii cloud's console.")
     expect(byText('a', "iii cloud's console")?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry/dev')
     // Every link to the console is a page it has: never `/<team>/<project>` and never `/variables`.
-    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '').filter((h) => h.startsWith('https://cloud.iii.dev/'))
+    const hrefs = [...el.querySelectorAll('a')]
+      .map((a) => a.getAttribute('href') ?? '')
+      .filter((h) => h.startsWith('https://cloud.iii.dev/'))
     expect(hrefs.length).toBeGreaterThan(1)
     for (const h of hrefs) {
       expect(h).not.toMatch(/\/variables$/)

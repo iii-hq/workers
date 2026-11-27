@@ -162,7 +162,9 @@ describe('Projects (desktop)', () => {
     await settle()
     expect(lines('old')[0]).toBe('restorable until 3 Dec')
     expect(place('old')?.querySelector('a')?.textContent).toBe('Open in iii cloud')
-    expect(place('old')?.querySelector('a')?.getAttribute('href')).toMatch(/^https:\/\/cloud\.iii\.dev\/[^/]+\/deletions$/)
+    expect(place('old')?.querySelector('a')?.getAttribute('href')).toMatch(
+      /^https:\/\/cloud\.iii\.dev\/[^/]+\/deletions$/,
+    )
     expect(openOf('old')).toBeNull()
   })
 

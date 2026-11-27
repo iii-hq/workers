@@ -27,9 +27,9 @@ import { configAction, findings, type Item, location, needsYou, valueName } from
 import { canOpenChat, handOff, openAgentChat } from './handoff'
 import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom } from './hub'
 import {
+  ASSISTED,
   activeSameKind,
   appFile,
-  ASSISTED,
   CHECK_AGAIN,
   cloudPending,
   cloudPendingNote,
@@ -953,7 +953,10 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
           </DetailRow>
         ) : null}
         {fixes && branch ? (
-          <DetailRow label="Your branch" note={assisted ? `The next deploy starts from ${target}.` : 'The next deploy starts from it.'}>
+          <DetailRow
+            label="Your branch"
+            note={assisted ? `The next deploy starts from ${target}.` : 'The next deploy starts from it.'}
+          >
             {assisted
               ? `After the deploy, ${target} has ${fixes}, and ${branch} is not changed`
               : `When the pull request is merged, ${env.branch} gets ${fixes}`}
@@ -961,7 +964,10 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
         ) : null}
         {assisted ? (
           <>
-            <DetailRow label="How it ships" note={`This page sends ${sha7(c.commit)} to ${target}, and iii cloud deploys it.`}>
+            <DetailRow
+              label="How it ships"
+              note={`This page sends ${sha7(c.commit)} to ${target}, and iii cloud deploys it.`}
+            >
               {ASSISTED}
             </DetailRow>
             {way.way === 'assisted' && way.own ? (

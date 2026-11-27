@@ -182,7 +182,11 @@ export function NewEnvironmentFields({
   const b = value.branch.trim()
   const badName = n !== '' && !validName(n)
   // A new environment is never production here: it gets an assisted deploy, on its own branch when this one is shared.
-  const way = deployWay(baseBranch ?? null, { name: n || '…', production: false, branch: b }, project.environments ?? [])
+  const way = deployWay(
+    baseBranch ?? null,
+    { name: n || '…', production: false, branch: b },
+    project.environments ?? [],
+  )
   const how = !b
     ? null
     : way.way === 'assisted' && way.own

@@ -646,7 +646,7 @@ function Follow({
               </Choice>
               <Choice line="Lists every problem with its file and line. Nothing is deployed.">
                 <Button size="sm" variant="secondary" onClick={checkAgain}>
-                  {`Check ${sha} here`}
+                  {`Check ${env.name} here`}
                 </Button>
               </Choice>
               {heldLinks}
@@ -690,12 +690,12 @@ function Follow({
         <Notice
           variant="warn"
           headline="iii cloud holds it for your approval"
-          detail={`It was not started from this page, so nothing here has checked ${sha}. Check it first: when it passes, you confirm here.`}
+          detail={`It was not started from this page, so nothing here has checked ${sha}. Check ${env.name} first: when a check of ${sha} passes, you confirm here.`}
           action={
             <div className="iii-cloud-cs-decide">
               <Choice line="Runs iii cloud's plan and the local run on this environment. Nothing is deployed.">
                 <Button size="sm" variant="primary" onClick={checkAgain}>
-                  {`Check ${sha} here`}
+                  {`Check ${env.name} here`}
                 </Button>
               </Choice>
               {heldLinks}

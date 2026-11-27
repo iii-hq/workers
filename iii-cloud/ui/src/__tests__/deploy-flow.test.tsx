@@ -426,7 +426,7 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
     // The failed stage says why beside it.
     expect(region('Deployment stages')?.textContent).toContain('The plan has 3 blocking issues')
     expect(links()).toContainEqual(['Open it in iii cloud', blocked.console_url])
-    await click(btn(`Check ${sha(blocked)} here`))
+    await click(btn('Check dev here'))
     expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
     await click(btn('Cancel deployment #6'))
     expect(text()).toContain('dev keeps serving #5.')
@@ -457,13 +457,13 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
     const h = await mount(status(other), at, { 'iii-cloud::check': {} })
     expect(title()).toBe('Deployment #6 waits for your approval')
     expect(text()).toContain(
-      'It was not started from this page, so nothing here has checked aaaaaaa. Check it first: when it passes, you confirm here.',
+      'It was not started from this page, so nothing here has checked aaaaaaa. Check dev first: when a check of aaaaaaa passes, you confirm here.',
     )
     expect(btn('Confirm deploy')).toBeNull()
-    expect(primaries()).toEqual(['Check aaaaaaa here'])
+    expect(primaries()).toEqual(['Check dev here'])
     expect(links()).toContainEqual(['Approve it in iii cloud', other.console_url])
     expect(btn('Cancel deployment #6')).toBeTruthy()
-    await click(btn('Check aaaaaaa here'))
+    await click(btn('Check dev here'))
     expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
   })
 })

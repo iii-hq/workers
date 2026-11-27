@@ -152,7 +152,6 @@ function liveLine(env: string, list: DeploymentList['deployments'], notServed: n
       parts.push(`${plural(notServed, 'commit')} in your folder ${notServed === 1 ? "isn't" : "aren't"} on ${env}`)
   } else parts.push('not deployed yet')
   return parts.map((x, i) => (
-    // biome-ignore lint/suspicious/noArrayIndexKey: a fixed, ordered list of words
     <Fragment key={i}>
       {i ? ' · ' : null}
       {x}
@@ -263,7 +262,12 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   else if (env && list) {
     const notServed = place.current ? (p?.checkout.not_served?.length ?? 0) : 0
     line1 = liveLine(env.name, list, notServed)
-    if (waits.length) line1 = <>{line1} · {waits.join(', ')}</>
+    if (waits.length)
+      line1 = (
+        <>
+          {line1} · {waits.join(', ')}
+        </>
+      )
   } else if (listed && !env) line1 = 'no environment yet'
   else line1 = <Skeleton className="iii-cloud-skeleton-row" />
 

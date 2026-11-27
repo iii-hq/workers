@@ -19,9 +19,9 @@ import {
   sha7,
   sourceLabel,
   type Tone,
+  wayOf,
   when,
   withAppFile,
-  wayOf,
 } from './model'
 import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
@@ -228,8 +228,7 @@ export function nextAction(
 
   const files = p?.checkout.changed_files.length ?? 0
   const notServed = p?.checkout.not_served ?? []
-  const folderMoved =
-    notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha))
+  const folderMoved = notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha))
   if (failed && !folderMoved) {
     const cloud = opts.cloud?.find((d) => d.id === failed.id)
     return {
@@ -274,10 +273,9 @@ export function nextAction(
       wait: false,
       primary: false,
       title: `Nothing is live on ${name} yet`,
-      detail:
-        env?.production
-          ? `It deploys when a pull request into ${env.branch} is merged.`
-          : 'An assisted deploy puts the first version live. It starts with the check.',
+      detail: env?.production
+        ? `It deploys when a pull request into ${env.branch} is merged.`
+        : 'An assisted deploy puts the first version live. It starts with the check.',
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }
@@ -462,9 +460,7 @@ export function LiveNow({
       </div>
       <div className="iii-cloud-cell">
         <span className="iii-cloud-cell-label">Deploys from</span>
-        <span className="iii-cloud-cell-value">
-          {way.way === 'assisted' ? 'an assisted deploy' : 'a pull request'}
-        </span>
+        <span className="iii-cloud-cell-value">{way.way === 'assisted' ? 'an assisted deploy' : 'a pull request'}</span>
         <span className="iii-cloud-desc">
           {way.way === 'pull_request'
             ? `when one into ${status.pr?.base ?? env.branch} is merged`

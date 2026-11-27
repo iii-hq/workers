@@ -260,7 +260,7 @@ describe('Open on a row', () => {
     expect(path()).toBe('Projects / registry · dev / Deploy')
     // No passed check matches it: it says to check first, with no Confirm to press.
     expect(btn('Confirm deploy')).toBeNull()
-    expect(btn(`Check ${held.commit.sha.slice(0, 7)} here`)).toBeTruthy()
+    expect(btn('Check dev here')).toBeTruthy()
     await mount(envPageStatus, ctx({ at: 'env', env: DEV.id }, 2), cloud)
     await settle()
     await click(btn('Open deployment #2'))
