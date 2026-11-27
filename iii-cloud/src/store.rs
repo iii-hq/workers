@@ -163,6 +163,26 @@ impl State {
         c.manifest.clone()
     }
 
+    /// The environment's file is `file` now (this worker just switched it): every check
+    /// of that environment was made for another, so a later change back in the
+    /// console is seen as a change by `work_file`.
+    pub fn env_file_is(&mut self, env_id: &str, file: &str) {
+        let ids: Vec<String> = self
+            .check_sources
+            .keys()
+            .filter(|id| {
+                self.find_check(id)
+                    .is_some_and(|c| c.environment_id == env_id)
+            })
+            .cloned()
+            .collect();
+        for id in ids {
+            if let Some(r) = self.check_sources.get_mut(&id) {
+                r.compose = Some(file.to_string());
+            }
+        }
+    }
+
     /// Record `check` as the latest and keep it in the history.
     pub fn put_check(&mut self, check: Check) {
         self.put_check_for(check, true);

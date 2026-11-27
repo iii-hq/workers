@@ -449,14 +449,23 @@ describe('a page that is out of date', () => {
   })
 })
 
-describe("the compose file of an environment's work is its newest check's", () => {
-  it("Next and a page check name the newest check's file, and the environment's own when it has none", () => {
+describe("the compose file of an environment's work is the worker's answer", () => {
+  it("Next and a page check name `work_file`, and the environment's own when it has none", () => {
     const x = 'api/worker-compose-cloud.yaml'
-    const s = dev({ check: { ...passed, manifest: x } })
+    const s = dev({ check: { ...passed, manifest: x }, work_file: x })
     expect(appFile(s)).toMatchObject({ path: x, switches: true })
     expect(withAppFile(s, { run: true })).toEqual({ run: true, manifest: x })
-    const own = dev({ check: { ...passed, manifest: null } })
+    const own = dev({ check: { ...passed, manifest: null }, work_file: null })
     expect(withAppFile(own).manifest).toBe(appFile(own).path)
     expect(appFile(own).switches).toBe(false)
+  })
+
+  it("the newest check's file is not named again once the worker says the environment's file changed", () => {
+    const x = 'api/worker-compose-cloud.yaml'
+    // The person set another file in the console: the worker's answer is none, whatever the old check was of.
+    const s = dev({ check: { ...passed, manifest: x }, work_file: null })
+    expect(appFile(s).switches).toBe(false)
+    expect(appFile(s).path).not.toBe(x)
+    expect(withAppFile(s).manifest).toBe(appFile(s).path)
   })
 })

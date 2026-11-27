@@ -1460,6 +1460,11 @@ pub struct Status {
     /// selected environment, sorted.
     #[serde(default)]
     pub skipped_problems: Vec<String>,
+    /// The compose file the selected environment's work is on when it is not
+    /// the environment's own (`State::work_file`): the newest check's, unless
+    /// the environment's file changed since. Null: the environment's file.
+    #[serde(default)]
+    pub work_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

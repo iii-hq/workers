@@ -16,6 +16,14 @@ use crate::types::*;
 /// A waiting request for a database URL the cloud provides is not needed: it
 /// becomes `not_needed` (noted) unless the person chose an outside database.
 fn settle_database_requests(ctx: &Ctx) {
+    // Nothing to settle: no write (the page polls status).
+    if !ctx.store.read(|s| {
+        s.secrets.iter().any(|r| {
+            r.state == SecretState::Waiting && !r.external && crate::local::database_shaped(&r.name)
+        })
+    }) {
+        return;
+    }
     let changed: Vec<SecretRequest> = ctx.store.update(|s| {
         let mut out = vec![];
         for r in s.secrets.iter_mut() {
@@ -45,8 +53,15 @@ fn settle_database_requests(ctx: &Ctx) {
 pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
     settle_database_requests(ctx);
     // Requests stored before `secret` refused them: a name that is not a variable name is no secret.
-    ctx.store
-        .update(|s| s.secrets.retain(|r| crate::secret::valid_name(&r.name)));
+    // Written only when one is dropped: the page polls this.
+    if ctx.store.read(|s| {
+        s.secrets
+            .iter()
+            .any(|r| !crate::secret::valid_name(&r.name))
+    }) {
+        ctx.store
+            .update(|s| s.secrets.retain(|r| crate::secret::valid_name(&r.name)));
+    }
     if request.refresh.unwrap_or(false) {
         refresh(ctx).await;
     }
@@ -174,6 +189,11 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
                     }
                 })
                 .collect(),
+            work_file: s.project.as_ref().and_then(|p| {
+                p.environment
+                    .as_ref()
+                    .and_then(|e| s.work_file(&e.id, e.manifest.as_deref()))
+            }),
             skipped_problems: env
                 .as_deref()
                 .and_then(|e| s.skipped_problems.get(e))

@@ -838,11 +838,12 @@ export function importMessage(s: Status, choice?: ImportChoice): string {
 /** The compose file an environment checks and deploys: its manifest, else the root file. */
 export const composeFile = (manifest: string | null | undefined) => manifest || 'worker-compose.yaml'
 
-/** The compose file: the latest check's, else the environment's. `switches`: it is not the environment's,
-    so the environment moves to it when the person confirms the deploy. */
+/** The compose file the work is on: the worker's answer (`work_file`: the latest check's file, unless the
+    environment's file was changed since, e.g. in the console), else the environment's. `switches`: it is not the
+    environment's, so the environment moves to it when the person confirms the deploy. */
 export function appFile(s: Status): { path: string; switches: boolean; note: string | null } {
   const current = composeFile(s.project?.environment?.manifest)
-  const path = s.check?.manifest || current
+  const path = s.work_file || current
   const switches = path !== current
   return {
     path,

@@ -4636,3 +4636,71 @@ async fn an_origin_whose_head_names_no_branch_only_stops_a_deploy_that_needs_the
     assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
     assert!(origin_branch(&s, OWN).is_none());
 }
+
+#[tokio::test]
+async fn status_names_the_work_file_unless_the_environments_file_changed_since() {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let work = || async {
+        iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
+            .await
+            .unwrap()
+            .work_file
+    };
+    assert_eq!(
+        work().await.as_deref(),
+        Some(NEXT),
+        "the check is of another file than the environment's"
+    );
+    // The person set another file in the console.
+    s.h.ctx.store.update(|st| {
+        st.project
+            .as_mut()
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .manifest = Some("console.yaml".into());
+    });
+    assert_eq!(work().await, None, "the check's file is not named again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deploy_that_switched_the_file_records_it_so_a_revert_in_the_console_stays() {
+    let s = setup(next_plan(true)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    direct(&s).await;
+    push_list(&s, "needs_action").await;
+    deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(*f.manifest.lock().unwrap(), NEXT);
+    // The person puts the first file back in the console: the check of NEXT does not switch it again.
+    let work =
+        s.h.ctx
+            .store
+            .read(|st| st.work_file(ENV, Some("worker-compose.yaml")));
+    assert_eq!(work, None);
+    // While the environment is on NEXT, the work stays on it.
+    let work = s.h.ctx.store.read(|st| st.work_file(ENV, Some(NEXT)));
+    assert_eq!(work.as_deref(), Some(NEXT));
+}
+
+#[tokio::test]
+async fn status_writes_nothing_when_nothing_changed() {
+    let s = setup(plan(false)).await;
+    let file = s.h.ctx.store.dir().join("state.json");
+    iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..3 {
+        iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().modified().unwrap(),
+        before
+    );
+}

@@ -495,6 +495,7 @@ async fn set_manifest(ctx: &Arc<Ctx>, sel: &Selected, manifest: &str) -> Res<()>
         );
         return Err(e);
     }
+    ctx.store.update(|s| s.env_file_is(&sel.env.id, manifest));
     crate::status::refresh_environment(ctx, sel).await;
     Ok(())
 }
@@ -1389,6 +1390,9 @@ async fn set_branch(
                 sel.env.name
             ),
         ));
+    }
+    if let Some(m) = manifest {
+        ctx.store.update(|s| s.env_file_is(&sel.env.id, m));
     }
     Ok(match crate::status::refresh_environment(ctx, sel).await {
         Some(fresh) => fresh,
