@@ -74,6 +74,12 @@ export function registerTerminal(
           throw new Error('session visibility changed; refresh the list');
         }
       };
+      // A spec built for a replaced binary or workspace would open the session on a stale host.
+      const verifyHost = () => {
+        if (session && host() !== prepared) {
+          throw new Error('the terminal host changed while opening; refresh the list');
+        }
+      };
       try {
         verifyVisibility();
         const open = session
@@ -84,6 +90,7 @@ export function registerTerminal(
         if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
         verifyVisibility();
         const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
+        verifyHost();
         // Plugin preparation can take minutes. Revalidate the explicit fork before returning it.
         if (session && request && open) {
           const fresh = await resolveOpen(session, request);
@@ -96,6 +103,7 @@ export function registerTerminal(
             throw new Error('the session changed while opening; refresh the list');
           }
         }
+        verifyHost();
         verifyVisibility();
         if (spec.detail) console.warn(`claude-code terminal: ${spec.detail}`);
         if (!open) return spec;
@@ -108,6 +116,7 @@ export function registerTerminal(
       } catch (error) {
         // Preparation errors can contain the external directory too, not just a successful spec.
         verifyVisibility();
+        verifyHost();
         throw error;
       }
     },
