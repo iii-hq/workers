@@ -217,6 +217,26 @@ export class ReplyPermission {
     return this.watchCheckpoint !== undefined;
   }
 
+  // Set the epoch and start the retained-watch checkpoint in one synchronous
+  // step, so no reader sees a grant whose checkpoint is not yet pending. The
+  // checkpoint runs apart from the live config read: a slow checkpoint must
+  // not cache a positive config probe. Without a captured boundary the grant
+  // is revoked unreported, and the next confirm or poll starts a new one.
+  private grant(generation: number) {
+    this.currentEpoch = generation;
+    if (this.watchCheckpoint || !this.recoverWatches) return;
+    this.watchCheckpoint = this.recoverWatches(generation)
+      .then(
+        () => {},
+        () => {
+          if (generation === this.generation) this.invalidate();
+        },
+      )
+      .finally(() => {
+        if (generation === this.generation) this.watchCheckpoint = undefined;
+      });
+  }
+
   // An explicit probe, admission or poll can recover on the same connection.
   // Concurrent readers share a probe; a config event always supersedes it.
   async confirm({ waitForWatchCheckpoint = true }: ConfirmOptions = {}): Promise<number | null> {
@@ -233,18 +253,7 @@ export class ReplyPermission {
           this.invalidate();
           return null;
         }
-        this.currentEpoch = generation;
-        // Run watch checkpointing separately from the live config read.
-        // A slow checkpoint must not cache a positive config probe.
-        if (!this.watchCheckpoint && this.recoverWatches) {
-          this.watchCheckpoint = this.recoverWatches(generation)
-            .catch(() => {
-              // An authorized poll can still establish a conservative baseline.
-            })
-            .finally(() => {
-              if (generation === this.generation) this.watchCheckpoint = undefined;
-            });
-        }
+        this.grant(generation);
         return generation;
       });
     }
@@ -268,7 +277,7 @@ export class ReplyPermission {
       connection !== null &&
       connection === this.watchConnection()
     ) {
-      this.currentEpoch = generation;
+      this.grant(generation);
     }
     return runtime;
   }

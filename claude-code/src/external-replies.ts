@@ -30,7 +30,14 @@ function sessionId(args: unknown) {
   return parsed.data.claude_session_id;
 }
 
-type Watch = { epoch: number; cursor: string; active: boolean };
+/** `sent` holds the ids already dispatched from the page that starts at
+ * `from`, so a dispatch failure partway through it resumes at the next reply. */
+type Watch = {
+  epoch: number;
+  cursor: string;
+  active: boolean;
+  sent?: { from: string; ids: Set<string> };
+};
 type Recovery = { epoch: number; env: Record<string, string>; cursor?: string };
 type Group = {
   watches: Map<string, Watch>;
@@ -148,7 +155,14 @@ export function registerExternalReplies(
             // A validated viewer may already have captured an earlier tip.
             recovery.cursor ??= cursor;
           },
-          () => {},
+          (err: unknown) => {
+            // An accepted viewer boundary still completes this recovery.
+            if (recovery.cursor) return;
+            // Without a boundary the grant must not be reported: a reply
+            // written meanwhile would fall behind any later baseline.
+            if (g.recovery === recovery) g.recovery = undefined;
+            throw err;
+          },
         );
       checkpoints.push(checkpoint);
       void serialize(g, async () => {
@@ -156,7 +170,7 @@ export function registerExternalReplies(
         const { env } = await lease.read(() => rowFor(id));
         await checkpoint;
         lease.check();
-        if (env !== recovery.env || !recovery.cursor) return;
+        if (g.recovery !== recovery || env !== recovery.env || !recovery.cursor) return;
         for (const w of g.watches.values()) {
           if (!needsBaseline(w)) continue;
           w.cursor = recovery.cursor;
@@ -203,18 +217,24 @@ export function registerExternalReplies(
         continue;
       }
       for (const [key, w] of batch) {
+        if (w.sent?.from !== cursor) w.sent = { from: cursor, ids: new Set() };
+        const sent = w.sent;
         for (const reply of next.replies) {
           lease.check();
           if (g.watches.get(key) !== w) break;
+          // Already dispatched before a failure partway through this page.
+          if (sent.ids.has(reply.id)) continue;
           requireOpenSocket();
           await iii.call({
             function_id: ON_REPLY,
             metadata: { for_observer: key, epoch },
             payload: { claude_session_id: id, reply },
           });
+          sent.ids.add(reply.id);
         }
         w.cursor = next.cursor;
         w.epoch = epoch;
+        w.sent = undefined;
       }
     }
   }
