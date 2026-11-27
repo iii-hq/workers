@@ -514,7 +514,12 @@ async fn resolve_cloud(
     let mut access = None;
     for team in &teams {
         let (status, body) = ctx
-            .raw(&Req::get(format!("/teams/{}/github/repositories", team.id)))
+            // One repository's compose files, not every repository's: the whole list takes the
+            // cloud a round trip to GitHub per repository (25 s for a team of 71).
+            .raw(&Req::get(format!(
+                "/teams/{}/github/repositories?full_name={want}",
+                team.id
+            )))
             .await?;
         if status != 200 {
             continue;

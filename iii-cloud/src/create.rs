@@ -117,13 +117,13 @@ pub async fn create_project(ctx: &Arc<Ctx>, request: ProjectCreateRequest) -> Re
         },
     )
     .await?;
+    let want = project.repository.to_lowercase();
     let listed = ctx
         .call(&Req::get(format!(
-            "/teams/{}/github/repositories",
+            "/teams/{}/github/repositories?full_name={want}",
             request.team_id
         )))
         .await?;
-    let want = project.repository.to_lowercase();
     let repo = listed
         .get("repositories")
         .and_then(Value::as_array)
