@@ -3107,12 +3107,9 @@ async fn a_provided_value_is_redacted_even_when_no_env_file_holds_it() {
     .await
     .unwrap();
     assert_eq!(done.cloud, Some(CloudOutcome::Set));
-    assert!(
-        !s.ws.join(".env").exists()
-            || !std::fs::read_to_string(s.ws.join(".env"))
-                .unwrap()
-                .contains(value)
-    );
+    // The run's `.env` holds it (the name is a `${NAME:-}` iii cloud has a value for now); with
+    // that file gone, only what the worker remembers is left, and it still redacts.
+    let _ = std::fs::remove_file(s.ws.join(".env"));
     assert!(iii_cloud::handoff::env_values(&s.h.ctx).contains(&value.to_string()));
     assert_eq!(
         iii_cloud::run::redact(
