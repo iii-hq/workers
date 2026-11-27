@@ -1747,29 +1747,21 @@ describe('authorization', () => {
     });
   });
 
-  it('reply written while the baseline fails is delivered once', async () => {
+  it('resumes from the first successful baseline', async () => {
     await withSyntheticHost(async (s) => {
       const restore = await unreadableAcrossGrant(s);
       await s.poll();
+      // The reply reaches A before any baseline of its watch succeeds: the
+      // watch may skip it and resumes from its first successful baseline.
       await restore();
-      // The reply lands on A while its first successful baseline is in flight,
-      // before any cursor exists for its watch.
-      let written = false;
-      s.host.hostOutput = (stdout) => {
-        const last = reads(s).at(-1)?.payload.args as string[] | undefined;
-        if (!written && last?.[5] === id) {
-          written = true;
-          appendFileSync(s.file, lines(answer(2, 1, 'written while the baseline failed')));
-        }
-        return stdout;
-      };
+      await appendFile(s.file, lines(answer(2, 1, 'written while the baseline failed')));
       await s.poll();
       await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after the first baseline')));
       await s.poll();
-      expect(written).toBe(true);
-      expect(seen(s, 'A')).toEqual([
-        { id: recordId(2), text: 'written while the baseline failed' },
-      ]);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after the first baseline' }]);
     });
   });
 
