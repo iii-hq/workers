@@ -13,6 +13,7 @@ use image::{DynamicImage, ImageFormat, RgbImage};
 use image_resize::config::{ResizeConfig, ResizeStrategy};
 use image_resize::handler::{ResizeRequest, read_image, resize};
 use image_resize::processing::{Format, ThumbnailMetadata};
+use image_resize::shutdown::InFlight;
 use serde_json::{Map, Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
@@ -28,14 +29,25 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     encode(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
 }
 
-fn noise_png(side: u32) -> Vec<u8> {
+fn noise(side: u32, format: ImageFormat) -> Vec<u8> {
     let mut seed: u32 = 7;
     let img = RgbImage::from_fn(side, side, |_, _| {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let [_, r, g, b] = seed.to_le_bytes();
         image::Rgb([r, g, b])
     });
-    encode(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
+    encode(&DynamicImage::ImageRgb8(img), format)
+}
+
+/// A 64x64 baseline JPEG whose APP1 holds a fake EXIF thumbnail, EOI and all.
+fn jpeg_with_thumbnail() -> Vec<u8> {
+    let jpeg = noise(64, ImageFormat::Jpeg);
+    let app1 = [
+        b"\xFF\xE1\x00\x0CExif\x00\x00".as_slice(),
+        b"\xFF\xD8\xFF\xD9",
+    ]
+    .concat();
+    [&jpeg[..2], &app1, &jpeg[2..]].concat()
 }
 
 struct Call {
@@ -50,6 +62,7 @@ async fn call_with(
     input: InputStream,
     metadata: Option<Value>,
     permits: Arc<Semaphore>,
+    calls: Arc<InFlight>,
     rest: Map<String, Value>,
 ) -> Call {
     let (writer, mut reader) = tokio::io::duplex(8 << 20);
@@ -61,7 +74,7 @@ async fn call_with(
         metadata,
         rest,
     };
-    let result = resize(Arc::new(ResizeConfig::default()), permits, req).await;
+    let result = resize(Arc::new(ResizeConfig::default()), permits, calls, req).await;
     let mut bytes = Vec::new();
     tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut bytes))
         .await
@@ -79,6 +92,7 @@ async fn call(input: Vec<u8>, metadata: Option<Value>) -> Call {
         InputStream::from_bytes(input),
         metadata,
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         Map::new(),
     )
     .await
@@ -103,6 +117,14 @@ fn rejected(call: Call) -> String {
 }
 
 fn decoded_dims(bytes: &[u8]) -> (u32, u32) {
+    // The image crate here has no WebP decoder.
+    if image::guess_format(bytes).unwrap() == ImageFormat::WebP {
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: libwebp reads at most `bytes.len()` bytes and writes only `w` and `h`.
+        let ok = unsafe { libwebp_sys::WebPGetInfo(bytes.as_ptr(), bytes.len(), &mut w, &mut h) };
+        assert_ne!(ok, 0, "not a WebP libwebp can read");
+        return (w as u32, h as u32);
+    }
     let img = image::load_from_memory(bytes).unwrap();
     (img.width(), img.height())
 }
@@ -150,7 +172,7 @@ async fn read_image_enforces_cap() {
 
 #[tokio::test]
 async fn large_input_in_64k_frames_resizes() {
-    let input = noise_png(300);
+    let input = noise(300, ImageFormat::Png);
     assert!(
         input.len() > 65_536,
         "{} bytes fit in one frame",
@@ -160,6 +182,7 @@ async fn large_input_in_64k_frames_resizes() {
         InputStream::from_reader(Cursor::new(input)),
         Some(json!({ "strategy": "crop-to-fit", "target_width": 64, "target_height": 64 })),
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         Map::new(),
     )
     .await;
@@ -182,12 +205,25 @@ async fn metadata_is_optional() {
 #[tokio::test]
 async fn sniffs_input_format() {
     let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
-    for (format, expected) in [
-        (ImageFormat::Jpeg, Format::Jpeg),
-        (ImageFormat::Png, Format::Png),
-        (ImageFormat::WebP, Format::Webp),
+    let webp = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/test-fixtures/sample.webp"
+    ))
+    .unwrap();
+    for (input, format, expected) in [
+        (
+            encode(&img, ImageFormat::Jpeg),
+            ImageFormat::Jpeg,
+            Format::Jpeg,
+        ),
+        (
+            encode(&img, ImageFormat::Png),
+            ImageFormat::Png,
+            Format::Png,
+        ),
+        (webp, ImageFormat::WebP, Format::Webp),
     ] {
-        let call = call(encode(&img, format), None).await;
+        let call = call(input, None).await;
         assert_eq!(call.result.unwrap().format, expected);
         assert_eq!(image::guess_format(&call.bytes).unwrap(), format);
     }
@@ -241,6 +277,7 @@ async fn top_level_options_are_invalid_args() {
             InputStream::from_bytes(png(400, 400)),
             None,
             Arc::new(Semaphore::new(1)),
+            Arc::default(),
             rest,
         )
         .await;
@@ -268,15 +305,18 @@ async fn unknown_metadata_keys_are_invalid_args_naming_the_key() {
 }
 
 #[tokio::test]
-async fn deprecated_metadata_keys_are_accepted_and_ignored() {
-    let old = json!({ "format": "jpeg", "width": 50, "height": 50, "target_width": 100 });
-    let call = call(png(400, 300), Some(old)).await;
-    assert!(call.output.contains("closed"), "{}", call.output);
-    let result = call.result.unwrap();
-    // `format` does not set the output format and `width`/`height` do not set the box.
-    assert_eq!(result.format, Format::Png);
-    assert_eq!((result.width, result.height), (100, 75));
-    assert_eq!(decoded_dims(&call.bytes), (100, 75));
+async fn removed_metadata_keys_are_invalid_args_naming_the_key() {
+    for (key, value) in [
+        ("format", json!("jpeg")),
+        ("width", json!(50)),
+        ("height", json!(50)),
+    ] {
+        let message = rejected(call(png(4, 4), Some(json!({ key: value }))).await);
+        assert!(
+            message.contains(&format!("unknown field `{key}`")),
+            "{key}: {message}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -290,6 +330,23 @@ async fn undecodable_input_is_invalid_args_and_aborts_output() {
 }
 
 #[tokio::test]
+async fn jpeg_cut_inside_its_scan_is_invalid_args() {
+    for jpeg in [noise(64, ImageFormat::Jpeg), jpeg_with_thumbnail()] {
+        let message = rejected(call(jpeg[..jpeg.len() / 2].to_vec(), None).await);
+        assert!(message.contains("truncated"), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn complete_jpeg_resizes_despite_trailing_bytes_or_an_eoi_in_app1() {
+    let trailing = [noise(64, ImageFormat::Jpeg), b"garbage\xFF\xD8".to_vec()].concat();
+    for jpeg in [trailing, jpeg_with_thumbnail()] {
+        let result = call(jpeg, None).await.result.unwrap();
+        assert_eq!((result.source_width, result.source_height), (64, 64));
+    }
+}
+
+#[tokio::test]
 async fn quality_out_of_range_is_invalid_args() {
     for quality in [0, 101] {
         let metadata = json!({ "output_format": "jpeg", "quality": quality });
@@ -300,8 +357,8 @@ async fn quality_out_of_range_is_invalid_args() {
 
 #[tokio::test]
 async fn zero_target_is_invalid_args() {
-    for key in ["target_width", "target_height"] {
-        let message = rejected(call(png(4, 4), Some(json!({ key: 0 }))).await);
+    for key in ["target_width", "target_height", "max_pixels", "max_bytes"] {
+        let message = rejected(call(Vec::new(), Some(json!({ key: 0 }))).await);
         assert!(message.contains("invalid metadata"), "{key}: {message}");
     }
 }
@@ -334,10 +391,87 @@ async fn result_reports_output_and_source_dims() {
             source_width: 300,
             source_height: 200,
             strategy: ResizeStrategy::ScaleToFit,
+            quality: None,
         }
     );
     assert_eq!(decoded_dims(&call.bytes), (150, 100));
     assert!(call.output.contains("closed"), "{}", call.output);
+}
+
+#[tokio::test]
+async fn max_pixels_shrinks_past_the_box_keeping_the_aspect() {
+    for (metadata, dims) in [
+        (json!({ "max_pixels": 10_000 }), (115, 86)),
+        (
+            json!({ "target_width": 1000, "target_height": 1000, "max_pixels": 10_000 }),
+            (115, 86),
+        ),
+        (
+            json!({ "strategy": "crop-to-fit", "target_width": 100, "target_height": 100, "max_pixels": 2_500 }),
+            (50, 50),
+        ),
+        (json!({ "max_pixels": 30_000 }), (200, 150)),
+        (json!({ "max_pixels": 1 }), (1, 1)),
+    ] {
+        let call = call(png(400, 300), Some(metadata.clone())).await;
+        let result = call.result.unwrap();
+        assert_eq!((result.width, result.height), dims, "{metadata}");
+        assert_eq!(decoded_dims(&call.bytes), dims, "{metadata}");
+        assert_eq!((result.source_width, result.source_height), (400, 300));
+    }
+}
+
+#[tokio::test]
+async fn max_bytes_lowers_the_quality_then_shrinks_lossy_output() {
+    let input = noise(300, ImageFormat::Jpeg);
+    for (format, default_quality) in [("jpeg", 85), ("webp", 80)] {
+        let plain = call(input.clone(), Some(json!({ "output_format": format }))).await;
+        assert_eq!(plain.result.unwrap().quality, Some(default_quality));
+        let full = plain.bytes.len();
+        for (cap, shrinks) in [(full * 4 / 5, false), (full / 5, true)] {
+            let metadata = json!({ "output_format": format, "max_bytes": cap });
+            let call = call(input.clone(), Some(metadata.clone())).await;
+            let result = call.result.unwrap();
+            let size = (result.width, result.height);
+            assert!(
+                call.bytes.len() <= cap,
+                "{metadata}: {} bytes",
+                call.bytes.len()
+            );
+            assert_eq!(decoded_dims(&call.bytes), size, "{metadata}");
+            assert!(
+                result.quality < Some(default_quality),
+                "{metadata}: {result:?}"
+            );
+            assert_eq!(size != (200, 200), shrinks, "{metadata}: {result:?}");
+            assert_eq!(result.width, result.height, "{metadata}: {result:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn max_bytes_shrinks_png_output() {
+    let input = noise(300, ImageFormat::Png);
+    let full = call(input.clone(), None).await.bytes.len();
+    let cap = full / 3;
+    let call = call(input, Some(json!({ "max_bytes": cap }))).await;
+    let result = call.result.unwrap();
+    assert!(call.bytes.len() <= cap, "{} bytes", call.bytes.len());
+    assert!(
+        result.width < 200 && result.width == result.height,
+        "{result:?}"
+    );
+    assert_eq!(decoded_dims(&call.bytes), (result.width, result.height));
+    assert_eq!(result.quality, None);
+}
+
+#[tokio::test]
+async fn max_bytes_no_output_meets_is_invalid_args() {
+    for format in ["jpeg", "png", "webp"] {
+        let metadata = json!({ "output_format": format, "max_bytes": 10 });
+        let message = rejected(call(png(400, 300), Some(metadata)).await);
+        assert!(message.contains("max_bytes (10)"), "{format}: {message}");
+    }
 }
 
 #[tokio::test]
@@ -347,6 +481,7 @@ async fn permits_gate_processing() {
         InputStream::from_bytes(png(20, 20)),
         None,
         permits.clone(),
+        Arc::default(),
         Map::new(),
     ));
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -359,6 +494,36 @@ async fn permits_gate_processing() {
         .unwrap();
     assert_eq!(call.result.unwrap().width, 20);
     assert_eq!(permits.available_permits(), 1, "the permit is given back");
+}
+
+#[tokio::test]
+async fn a_call_counts_as_in_flight_until_it_returns() {
+    let (permits, calls) = (Arc::new(Semaphore::new(0)), Arc::new(InFlight::default()));
+    let pending = tokio::spawn(call_with(
+        InputStream::from_bytes(png(20, 20)),
+        None,
+        permits.clone(),
+        calls.clone(),
+        Map::new(),
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        calls.running(),
+        1,
+        "a call waiting for a permit is in flight"
+    );
+
+    permits.add_permits(1);
+    let call = tokio::time::timeout(Duration::from_secs(30), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call.result.unwrap().width, 20);
+    assert_eq!(
+        calls.running(),
+        0,
+        "the call left the count when it returned"
+    );
 }
 
 #[tokio::test]
@@ -377,6 +542,7 @@ async fn payload_with_engine_keys_deserializes() {
         InputStream::from_bytes(png(20, 20)),
         None,
         Arc::new(Semaphore::new(1)),
+        Arc::default(),
         req.rest,
     )
     .await;
@@ -406,23 +572,21 @@ async fn registered_schema_matches_types() {
     assert_eq!(
         keys,
         BTreeSet::from([
-            "format",
-            "height",
+            "max_bytes",
+            "max_pixels",
             "output_format",
             "quality",
             "strategy",
             "target_height",
             "target_width",
-            "width"
         ])
     );
-    for key in ["format", "width", "height"] {
-        assert_eq!(props[key]["deprecated"], json!(true), "{key}");
-    }
     assert_eq!(props["quality"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(props["quality"]["maximum"].as_f64(), Some(100.0));
     assert_eq!(props["target_width"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(props["target_height"]["minimum"].as_f64(), Some(1.0));
+    assert_eq!(props["max_pixels"]["minimum"].as_f64(), Some(1.0));
+    assert_eq!(props["max_bytes"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(defs["Format"]["enum"], json!(["jpeg", "png", "webp"]));
     assert_eq!(
         defs["ResizeStrategy"]["enum"],

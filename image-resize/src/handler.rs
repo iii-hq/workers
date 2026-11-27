@@ -10,9 +10,9 @@ use tokio::sync::Semaphore;
 
 use crate::config::{ResizeConfig, check_quality};
 use crate::processing::{
-    ImageMetadata, ThumbnailMetadata, deprecated_keys, invalid, process_image, resolve_params,
-    sniff,
+    ImageMetadata, ThumbnailMetadata, invalid, process_image, resolve_params, sniff,
 };
+use crate::shutdown::InFlight;
 
 /// Largest input read from `input_channel`.
 pub const MAX_INPUT_BYTES: usize = 64 << 20;
@@ -59,12 +59,15 @@ pub async fn read_image(
 }
 
 /// The `image_resize::resize` handler: on success output_channel carries the
-/// result as one JSON text frame, then the image bytes.
+/// result as one JSON text frame, then the image bytes. Counted in `calls`
+/// until it returns.
 pub async fn resize(
     config: Arc<ResizeConfig>,
     permits: Arc<Semaphore>,
+    calls: Arc<InFlight>,
     req: ResizeRequest,
 ) -> Result<ThumbnailMetadata, Error> {
+    let _call = calls.enter();
     let result = run(&config, permits, &req).await;
     if let Err(error) = &result {
         // The SDK leaves an output the handler never used open on failure; a
@@ -88,18 +91,8 @@ async fn run(
     let meta = match &req.metadata {
         None | Some(Value::Null) => ImageMetadata::default(),
         // Serde would also take the struct as a positional array.
-        Some(value @ Value::Object(fields)) => {
-            let meta = ImageMetadata::deserialize(value)
-                .map_err(|e| invalid(format!("invalid metadata: {e}")))?;
-            let deprecated = deprecated_keys(fields);
-            if !deprecated.is_empty() {
-                tracing::warn!(
-                    keys = ?deprecated,
-                    "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
-                );
-            }
-            meta
-        }
+        Some(value @ Value::Object(_)) => ImageMetadata::deserialize(value)
+            .map_err(|e| invalid(format!("invalid metadata: {e}")))?,
         Some(_) => return Err(invalid("invalid metadata: expected an object")),
     };
     // Fail a bad override before waiting on the input stream.
@@ -113,12 +106,19 @@ async fn run(
         .acquire_owned()
         .await
         .map_err(|e| Error::Handler(e.to_string()))?;
-    let (out, result) = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        process_image(&bytes, &params)
-    })
-    .await
-    .map_err(|e| Error::Handler(format!("image processing panicked: {e}")))??;
+    let (done, processed) = tokio::sync::oneshot::channel();
+    // Not spawn_blocking: a runtime waits for its blocking tasks when it drops,
+    // so a resize a stop cuts off would hold the exit until it returns.
+    std::thread::Builder::new()
+        .name("image-resize".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = done.send(process_image(&bytes, &params));
+        })
+        .map_err(|e| Error::Handler(format!("could not start image processing: {e}")))?;
+    let (out, result) = processed
+        .await
+        .map_err(|_| Error::Handler("image processing panicked".into()))??;
 
     req.output_channel.send(&result).await?;
     req.output_channel.write(&out).await?;

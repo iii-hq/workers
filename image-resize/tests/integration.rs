@@ -29,6 +29,8 @@ fn process(
         quality: 80,
         input_format,
         output_format,
+        max_pixels: None,
+        max_bytes: None,
     };
     let (out, result) = process_image(&fixture(name), &params).expect("process fixture");
     let decoded = image::load_from_memory(&out).expect("decode output");

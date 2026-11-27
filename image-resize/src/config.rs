@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,7 @@ use serde_json::Value;
 
 pub const CONFIG_ID: &str = "image-resize";
 pub const CONFIG_NAME: &str = "Image resize";
-pub const CONFIG_DESCRIPTION: &str = "Default box, strategy and JPEG/WebP quality for image_resize::resize calls that leave them out.";
+pub const CONFIG_DESCRIPTION: &str = "Default box, strategy, JPEG/WebP quality and output limits for image_resize::resize calls that leave them out.";
 
 const DEFAULT_SIDE: NonZeroU32 = NonZeroU32::new(200).unwrap();
 
@@ -21,6 +21,13 @@ pub struct ResizeConfig {
     pub strategy: ResizeStrategy,
     /// Quality for a call without `quality`.
     pub quality: QualityConfig,
+    /// Largest output in pixels, width times height, for a call without
+    /// `max_pixels`. Null or absent: no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_pixels: Option<NonZeroU64>,
+    /// Largest output in bytes for a call without `max_bytes`. Null or absent: no limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<NonZeroU64>,
 }
 
 impl Default for ResizeConfig {
@@ -30,6 +37,8 @@ impl Default for ResizeConfig {
             height: DEFAULT_SIDE,
             strategy: ResizeStrategy::default(),
             quality: QualityConfig::default(),
+            max_pixels: None,
+            max_bytes: None,
         }
     }
 }
@@ -142,6 +151,8 @@ mod tests {
             height: NonZeroU32::new(150).unwrap(),
             strategy: ResizeStrategy::CropToFit,
             quality: QualityConfig { jpeg: 70, webp: 60 },
+            max_pixels: NonZeroU64::new(1_000_000),
+            max_bytes: NonZeroU64::new(500_000),
         };
         for config in [ResizeConfig::default(), custom] {
             assert_eq!(ResizeConfig::from_json(&config.to_json()).unwrap(), config);
@@ -157,6 +168,18 @@ mod tests {
     }
 
     #[test]
+    fn limits_are_optional_and_null_means_none() {
+        let config = ResizeConfig::from_json(&json!({"max_pixels": null, "max_bytes": null}));
+        assert_eq!(config.unwrap(), ResizeConfig::default());
+        let config =
+            ResizeConfig::from_json(&json!({"max_pixels": 1_150_000, "max_bytes": 5_000_000}));
+        let config = config.unwrap();
+        assert_eq!(config.max_pixels, NonZeroU64::new(1_150_000));
+        assert_eq!(config.max_bytes, NonZeroU64::new(5_000_000));
+        assert_eq!(config.width.get(), 200);
+    }
+
+    #[test]
     fn invalid_values_are_rejected() {
         for value in [
             json!({"stratgy": "crop-to-fit"}),
@@ -166,6 +189,10 @@ mod tests {
             json!({"quality": {"jpeg": 0}}),
             json!([200, 200, "scale-to-fit", {"jpeg": 85, "webp": 80}]),
             json!({"quality": [70, 60]}),
+            json!({"max_pixels": 0}),
+            json!({"max_bytes": 0}),
+            json!({"max_bytes": -5}),
+            json!({"max_pixels": "1000"}),
             json!(null),
         ] {
             let err = ResizeConfig::from_json(&value).unwrap_err();
@@ -190,6 +217,11 @@ mod tests {
         assert!(schema.get("required").is_none(), "{schema:#}");
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(schema["properties"]["width"]["minimum"], 1.0);
+        for key in ["max_pixels", "max_bytes"] {
+            let limit = &schema["properties"][key];
+            assert_eq!(limit["minimum"], 1.0, "{key}: {limit}");
+            assert_eq!(limit["type"], json!(["integer", "null"]), "{key}: {limit}");
+        }
 
         let quality = &schema["definitions"]["QualityConfig"];
         assert!(quality.get("required").is_none(), "{quality:#}");

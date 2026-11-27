@@ -69,7 +69,7 @@ export function ImageResizeConfigForm({ value, onChange, errors, focusField }: C
     target?.focus()
   }, [focusKey])
 
-  const number = (path: string[], label: string, fallback: number, max?: number, description?: string) => {
+  const number = (path: string[], label: string, fallback: number | string, max?: number, description?: string) => {
     const current = read(value, path)
     return (
       <SettingsField
@@ -134,6 +134,22 @@ export function ImageResizeConfigForm({ value, onChange, errors, focusField }: C
           />
           {number(['quality', 'jpeg'], 'JPEG quality', 85, 100, '1 to 100.')}
           {number(['quality', 'webp'], 'WebP quality', 80, 100, '1 to 100.')}
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Output limits"
+        description="Used by calls that leave a limit out. A call can set its own limit but cannot remove one set here. Empty means no limit."
+      >
+        <SettingsList>
+          {number(['max_pixels'], 'Max pixels', 'No limit', undefined, 'Width times height. A larger output shrinks to fit.')}
+          {number(
+            ['max_bytes'],
+            'Max bytes',
+            'No limit',
+            undefined,
+            'JPEG and WebP lower their quality, then shrink. PNG shrinks.',
+          )}
         </SettingsList>
       </SettingsSection>
     </div>
