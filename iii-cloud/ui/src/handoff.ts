@@ -56,7 +56,8 @@ export async function handOff(
     // The worker tries to deliver to the agent's own chat first: when it does, no new chat is opened.
     made = await host.iii.call<HandoffResult>('iii-cloud::handoff', {
       kind,
-      text: plain,
+      // A hand-off of this kind is open: the worker's own continue is the one message, so no text goes with it.
+      ...(more.call && activeSameKind(status, kind) ? {} : { text: plain }),
       ...(status.check ? { check_id: status.check.id } : {}),
       ...(deploy ? { deployment_id: deploy.id } : {}),
       ...(more.candidate ? { candidate: true } : {}),
@@ -73,7 +74,16 @@ export async function handOff(
   if (made?.reused) {
     if (made.session_id) openChatFor(host, made.session_id)
     // `sent: false`: the chat is open but nothing was put in it: the person tells it.
-    setLaunch(made.sent === false ? { kind: 'told' } : made.session_id ? { kind: 'sent' } : { kind: 'waiting' })
+    const check = status.check?.id
+    setLaunch(
+      made.asks
+        ? { kind: 'asks', check }
+        : made.sent === false
+          ? { kind: 'told', check }
+          : made.session_id
+            ? { kind: 'sent', check }
+            : { kind: 'waiting' },
+    )
     return true
   }
   if (made?.delivered && made.session_id) {

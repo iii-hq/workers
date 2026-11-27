@@ -17,6 +17,7 @@ import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } fr
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
+import { copyFlash } from './hooks-mock'
 import { fakeHost } from './host'
 import { btn, click, cloudAnswers, el, flush, lastCall, root, text, type, usePage } from './util'
 
@@ -1268,7 +1269,23 @@ describe('the check follows the canvas', () => {
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
     })
 
-    it('a run that failed at another stage says values are not the cause, and never "optional ones can wait"', async () => {
+    it('a run that failed at install says values are not the cause, and never "optional ones can wait"', async () => {
+      const atRelease = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: {
+            ...quiet.check!.run!,
+            error: { ...quiet.check!.run!.error!, stage: 'install' as const, code: 'INSTALL_FAILED' },
+          },
+        },
+      }
+      await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
+      expect(card()?.textContent).toContain('The local run failed at Frozen install; values are not the cause.')
+      expect(card()?.textContent).not.toContain('If the application needs')
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
+    })
+    it("a run that failed at the release command may be a value, or the agent's", async () => {
       const atRelease = {
         ...quiet,
         check: {
@@ -1280,9 +1297,10 @@ describe('the check follows the canvas', () => {
         },
       }
       await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
-      expect(card()?.textContent).toContain('The local run failed at Release command; values are not the cause.')
-      expect(card()?.textContent).not.toContain('If the application needs')
-      expect(card()?.textContent).not.toContain('Optional ones can wait')
+      expect(card()?.textContent).toContain(
+        "The local run failed at Release command. If that command reads one of the names above, set it; otherwise it is your agent's.",
+      )
+      expect(card()?.textContent).not.toContain('values are not the cause')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {
@@ -1886,7 +1904,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     } as Status
   }
   const stop = () =>
-    [...el.querySelectorAll('[role=status]')].find((p) => p.textContent?.includes('stopped at Release'))
+    [...el.querySelectorAll('[role=status]')].find((p) => p.textContent?.includes('The local run stopped at'))
 
   it('the title counts it, the stop offers the agent first, and Run again stays second', async () => {
     const openScreen = vi.fn()
@@ -1927,6 +1945,140 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(title()).toBe('1 for your agent to fix')
     expect(region('Your agent')?.textContent).toContain('done for now')
     expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
+  })
+
+  const owned = (
+    owner: 'agent' | 'person' | 'interrupted',
+    over: object = {},
+    withheld = false,
+    problems: object[] = [],
+  ) => {
+    const st = release(note)
+    return {
+      ...st,
+      check: {
+        ...st.check!,
+        problems,
+        run: { ...st.check!.run!, error: { ...st.check!.run!.error!, owner, withheld, ...over } },
+      },
+    } as Status
+  }
+  const buttonsOf = () => [...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)
+
+  it("the worker's owner decides: agent counts and offers the agent", async () => {
+    await stage(owned('agent'))
+    expect(title()).toBe('1 for your agent to fix')
+    expect(buttonsOf()).toEqual(['Fix with your agent', 'Run again'])
+  })
+
+  it("person: a tool missing on this machine is the person's, with no offer and no count", async () => {
+    await stage(
+      owned('person', { code: 'TOOL_MISSING', stage: 'install', message: '`pnpm` is not installed or not on PATH' }),
+    )
+    expect(title() ?? '').not.toContain('for your agent to fix')
+    expect(stop()?.textContent).toContain("This one is yours to fix here, not your agent's.")
+    expect(buttonsOf()).toEqual(['Run again'])
+  })
+
+  it('interrupted: a crash of the worker only offers Run again', async () => {
+    await stage(owned('interrupted', { code: 'RUN_PANIC', message: 'The run stopped unexpectedly.' }))
+    expect(title() ?? '').not.toContain('for your agent to fix')
+    expect(stop()?.textContent).toContain('interrupted')
+    expect(buttonsOf()).toEqual(['Run again'])
+  })
+
+  it("withheld: the person's open thing comes first, no offer and no count", async () => {
+    const need = {
+      ...rcVariables[0],
+      id: 'p-cred',
+      code: 'LITERAL_CREDENTIAL',
+      file: null,
+      line: null,
+      source: 'cloud_plan' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'A literal credential is in the compose file',
+      detail: null,
+    }
+    await stage(owned('agent', {}, true, [need]))
+    expect(stop()?.textContent).toContain('Your part comes first: A literal credential is in the compose file.')
+    expect(buttonsOf()).toEqual(['Run again'])
+    expect(region('Your agent')?.textContent ?? '').not.toContain('The local run stopped at Release')
+  })
+
+  it('a real question open: no "Fix with your agent", answer it first; a worker "asks" answer says the same', async () => {
+    const asking = { ...note, question: 'Which database should the migration use?', question_source: 'agent' as const }
+    const openScreen = vi.fn()
+    await stage(release(asking), {}, { openScreen })
+    expect(buttonsOf()).toEqual(['Open chat', 'Run again'])
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    expect(openScreen).toHaveBeenCalled()
+    // the status shows no question, but the worker says one is open
+    const reply = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: false, asks: true, session_id: 'sess-1' },
+    }
+    const quietNote = { ...note, check: undefined }
+    await stage({ ...release(quietNote), check: { ...release(note).check!, id: 'chk-asks' } }, reply, {
+      openScreen: vi.fn(),
+    })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+  })
+
+  it("after a page check ends the button waits six seconds for the worker's own continue", async () => {
+    const h = await stage(release(note), {}, { openScreen: vi.fn() })
+    await act(async () => {
+      hubOf(h.host).checking(1)
+      hubOf(h.host).checking(-1)
+    })
+    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    expect(first().disabled).toBe(true)
+    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+  })
+
+  it("with a hand-off open the call carries no text (the worker's continue is the one message); without one it does", async () => {
+    const reused = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
+    }
+    const h = await stage(release(note), reused, { openScreen: vi.fn() })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(handoffs(h)).toHaveLength(1)
+    expect(h.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).not.toHaveProperty('text')
+    const h2 = await stage({ ...release(note), agent: null, handoff_brief: null }, marker)
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(h2.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toHaveProperty('text')
+  })
+
+  it('one voice: no "Tell it in the chat, or check again" beside the stop\'s Fix button, and a failed copy says so', async () => {
+    const w = release({ ...note, state: 'waiting' as const, waiting_for: 'the check to end' } as never)
+    const r = w.check!
+    await stage({ ...w, check: { ...r, run: { ...r.run!, log_path: '/home/you/.iii-cloud/runs/x.log' } } })
+    expect(region('Your agent')?.textContent).not.toContain('Tell it in the chat, or check again')
+    expect(buttonsOf()).toContain('Fix with your agent')
+    copyFlash.state = 'failed'
+    await stage({ ...w, check: { ...r, run: { ...r.run!, log_path: '/home/you/.iii-cloud/runs/x.log' } } })
+    expect(stop()?.textContent).toContain('Could not copy: select the text.')
+    copyFlash.state = 'idle'
+  })
+
+  it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
+    const reused = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
+    }
+    await stage(release(note), reused, { openScreen: vi.fn() })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(stop()?.textContent).toContain("Sent to your agent's chat.")
+    // an hour later another check fails at Release: nothing was sent for it
+    const next = release(note)
+    await stage({ ...next, check: { ...next.check!, id: 'chk-newer' } })
+    expect(stop()?.textContent).toContain('stopped at Release')
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
   it('an agent already on it: "Your agent is on it." and no button for it', async () => {

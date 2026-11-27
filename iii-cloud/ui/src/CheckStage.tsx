@@ -618,7 +618,7 @@ function runPart(s: Status, c: Check, now: number, running: boolean, again: () =
 
 /** The run's whole log on this machine: one quiet line, selectable, with a copy button. */
 function LogPath({ path }: { path?: string | null }) {
-  const copy = useCopyFlash(path ?? '')
+  const copy = useCopyFlash(path ?? '', 5000)
   if (!path) return null
   return (
     <p className="iii-cloud-cs-foot iii-cloud-cs-logpath">
@@ -626,6 +626,7 @@ function LogPath({ path }: { path?: string | null }) {
       <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={copy.copy}>
         {copy.state === 'copied' ? 'Copied' : 'Copy'}
       </button>
+      {copy.state === 'failed' ? <span role="alert"> Could not copy: select the text.</span> : null}
     </p>
   )
 }
@@ -1131,15 +1132,25 @@ export function CheckStage(props: CheckStageProps) {
         id: null,
       })),
   ]
-  // A failed local run is the agent's to fix unless it is Docker, a replaced run, or something the person's own values
-  // explain (an open problem of the run here, or a value still missing): the page has no owner for a run's failure, so
-  // it is told the way the run's stop is (`stops` below): by what else is open. It is one more row for the agent.
+  // A failed local run: the worker says whose it is (`owner`, and `withheld` when the person's own open thing comes
+  // first). An older shape without it is told the way the run's stop is: the agent's unless it is Docker, a replaced
+  // run, or something the person's values explain. The agent's is one more row for it.
   const runError = run?.status === 'failed' && !running ? run.error : null
   const agentRun =
     !!runError &&
-    !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
-    !openProblems(s, true).some((x) => x.source === 'check_here') &&
-    !missing.length
+    (runError.owner
+      ? runError.owner === 'agent' && !runError.withheld
+      : !['DOCKER_MISSING', 'RUN_REPLACED'].includes(runError.code) &&
+        !openProblems(s, true).some((x) => x.source === 'check_here') &&
+        !missing.length)
+  // What the person owes first, said for a withheld failure.
+  const yours =
+    needItems[0]?.title ??
+    (missing.length
+      ? `${plural(missing.length, 'value')} to set`
+      : decide[0]
+        ? `${decide[0].setting} to decide`
+        : 'what waits for you above')
   if (agentRun && runError)
     lines.push({
       key: 'run-failed',
@@ -1206,6 +1217,8 @@ export function CheckStage(props: CheckStageProps) {
   const fixed = [...f.person, ...f.agent].filter((i) => i.fixed)
   const past = historyOf(s, c, envId)
 
+  // The seconds after a page check ends, while the worker may still be sending the agent on.
+  const settling = hubOf(host).checkEndedAt() > 0 && now - hubOf(host).checkEndedAt() < 6000
   const stops: Stop[] = []
   if (c) {
     if (s.connection.status === 'expired' || signInRequired(s)) {
@@ -1295,9 +1308,16 @@ export function CheckStage(props: CheckStageProps) {
         detail: (
           <>
             {plainMessage(err)}
+            {err.owner === 'person' ? " This one is yours to fix here, not your agent's." : ''}
+            {err.owner === 'interrupted' ? ' The run was interrupted: run it again.' : ''}
+            {err.owner === 'agent' && err.withheld ? ` Your part comes first: ${yours}.` : ''}
+            {agentRun && settling && !agentWorking(s) && !agentAsks(s) ? ' Checking whether your agent took it…' : ''}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
-            {agentRun && launch?.kind === 'sent' ? " Sent to your agent's chat." : ''}
-            {agentRun && launch?.kind === 'told' ? ' Tell it in the chat.' : ''}
+            {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
+            {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}
+            {agentRun && (agentAsks(s) || (launch?.kind === 'asks' && launch.check === c?.id))
+              ? " Answer your agent's question in the chat first."
+              : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
             {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
@@ -1305,16 +1325,20 @@ export function CheckStage(props: CheckStageProps) {
         // The agent's to fix: its hand-off first (unless it is already on it); running again repeats the failure.
         acts: agentRun
           ? [
-              ...(agentWorking(s)
-                ? []
-                : [
-                    {
-                      label: sendLabel(s, 'ready', 'Fix with your agent'),
-                      // An agent that waits has a hand-off open: the worker puts what failed into its chat.
-                      onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
-                      disabled: !canAsk,
-                    },
-                  ]),
+              // A real question of the agent's is answered first: the hand-off would answer it for the person.
+              ...(agentAsks(s)
+                ? [{ label: 'Open chat', onClick: () => void openAgentChat(host, s) }]
+                : agentWorking(s)
+                  ? []
+                  : [
+                      {
+                        label: sendLabel(s, 'ready', 'Fix with your agent'),
+                        // An agent that waits has a hand-off open: the worker puts what failed into its chat.
+                        onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
+                        // The worker continues the agent by itself within seconds of a page check's end: wait for that.
+                        disabled: !canAsk || settling,
+                      },
+                    ]),
               { label: 'Run again', onClick: checkAgain, disabled: running },
             ]
           : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
@@ -1598,17 +1622,20 @@ export function CheckStage(props: CheckStageProps) {
   const nudge: { line: string; chat: boolean } | null =
     !stuck || !(lines.length > 0 || run?.status === 'failed')
       ? null
-      : // Only a waiting agent is continued when a check ends; a stalled one has no wake armed.
-        running && a?.state === 'waiting'
-        ? { line: 'Your agent goes on when the check ends.', chat: false }
-        : !lines.length && missing.length
-          ? {
-              line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
-              chat: false,
-            }
-          : a?.session_id && canOpenChat(host)
-            ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
-            : { line: 'Your agent is not working on this: check again.', chat: false }
+      : // A failed run of the agent's has the stop's own voice (and its button): no second line beside it.
+        agentRun
+        ? null
+        : // The worker continues a waiting, done or check-noted agent when a check ends; a stalled one is not continued.
+          running && a?.state === 'waiting'
+          ? { line: 'Your agent goes on when the check ends.', chat: false }
+          : !lines.length && missing.length
+            ? {
+                line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
+                chat: false,
+              }
+            : a?.session_id && canOpenChat(host)
+              ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
+              : { line: 'Your agent is not working on this: check again.', chat: false }
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)

@@ -23,6 +23,8 @@ export type Hub = {
   refresh(fresh?: boolean): Promise<void>
   /** A check is running: the page shows it everywhere, not only on the button that asked. */
   checking(delta: 1 | -1): void
+  /** When the page's last check ended (ms); 0: none yet. The worker's own continue to the agent follows within seconds. */
+  checkEndedAt(): number
   record(kind: string, id: string): unknown
   recordVersion(): number
   /** The last `check` call's refusal for an environment, kept until the next check call or check record of it. */
@@ -145,6 +147,7 @@ export function hubOf(host: Host): Hub {
   const records = new Map<string, unknown>()
   const checkErrors = new Map<string, WorkerError>()
   let pendingEnv = ''
+  let endedAt = 0
   let pendingSeq = 0
   /** A check that arrived for an environment: a recorded move is over once it is another one than the replaced. */
   const newer = (envId: string, checkId: string) => {
@@ -225,8 +228,10 @@ export function hubOf(host: Host): Hub {
       emit()
     },
     checking(delta) {
+      if (delta < 0) endedAt = Date.now()
       set({ checking: Math.max(0, state.checking + delta) })
     },
+    checkEndedAt: () => endedAt,
     async refresh(fresh = false) {
       const mine = ++seq
       try {
