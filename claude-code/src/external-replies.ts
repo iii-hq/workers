@@ -24,6 +24,13 @@ export function withoutCaller(args: unknown): unknown {
   return Object.fromEntries(Object.entries(args).filter(([key]) => key !== '_caller_worker_id'));
 }
 
+/** Host env equality by keys and values, in any key order: a re-prepared
+ * host hands out a new object with the same contents. */
+function sameEnv(a: Record<string, string>, b: Record<string, string>) {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
 function sessionId(args: unknown) {
   const parsed = Args.safeParse(withoutCaller(args));
   if (!parsed.success) throw new Error('invalid Claude session id');
@@ -172,7 +179,7 @@ export function registerExternalReplies(
         const { env } = await lease.read(() => rowFor(id));
         await checkpoint;
         lease.check();
-        if (g.recovery !== recovery || env !== recovery.env || !recovery.cursor) return;
+        if (g.recovery !== recovery || !sameEnv(env, recovery.env) || !recovery.cursor) return;
         for (const w of g.watches.values()) {
           if (!needsBaseline(w)) continue;
           w.cursor = recovery.cursor;
@@ -187,7 +194,7 @@ export function registerExternalReplies(
 
   permission.onConfirmedRecovery(recoverWatches, ({ id, epoch, env, cursor }) => {
     const recovery = groups.get(id)?.recovery;
-    if (recovery?.epoch === epoch && recovery.env === env) recovery.cursor ??= cursor;
+    if (recovery?.epoch === epoch && sameEnv(env, recovery.env)) recovery.cursor ??= cursor;
   });
 
   async function poll(id: string, g: Group, lease: ReturnType<typeof replyLease>) {
@@ -196,7 +203,7 @@ export function registerExternalReplies(
     const { env } = await lease.read(() => rowFor(id));
     const recovery = g.recovery;
     const checkpoint =
-      recovery?.epoch === epoch && recovery.env === env ? recovery.cursor : undefined;
+      recovery?.epoch === epoch && sameEnv(env, recovery.env) ? recovery.cursor : undefined;
     const batches = new Map<string, Array<[string, Watch]>>();
     for (const entry of g.watches) {
       const w = entry[1];
