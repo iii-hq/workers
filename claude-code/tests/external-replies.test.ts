@@ -843,6 +843,87 @@ describe('authorization', () => {
     });
   });
 
+  it('reports an ordinary grant only after the retained watch boundary, keeping the first later reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted === 1) await checkpoint.wait();
+      };
+      const visibility = s.client.call({ function_id: 'claude::agents::visibility', payload: {} });
+      try {
+        await checkpoint.entered;
+        expect(
+          await Promise.race([
+            visibility,
+            new Promise((resolve) => setImmediate(() => resolve('checkpoint pending'))),
+          ]),
+        ).toBe('checkpoint pending');
+        // The rail listing must not publish the grant before the boundary exists either.
+        expect(
+          await s.client.call({
+            function_id: 'claude::agents::list',
+            payload: { include_config_id: true },
+          }),
+        ).toMatchObject({ external_visibility: null });
+      } finally {
+        checkpoint.release();
+      }
+      expect(await visibility).toEqual({ external_visibility: expect.any(String) });
+      await appendFile(s.file, lines(answer(3, 2, 'first after reported grant')));
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'second after reported grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'first after reported grant' },
+        { id: recordId(4), text: 'second after reported grant' },
+      ]);
+    });
+  });
+
+  it('lets the next heartbeat accept a live confirmation that settled after its probe deadline', async () => {
+    await withSyntheticHost(async (s) => {
+      const confirm = () =>
+        s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: { confirm_live_config: true },
+        });
+      s.host.config = async () => null;
+      expect(await confirm()).toEqual({ external_visibility: null });
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        let configReads = 0;
+        // Each read succeeds inside the 5 s config budget but after the 4.5 s probe cutoff.
+        s.host.config = async () => {
+          configReads++;
+          await delay(4_800);
+          return { external_sessions: true };
+        };
+        const heartbeat = () =>
+          Promise.race([confirm(), delay(5_000).then(() => 'rail deadline exceeded')]);
+        const first = heartbeat();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(await first).toEqual({ external_visibility: null });
+        const second = heartbeat();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(await second).toEqual({
+          external_visibility: expect.any(String),
+          live_config_confirmed: true,
+        });
+        expect(configReads).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('returns pending before the rail deadline rather than confirming an uncaptured watch boundary', async () => {
     await withSyntheticHost(async (s) => {
       await observe(s, 'retained');

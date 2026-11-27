@@ -116,6 +116,10 @@ export type ReplyAccess = {
   readonly epoch: number | null;
   confirm(options?: ConfirmOptions): Promise<number | null>;
   offerWatchBoundary?(boundary: WatchBoundary): void;
+  /** Settles once a pending retained-watch checkpoint is captured; no config read. */
+  watchCheckpointSettled?(): Promise<void>;
+  /** Whether a retained-watch checkpoint for the current grant is still being captured. */
+  readonly watchCheckpointPending?: boolean;
 };
 
 /** Bind a series of reads to one grant. Even a rejected inventory lookup can
@@ -203,6 +207,14 @@ export class ReplyPermission {
 
   offerWatchBoundary(boundary: WatchBoundary) {
     if (boundary.epoch === this.epoch) this.acceptWatchBoundary?.(boundary);
+  }
+
+  async watchCheckpointSettled() {
+    await this.watchCheckpoint;
+  }
+
+  get watchCheckpointPending() {
+    return this.watchCheckpoint !== undefined;
   }
 
   // An explicit probe, admission or poll can recover on the same connection.

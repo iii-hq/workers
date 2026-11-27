@@ -367,29 +367,56 @@ export function registerAgents(
       : createHmac('sha256', visibilityKey).update(String(epoch)).digest('base64url');
   const visibilitySchema = z.string().nullable();
   const visibilityArgs = z.object({ confirm_live_config: z.boolean().optional() });
-  async function confirmRailVisibility() {
+  // Settle within the rail's 5s RPC; undefined means still pending.
+  async function withinRail<T>(work: Promise<T>): Promise<{ value: T } | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        access.confirm(),
-        new Promise<null>((resolve) => {
-          // Leave time to return a pending result within the rail's 5s RPC.
-          timer = setTimeout(() => resolve(null), 4_500);
+        work.then((value) => ({ value })),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 4_500);
         }),
       ]);
     } finally {
       clearTimeout(timer);
     }
   }
+  // A live read that outlasts one probe answers the next heartbeat's probe
+  // instead of starting another read that races the same deadline. Only that
+  // next probe may use it, and only shortly after it settled.
+  type LateConfirmation = { promise: Promise<number | null>; settledAt?: number };
+  let late: LateConfirmation | undefined;
+  async function confirmRailVisibility() {
+    if (late?.settledAt !== undefined && Date.now() - late.settledAt > 5_000) late = undefined;
+    let entry = late;
+    late = undefined;
+    if (!entry) {
+      const fresh: LateConfirmation = { promise: access.confirm() };
+      const settle = () => {
+        fresh.settledAt = Date.now();
+      };
+      fresh.promise.then(settle, settle);
+      entry = fresh;
+    }
+    const settled = await withinRail(entry.promise);
+    if (!settled) late ??= entry;
+    return settled ? settled.value : null;
+  }
+  // Don't publish a grant while the retained-watch boundary is still being
+  // captured: a reply written meanwhile would fall behind that boundary.
+  async function ordinaryVisibility() {
+    const epoch = access.epoch ?? (await access.confirm({ waitForWatchCheckpoint: false }));
+    if (epoch !== null) await access.watchCheckpointSettled?.();
+    return epoch;
+  }
   iii.registerFunction(
     'claude::agents::visibility',
     async (payload: unknown) => {
       const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
-      // An explicit probe can retry on the next rail heartbeat. Don't claim
-      // recovery while the retained-watch boundary is still being captured.
+      // A pending probe returns null; the rail retries on its next heartbeat.
       const epoch = confirm_live_config
         ? await confirmRailVisibility()
-        : (access.epoch ?? (await access.confirm({ waitForWatchCheckpoint: false })));
+        : ((await withinRail(ordinaryVisibility()))?.value ?? null);
       if (epoch === null || epoch !== access.epoch) return { external_visibility: null };
       return {
         external_visibility: visibilityToken(epoch),
@@ -426,10 +453,14 @@ export function registerAgents(
       ]);
       // Recheck at publication; merge the same snapshot without external rows if revoked.
       const currentEpoch = access.epoch;
-      const authorized = epoch !== null && epoch === currentEpoch;
+      // The rail skips the checkpoint wait to stay within its deadline. Until the
+      // retained-watch boundary exists, publishing the grant would let a reply
+      // written meanwhile fall behind it; the next heartbeat picks the grant up.
+      const capturing = include_config_id === true && access.watchCheckpointPending === true;
+      const authorized = epoch !== null && epoch === currentEpoch && !capturing;
       const { agents, hidden } = merge(authorized);
       const details = detail ? [authorized ? detail : INVENTORY_UNAVAILABLE] : [];
-      if (hidden > 0) {
+      if (hidden > 0 && !capturing) {
         details.push(
           `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
         );
