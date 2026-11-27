@@ -108,7 +108,11 @@ page shows an error that tells you to update the ade worker.
 - Input up to 64 MiB and 50 megapixels.
 - One image per CPU core at a time; further calls queue.
 - WebP output is at most 16383 px per side, JPEG 65535.
-- EXIF orientation is applied; other metadata and colour profiles are dropped.
+- EXIF orientation is applied; other metadata is dropped.
+- An embedded RGB colour profile, such as Display P3 or Adobe RGB, is
+  converted to sRGB with the relative colorimetric intent, and the output
+  carries no profile. Gray, CMYK, unreadable or over-4-MiB profiles are
+  ignored and the pixels kept as they are.
 - WebP output is lossy; use `png` for pixel-exact output such as line art.
 - JPEG output flattens transparency onto white.
 - Images with transparency are resized with premultiplied alpha, so the
@@ -144,6 +148,9 @@ page shows an error that tells you to update the ade worker.
 - `quality` outside 1-100 is an error.
 - A truncated JPEG, one that ends before its end-of-image marker, is rejected
   with `INVALID_ARGS`; it used to decode with the missing rows grey.
+- Images with an embedded RGB colour profile are converted to sRGB. The
+  profile used to be dropped and the values kept, so Display P3 or Adobe RGB
+  photos came out with wrong colours.
 - WebP input is decoded by libwebp instead of image-webp. A frame whose size
   disagrees with its canvas fails with `INVALID_ARGS` before any pixels are
   decoded, an animation frame whose header disagrees with its bitstream is

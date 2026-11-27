@@ -823,6 +823,7 @@ dependencies = [
  "iii-sdk",
  "image",
  "libwebp-sys",
+ "moxcms",
  "schemars",
  "serde",
  "serde_json",

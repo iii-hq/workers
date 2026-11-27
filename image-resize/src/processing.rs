@@ -117,14 +117,14 @@ pub fn resolve_params(
     })
 }
 
-/// The top-level EXIF chunk of a WebP file, as a slice of the input.
-fn webp_exif(bytes: &[u8]) -> Option<&[u8]> {
+/// A top-level chunk of a WebP file, as a slice of the input.
+fn webp_chunk<'a>(bytes: &'a [u8], fourcc: &[u8; 4]) -> Option<&'a [u8]> {
     let mut rest = bytes.get(12..)?; // past "RIFF", the size and "WEBP"
     loop {
         let (head, tail) = rest.split_at_checked(8)?;
         let size = u32::from_le_bytes(head[4..].try_into().ok()?) as usize;
         let body = tail.get(..size)?;
-        if &head[..4] == b"EXIF" {
+        if &head[..4] == fourcc {
             return Some(body);
         }
         rest = tail.get(size + (size & 1)..)?;
@@ -177,7 +177,8 @@ fn check_pixels(w: u32, h: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
+/// The image, oriented, and its embedded ICC profile.
+fn decode(bytes: &[u8], format: ImageFormat) -> Result<(DynamicImage, Option<Vec<u8>>), Error> {
     let undecodable =
         |e: image::ImageError| invalid(format!("could not decode the {format:?} image: {e}"));
     if format == ImageFormat::Jpeg && jpeg_truncated(bytes) {
@@ -185,9 +186,10 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
             "the JPEG is truncated: its data ends before the end-of-image marker",
         ));
     }
-    let (mut img, orientation) = if format == ImageFormat::WebP {
-        let orientation = webp_exif(bytes).and_then(Orientation::from_exif_chunk);
-        (decode_webp(bytes)?, orientation)
+    let (mut img, orientation, icc) = if format == ImageFormat::WebP {
+        let orientation = webp_chunk(bytes, b"EXIF").and_then(Orientation::from_exif_chunk);
+        let icc = webp_chunk(bytes, b"ICCP").map(<[u8]>::to_vec);
+        (decode_webp(bytes)?, orientation, icc)
     } else {
         let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
         let mut limits = Limits::default();
@@ -200,13 +202,94 @@ fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
         check_pixels(w, h)?;
         // JPEG: one APP1 segment, at most 64 KiB. PNG: the eXIf chunk the decoder already holds.
         let orientation = decoder.orientation().ok();
+        // JPEG: its APP2 segments, at most 16 MiB. PNG: the iCCP chunk the decoder already holds.
+        let icc = decoder.icc_profile().ok().flatten();
         (
             DynamicImage::from_decoder(decoder).map_err(undecodable)?,
             orientation,
+            icc,
         )
     };
     img.apply_orientation(orientation.unwrap_or(Orientation::NoTransforms));
-    Ok(img)
+    Ok((img, icc))
+}
+
+/// Largest ICC profile applied; real RGB profiles take a few KiB.
+const MAX_ICC_BYTES: usize = 4 << 20;
+
+/// `img` converted from the colour profile `icc` to sRGB, alpha kept. Any
+/// profile but an RGB one on an RGB image leaves it as it is.
+fn to_srgb(mut img: DynamicImage, icc: &[u8]) -> DynamicImage {
+    if let Err(why) = convert_to_srgb(&mut img, icc) {
+        tracing::debug!(%why, "colour profile not applied");
+    }
+    img
+}
+
+fn convert_to_srgb(img: &mut DynamicImage, icc: &[u8]) -> Result<(), String> {
+    use moxcms::{ColorProfile, DataColorSpace, Layout, RenderingIntent, TransformOptions};
+    if icc.len() > MAX_ICC_BYTES {
+        return Err(format!("the profile is {} bytes", icc.len()));
+    }
+    let profile = ColorProfile::new_from_slice(icc).map_err(|e| format!("bad profile: {e}"))?;
+    if profile.color_space != DataColorSpace::Rgb {
+        return Err(format!("a {:?} profile", profile.color_space));
+    }
+    let srgb = ColorProfile::new_srgb();
+    // Relative colorimetric, libvips' thumbnail default: in-gamut colours keep
+    // their values and the rest clip. Matrix profiles (Display P3, Adobe RGB) define no other.
+    let options = TransformOptions {
+        rendering_intent: RenderingIntent::RelativeColorimetric,
+        ..Default::default()
+    };
+    let (rgb, rgba) = (Layout::Rgb, Layout::Rgba);
+    // A profile that moves no colour of a 6x6x6 cube by more than a level is
+    // sRGB in effect; skipping it keeps sRGB-tagged images byte-identical.
+    let probe: Vec<u8> = (0..216u8)
+        .flat_map(|i| [i / 36, i / 6 % 6, i % 6].map(|c| c * 51))
+        .collect();
+    let mut probed = probe.clone();
+    apply(
+        profile.create_transform_8bit(rgb, &srgb, rgb, options),
+        &mut probed,
+    )
+    .map_err(|e| e.to_string())?;
+    if probe.iter().zip(&probed).all(|(a, b)| a.abs_diff(*b) <= 1) {
+        return Ok(());
+    }
+    match img {
+        DynamicImage::ImageRgb8(b) => {
+            apply(profile.create_transform_8bit(rgb, &srgb, rgb, options), b)
+        }
+        DynamicImage::ImageRgba8(b) => {
+            apply(profile.create_transform_8bit(rgba, &srgb, rgba, options), b)
+        }
+        DynamicImage::ImageRgb16(b) => {
+            apply(profile.create_transform_16bit(rgb, &srgb, rgb, options), b)
+        }
+        DynamicImage::ImageRgba16(b) => apply(
+            profile.create_transform_16bit(rgba, &srgb, rgba, options),
+            b,
+        ),
+        other => return Err(format!("a {:?} image", other.color())),
+    }
+    .map_err(|e| e.to_string())
+}
+
+fn apply<V: Copy + Default>(
+    transform: Result<
+        std::sync::Arc<dyn moxcms::TransformExecutor<V> + Send + Sync>,
+        moxcms::CmsError,
+    >,
+    px: &mut [V],
+) -> Result<(), moxcms::CmsError> {
+    let transform = transform?;
+    // Slices of whole RGB and RGBA pixels, so a full-size image needs no full-size copy.
+    for part in px.chunks_mut(12 << 10) {
+        let src = part.to_vec();
+        transform.transform(&src, part)?;
+    }
+    Ok(())
 }
 
 /// A still WebP, or an animation's first frame on its canvas. libwebp checks
@@ -407,7 +490,7 @@ pub fn process_image(
     bytes: &[u8],
     params: &ProcessingParams,
 ) -> Result<(Vec<u8>, ThumbnailMetadata), Error> {
-    let mut img = decode(bytes, params.input_format.image_format())?;
+    let (mut img, icc) = decode(bytes, params.input_format.image_format())?;
     let (source_width, source_height) = (img.width(), img.height());
     // JPEG has no alpha. Flattening before the resize leaves it an opaque
     // image, which skips the premultiplication.
@@ -422,6 +505,11 @@ pub fn process_image(
         ResizeStrategy::CropToFit => {
             resize_crop_to_fit(img, params.target_width, params.target_height)
         }
+    };
+    // After the resize, so the conversion touches only the thumbnail's pixels.
+    let thumbnail = match icc {
+        Some(icc) => to_srgb(thumbnail, &icc),
+        None => thumbnail,
     };
 
     let (width, height) = (thumbnail.width(), thumbnail.height());
@@ -731,7 +819,7 @@ mod tests {
         DynamicImage::ImageRgba8(RgbaImage::new(w, h))
             .write_with_encoder(enc)
             .unwrap();
-        let img = decode(&png, ImageFormat::Png).unwrap();
+        let img = decode(&png, ImageFormat::Png).unwrap().0;
         assert_eq!((img.width(), img.height()), (w, h));
     }
 
@@ -789,7 +877,7 @@ mod tests {
             output_format: Format::Webp,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
-        let decoded = decode(&output, ImageFormat::WebP).unwrap();
+        let decoded = decode(&output, ImageFormat::WebP).unwrap().0;
         assert!(decoded.width() <= 100);
         assert!(decoded.height() <= 100);
     }
@@ -818,7 +906,7 @@ mod tests {
             let (out, _) = process_image(&png, &webp_params(256, 256, q, Format::Png)).unwrap();
             assert_eq!(&out[..4], b"RIFF", "q{q}");
             assert_eq!(&out[12..16], b"VP8 ", "q{q} must be lossy");
-            let decoded = decode(&out, ImageFormat::WebP).unwrap();
+            let decoded = decode(&out, ImageFormat::WebP).unwrap().0;
             assert_eq!((decoded.width(), decoded.height()), (256, 256), "q{q}");
             out.len()
         });
@@ -832,7 +920,7 @@ mod tests {
         });
         let png = encode_image(&DynamicImage::ImageRgba8(half), ImageFormat::Png);
         let (out, _) = process_image(&png, &webp_params(64, 64, 80, Format::Png)).unwrap();
-        let decoded = decode(&out, ImageFormat::WebP).unwrap();
+        let decoded = decode(&out, ImageFormat::WebP).unwrap().0;
         assert!(decoded.to_rgba8().pixels().any(|p| p.0[3] < 255));
     }
 
@@ -1056,7 +1144,7 @@ mod tests {
 
         let p = webp.windows(4).position(|w| w == b"EXIF").unwrap();
         webp[p + 4..p + 8].fill(0xFF);
-        assert_eq!(webp_exif(&webp), None);
+        assert_eq!(webp_chunk(&webp, b"EXIF"), None);
     }
 
     #[test]
@@ -1215,7 +1303,7 @@ mod tests {
         let blue = encode_webp(&make_rgba_image(16, 16, 0, 0, 255, 128), 90).unwrap();
         assert_eq!(&blue[30..34], b"ALPH", "VP8X, then ALPH and VP8");
         let webp = animation(16, 16, &[anmf(1, 1, &blue[30..])]);
-        let img = decode(&webp, ImageFormat::WebP).unwrap();
+        let img = decode(&webp, ImageFormat::WebP).unwrap().0;
         assert_eq!((img.width(), img.height()), (16, 16));
         for p in img.to_rgba8().pixels() {
             assert!(p[2] > 200 && p[3] == 128, "{p:?}");
@@ -1411,5 +1499,163 @@ mod tests {
         assert_eq!(params.output_format, Format::Png);
         // PNG is lossless, so quality defaults to 100
         assert_eq!(params.quality, 100);
+    }
+
+    // ── Colour profiles ──────────────────────────────
+
+    fn display_p3() -> Vec<u8> {
+        moxcms::ColorProfile::new_display_p3().encode().unwrap()
+    }
+
+    fn png_with_icc(img: &DynamicImage, icc: Vec<u8>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut enc = image::codecs::png::PngEncoder::new(&mut buf);
+        enc.set_icc_profile(icc).unwrap();
+        img.write_with_encoder(enc).unwrap();
+        buf
+    }
+
+    /// An 8-bit Display P3 colour in sRGB, through the standard P3-D65 to sRGB
+    /// linear matrix; both spaces use the sRGB curve.
+    fn p3_to_srgb(p: [u8; 3]) -> [u8; 3] {
+        const M: [[f64; 3]; 3] = [
+            [1.224_940_2, -0.224_940_4, 0.0],
+            [-0.042_056_9, 1.042_057_1, 0.0],
+            [-0.019_637_6, -0.078_636_1, 1.098_273_5],
+        ];
+        let linear = p.map(|c| {
+            let c = f64::from(c) / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        M.map(|row| {
+            let v = (0..3)
+                .map(|i| row[i] * linear[i])
+                .sum::<f64>()
+                .clamp(0.0, 1.0);
+            let v = if v <= 0.003_130_8 {
+                v * 12.92
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            (v * 255.0).round() as u8
+        })
+    }
+
+    /// The PNG output for `input` at its own size; it must carry no profile.
+    fn untagged_png(input: &[u8], input_format: Format) -> DynamicImage {
+        let params = ProcessingParams {
+            output_format: Format::Png,
+            ..webp_params(1000, 1000, 100, input_format)
+        };
+        let (out, _) = process_image(input, &params).unwrap();
+        assert!(
+            !out.windows(4).any(|w| w == b"iCCP"),
+            "output has a profile"
+        );
+        image::load_from_memory_with_format(&out, ImageFormat::Png).unwrap()
+    }
+
+    /// Asserts that `tagged`, a Display P3 image, comes out as its pixels in sRGB.
+    fn assert_p3_converted(tagged: &[u8], input_format: Format) {
+        let (raw, icc) = decode(tagged, input_format.image_format()).unwrap();
+        assert_eq!(icc, Some(display_p3()));
+        let out = untagged_png(tagged, input_format);
+        assert_eq!(out.color(), raw.color());
+        for (p, r) in out.to_rgba8().pixels().zip(raw.to_rgba8().pixels()) {
+            let want = p3_to_srgb([r[0], r[1], r[2]]);
+            let near = (0..3).all(|c| p[c].abs_diff(want[c]) <= 2);
+            assert!(
+                near && p[3] == r[3],
+                "P3 {:?} came out {:?}, not {want:?}",
+                r.0,
+                p.0
+            );
+        }
+    }
+
+    #[test]
+    fn display_p3_png_is_converted_to_srgb() {
+        // In gamut, white, black, and a green sRGB cannot show, which clips.
+        let px = [
+            [200, 100, 50, 128],
+            [255, 255, 255, 255],
+            [0, 0, 0, 255],
+            [0, 255, 0, 255],
+        ];
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_raw(4, 1, px.concat()).unwrap());
+        for img in [
+            DynamicImage::ImageRgb8(img.to_rgb8()),
+            DynamicImage::ImageRgb16(img.to_rgb16()),
+            DynamicImage::ImageRgba16(img.to_rgba16()),
+            img,
+        ] {
+            assert_p3_converted(&png_with_icc(&img, display_p3()), Format::Png);
+        }
+    }
+
+    #[test]
+    fn display_p3_jpeg_is_converted_to_srgb() {
+        let mut jpeg = Vec::new();
+        let mut enc = JpegEncoder::new_with_quality(&mut jpeg, 95);
+        enc.set_icc_profile(display_p3()).unwrap();
+        make_rgb_image(16, 16, 200, 100, 50)
+            .write_with_encoder(enc)
+            .unwrap();
+        assert_p3_converted(&jpeg, Format::Jpeg);
+    }
+
+    #[test]
+    fn display_p3_webp_is_converted_to_srgb() {
+        let still = encode_webp(&make_rgb_image(16, 16, 200, 100, 50), 90).unwrap();
+        // VP8X flag 0x20 marks an ICCP chunk, which comes right after it.
+        let webp = riff(&[
+            vp8x(0x20, 16, 16),
+            chunk(b"ICCP", &display_p3()),
+            still[12..].to_vec(),
+        ]);
+        assert_p3_converted(&webp, Format::Webp);
+    }
+
+    #[test]
+    fn profiles_that_need_no_conversion_leave_pixels_unchanged() {
+        let mut seed: u32 = 7;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 16) as u16
+        };
+        let wide = image::ImageBuffer::from_fn(16, 16, |_, _| image::Rgb([next(), next(), next()]));
+        let wide = DynamicImage::ImageRgb16(wide);
+        // sRGB as a 1024-entry curve, the form of the widely shipped IEC 61966-2.1 profile.
+        let mut tabled = moxcms::ColorProfile::new_srgb();
+        let curve = (0..1024).map(|i| {
+            let c = f64::from(i) / 1023.0;
+            let lin = if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            };
+            (lin * 65535.0).round() as u16
+        });
+        let curve = moxcms::ToneReprCurve::Lut(curve.collect());
+        (tabled.red_trc, tabled.green_trc) = (Some(curve.clone()), Some(curve.clone()));
+        (tabled.blue_trc, tabled.cicp) = (Some(curve), None);
+        let gray = moxcms::ColorProfile::new_gray_with_gamma(2.2);
+        let profiles = [
+            ("sRGB", moxcms::ColorProfile::new_srgb().encode().unwrap()),
+            ("tabled sRGB", tabled.encode().unwrap()),
+            ("gray", gray.encode().unwrap()),
+            ("garbage", b"not an ICC profile".to_vec()),
+            ("oversized", [display_p3(), vec![0; MAX_ICC_BYTES]].concat()),
+        ];
+        for noise in [DynamicImage::ImageRgb8(wide.to_rgb8()), wide] {
+            for (why, icc) in &profiles {
+                let out = untagged_png(&png_with_icc(&noise, icc.clone()), Format::Png);
+                assert_eq!(out, noise, "{why} {:?}", noise.color());
+            }
+        }
     }
 }
