@@ -422,7 +422,11 @@ pub async fn pre_generate(
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
-    let query = recall_query(&input);
+    // An automation session's turn recalls nothing (`turn_capture` reads
+    // `recall_in_automation`): the user's work-item memories mislead a machine
+    // run. Its rules and pinned memories still go in.
+    let automation = capture == Capture::Automation;
+    let query = recall_query(&input).filter(|_| !automation);
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
     let injected = injection(
         deps,
@@ -463,7 +467,13 @@ pub async fn pre_generate(
     if injected.retrieval == "bm25-entity-semantic" {
         annotations.insert("memory_retrieval".into(), json!(injected.retrieval));
     }
-    let outcome = recall_outcome(cfg.inject_memories, input.step, query.as_deref(), &injected);
+    let outcome = recall_outcome(
+        cfg.inject_memories,
+        input.step,
+        automation,
+        query.as_deref(),
+        &injected,
+    );
     if let Some(body) = injected.message {
         let ids: Vec<&str> = injected
             .memories
@@ -493,10 +503,11 @@ pub async fn pre_generate(
 
 /// The step's recall outcome: `hit` (recalled memories went in, past the
 /// pinned ones), `miss` (recall ran, none did) or `skipped` with why it
-/// never ran.
+/// never ran. `automation`: the session's kind kept recall from running.
 fn recall_outcome(
     inject_memories: bool,
     step: u64,
+    automation: bool,
     query: Option<&str>,
     injected: &Injection,
 ) -> (&'static str, Option<&'static str>) {
@@ -512,6 +523,8 @@ fn recall_outcome(
         "memories_off"
     } else if step != 0 {
         "later_step"
+    } else if automation {
+        "automation"
     } else if query.is_none_or(|q| q.trim().is_empty()) {
         // A notification, an unknown delivery or a context mismatch.
         "no_query"
@@ -774,11 +787,20 @@ pub(crate) async fn injection(
         }
         ranked.push((m, s));
     }
+    // An expired line (see `Memory::expired`) is never told, but ranks like a pinned one:
+    // the older line it supersedes stays hidden, and it takes no slot.
+    let now = now_ms();
+    let hidden: HashSet<String> = ranked
+        .iter()
+        .filter(|(m, _)| m.expired(now))
+        .map(|(m, _)| m.id.clone())
+        .chain(pinned_ids)
+        .collect();
     let hits = select(
         merge_ranked(ranked, usize::MAX),
         &best_evidence,
         &shown,
-        &pinned_ids,
+        &hidden,
         cfg.recall_limit,
     );
     // What each source holds on a told line's subject; a memory two hold is the earlier's.
@@ -786,14 +808,14 @@ pub(crate) async fn injection(
     let mut tagged = Vec::new();
     for &(name, b, layered) in &sources {
         for m in b.tagged(&linked).await {
-            if keeps(name, layered, &m) {
+            if keeps(name, layered, &m) && !m.expired(now) {
                 held.entry(m.id.clone()).or_insert(name);
                 tagged.push(m);
             }
         }
     }
     let mut hits = with_updates(hits, &tagged, &query);
-    hits.retain(|(m, _)| !pinned_ids.contains(&m.id));
+    hits.retain(|(m, _)| !hidden.contains(&m.id));
     let scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
     // After `select`, so a slot this frees stays free.
     let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), &shown);
@@ -1050,10 +1072,11 @@ fn two_subjects(a: &Memory, b: &Memory) -> bool {
 /// the current statement takes its place, whatever the newer's own rank or
 /// relevance. `seen` holds the memory lines the window shows: a rewording of
 /// one is not sent again. `pinned` holds the ids of the pinned lines the turn
-/// opens with: they rank like any hit, so a line they supersede is still not
-/// told, but take no place in the pool or a slot. Those that stand come last,
-/// so [`with_updates`] still links their newer statements; the caller drops
-/// them, since they are told already.
+/// opens with, and of the expired lines it never tells (unpinned): they rank
+/// like any hit, so a line they supersede is still not told, but take no place
+/// in the pool (up to as many again) or a slot, and an expired one sets no bar
+/// or subject. Those that stand come last, so [`with_updates`] still links
+/// their newer statements; the caller drops them.
 pub fn select(
     hits: Vec<(Memory, f32)>,
     evidence: &HashMap<String, Evidence>,
@@ -1066,19 +1089,32 @@ pub fn select(
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
     // Evidence: a word of the question, or a meaning above the model's floor.
-    // A pinned line takes no place in the quota, so pins never crowd recall out.
+    // An expired line (in `pinned`, not pinned) is never told: it sets no bar or subject.
+    let told = |m: &Memory| m.pinned || !pinned.contains(&m.id);
+    // A pinned or expired line takes no place in the quota, so neither crowds
+    // recall out; expired ones up to as many again, so the pool stays bounded.
+    // shortcut: past that, an older line an expired one supersedes can be told;
+    // raise the bound if a bank of stale lines shows it.
     let mut room = POOL_PER_SLOT.saturating_mul(limit);
-    let pool: Vec<(Memory, f32)> = hits
+    let mut spare = room;
+    let mut pool: Vec<(Memory, f32)> = Vec::new();
+    for (m, s) in hits
         .into_iter()
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
-        .take_while(|(m, _)| {
-            room > 0
-                && (pinned.contains(&m.id) || {
-                    room -= 1;
-                    true
-                })
-        })
-        .collect();
+    {
+        if room == 0 {
+            break;
+        }
+        if !told(&m) {
+            if spare == 0 {
+                continue;
+            }
+            spare -= 1;
+        } else if !pinned.contains(&m.id) {
+            room -= 1;
+        }
+        pool.push((m, s));
+    }
     // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
     let newest: Vec<Option<usize>> = pool
         .iter()
@@ -1104,7 +1140,7 @@ pub fn select(
     let best = pool
         .iter()
         .zip(&newest)
-        .filter(|(_, newer)| newer.is_none())
+        .filter(|((m, _), newer)| newer.is_none() && told(m))
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
     // Holds two of the question's words, or its one; or two of those it uses
@@ -1138,11 +1174,15 @@ pub fn select(
     // one word with each ("great, carry on" beside a "great" and a "carry" memory)
     // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
     // eval (q-id-apelido, q-evt-next-week): revisit when a per-hit signal delivers them.
-    let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
+    let covered: HashSet<&String> = pool
+        .iter()
+        .filter(|(m, _)| told(m))
+        .flat_map(|(m, _)| &ev(m).matched)
+        .collect();
     // The question's term count, the same on every hit.
     let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
     let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
-        || pool.iter().any(|(m, _)| {
+        || pool.iter().filter(|(m, _)| told(m)).any(|(m, _)| {
             let e = ev(m);
             alone(e) || (e.cosine.is_some() && e.z.is_none())
         });
@@ -1150,6 +1190,7 @@ pub fn select(
     // that hit matched.
     let named: HashSet<String> = pool
         .iter()
+        .filter(|(m, _)| told(m))
         .flat_map(|(m, _)| {
             let e = ev(m);
             subjects(m).into_iter().filter(move |s| {
@@ -1299,9 +1340,16 @@ pub(crate) enum Capture {
     /// Working for the user but not extracted (a sub-agent, extraction
     /// off): told to save what a later session needs.
     Save,
-    /// A scripted run (automation, e2e) or an unknown session: nothing is
-    /// captured, and it is not invited to write into the user's memory.
+    /// A scripted run (e2e, any other non-user kind) or an unknown session:
+    /// nothing is captured, and it is not invited to write into the user's
+    /// memory.
     Scripted,
+    /// A session of kind `automation` (a workflow node, a kanban dispatch, a
+    /// sentinel investigation and the like, and their sub-agents): scripted,
+    /// and recalls
+    /// nothing; [`turn_capture`] makes its turn `Scripted` while
+    /// `recall_in_automation` is set.
+    Automation,
 }
 
 /// Each session's [`Capture`] with extraction on ([`session_capture`]):
@@ -1316,8 +1364,10 @@ static SESSION_CAPTURE: LazyLock<Mutex<HashMap<String, Capture>>> =
 /// skips the same two. A fork copies its source's metadata, parent
 /// included, but its turns carry no parent, so turn-end extracts them.
 fn session_capture(meta: &Value) -> Capture {
-    if !extract::extracts(meta.get("kind").and_then(Value::as_str)) {
-        return Capture::Scripted;
+    match meta.get("kind").and_then(Value::as_str) {
+        Some("automation") => return Capture::Automation,
+        kind if !extract::extracts(kind) => return Capture::Scripted,
+        _ => {}
     }
     let top_level = meta["forked_from"].is_string()
         || meta["metadata"]["parent_session_id"]
@@ -1363,7 +1413,8 @@ pub(crate) async fn session_capture_of(deps: &Deps, session_id: &str) -> Result<
 
 /// This turn's [`Capture`]: its session's, with extraction off or a parent
 /// on the turn (`sub_agent`: what turn-end skips) turning the user's own
-/// session into one that saves.
+/// session into one that saves, and `recall_in_automation` an automation
+/// session into a scripted one that recalls.
 async fn turn_capture(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1372,6 +1423,7 @@ async fn turn_capture(
 ) -> Result<Capture, String> {
     Ok(match session_capture_of(deps, session_id).await? {
         Capture::Extracted if !cfg.extraction_enabled || sub_agent => Capture::Save,
+        Capture::Automation if cfg.recall_in_automation => Capture::Scripted,
         capture => capture,
     })
 }
@@ -1738,7 +1790,8 @@ pub async fn session_deleted(
 /// nothing is captured, so what a later session needs must be saved with
 /// `memory::save`, which the session's policy may not grant. Scripted:
 /// nothing is captured, and a scripted run is not asked to write into the
-/// user's memory (extraction keeps it out for the same reason).
+/// user's memory (extraction keeps it out for the same reason). Automation:
+/// scripted, and told only pinned memories come, so it recalls on its own.
 pub(crate) fn ambient_header(bank_name: &str, capture: Capture) -> String {
     let body = match capture {
         Capture::Extracted => {
@@ -1757,6 +1810,11 @@ pub(crate) fn ambient_header(bank_name: &str, capture: Capture) -> String {
         Capture::Scripted => {
             "Relevant memories are provided to you when they exist, but nothing from this \
              conversation is captured automatically."
+        }
+        Capture::Automation => {
+            "Only pinned memories are provided to you, nothing is recalled for this run, and \
+             nothing from this conversation is captured automatically: if `memory::recall` is \
+             available to you, call it when the task needs a memory."
         }
     };
     format!("\n\n# Memory — bank: {bank_name}\n{body}\n")
@@ -2387,6 +2445,10 @@ mod tests {
         let scripted = ambient_header("b", Capture::Scripted);
         assert!(scripted.contains(nothing));
         assert!(!scripted.contains("memory::save") && !scripted.contains("no save call"));
+        // An automation run is not told memories come that never will.
+        let automation = ambient_header("b", Capture::Automation);
+        assert!(automation.contains(nothing) && automation.contains("`memory::recall`"));
+        assert!(!automation.contains("Relevant memories are provided"));
     }
 
     #[test]
@@ -2412,15 +2474,15 @@ mod tests {
                 json!({ "kind": "user", "metadata": { "parent_session_id": "p" } }),
                 Capture::Save,
             ),
-            (json!({ "kind": "automation" }), Capture::Scripted),
+            (json!({ "kind": "automation" }), Capture::Automation),
             (json!({ "kind": "e2e" }), Capture::Scripted),
             (
                 json!({ "kind": "automation", "forked_from": "a" }),
-                Capture::Scripted,
+                Capture::Automation,
             ),
             (
                 json!({ "kind": "automation", "metadata": { "parent_session_id": "p" } }),
-                Capture::Scripted,
+                Capture::Automation,
             ),
         ] {
             assert_eq!(session_capture(&meta), capture, "{meta}");
@@ -2463,7 +2525,7 @@ mod tests {
             (
                 "hdr-auto",
                 json!({ "kind": "automation" }),
-                Capture::Scripted,
+                Capture::Automation,
             ),
             ("hdr-e2e", json!({ "kind": "e2e" }), Capture::Scripted),
         ] {
@@ -2483,7 +2545,7 @@ mod tests {
             (
                 "hdr-off-auto",
                 json!({ "kind": "automation" }),
-                Capture::Scripted,
+                Capture::Automation,
             ),
         ] {
             let (prompt, bank) = header(off.clone(), session, meta).await;
@@ -5085,6 +5147,234 @@ Formal."
         assert_eq!(annotations["memory_recall_skip_reason"], "no_query");
     }
 
+    /// The opening step of a turn on `bank` in a session of `kind`, the
+    /// user asking `text`.
+    async fn asked_turn(
+        deps: &Arc<Deps>,
+        session: &str,
+        kind: &str,
+        bank: &str,
+        text: &str,
+    ) -> HookResponse {
+        remember_session(session, &json!({ "kind": kind }));
+        let turn = format!("{session}-t");
+        let input = serde_json::from_value(json!({
+            "session_id": session,
+            "turn_id": turn,
+            "step": 0,
+            "metadata": { "memory_bank": bank },
+            "recall_context": {
+                "version": 1,
+                "session_id": session,
+                "turn_id": turn,
+                "source": { "kind": "direct", "entry_id": "e1" },
+                "query": { "entry_id": "e1", "text": text },
+            },
+        }))
+        .unwrap();
+        pre_generate(deps, input, true).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_expired_transient_memory_is_hidden_from_turns_not_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        let transient = [crate::types::TRANSIENT_TAG];
+        let stated = |id: &str, subject: &str, tags: &[&str], days_ago: u64| Memory {
+            entities: vec![subject.into()],
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            stated_at: Some(now_ms() - days_ago * 86_400_000),
+            ..memory(
+                id,
+                &format!("The {subject} review round is waiting on Dana."),
+            )
+        };
+        let old = stated("fp-old", "ledger", &transient, 8);
+        for m in [
+            old.clone(),
+            stated("fp-fresh", "billing", &transient, 6),
+            stated("fp-untagged", "search", &[], 30),
+            Memory {
+                text: "The KAN-158 review round is waiting on Dana.".into(),
+                ..stated("fp-named", "kan-158", &[], 8)
+            },
+            Memory {
+                pinned: true,
+                ..stated("fp-pin", "payouts", &transient, 30)
+            },
+        ] {
+            bank.commit(m).await.unwrap();
+        }
+        let question = "which review round is waiting?";
+
+        let out = asked_turn(&deps, "transient-user", "user", "main", question).await;
+        assert!(
+            !memory_block(&out).contains("ledger"),
+            "{}",
+            memory_block(&out)
+        );
+        let ids = out.annotations.unwrap()["memory_ids"].clone();
+        let mut told: Vec<&str> = ids
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(told[0], "fp-pin", "a pinned transient line never expires");
+        told.sort_unstable();
+        assert_eq!(told, ["fp-fresh", "fp-pin", "fp-untagged"]);
+
+        // Preview runs the hook's code: the same lines, in the same order.
+        let preview = crate::functions::preview::preview(
+            &deps,
+            crate::functions::preview::PreviewRequest {
+                bank: Some("main".into()),
+                query: question.into(),
+            },
+        )
+        .await
+        .unwrap();
+        let previewed: Vec<&str> = preview
+            .memories
+            .iter()
+            .map(|p| p.memory.id.as_str())
+            .collect();
+        assert_eq!(json!(previewed), ids);
+
+        // Hidden, not retired: list and get return it, unchanged.
+        let listed = crate::functions::items::list(
+            &deps,
+            crate::functions::items::ListRequest {
+                bank: Some("main".into()),
+                limit: None,
+                offset: None,
+                include_superseded: None,
+                tag: Some(crate::types::TRANSIENT_TAG.into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(listed.memories.iter().any(|m| m.id == "fp-old"));
+        assert_eq!(bank.get("fp-old").await, Some(old));
+    }
+
+    #[tokio::test]
+    async fn an_expired_newer_statement_keeps_the_older_one_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        let at = |days: u64| Some(now_ms() - days * 86_400_000);
+        for m in [
+            Memory {
+                entities: vec!["export".into()],
+                stated_at: at(20),
+                ..memory("fp-02", "The nightly export runs at 02:00.")
+            },
+            Memory {
+                entities: vec!["export".into()],
+                tags: vec![crate::types::TRANSIENT_TAG.into()],
+                stated_at: at(8),
+                ..memory("fp-04", "The nightly export now runs at 04:00.")
+            },
+        ] {
+            bank.commit(m).await.unwrap();
+        }
+        let out = asked_turn(
+            &deps,
+            "expired-newer",
+            "user",
+            "main",
+            "when does the nightly export run?",
+        )
+        .await;
+        let block = memory_block(&out);
+        assert!(
+            !block.contains("02:00") && !block.contains("04:00"),
+            "{block}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_note_never_joins_a_told_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        let at = |days: u64| Some(now_ms() - days * 86_400_000);
+        for m in [
+            Memory {
+                entities: vec!["payments-api".into()],
+                stated_at: at(20),
+                ..memory("fp-oncall", "dana is on call for payments-api")
+            },
+            // Newer, on the same subject, sharing no word of the question.
+            Memory {
+                entities: vec!["payments-api".into()],
+                stated_at: at(10),
+                ..memory("fp-rota", "The pager rota moved to kai in PR #1910.")
+            },
+        ] {
+            bank.commit(m).await.unwrap();
+        }
+        let question = "who is on call for payments-api?";
+        let out = asked_turn(&deps, "expired-note", "user", "main", question).await;
+        let block = memory_block(&out);
+        assert!(block.contains("dana"), "{block}");
+        assert!(!block.contains("kai"), "{block}");
+    }
+
+    #[tokio::test]
+    async fn an_automation_session_recalls_nothing_unless_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        bank.set_rule("style", "No em-dashes.").unwrap();
+        let pin = pinned("fp-pin", "The user signs releases with their own key.", 5);
+        bank.commit(pin.clone()).await.unwrap();
+        bank.commit(memory("fp-ship", "Deploys go through make ship."))
+            .await
+            .unwrap();
+        let question = "how do deploys go through make ship?";
+
+        let out = asked_turn(&deps, "auto-node", "automation", "main", question).await;
+        let prompt = out.mutations.as_ref().unwrap().system_prompt.clone();
+        let prompt = prompt.unwrap();
+        assert!(prompt.contains("No em-dashes."), "rules still go in");
+        assert!(prompt.contains(&ambient_header("main", Capture::Automation)));
+        let block = memory_block(&out);
+        assert!(block.contains(&memory_line(&pin)), "{block}");
+        assert!(!block.contains("make ship"), "recall never ran: {block}");
+        let annotations = out.annotations.unwrap();
+        assert_eq!(annotations["memory_ids"], json!(["fp-pin"]));
+        assert_eq!(annotations["memory_recall"], "skipped");
+        assert_eq!(annotations["memory_recall_skip_reason"], "automation");
+
+        // harness-e2e's memory scenarios run as `e2e` (and `user`): they recall.
+        for (session, kind) in [("e2e-run", "e2e"), ("user-chat", "user")] {
+            let annotations = asked_turn(&deps, session, kind, "main", question)
+                .await
+                .annotations
+                .unwrap();
+            assert_eq!(annotations["memory_recall"], "hit", "{kind}");
+            assert_eq!(annotations["memory_ids"], json!(["fp-pin", "fp-ship"]));
+        }
+
+        *deps.config.write().await = Arc::new(WorkerConfig {
+            recall_in_automation: true,
+            ..offline_cfg(6)
+        });
+        let out = asked_turn(&deps, "auto-node-on", "automation", "main", question).await;
+        let prompt = out.mutations.as_ref().unwrap().system_prompt.clone();
+        assert!(
+            prompt
+                .unwrap()
+                .contains(&ambient_header("main", Capture::Scripted))
+        );
+        let annotations = out.annotations.unwrap();
+        assert_eq!(annotations["memory_recall"], "hit");
+        assert_eq!(annotations["memory_ids"], json!(["fp-pin", "fp-ship"]));
+    }
+
     #[tokio::test]
     async fn the_pinned_cap_holds_and_the_overflow_is_reported() {
         let dir = tempfile::tempdir().unwrap();
@@ -5221,6 +5511,39 @@ Formal."
         let mut rest = ids[1..].to_vec();
         rest.sort();
         assert_eq!(rest, ["fp-backup", "fp-left"], "each once: {ids:?}");
+    }
+
+    #[test]
+    fn expired_lines_neither_crowd_the_pool_nor_set_the_bar() {
+        // 100 expired lines ranked first, each matching every question word.
+        let mut hits: Vec<(Memory, f32)> = (0..100)
+            .map(|n| {
+                (
+                    memory(&format!("fp-old{n}"), &format!("old status {n}")),
+                    1.0,
+                )
+            })
+            .collect();
+        hits.push((memory("fp-alone", "durable fact"), 0.6));
+        hits.push((memory("fp-share", "another fact"), 0.5));
+        let mut evidence: HashMap<String, Evidence> = hits
+            .iter()
+            .map(|(m, _)| (m.id.clone(), words(3, 3, 1.0)))
+            .collect();
+        evidence.insert("fp-alone".into(), words(2, 3, 0.9));
+        // Under half of an expired line's 1.0, over half of the told best's 0.9.
+        evidence.insert("fp-share".into(), words(1, 3, 0.48));
+        let hidden: HashSet<String> = hits[..100].iter().map(|(m, _)| m.id.clone()).collect();
+        let ids: Vec<String> = select(hits, &evidence, &HashSet::new(), &hidden, 2)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+        assert_eq!(ids[..2], ["fp-alone", "fp-share"], "{ids:?}");
+        assert_eq!(
+            ids.len() - 2,
+            2 * POOL_PER_SLOT,
+            "the expired ones kept: {ids:?}"
+        );
     }
 
     #[test]
@@ -5724,33 +6047,50 @@ Formal."
             memories: vec![(memory("m1", "the user prefers tabs"), 1.0, "main".into())],
             ..Injection::none()
         };
-        assert_eq!(recall_outcome(true, 0, Some("tabs?"), &ran), ("hit", None));
+        assert_eq!(
+            recall_outcome(true, 0, false, Some("tabs?"), &ran),
+            ("hit", None)
+        );
         ran.pinned = 1;
         assert_eq!(
-            recall_outcome(true, 0, Some("tabs?"), &ran),
+            recall_outcome(true, 0, false, Some("tabs?"), &ran),
             ("miss", None),
             "a pinned line alone is no recall hit"
         );
         ran.memories.clear();
-        assert_eq!(recall_outcome(true, 0, Some("tabs?"), &ran), ("miss", None));
+        assert_eq!(
+            recall_outcome(true, 0, false, Some("tabs?"), &ran),
+            ("miss", None)
+        );
 
         let none = Injection::none();
         let skipped = |why| ("skipped", Some(why));
         assert_eq!(
-            recall_outcome(false, 0, Some("tabs?"), &none),
+            recall_outcome(false, 0, false, Some("tabs?"), &none),
             skipped("memories_off")
         );
         assert_eq!(
-            recall_outcome(true, 1, Some("tabs?"), &none),
+            recall_outcome(true, 1, false, Some("tabs?"), &none),
             skipped("later_step")
         );
-        assert_eq!(recall_outcome(true, 0, None, &none), skipped("no_query"));
         assert_eq!(
-            recall_outcome(true, 0, Some("  "), &none),
+            recall_outcome(true, 0, false, None, &none),
             skipped("no_query")
         );
         assert_eq!(
-            recall_outcome(true, 0, Some("tabs?"), &none),
+            recall_outcome(true, 0, true, None, &none),
+            skipped("automation")
+        );
+        assert_eq!(
+            recall_outcome(true, 1, true, None, &none),
+            skipped("later_step")
+        );
+        assert_eq!(
+            recall_outcome(true, 0, false, Some("  "), &none),
+            skipped("no_query")
+        );
+        assert_eq!(
+            recall_outcome(true, 0, false, Some("tabs?"), &none),
             skipped("bank_not_created")
         );
     }

@@ -1,7 +1,7 @@
 //! Extraction eval: the production prompt and parser
 //! ([`extract_items`]) over short excerpts (EN but for two `handles`
-//! cases), every case a repository session with `default_bank` layered
-//! under it. Scores three things:
+//! cases and the `status` ones), every case a repository session with
+//! `default_bank` layered under it. Scores three things:
 //! - capture: every expected item is captured, wrong (its kind, where it
 //!   lands, the memory it corrects, or the rule gate [`stated_by_user`]
 //!   drops it), or missed. A trap hit is any item past the expected ones
@@ -11,8 +11,14 @@
 //!   restates from a generated wiki page, a harness notice, a transient
 //!   error, a one-off instruction, task progress, what a correction leaves
 //!   behind, an explicit "remember X" answered with only X, a turn with
-//!   nothing to keep. The report also counts the trap hits the rule gate
-//!   would still let into the bank. Two `dense` cases reach the cap of one
+//!   nothing to keep, a work item's state (`status`, in Portuguese, beside
+//!   a pitfall, a how-to or a behaviour that must still be kept, written
+//!   without the ticket, round or PR, else wrong; and a deadline). The
+//!   report also counts the trap hits the rule gate would still let into
+//!   the bank, and apart from the rest those that would expire (tagged
+//!   `transient`, or naming a ticket, a pull request or a commit), which
+//!   turns stop being given after a week; an expected item tagged
+//!   `transient` is wrong. Two `dense` cases reach the cap of one
 //!   call: a continuation ([`MAX_CONTINUATIONS`]) must bring the facts left
 //!   and nothing else, and `[]` when none is left. Report lines from a
 //!   continuation are marked `continued`.
@@ -57,6 +63,7 @@ const STRICT: &[&str] = &[
     "one-off",
     "pasted",
     "progress",
+    "status",
     "unconfirmed",
 ];
 
@@ -72,6 +79,8 @@ struct Want {
     replaces: Option<usize>,
     /// The listed agent whose bank it lands in (`user` is then false).
     agent: Option<&'static str>,
+    /// Stems it must not hold: the work's history ("kan-158", "#1910").
+    lacks: &'static [&'static str],
 }
 
 struct Case {
@@ -121,6 +130,7 @@ const fn fact(has: &'static [&'static str], user: bool) -> Want {
         user,
         replaces: None,
         agent: None,
+        lacks: &[],
     }
 }
 
@@ -131,6 +141,7 @@ const fn rule(has: &'static [&'static str], user: bool) -> Want {
         user,
         replaces: None,
         agent: None,
+        lacks: &[],
     }
 }
 
@@ -141,6 +152,7 @@ const fn either(has: &'static [&'static str], user: bool) -> Want {
         user,
         replaces: None,
         agent: None,
+        lacks: &[],
     }
 }
 
@@ -151,6 +163,11 @@ const fn to(agent: &'static str, want: Want) -> Want {
         agent: Some(agent),
         ..want
     }
+}
+
+/// `want`, written as the behaviour it keeps, never with any of `lacks`.
+const fn without(lacks: &'static [&'static str], want: Want) -> Want {
+    Want { lacks, ..want }
 }
 
 const fn case(
@@ -530,6 +547,7 @@ const CASES: &[Case] = &[
             user: true,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     Case {
@@ -553,6 +571,7 @@ const CASES: &[Case] = &[
             user: false,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     Case {
@@ -579,6 +598,7 @@ const CASES: &[Case] = &[
             user: true,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     // Corrected in the excerpt itself: only the corrected fact is kept.
@@ -1148,6 +1168,145 @@ const CASES: &[Case] = &[
         ],
         &[],
     ),
+    // A work item's state, in Portuguese as live banks hold it: a round's
+    // verdict, a PR, a branch, a build, a test run, the next fix, a card.
+    case(
+        "pt-round-verdict",
+        "status",
+        &[
+            ("user", "Como ficou a rodada 14 do KAN-158?"),
+            (
+                "assistant",
+                "A rodada 14 do KAN-158 teve veredito reprovado: o anúncio para leitores de tela ainda contém o nome da sessão, o bug está em claude-code/ui/sessions.tsx:198-201. Vou abrir a rodada 15 com a correção.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-pr-open",
+        "status",
+        &[
+            ("user", "Abre o PR do KAN-159."),
+            (
+                "assistant",
+                "Abri o PR #1895 para o KAN-159. Ele está aberto, aguardando revisão, sem merge.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-branch-local",
+        "status",
+        &[
+            ("user", "Já subiu a branch do KAN-159?"),
+            (
+                "assistant",
+                "Ainda não: a branch feat/kan-159 permanece local, sem push. Faço o push quando a suíte passar.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-build-running",
+        "status",
+        &[
+            ("user", "O que a stack local está rodando agora?"),
+            (
+                "assistant",
+                "A stack local está rodando o build do commit aa67ce3; staging ainda está no deploy do commit 91bd2f0.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-tests-at-commit",
+        "status",
+        &[
+            ("user", "Roda os testes de novo."),
+            (
+                "assistant",
+                "Os 82 testes passaram no commit e52993b. O CI do PR ainda está rodando.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-next-fix",
+        "status",
+        &[
+            ("user", "O que falta para fechar o card?"),
+            (
+                "assistant",
+                "Falta corrigir o parser de datas do módulo de faturas e depois atualizar o changelog. Começo pelo parser agora.",
+            ),
+        ],
+        &[],
+    ),
+    case(
+        "pt-card-moved",
+        "status",
+        &[
+            (
+                "user",
+                "Move o KAN-160 para Em revisão, terminei a parte do backend.",
+            ),
+            ("assistant", "Movi o KAN-160 para Em revisão."),
+        ],
+        &[],
+    ),
+    // What outlasts the same work: the status around it is still a trap.
+    case(
+        "pt-pitfall-in-round",
+        "status",
+        &[
+            ("user", "E a rodada 15 do KAN-158?"),
+            (
+                "assistant",
+                "A rodada 15 foi aprovada. O que derrubou a 14: rodei de novo e os testes de integração só passam com TZ=UTC.",
+            ),
+        ],
+        &[without(&["kan-158", "rodada"], fact(&["utc"], false))],
+    ),
+    case(
+        "pt-run-beside-pr",
+        "status",
+        &[
+            (
+                "user",
+                "Abri o PR #1902. Como eu subo a stack de memória localmente para testar?",
+            ),
+            (
+                "assistant",
+                "Rodei aqui: `make memory-stack` sobe o engine e o worker de memória. O PR continua aguardando revisão.",
+            ),
+        ],
+        &[without(&["#1902"], fact(&["memory-stack"], false))],
+    ),
+    case(
+        "pt-behaviour-after-merge",
+        "status",
+        &[
+            (
+                "user",
+                "Mergeei o PR #1910. Com esse merge, uma fatura vencida passa a ser reenviada três vezes, com um dia de intervalo.",
+            ),
+            (
+                "assistant",
+                "Certo, o card do reenvio pode ir para Concluído.",
+            ),
+        ],
+        &[without(&["#1910", "merge"], fact(&["reenvi"], false))],
+    ),
+    // A work deadline is a dated event: kept, never tagged `transient`.
+    case(
+        "pt-deadline",
+        "status",
+        &[
+            ("user", "O KAN-170 tem prazo em 2026-12-20."),
+            ("assistant", "Anotado: KAN-170 até 2026-12-20."),
+        ],
+        &[fact(&["kan-170"], false)],
+    ),
     Case {
         id: "team-switch",
         category: "corrections",
@@ -1169,6 +1328,7 @@ const CASES: &[Case] = &[
             user: true,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     // A learned line restated comes back unchanged, naming itself, so it
@@ -1193,6 +1353,7 @@ const CASES: &[Case] = &[
             user: true,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     Case {
@@ -1216,6 +1377,7 @@ const CASES: &[Case] = &[
             user: true,
             replaces: Some(1),
             agent: None,
+            lacks: &[],
         }],
     },
     Case {
@@ -1611,9 +1773,26 @@ struct Tally {
     wrong: usize,
     missed: usize,
     traps: usize,
+    /// Trap hits that would expire ([`expires`]), counted apart from `traps`.
+    transient: usize,
     main: usize,
     agent: usize,
     harmful: usize,
+}
+
+/// Tagged `transient` as it would be stored. A rule's tags are dropped.
+fn tagged_transient(item: &ExtractedItem) -> bool {
+    !item.is_rule()
+        && item
+            .tags
+            .iter()
+            .any(|t| t.trim().to_lowercase() == crate::types::TRANSIENT_TAG)
+}
+
+/// Turns stop being given it a week after it was stated: tagged `transient`,
+/// or naming a work item. A rule never expires.
+fn expires(item: &ExtractedItem) -> bool {
+    tagged_transient(item) || (!item.is_rule() && crate::types::names_work_item(&item.text))
 }
 
 /// One returned item as a report line: `text / scope / kind / lands /
@@ -1657,12 +1836,25 @@ async fn extraction_eval() {
     let mut by_category: BTreeMap<&str, Tally> = BTreeMap::new();
     let mut report = Vec::new();
     let (mut expected, mut captured, mut wrong, mut missed) = (0, 0, 0, 0);
-    let (mut traps, mut kept, mut extras) = (0, 0, 0);
+    let (mut traps, mut kept, mut extras, mut transient_traps) = (0, 0, 0, 0);
     let (mut matched, mut kind_ok, mut user_matched, mut user_main, mut harmful) = (0, 0, 0, 0, 0);
     let (mut agent_matched, mut agent_landed) = (0, 0);
     let mut spent = PassTally::default();
     let mut continued_traps = 0;
-    for case in CASES {
+    // A tuning run can narrow the cases and repeats; asserts still apply.
+    let only: Vec<String> = std::env::var("EVAL_CATEGORIES")
+        .map(|v| v.split(',').map(|c| c.trim().to_string()).collect())
+        .unwrap_or_default();
+    let repeats = std::env::var("EVAL_REPEATS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(REPEATS);
+    let cases: Vec<&Case> = CASES
+        .iter()
+        .filter(|c| only.is_empty() || only.iter().any(|o| o == c.category))
+        .collect();
+    assert!(!cases.is_empty(), "no case in EVAL_CATEGORIES {only:?}");
+    for &case in &cases {
         let agents: Vec<String> = case.agents.iter().map(|a| a.to_string()).collect();
         let known: Vec<Memory> = case
             .known
@@ -1710,7 +1902,7 @@ async fn extraction_eval() {
         let strict = STRICT.contains(&case.category);
         let (transcript, ..) = excerpt(entries);
         let tally = by_category.entry(case.category).or_default();
-        for repeat in 1..=REPEATS {
+        for repeat in 1..=repeats {
             let tag = format!("{}#{repeat}", case.id);
             let items = extract_items(
                 &iii,
@@ -1775,6 +1967,15 @@ async fn extraction_eval() {
                     Some("replaces")
                 } else if !case.handles.kept_by(item) {
                     Some("entities")
+                } else if want
+                    .lacks
+                    .iter()
+                    .any(|s| item.text.to_lowercase().contains(s))
+                {
+                    Some("history")
+                } else if tagged_transient(item) {
+                    // Every expected item outlasts the work: hidden in a week, it is lost.
+                    Some("transient")
                 } else if !gate(item) {
                     Some("gated")
                 } else {
@@ -1871,6 +2072,12 @@ async fn extraction_eval() {
                             }
                         }
                     }
+                    None if strict && expires(item) => {
+                        transient_traps += 1;
+                        tally.transient += 1;
+                        continued_traps += usize::from(continued(i));
+                        "TRAP transient".to_string()
+                    }
                     None if strict => {
                         traps += 1;
                         tally.traps += 1;
@@ -1905,17 +2112,26 @@ async fn extraction_eval() {
     let user_landing = ratio(user_main, user_matched);
     let agent_landing = ratio(agent_landed, agent_matched);
     println!(
-        "extraction eval: model {model}, repository rule {repository}, {} cases x {REPEATS} repeats",
-        CASES.len()
+        "extraction eval: model {model}, repository rule {repository}, {} cases x {repeats} repeats",
+        cases.len()
     );
     println!(
-        "{:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>6} {:>8}",
-        "category", "n", "captured", "wrong", "missed", "traps", "main", "agent", "harmful"
+        "{:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>9} {:>5} {:>6} {:>8}",
+        "category",
+        "n",
+        "captured",
+        "wrong",
+        "missed",
+        "traps",
+        "transient",
+        "main",
+        "agent",
+        "harmful"
     );
     for (category, t) in &by_category {
         println!(
-            "{category:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>6} {:>8}",
-            t.n, t.captured, t.wrong, t.missed, t.traps, t.main, t.agent, t.harmful
+            "{category:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>9} {:>5} {:>6} {:>8}",
+            t.n, t.captured, t.wrong, t.missed, t.traps, t.transient, t.main, t.agent, t.harmful
         );
     }
     for line in &report {
@@ -1923,7 +2139,8 @@ async fn extraction_eval() {
     }
     println!(
         "capture: captured {captured}, wrong {wrong}, missed {missed} of {expected}; \
-         trap hits {traps} ({kept} past the rule gate); extras {extras}"
+         trap hits {traps} untagged ({kept} past the rule gate), {transient_traps} would \
+         expire; extras {extras}"
     );
     println!(
         "spent: calls {}, continuations {} ({continued_traps} trap hits), saturated {}, \
@@ -1947,18 +2164,20 @@ async fn extraction_eval() {
         "an item left its scope (a project one in main, an agent bank's not \
          its own, an agent's outside its bank), or a stray retire"
     );
+    // A narrowed run (EVAL_CATEGORIES) may hold no case of a kind.
+    let narrowed = !only.is_empty();
     assert!(
-        user_landing >= 0.85,
+        (narrowed && user_matched == 0) || user_landing >= 0.85,
         "user landing {user_landing:.3} < 0.85"
     );
     assert!(
-        agent_landing >= 0.85,
+        (narrowed && agent_matched == 0) || agent_landing >= 0.85,
         "agent landing {agent_landing:.3} < 0.85"
     );
     // A piece whose only continuation went unread adds 1 to both counters; one
     // that had a continuation read adds more to `continuations`.
     assert!(
-        spent.continuations > spent.saturated,
+        (narrowed && !only.iter().any(|c| c == "dense")) || spent.continuations > spent.saturated,
         "no continuation reply was read: no case reached the cap, or every continuation failed \
          or held no array"
     );
