@@ -139,6 +139,7 @@ class ProfileContractTests(unittest.TestCase):
                                          "`split the cards`: for each B card",
                                          "its few-tickets rule does not merge them back",
                                          "would keep only items whose Verify calls are project commands",
+                                         "`moved` kept as stored",
                                          "A card whose every Acceptance sentence a reason breaks, or that",
                                          "Moved: <new KEY>: <the sentences it took>",
                                          '`"moved":["<new KEY>: <the sentences it took>",…]`',
@@ -181,6 +182,7 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIsNotNone(re.search(r'"kind":<"plan"\|"cards"\|', self.profile), "no cards kind")
         self.assertHasAll(self.profile, [
             "Every card is checked once, before its first dispatch",
+            "more than four for the person go on the next Edge cases card",
             '"task":"Mode: cards. Run ticket <R>',
             "no comment by `workflow` on the card opens `**Card check**`, or `Split from`",
             "one comment, opening `Split from <KEY>.`, holds the reasons it took",
