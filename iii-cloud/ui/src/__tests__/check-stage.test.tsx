@@ -1570,18 +1570,37 @@ describe('small things the review found', () => {
     }
     const items = names8.map((n) => valueItem(n, { need: 'required', default: null, in_cloud: 'set', suggestions: [] }))
     const answers = { 'iii-cloud::values': () => ({ ...rcValues, environment_id: r.project?.environment?.id, items }) }
-    const mine = { ...r, check: { ...r.check!, handoff_id: brief.handoff_id } }
-    await stage({ ...mine, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } }, answers)
-    expect(region('Details')?.textContent).toMatch(/^Details(You did 8|Your agent fixed)/)
+    // The real flow: the agent waited for 8 values, the person saved them, and the PAGE's check passed (no hand-off id).
+    const early = {
+      ...r.checks![0],
+      id: 'chk-brief',
+      environment_id: r.check!.environment_id,
+      checked_at: '2020-01-01T00:00:00.000Z',
+    }
+    const withBrief = {
+      ...r,
+      check: { ...r.check!, handoff_id: null },
+      checks: [...(r.checks ?? []), early],
+      handoff_brief: { ...brief, check_id: 'chk-brief' },
+      agent: { ...rcFixing.agent!, state: 'done' as const, handoff_id: brief.handoff_id },
+    } as Status
+    await stage(withBrief, answers)
     expect(region('Details')?.textContent).toMatch(/You did 8/)
-    // an old hand-off of another kind, or one that is not this check's, counts nothing
-    await stage({ ...mine, handoff_brief: { ...brief, kind: 'pull_request' as const } }, answers)
+    // not another kind of hand-off
+    await stage(
+      { ...withBrief, handoff_brief: { ...withBrief.handoff_brief!, kind: 'pull_request' as const } },
+      answers,
+    )
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
-    await stage({ ...r, handoff_brief: brief }, answers)
+    // not when the hand-off is no longer the environment's current one
+    await stage({ ...withBrief, agent: { ...withBrief.agent!, handoff_id: 'another' } } as Status, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    // not for a check made before the hand-off began
+    await stage({ ...withBrief, check: { ...withBrief.check!, checked_at: '2019-01-01T00:00:00.000Z' } }, answers)
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
     expect(text()).not.toContain('agent fixed 0')
     // without the read nothing is invented
-    await stage({ ...r, handoff_brief: brief, agent: { ...rcFixing.agent!, state: 'done' as const } })
+    await stage(withBrief)
     expect(text()).not.toContain('You did')
   })
 

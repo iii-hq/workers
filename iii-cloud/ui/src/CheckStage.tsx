@@ -1699,10 +1699,20 @@ export function CheckStage(props: CheckStageProps) {
   // The values you set since the hand-off began: names its brief listed as the person's to set that the values read
   // now reports as set. Without a brief or a read there is nothing to count, so "You did" is left out, never 0.
   const setNow = new Set(valuesPlan(read).set.map((i) => i.name))
-  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it.
+  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it. A check
+  // the page itself started carries no hand-off id: it counts when it is of the same environment, made after the
+  // check the hand-off began with, while that hand-off is still the environment's current one.
+  const brief = s.handoff_brief
+  const briefCheck = brief ? (s.checks ?? []).find((x) => x.id === brief.check_id) : undefined
   const briefNow =
-    s.handoff_brief?.kind === 'ready' && !!c?.handoff_id && c.handoff_id === s.handoff_brief.handoff_id
-      ? s.handoff_brief
+    brief?.kind === 'ready' &&
+    c &&
+    (c.handoff_id === brief.handoff_id ||
+      (!c.handoff_id &&
+        s.agent?.handoff_id === brief.handoff_id &&
+        briefCheck?.environment_id === c.environment_id &&
+        Date.parse(c.checked_at) > Date.parse(briefCheck.checked_at)))
+      ? brief
       : null
   const valuesYouSet = (briefNow?.person_problems ?? [])
     .filter((b) => b.code && VALUE_CODES.has(b.code))
