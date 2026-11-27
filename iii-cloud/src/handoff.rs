@@ -22,6 +22,12 @@ const STALL_SECONDS: u64 = 180;
 const GIVE_UP_SECONDS: u64 = 1800;
 const CURRENT_MAX: usize = 120;
 const QUESTION_MAX: usize = 200;
+/// The failed run's lines in the brief.
+const RUN_LOG_LINES: usize = 40;
+/// "Continue" messages per hand-off before the state is `stalled`.
+const MAX_CONTINUES: u32 = 3;
+/// Failed fast checks in a row (other than the agent's own mistake) before it stalls.
+const MAX_CHECK_FAILURES: u32 = 3;
 
 fn rfc3339(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
@@ -148,7 +154,7 @@ pub async fn worktree(ctx: &Arc<Ctx>, request: HandoffWorktreeRequest) -> Res<Ha
             s.handoffs
                 .iter()
                 .find(|h| match &request.handoff_id {
-                    Some(id) => h.id == *id,
+                    Some(id) => h.is(id),
                     None => {
                         Some(&h.environment_id) == selected_env.as_ref()
                             && !matches!(h.agent.state, AgentPhase::Done | AgentPhase::Stopped)
@@ -360,6 +366,11 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         manifest,
         candidate: request.candidate == Some(true),
         worktree_note,
+        continues: 0,
+        continue_at_ms: None,
+        continue_refused: false,
+        check_failures: 0,
+        waited_run: None,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -480,20 +491,43 @@ pub async fn stop(ctx: &Arc<Ctx>, request: HandoffStopRequest) -> Res<HandoffSto
         .session_id
         .clone()
         .ok_or_else(|| CloudError::invalid("the agent has no session yet; nothing to stop"))?;
-    let out = ctx
+    // Stopped first: a "continue" that lands while the harness stops the turn must not start another.
+    let before = ctx.store.update(|s| {
+        let h = s.handoffs.iter_mut().find(|h| h.id == request.id)?;
+        let before = h.agent.clone();
+        h.agent.state = AgentPhase::Stopped;
+        h.agent.working_on.clear();
+        h.agent.note = None;
+        Some(before)
+    });
+    let out = match ctx
         .plat
         .call("harness::stop", json!({ "session_id": session }))
-        .await?;
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => {
+            if let Some(before) = before {
+                ctx.store.update(|s| {
+                    if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == request.id) {
+                        h.agent = before;
+                    }
+                });
+                // The follower may have ended on the Stopped it saw.
+                follow(ctx, request.id.clone());
+            }
+            return Err(e);
+        }
+    };
     let stopping = out
         .get("stopping")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let agent = ctx.store.update(|s| {
-        let h = s.handoffs.iter_mut().find(|h| h.id == request.id)?;
-        h.agent.state = AgentPhase::Stopped;
-        h.agent.working_on.clear();
-        h.agent.note = None;
-        Some(h.agent.clone())
+    let agent = ctx.store.read(|s| {
+        s.handoffs
+            .iter()
+            .find(|h| h.id == request.id)
+            .map(|h| h.agent.clone())
     });
     if let Some(agent) = agent {
         emit(ctx, &agent);
@@ -553,7 +587,7 @@ pub async fn progress(
             let resolved = resolve_working_on(s, &sel.env.id, &request.working_on);
             let h = s.handoffs.iter_mut().find(|h| match &request.handoff_id {
                 // The caller's own hand-off, not whichever is first open.
-                Some(id) => h.id == *id,
+                Some(id) => h.is(id),
                 None => {
                     h.environment_id == sel.env.id
                         && !matches!(h.agent.state, AgentPhase::Done | AgentPhase::Stopped)
@@ -794,34 +828,40 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     }
     let mut obs = Observed::default();
     // The session's own status.
-    if let Ok(meta) = ctx
+    // A read that fails says nothing: this poll judges nothing and the next one tries again.
+    let Ok(meta) = ctx
         .plat
         .call("session::get", json!({ "session_id": session }))
         .await
-    {
-        // The chat is gone: nothing left to follow.
-        if meta.get("meta").is_none_or(Value::is_null) {
-            return Poll::Finished;
-        }
-        obs.status = meta
-            .pointer("/meta/status")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        obs.last_activity_ms = meta.pointer("/meta/updated_at").and_then(Value::as_i64);
+    else {
+        return Poll::Continue;
+    };
+    // The chat is gone: nothing left to follow.
+    if meta.get("meta").is_none_or(Value::is_null) {
+        return Poll::Finished;
     }
+    obs.status = meta
+        .pointer("/meta/status")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    obs.last_activity_ms = meta.pointer("/meta/updated_at").and_then(Value::as_i64);
     count_steps(ctx, &session, local).await;
     // The newest messages: when, and what the last call says it does.
     let secrets = env_values(ctx);
     let mut current = agent.current.clone();
-    let mut confirm_pending = false;
-    if let Ok(tail) = ctx
+    let confirm_pending;
+    // A failed read judges nothing (a pending folder confirmation could hide in it).
+    let Ok(tail) = ctx
         .plat
         .call(
             "session::messages-tail",
             json!({ "session_id": session, "limit": 4 }),
         )
         .await
+    else {
+        return Poll::Continue;
+    };
     {
         let items = tail
             .get("messages")
@@ -863,19 +903,20 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         }
     }
     // An open question for the person.
-    if let Ok(asks) = ctx
+    let Ok(asks) = ctx
         .plat
         .call(
             "harness::ask::list",
             json!({ "session_id": session, "state": "open", "limit": 3 }),
         )
         .await
-    {
-        obs.question = asks
-            .pointer("/entries/0/questions/0/question")
-            .and_then(Value::as_str)
-            .map(|q| cut(q.trim(), QUESTION_MAX));
-    }
+    else {
+        return Poll::Continue;
+    };
+    obs.question = asks
+        .pointer("/entries/0/questions/0/question")
+        .and_then(Value::as_str)
+        .map(|q| cut(q.trim(), QUESTION_MAX));
     local.seen_working |= obs.status == "working";
     obs.has_assistant |= local.steps > 0;
     let phase = derive_phase(
@@ -884,9 +925,20 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         ctx.secs(STALL_SECONDS).as_millis() as i64,
         local.seen_working,
     );
+    let mut continue_at = handoff.continue_at_ms;
     if obs.status == "working" {
         local.idle_checked = false;
+        if continue_at.take().is_some() {
+            ctx.store.update(|s| {
+                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                    h.continue_at_ms = None;
+                    h.continue_refused = false;
+                }
+            });
+        }
     }
+    let continuing =
+        continue_at.is_some_and(|at| now_ms() - at < ctx.secs(STALL_SECONDS).as_millis() as i64);
     // An old chat the hand-off was sent into: idle and quiet since before the
     // hand-off means the turn has not begun, not that it is over.
     let fresh = obs
@@ -903,10 +955,22 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     // event, not on the person; once the wake fires or expires the rules below apply.
     let mut waiting_for = None;
     if matches!(phase, AgentPhase::Done | AgentPhase::Stalled) && !confirm_pending {
-        waiting_for = awaited_wake(ctx, &session).await;
+        match awaited_wake(ctx, &session).await {
+            Ok(w) => waiting_for = w,
+            Err(()) => return Poll::Continue,
+        }
     }
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
+    } else if phase == AgentPhase::Done && continuing {
+        if handoff.continue_refused {
+            // The chat refused our "continue"; the page can say so and point at the chat.
+            phase = AgentPhase::Stalled;
+            question = Some(STOPPED_TEXT.to_string());
+        } else {
+            // Our "continue" is queued; the turn has not begun yet.
+            phase = AgentPhase::Working;
+        }
     } else if phase == AgentPhase::Done {
         // The turn ended, but not because the work is finished.
         if confirm_pending {
@@ -915,6 +979,9 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             question = Some(CONFIRM_TEXT.to_string());
         } else if matches!(handoff.kind, HandoffKind::Ready | HandoffKind::DeployFix) {
             // One fast check per idle stretch: does the agent still have problems to fix?
+            // The agent's own mistake (the worktree on another branch) is its to fix;
+            // another failure is retried, and after three in a row the hand-off stalls.
+            let mut forced: Option<(String, String)> = None;
             if !local.idle_checked {
                 local.idle_checked = true;
                 ctx.store.update(|s| {
@@ -922,7 +989,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                         h.checked = true;
                     }
                 });
-                let _ = crate::check::check(
+                let checked = crate::check::check(
                     ctx,
                     CheckRequest {
                         handoff_id: Some(id.to_string()),
@@ -930,10 +997,106 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                     },
                 )
                 .await;
+                match checked {
+                    Ok(_) => {
+                        if handoff.check_failures > 0 {
+                            ctx.store.update(|s| {
+                                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                                    h.check_failures = 0;
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        // Judge nothing from an older check; try again next poll.
+                        local.idle_checked = false;
+                        if e.code == "WRONG_WORKTREE" {
+                            forced = Some((e.code, e.message));
+                        } else {
+                            let failures = ctx.store.update(|s| {
+                                let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
+                                h.check_failures += 1;
+                                Some(h.check_failures)
+                            });
+                            if failures.is_some_and(|n| n >= MAX_CHECK_FAILURES) {
+                                let message = crate::run::redact(&e.message, &secrets);
+                                let stalled = ctx.store.update(|s| {
+                                    let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
+                                    if h.agent.state == AgentPhase::Stopped {
+                                        return None;
+                                    }
+                                    h.agent.state = AgentPhase::Stalled;
+                                    h.agent.question = Some(message);
+                                    Some(h.agent.clone())
+                                });
+                                if let Some(a) = stalled
+                                    && a != handoff.agent
+                                {
+                                    emit(ctx, &a);
+                                }
+                            }
+                            return Poll::Continue;
+                        }
+                    }
+                }
             }
-            if agent_problems_remain(ctx, &handoff) {
+            let mut mine: Vec<(String, String)> = forced.iter().cloned().collect();
+            let mut theirs = Vec::new();
+            if forced.is_none() {
+                mine = open_problems(ctx, &handoff, Owner::Agent);
+                theirs = open_problems(ctx, &handoff, Owner::Person);
+            }
+            // The hand-off's own local run, when the plan has nothing left to say.
+            let mut run_going = false;
+            let mut waiting: Option<((String, String), String)> = None;
+            if forced.is_none()
+                && mine.is_empty()
+                && theirs.is_empty()
+                && !passed_run_here(ctx, &handoff)
+            {
+                match run_judgment(ctx, &handoff) {
+                    Some(RunJudgment::Agent(line)) => mine.push(line),
+                    Some(RunJudgment::Person(line)) => theirs.push(line),
+                    Some(RunJudgment::Going) => run_going = true,
+                    Some(RunJudgment::Waiting(line, run)) => waiting = Some((line, run)),
+                    None => {}
+                }
+            }
+            if run_going {
+                // Nothing to judge until it ends.
+                phase = AgentPhase::Working;
+                current = Some("the local run is going".to_string());
+            } else if let Some((line, run)) = waiting {
+                // The first notice of a hand-off is information, outside the cap; later ones count.
+                let sent =
+                    send_continue(ctx, &handoff, &session, &[line], &secrets, Some(&run)).await;
+                phase = if sent == Continue::Sent {
+                    AgentPhase::Working
+                } else {
+                    AgentPhase::Stalled
+                };
+                if phase == AgentPhase::Stalled {
+                    question = Some(STOPPED_TEXT.to_string());
+                }
+            } else if !mine.is_empty() {
+                let sent = send_continue(ctx, &handoff, &session, &mine, &secrets, None).await;
+                // The window opens; when it passes the stretch is judged again.
+                // A reason that comes from the check itself (the worktree) is read again each poll.
+                local.idle_checked =
+                    local.idle_checked || (sent == Continue::Spent && forced.is_none());
+                if sent == Continue::Sent {
+                    phase = AgentPhase::Working;
+                } else {
+                    phase = AgentPhase::Stalled;
+                    question = Some(match &forced {
+                        Some((_, message)) if sent == Continue::Spent => message.clone(),
+                        _ => STOPPED_TEXT.to_string(),
+                    });
+                }
+            } else if !theirs.is_empty() {
+                // Nothing left for the agent: these wait for the person.
                 phase = AgentPhase::WaitingForYou;
-                question = Some(STOPPED_TEXT.to_string());
+                question = Some(problem_lines(&theirs));
             } else if !passed_run_here(ctx, &handoff) {
                 // Done is a ready check and a run here that passed for its commit.
                 phase = AgentPhase::WaitingForYou;
@@ -1009,14 +1172,14 @@ const NO_RUN_TEXT: &str = "Your agent stopped before running it here like the cl
 const PROPOSE_FN: &str = "ade::working-directory::propose";
 
 /// What the session's armed wake waits for, from `harness::observers::list`.
-/// `None` when it has none or the list fails: the caller keeps its mapping.
-async fn awaited_wake(ctx: &Ctx, session: &str) -> Option<String> {
+/// `Ok(None)` when it has none; `Err` when the list fails (nothing is known).
+async fn awaited_wake(ctx: &Ctx, session: &str) -> Result<Option<String>, ()> {
     let list = ctx
         .plat
         .call("harness::observers::list", json!({ "session_id": session }))
         .await
-        .ok()?;
-    waiting_for(&list, now_ms())
+        .map_err(|_| ())?;
+    Ok(waiting_for(&list, now_ms()))
 }
 
 /// The newest armed wake in an `harness::observers::list` answer, as plain
@@ -1114,43 +1277,240 @@ pub fn awaits_confirmation(items: &[Value]) -> bool {
     pending
 }
 
-/// The newest check still has problems that are the agent's to fix.
-fn agent_problems_remain(ctx: &Ctx, handoff: &Handoff) -> bool {
-    ctx.store.read(|s| {
-        s.check
-            .as_ref()
-            .filter(|c| c.environment_id == handoff.environment_id)
-            .is_some_and(|c| {
-                !c.ready
-                    && c.problems
-                        .iter()
-                        .any(|p| p.owner == Owner::Agent && p.severity != Severity::Info)
-            })
+/// The checks that are this hand-off's, newest first: the one it was made from
+/// and the ones its agent (or the worker, after a turn) asked for. A check the
+/// person started in their own folder is not.
+fn own_checks<'a>(
+    s: &'a crate::store::State,
+    h: &'a Handoff,
+) -> impl Iterator<Item = &'a Check> + 'a {
+    s.check.iter().chain(s.checks.iter()).filter(move |c| {
+        c.handoff_id.as_deref() == Some(h.id.as_str())
+            || h.check_id.as_deref() == Some(c.id.as_str())
     })
 }
 
-/// The newest check of the hand-off's environment has a passed run for its own commit.
+/// `(code, title)` of the blocking problems of `owner` in the hand-off's newest
+/// check; none once it is ready. Warnings never keep a hand-off open.
+fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, String)> {
+    ctx.store.read(|s| {
+        own_checks(s, handoff)
+            .next()
+            .filter(|c| !c.ready)
+            .map(|c| {
+                c.problems
+                    .iter()
+                    .filter(|p| p.owner == owner && p.severity == Severity::Block)
+                    .map(|p| (p.code.clone(), p.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// One `<CODE>: <title>` per line.
+fn problem_lines(problems: &[(String, String)]) -> String {
+    problems
+        .iter()
+        .map(|(code, title)| format!("{code}: {title}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(PartialEq)]
+enum Continue {
+    Sent,
+    /// The chat refused it: nothing is counted, and no other is tried for a while.
+    Refused,
+    /// The limit is reached, the person stopped the hand-off, or it is retired.
+    Spent,
+}
+
+/// Post the "continue" message in the hand-off's chat, at most `MAX_CONTINUES`
+/// times; only a delivered one is counted.
+async fn send_continue(
+    ctx: &Ctx,
+    handoff: &Handoff,
+    session: &str,
+    problems: &[(String, String)],
+    secrets: &[String],
+    // The run a waiting notice is for: the first one of a hand-off goes outside the cap, later ones count.
+    waiting_run: Option<&str>,
+) -> Continue {
+    // Only the first waiting notice of a hand-off is information; a later one
+    // (every fix commit starts a new run that waits again) is a counted continue.
+    let free = ctx.store.read(|s| {
+        waiting_run.is_some()
+            && s.handoffs
+                .iter()
+                .find(|h| h.id == handoff.id)
+                .is_some_and(|h| h.waited_run.is_none())
+    });
+    let n = ctx.store.read(|s| {
+        s.handoffs
+            .iter()
+            .find(|h| h.id == handoff.id)
+            .filter(|h| {
+                h.agent.state != AgentPhase::Stopped && (free || h.continues < MAX_CONTINUES)
+            })
+            .map(|h| h.continues + 1)
+    });
+    let Some(n) = n.filter(|_| !retired(ctx, handoff)) else {
+        return Continue::Spent;
+    };
+    let text = format!(
+        "{} · continue\n{}\nKeep going until the check is ready or you need the person.",
+        handoff.marker,
+        problem_lines(problems)
+    );
+    let text = crate::run::redact(&text, secrets);
+    let key = match waiting_run {
+        Some(run) => format!("{}-waiting-{run}", handoff.id),
+        None => format!("{}-continue-{n}", handoff.id),
+    };
+    let sent = deliver(ctx, session, &text, &key).await;
+    ctx.store.update(|s| {
+        if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == handoff.id) {
+            h.continue_at_ms = Some(now_ms());
+            h.continue_refused = !sent;
+            if sent {
+                if let Some(run) = waiting_run {
+                    h.waited_run = Some(run.to_string());
+                }
+                if !free {
+                    h.continues += 1;
+                }
+            }
+        }
+    });
+    if sent {
+        Continue::Sent
+    } else {
+        Continue::Refused
+    }
+}
+
+/// The hand-off's newest check has a passed run for its own commit.
 fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
     ctx.store.read(|s| {
-        let mut mine = s
-            .check
-            .iter()
-            .chain(s.checks.iter())
-            .filter(|c| c.environment_id == handoff.environment_id);
-        let Some(latest) = mine.next() else {
+        let Some(latest) = own_checks(s, handoff).next() else {
             return false;
         };
         // The fast check after the turn is a new check of the same commit: the
         // run the agent made belongs to an earlier check of that commit.
-        s.check
-            .iter()
-            .chain(s.checks.iter())
-            .filter(|c| c.environment_id == handoff.environment_id && c.commit == latest.commit)
+        own_checks(s, handoff)
+            .filter(|c| c.commit == latest.commit)
             .any(|c| {
                 c.run
                     .as_ref()
                     .is_some_and(|r| r.status == RunStatus::Passed)
             })
+    })
+}
+
+/// Who a failed local run's code belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOwner {
+    /// The agent fixes it in the worktree.
+    Agent,
+    /// The person's: Docker, a tool, the iii binary, or a decision about the routes.
+    Person,
+    /// Nobody's fault: the run was cut short; run it again.
+    Interrupted,
+}
+
+/// The one place that sorts a run's error code (`src/run.rs`): the turn-end
+/// judgment and the brief both read it. It is the Owner column of "Local run
+/// failures" in `skills/plan-codes.md`, where the agent looks the code up, and a
+/// test holds the two together (`none` there is an interruption here). An
+/// unknown code is an interruption.
+pub fn run_code_owner(code: &str) -> RunOwner {
+    match code {
+        "INSTALL_FAILED"
+        | "BUILD_FAILED"
+        | "RELEASE_FAILED"
+        | "PORT_IN_USE"
+        | "COMPOSE_FAILED"
+        | "WORKERS_NOT_READY"
+        | "NO_ROUTE"
+        | "ROUTE_OUTSIDE_PREFIX"
+        | "HEALTHCHECK_FAILED"
+        | "RUN_TIMEOUT" => RunOwner::Agent,
+        "TOOL_MISSING" | "DOCKER_MISSING" | "ROUTE_OUTSIDE_HTTP_GROUP" | "LOCAL_ENGINE_VERSION" => {
+            RunOwner::Person
+        }
+        _ => RunOwner::Interrupted,
+    }
+}
+
+/// The hand-off's newest run: of its own checks, on the newest check's commit.
+fn own_run<'a>(s: &'a crate::store::State, h: &'a Handoff) -> Option<&'a Run> {
+    let latest = own_checks(s, h).next()?;
+    own_checks(s, h)
+        .filter(|c| c.commit == latest.commit)
+        .find_map(|c| c.run.as_ref())
+}
+
+/// A failed run as `(code, "<message> (stage <stage>)")`.
+fn run_failure_of(run: &Run) -> (String, String) {
+    let stage = run
+        .error
+        .as_ref()
+        .and_then(|e| serde_json::to_value(e.stage).ok())
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let (code, message) = match &run.error {
+        Some(e) => (e.code.clone(), e.message.clone()),
+        None => ("RUN_FAILED".into(), "the local run failed".into()),
+    };
+    match stage {
+        Some(st) => (code, format!("{message} (stage {st})")),
+        None => (code, message),
+    }
+}
+
+enum RunJudgment {
+    /// The continue's line.
+    Agent((String, String)),
+    /// What the person must do.
+    Person((String, String)),
+    /// Running, and not waiting on anything (or already told about it): nothing to judge yet.
+    Going,
+    /// Running and waiting on containers, not yet told: `(line, run id)`.
+    Waiting((String, String), String),
+}
+
+fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
+    ctx.store.read(|s| {
+        let run = own_run(s, h)?;
+        match run.status {
+            RunStatus::Passed => None,
+            RunStatus::Running => Some(match &run.waiting_on {
+                Some(w) if h.waited_run.as_deref() != Some(run.id.as_str()) => {
+                    RunJudgment::Waiting(
+                        (
+                            "RUN_WAITING".into(),
+                            format!(
+                                "the local run waits for {} to connect; read the run's log, fix it and check again",
+                                w.containers.join(", ")
+                            ),
+                        ),
+                        run.id.clone(),
+                    )
+                }
+                _ => RunJudgment::Going,
+            }),
+            RunStatus::Failed => {
+                let (code, line) = run_failure_of(run);
+                Some(match run_code_owner(&code) {
+                    RunOwner::Agent => RunJudgment::Agent((code, line)),
+                    RunOwner::Person => RunJudgment::Person((code, line)),
+                    RunOwner::Interrupted => RunJudgment::Agent((
+                        code,
+                        "the local run was interrupted; run `check {run: true}` again".into(),
+                    )),
+                })
+            }
+        }
     })
 }
 
@@ -1241,6 +1601,10 @@ fn earlier_try_note(worktree: &std::path::Path, branch: &str) -> Option<String> 
 fn brief_problem(p: &Problem, secrets: &[String]) -> BriefProblem {
     let clean = |t: &str, max: usize| cut(&crate::run::redact(t, secrets), max);
     BriefProblem {
+        id: p.id.clone(),
+        code: p.code.clone(),
+        owner: p.owner,
+        severity: p.severity,
         title: clean(&p.title, 160),
         file: p.file.clone(),
         line: p.line,
@@ -1257,6 +1621,15 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
     let source = match (h.kind, h.candidate, s.candidate.as_ref()) {
         (HandoffKind::Import, true, Some(c)) => Some(c),
         _ => project,
+    };
+    // The environment this hand-off was made for, not the page's current pick
+    // (the add-project import is of the candidate's own).
+    let env = if h.kind == HandoffKind::Import && h.candidate && s.candidate.is_some() {
+        source.and_then(|p| p.environment.as_ref())
+    } else {
+        h.env
+            .as_ref()
+            .or_else(|| project.and_then(|p| p.environment.as_ref()))
     };
     let check = h.check_id.as_deref().and_then(|id| s.find_check(id));
     let clean = |t: &str, max: usize| cut(&crate::run::redact(t, secrets), max);
@@ -1310,8 +1683,7 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         HandoffKind::PullRequest => "Push the worktree's branch and open the pull request with `gh pr create`, using the ready check's report as the body.",
     }
     .to_string();
-    let env_manifest = project
-        .and_then(|p| p.environment.as_ref())
+    let env_manifest = env
         .and_then(|e| e.manifest.as_deref())
         .and_then(crate::local::confined)
         .unwrap_or("worker-compose.yaml");
@@ -1340,7 +1712,7 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         .map(|w| other_compose_files(Path::new(&w.path), &manifest))
         .unwrap_or_default();
     let pushes_directly = project.is_some_and(|p| {
-        p.environment.as_ref().is_some_and(|e| {
+        env.is_some_and(|e| {
             crate::project::tracks_other_branch(p.default_branch.as_deref(), &e.branch)
         })
     });
@@ -1348,14 +1720,8 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
     let next_step = if pushes_directly && h.kind != HandoffKind::Import {
         format!(
             "Fix what is yours in the worktree, commit, push only your fix branch, run `iii-cloud::check {{}}`, then `iii-cloud::check {{run: true}}` until it is ready. No pull request: {} deploys from its own branch, and the person's deploy on the page pushes the checked commit to it. Never push {} yourself. Your job ends there: tell the person to review and deploy on the page; you never deploy.",
-            project
-                .and_then(|p| p.environment.as_ref())
-                .map(|e| e.name.as_str())
-                .unwrap_or("the environment"),
-            project
-                .and_then(|p| p.environment.as_ref())
-                .map(|e| e.branch.as_str())
-                .unwrap_or("its branch"),
+            env.map(|e| e.name.as_str()).unwrap_or("the environment"),
+            env.map(|e| e.branch.as_str()).unwrap_or("its branch"),
         )
     } else {
         next_step
@@ -1385,10 +1751,7 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
     let next_step = if manifest == env_manifest {
         format!("{next_step} Only {manifest} is checked and deployed.")
     } else {
-        let env = project
-            .and_then(|p| p.environment.as_ref())
-            .map(|e| e.name.as_str())
-            .unwrap_or("the environment");
+        let env = env.map(|e| e.name.as_str()).unwrap_or("the environment");
         format!(
             "{next_step} Only {manifest} is checked and deployed: your checks on this hand-off use it, and {env} switches from {env_manifest} to it when the person confirms the deploy. Never change the environment's compose file yourself."
         )
@@ -1418,7 +1781,7 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
                 .as_ref()
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| p.repository.clone());
-            match &p.environment {
+            match env {
                 Some(e) => format!("{name} · {}", e.name),
                 None => name,
             }
@@ -1428,8 +1791,58 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         check_id: check.map(|c| c.id.clone()),
         commit: check.map(|c| c.commit.clone()),
         agent_problems: problems(Owner::Agent),
-        person_problems: problems(Owner::Person),
+        person_problems: {
+            let mut list = problems(Owner::Person);
+            // A failed run that only the person can settle (Docker, a port) is theirs too.
+            if let Some(run) = own_run(s, h).filter(|r| r.status == RunStatus::Failed) {
+                let (code, line) = run_failure_of(run);
+                if run_code_owner(&code) == RunOwner::Person {
+                    list.push(BriefProblem {
+                        id: format!("run:{}", run.id),
+                        code,
+                        owner: Owner::Person,
+                        severity: Severity::Block,
+                        title: cut(&crate::run::redact(&line, secrets), 160),
+                        file: None,
+                        line: None,
+                        detail: None,
+                        fix: None,
+                    });
+                }
+            }
+            list
+        },
         deploy,
         next_step,
     }
+}
+
+/// `iii-cloud::handoff::brief`: the brief alone, with the failed run's reason
+/// when the newest run of the hand-off's environment failed.
+pub async fn brief_for(ctx: &Arc<Ctx>, request: HandoffBriefRequest) -> Res<HandoffBriefResponse> {
+    let secrets = env_values(ctx);
+    ctx.store
+        .read(|s| {
+            let h = s.handoffs.iter().find(|h| h.is(&request.handoff_id))?;
+            // Only this hand-off's own run, on its newest commit.
+            let run = own_run(s, h).filter(|r| r.status == RunStatus::Failed);
+            let run_failure = run.and_then(|r| {
+                let e = r.error.as_ref()?;
+                let skip = r.log_tail.len().saturating_sub(RUN_LOG_LINES);
+                Some(RunFailure {
+                    stage: e.stage,
+                    code: e.code.clone(),
+                    message: cut(&crate::run::redact(&e.message, &secrets), 400),
+                    log_tail: r.log_tail[skip..]
+                        .iter()
+                        .map(|l| cut(&crate::run::redact(l, &secrets), 400))
+                        .collect(),
+                })
+            });
+            Some(HandoffBriefResponse {
+                brief: brief(s, h, &secrets),
+                run_failure,
+            })
+        })
+        .ok_or_else(|| CloudError::invalid("no such hand-off"))
 }

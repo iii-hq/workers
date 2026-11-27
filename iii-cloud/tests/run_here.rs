@@ -105,11 +105,6 @@ async fn run_here_passes_all_seven_stages_on_the_fixture_app() {
         });
     });
     start(&h.ctx, "chk".into()).await.unwrap();
-    // A second run at once is refused.
-    assert_eq!(
-        start(&h.ctx, "chk".into()).await.unwrap_err().code,
-        "RUN_BUSY"
-    );
     let deadline = Instant::now() + Duration::from_secs(600);
     let run = loop {
         let run = h
@@ -161,7 +156,7 @@ async fn run_here_passes_all_seven_stages_on_the_fixture_app() {
     assert!(!ws.join(".iii/compose/iii-cloud-run").exists());
     assert!(!containers().contains("iii-cloud-run-"));
     assert_eq!(listeners(), before, "no change on 49134 or 3111");
-    assert!(h.ctx.busy.lock().unwrap().is_empty() || !h.ctx.busy.lock().unwrap().contains("run"));
+    assert!(h.ctx.runs.lock().unwrap().is_empty());
 }
 
 /// The default local Postgres image carries pgvector, and the run gives it the

@@ -2,7 +2,7 @@
 //! the platform (vault and events), the HTTP client and the in-memory
 //! credential.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use std::time::Duration;
 use iii_sdk::{CallAction, CallRequest, IIIClient};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
@@ -140,6 +141,21 @@ pub struct Credential {
     pub token: String,
 }
 
+/// The run a workspace has going: what it is of, how to stop it, how to wait for its end.
+pub struct ActiveRun {
+    pub id: String,
+    pub env_id: String,
+    /// The check's reuse key (HEAD, compose file, engine, environment, settings,
+    /// values, Postgres image). A call attaches only to a run with the same
+    /// environment and a key that is there and equal.
+    pub key: Option<String>,
+    /// The checks that attached to this run: the run publishes to them too.
+    pub followers: Arc<Mutex<Vec<String>>>,
+    pub cancel: watch::Sender<bool>,
+    /// Turns true once the run's teardown is over.
+    pub done: watch::Receiver<bool>,
+}
+
 pub struct Ctx {
     pub cfg: ConfigCell,
     pub store: Arc<Store>,
@@ -150,6 +166,10 @@ pub struct Ctx {
     pub tick: Option<Duration>,
     /// Ids of the runs and deploys a task follows now.
     pub busy: Mutex<HashSet<String>>,
+    /// The local run of each workspace (its path): one at a time per workspace.
+    pub runs: Mutex<HashMap<String, ActiveRun>>,
+    /// Ports the runs picked, held from the pick to the run's teardown.
+    pub ports: Mutex<HashSet<u16>>,
     pub poller: Mutex<Option<JoinHandle<()>>>,
     /// The background poll of deployments made elsewhere.
     pub deploys_task: Mutex<Option<JoinHandle<()>>>,
@@ -182,6 +202,8 @@ impl Ctx {
             cred: Mutex::new(None),
             tick,
             busy: Mutex::new(HashSet::new()),
+            runs: Mutex::new(HashMap::new()),
+            ports: Mutex::new(HashSet::new()),
             poller: Mutex::new(None),
             deploys_task: Mutex::new(None),
             known_secrets: Mutex::new(Vec::new()),

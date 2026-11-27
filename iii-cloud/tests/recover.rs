@@ -56,6 +56,8 @@ async fn a_restart_fails_the_running_run_and_cleans_up_its_files() {
         not_covered: vec![],
         log_tail: vec![],
         error: None,
+        reused: false,
+        waiting_on: None,
     };
     let (part, _) =
         iii_cloud::check::plan_part(&serde_json::json!({"can_deploy": true, "plan": {}}));
@@ -97,4 +99,73 @@ async fn a_restart_fails_the_running_run_and_cleans_up_its_files() {
     assert!(!app.join(".iii/compose/iii-cloud-run").exists());
     assert!(!run_dir.join("run.json").exists());
     assert!(h.fake.kinds().contains(&"check:true".to_string()));
+    // Whoever waits for the run hears that it ended.
+    let events = h.fake.events.lock().unwrap().clone();
+    assert!(
+        events.iter().any(|e| e.kind == EventKind::Run
+            && e.id == "r1"
+            && e.terminal
+            && e.record["error"]["code"] == "WORKER_RESTARTED"),
+        "{events:?}"
+    );
+}
+
+/// A stage command runs in its own process group, so the worker's death does
+/// not reach it: `recover` kills the group `run.json` names.
+#[tokio::test]
+async fn a_restart_kills_the_process_group_of_the_stage_that_was_running() {
+    use std::os::unix::process::CommandExt;
+    let h = harness("http://cloud.test", Arc::new(Fake::default()));
+    let cfg = h.ctx.config().await;
+    // Ended whatever the assertions do: the guard kills that exact child.
+    struct Stage(std::process::Child);
+    impl Drop for Stage {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut stage = Stage(
+        std::process::Command::new("sleep")
+            .arg("20")
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let run_dir = cfg.data_path().join("runs/r2");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let pid = stage.0.id();
+    let saved = |start: Option<String>| {
+        serde_json::json!({"containers": [], "copy": null, "iii_bin": "true", "stage_group": pid, "stage_start": start}).to_string()
+    };
+    // A pid that shows another start time is another process now (a reboot reused it):
+    // it is left alone and only the record is dropped.
+    std::fs::write(
+        run_dir.join("run.json"),
+        saved(Some("Thu Jan  1 00:00:00 1970".into())),
+    )
+    .unwrap();
+    recover(&h.ctx).await;
+    assert!(
+        stage.0.try_wait().unwrap().is_none(),
+        "a live group of another start time was killed"
+    );
+    assert!(!run_dir.join("run.json").exists());
+    // The same process (the start time it shows): its group goes.
+    std::fs::write(
+        run_dir.join("run.json"),
+        saved(iii_cloud::run::proc_start(pid)),
+    )
+    .unwrap();
+    recover(&h.ctx).await;
+    // Killed by SIGKILL: `wait` returns at once, with no exit code.
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || stage.0.wait().unwrap()),
+    )
+    .await
+    .expect("the stage was left running")
+    .unwrap();
+    assert!(status.code().is_none());
+    assert!(!run_dir.join("run.json").exists());
 }

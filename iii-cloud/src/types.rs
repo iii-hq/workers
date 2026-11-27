@@ -200,6 +200,10 @@ pub struct CheckRequest {
     /// tracks or that is not an `iii-cloud/` fix branch.
     #[serde(default)]
     pub push: Option<bool>,
+    /// With `run`: run again even when a passed run of the same commit, compose
+    /// file, engine and run environment exists.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 /// `iii-cloud::check::get` input.
@@ -404,7 +408,8 @@ pub struct AgentState {
 /// `iii-cloud::handoff::progress` input: the agent says what it starts on.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct HandoffProgressRequest {
-    /// The hand-off this progress is for (default: the selected environment's open one).
+    /// The hand-off this progress is for, by its id or the 8 characters of the
+    /// marker (default: the selected environment's open one).
     #[serde(default)]
     pub handoff_id: Option<String>,
     /// Problem ids, or codes (a code stands for every open problem of that code).
@@ -458,10 +463,63 @@ pub struct Handoff {
     /// did not come in), from `handoff::worktree`.
     #[serde(default)]
     pub worktree_note: Option<String>,
+    /// "Continue" messages the worker posted in the chat (at most 3).
+    #[serde(default)]
+    pub continues: u32,
+    /// When the worker last tried a "continue" (sent or refused): until the
+    /// session works again, or a stall passes, it tries no other.
+    #[serde(default)]
+    pub continue_at_ms: Option<i64>,
+    /// The chat refused the last "continue" (so the state after a restart is the same).
+    #[serde(default)]
+    pub continue_refused: bool,
+    /// Fast checks that failed in a row (reset by one that worked).
+    #[serde(default)]
+    pub check_failures: u32,
+    /// The run the "it is waiting for a container" continue went out for: told once
+    /// per run, never counted against the cap, and judged no more while it goes on.
+    #[serde(default)]
+    pub waited_run: Option<String>,
+}
+
+impl Handoff {
+    /// `id` is this hand-off's id, or the 8 characters its marker line carries.
+    pub fn is(&self, id: &str) -> bool {
+        self.id == id || (id.len() == 8 && self.id.starts_with(id))
+    }
+}
+
+/// `iii-cloud::handoff::brief` input.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct HandoffBriefRequest {
+    /// The hand-off's id, or the 8 characters of its marker line.
+    pub handoff_id: String,
+}
+
+/// Why the hand-off's latest local run failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunFailure {
+    pub stage: StageName,
+    pub code: String,
+    pub message: String,
+    /// The run's last lines, oldest first, redacted.
+    pub log_tail: Vec<String>,
+}
+
+/// `iii-cloud::handoff::brief` output: the brief, and the failed run when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffBriefResponse {
+    #[serde(flatten)]
+    pub brief: HandoffBrief,
+    pub run_failure: Option<RunFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BriefProblem {
+    pub id: String,
+    pub code: String,
+    pub owner: Owner,
+    pub severity: Severity,
     pub title: String,
     pub file: Option<String>,
     pub line: Option<u32>,
@@ -1059,6 +1117,21 @@ pub struct Run {
     pub not_covered: Vec<String>,
     pub log_tail: Vec<String>,
     pub error: Option<RunError>,
+    /// A passed run of an earlier check answered this one: nothing ran again.
+    #[serde(default)]
+    pub reused: bool,
+    /// The workers stage has gone a minute with no new worker: who it waits for.
+    /// The run is still `running`; null otherwise.
+    #[serde(default)]
+    pub waiting_on: Option<WaitingOn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WaitingOn {
+    /// The containers that have not connected.
+    pub containers: Vec<String>,
+    /// When the wait was noticed (RFC 3339).
+    pub since: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1350,6 +1423,8 @@ pub struct WorkerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Status {
     pub worker: WorkerInfo,
+    /// The worker's `auto_fix` setting: a person's check hands the agent its problems.
+    pub auto_fix: bool,
     pub connection: Connection,
     pub project: Option<Project>,
     /// The selected environment's latest check.

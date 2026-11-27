@@ -1533,3 +1533,161 @@ async fn a_bring_that_fails_half_way_leaves_the_worktree_as_it_was() {
     assert_eq!(files, vec!["README.md", "a.txt", "z.txt"]);
     assert_eq!(git(&ws, &["status", "--porcelain"]), "");
 }
+
+/// A commit pushed to another branch, from another clone, is pushed: the check
+/// fetches only the environment branch, so `pushed` looks once more at every branch.
+#[tokio::test]
+async fn a_commit_on_another_branch_pushed_from_another_clone_is_pushed() {
+    let r = repo();
+    let other = r.root.path().join("other-clone");
+    git(
+        r.root.path(),
+        &["clone", r.origin.to_str().unwrap(), other.to_str().unwrap()],
+    );
+    git(&other, &["checkout", "-b", "feature"]);
+    git(&other, &["commit", "--allow-empty", "-m", "elsewhere"]);
+    git(&other, &["push", "origin", "feature"]);
+    let sha = git(&other, &["rev-parse", "HEAD"]);
+    // The checkout has the commit (fetched by id, as the check does) and no ref for it.
+    git(&r.checkout, &["fetch", "origin", &sha]);
+    assert!(
+        git(&r.checkout, &["branch", "-r", "--contains", &sha]).is_empty(),
+        "no tracking ref has it yet"
+    );
+    assert!(pushed(&r.checkout, &sha).await);
+    // And one that is on no branch of the remote is still not pushed.
+    git(
+        &r.checkout,
+        &["commit", "--allow-empty", "-m", "local only"],
+    );
+    let local = git(&r.checkout, &["rev-parse", "HEAD"]);
+    assert!(!pushed(&r.checkout, &local).await);
+}
+
+/// `use` is all or nothing for the worktree: a failure after the new source came in puts it back.
+#[tokio::test]
+async fn a_use_that_fails_after_taking_the_new_source_leaves_the_worktree_where_it_was() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    staging(&server).await;
+    feature(&r);
+    old_commit(&r.checkout, "one.txt", "mine");
+    let with = |source: &str, bring: bool| UseRequest {
+        source: Some(source.into()),
+        ..from_checkout(&r.checkout, ENV2, bring)
+    };
+    let w = use_project(&h.ctx, with("main", false))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    let ws = std::path::PathBuf::from(&w.path);
+    let (head, branch) = (
+        git(&ws, &["rev-parse", "HEAD"]),
+        git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]),
+    );
+    let stored = h.ctx.store.read(|s| s.project.clone());
+    // The commit of the brought files fails (a pre-commit hook, as a missing git identity would).
+    let hooks = std::path::PathBuf::from(git(&r.checkout, &["rev-parse", "--git-common-dir"]))
+        .join("hooks");
+    let hooks = if hooks.is_absolute() {
+        hooks
+    } else {
+        r.checkout.join(hooks)
+    };
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    origin_branch(&r, "feature-x", "x.txt");
+    move_main(&r, "m.txt", "m");
+    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
+    let err = use_project(&h.ctx, with("origin/feature-x", true))
+        .await
+        .unwrap_err();
+    assert!(
+        !err.message.contains("could not be put back"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "HEAD"]),
+        head,
+        "the commit is the old source's"
+    );
+    assert_eq!(git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]), branch);
+    assert!(!ws.join("new.txt").exists() && !ws.join("x.txt").exists());
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+    let after = h.ctx.store.read(|s| s.project.clone());
+    assert_eq!(
+        after
+            .as_ref()
+            .and_then(|p| p.workspace.as_ref())
+            .map(|w| (&w.source, &w.from_head)),
+        stored
+            .as_ref()
+            .and_then(|p| p.workspace.as_ref())
+            .map(|w| (&w.source, &w.from_head))
+    );
+    // Without the hook the same use goes through.
+    std::fs::remove_file(&hook).unwrap();
+    let w = use_project(&h.ctx, with("origin/feature-x", true))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
+    assert!(ws.join("new.txt").exists());
+}
+
+/// The workspace's source commit is part of what a check was made for, so a branch
+/// switched in the checkout is seen with no name given; the ordinary flows are not refused.
+#[tokio::test]
+async fn a_check_is_for_the_source_commit_and_ordinary_flows_keep_it() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    staging(&server).await;
+    feature(&r);
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    let ws = std::path::PathBuf::from(&w.path);
+    let mut c = a_check(ENV2, &git(&ws, &["rev-parse", "HEAD"]));
+    c.id = "c1".into();
+    h.ctx.store.update(|s| s.put_check(c));
+    let fine = |h: &support::Harness| h.ctx.store.read(|s| s.source_unchanged("c1"));
+    assert!(fine(&h));
+    // The agent commits on the fix branch: the source's commit does not move.
+    old_commit(&ws, "agent.txt", "agent work");
+    assert!(fine(&h));
+    // A plain `use` again keeps what the worktree took.
+    use_project(
+        &h.ctx,
+        UseRequest {
+            environment_id: Some(ENV2.into()),
+            ..use_req(&r.checkout, false)
+        },
+    )
+    .await
+    .unwrap();
+    assert!(fine(&h));
+    // The same branch taken again with the same tip: unchanged.
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap();
+    assert!(fine(&h));
+    // The person switches the checkout to another branch and `use`s it: refused.
+    git(&r.checkout, &["checkout", "-q", "-b", "feat-b"]);
+    old_commit(&r.checkout, "b.txt", "b");
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap();
+    assert!(!fine(&h));
+}

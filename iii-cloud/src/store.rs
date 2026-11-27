@@ -30,9 +30,29 @@ pub struct StoredChoice {
     pub choice: OverrideChoice,
 }
 
+/// What the workspace was on when a check was stored: the source branch or ref
+/// and the environment's compose file. A deploy of the check is refused when
+/// they are not the same any more (`SOURCE_CHANGED`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckedFor {
+    pub source: Option<String>,
+    /// The commit the source pointed at when the workspace took it (a branch
+    /// switched in the person's checkout changes it with no name given).
+    #[serde(default)]
+    pub source_sha: Option<String>,
+    /// The source above was read from the selected workspace. A check made while
+    /// another environment was selected has none: the source half does not apply.
+    #[serde(default)]
+    pub workspace: bool,
+    pub compose: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
+    /// `CheckedFor` by check id (kept with the checks). A check with none (made
+    /// before this was recorded) is never refused for it.
+    pub check_sources: std::collections::BTreeMap<String, CheckedFor>,
     pub merges: Vec<PendingMerge>,
     /// Ids of the deployments this worker made or adopted from its own merge.
     pub worker_deploys: Vec<String>,
@@ -78,6 +98,10 @@ pub struct State {
     pub check: Option<Check>,
     /// Earlier checks, newest first, at most 20 (a deploy points at one).
     pub checks: Vec<Check>,
+    /// What each run was made from (a hash of the commit, compose file, engine
+    /// and run environment), by run id: a passed run with the same key is reused.
+    /// Only runs some kept check holds.
+    pub run_keys: std::collections::BTreeMap<String, String>,
     pub secrets: Vec<SecretRequest>,
     pub variables: Vec<VariableRow>,
     pub pr: Option<PullRequest>,
@@ -96,6 +120,22 @@ pub struct State {
 const MAX_CHECKS: usize = 20;
 const MAX_DEPLOYS: usize = 20;
 const MAX_RECENT_PROJECTS: usize = 8;
+
+/// Not stopped, and not a finished one that has been quiet for 30 minutes (retired).
+fn handoff_going(h: &Handoff) -> bool {
+    if h.agent.state == AgentPhase::Stopped {
+        return false;
+    }
+    let quiet = h
+        .agent
+        .last_activity_at
+        .as_deref()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(h.asked_at_ms);
+    h.agent.state != AgentPhase::Done
+        || chrono::Utc::now().timestamp_millis() - quiet <= 30 * 60 * 1000
+}
 
 impl State {
     pub fn find_check(&self, id: &str) -> Option<&Check> {
@@ -116,11 +156,19 @@ impl State {
     pub fn put_check_for(&mut self, check: Check, latest: bool) {
         self.checks.retain(|c| c.id != check.id);
         self.checks.insert(0, check.clone());
+        // Recorded once, when the check is first kept: a later update of its run is not a new source.
+        if let Some(now) = self.checked_for_now(&check.environment_id) {
+            self.check_sources.entry(check.id.clone()).or_insert(now);
+        }
         let referenced = |s: &State, c: &Check| {
             s.merges.iter().any(|m| m.check_id == c.id)
                 || s.handoffs
                     .iter()
                     .any(|h| h.check_id.as_deref() == Some(c.id.as_str()))
+                // The checks of a hand-off that is still going: its agent's passed run is among them.
+                || s.handoffs.iter().any(|h| {
+                    c.handoff_id.as_deref() == Some(h.id.as_str()) && handoff_going(h)
+                })
                 || s.pr.as_ref().is_some_and(|p| p.head_sha == c.commit)
                 || s.deploys.iter().any(|d| d.commit.sha == c.commit)
         };
@@ -133,9 +181,48 @@ impl State {
                 kept <= MAX_CHECKS || referenced(self, c)
             })
             .collect();
+        let kept: std::collections::BTreeSet<&str> =
+            self.checks.iter().map(|c| c.id.as_str()).collect();
+        self.check_sources
+            .retain(|id, _| kept.contains(id.as_str()));
         if latest {
             self.check = Some(check);
         }
+    }
+
+    /// What the selected workspace is on now, when it is of environment `env_id`:
+    /// `check` reads it when it starts, so a `use` that lands while it runs is not its source.
+    pub fn checked_for_now(&self, env_id: &str) -> Option<CheckedFor> {
+        let p = self.project.as_ref()?;
+        let e = p.environment.as_ref().filter(|e| e.id == env_id)?;
+        let w = p.workspace.as_ref();
+        Some(CheckedFor {
+            source: w.and_then(|w| w.source.clone()),
+            source_sha: w.and_then(|w| w.source_sha.clone()),
+            workspace: true,
+            compose: e.manifest.clone(),
+        })
+    }
+
+    /// Whether the workspace is on what `check_id` was made for. A check with
+    /// no record (or of another environment than the selected one) passes.
+    pub fn source_unchanged(&self, check_id: &str) -> bool {
+        let (Some(rec), Some(p)) = (self.check_sources.get(check_id), self.project.as_ref()) else {
+            return true;
+        };
+        let (Some(env), Some(check)) = (p.environment.as_ref(), self.find_check(check_id)) else {
+            return true;
+        };
+        if env.id != check.environment_id {
+            return true;
+        }
+        let now = self.checked_for_now(&env.id);
+        let Some(now) = now else {
+            return true;
+        };
+        // The compose file is compared in `deploy`, against the cloud's current one:
+        // this cache is only as new as the last refresh.
+        !rec.workspace || (now.source == rec.source && now.source_sha == rec.source_sha)
     }
 
     /// Put a used project first; one entry per folder and cloud project.
@@ -144,6 +231,12 @@ impl State {
             .retain(|r| !(r.path == recent.path && r.cloud_project_id == recent.cloud_project_id));
         self.recent_projects.insert(0, recent);
         self.recent_projects.truncate(MAX_RECENT_PROJECTS);
+    }
+
+    /// A deployment made in the console: a manual one this worker did not make
+    /// or adopt (a teammate's push deployment is not).
+    pub fn from_console(&self, deploy: &Deploy) -> bool {
+        deploy.kind == "manual" && !self.worker_deploys.contains(&deploy.id)
     }
 
     pub fn put_deploy(&mut self, deploy: Deploy) {

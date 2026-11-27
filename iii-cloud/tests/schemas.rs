@@ -46,6 +46,7 @@ fn catalog_lists_the_public_ids_in_registration_order() {
             "iii-cloud::handoff",
             "iii-cloud::handoff::stop",
             "iii-cloud::handoff::progress",
+            "iii-cloud::handoff::brief",
             "iii-cloud::handoff::worktree",
             "iii-cloud::values",
             "iii-cloud::values::save",

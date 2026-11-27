@@ -20,3 +20,6 @@ run_timeout_s: 900
 
 # Records and run logs, relative to III_COMPOSE_DIR.
 data_dir: data/iii-cloud
+
+# A check the person starts hands the agent the problems that are its to fix.
+auto_fix: true

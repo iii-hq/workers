@@ -12,6 +12,15 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn ready(server: &MockServer, plan_status: u16) -> (Harness, Repo, std::path::PathBuf) {
+    ready_with(server, plan_status, std::time::Duration::ZERO).await
+}
+
+/// `ready`, with the cloud answering the plan after `plan_delay`.
+async fn ready_with(
+    server: &MockServer,
+    plan_status: u16,
+    plan_delay: std::time::Duration,
+) -> (Harness, Repo, std::path::PathBuf) {
     let repo = repo();
     let h = connected(server, "worker-compose.yaml").await;
     Mock::given(method("GET"))
@@ -29,7 +38,11 @@ async fn ready(server: &MockServer, plan_status: u16) -> (Harness, Repo, std::pa
     };
     Mock::given(method("GET"))
         .and(path_regex(r"/plan$"))
-        .respond_with(ResponseTemplate::new(plan_status).set_body_json(body))
+        .respond_with(
+            ResponseTemplate::new(plan_status)
+                .set_body_json(body)
+                .set_delay(plan_delay),
+        )
         .mount(server)
         .await;
     let p = use_project(
@@ -210,6 +223,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -224,6 +238,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -274,6 +289,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -305,6 +321,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             run: None,
             manifest: None,
             push: None,
+            force: None,
         },
     )
     .await
@@ -890,6 +907,8 @@ async fn a_skipped_name_is_no_local_problem_and_the_check_can_be_ready_until_und
                 not_covered: iii_cloud::check::default_not_covered(),
                 log_tail: vec![],
                 error: None,
+                reused: false,
+                waiting_on: None,
             }),
             &c.commit,
         )
@@ -1001,4 +1020,480 @@ async fn a_skipped_cloud_warning_turns_to_info_until_undone_and_other_codes_are_
         .await
         .unwrap_err();
     assert_eq!(err.code, "ENVIRONMENT_CHANGED");
+}
+
+/// Every `git fetch` and `ls-remote` of `repo` goes through its upload-pack:
+/// a script that logs one line per call counts the GitHub round trips.
+fn count_round_trips(repo: &Repo) -> std::path::PathBuf {
+    let log = repo.root.path().join("trips.log");
+    let script = repo.root.path().join("count-upload-pack.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho x >> {}\nexec git upload-pack \"$@\"\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &repo.checkout,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap(),
+        ],
+    );
+    log
+}
+
+fn trips(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |t| t.lines().count())
+}
+
+#[tokio::test]
+async fn a_check_makes_one_round_trip_to_github_and_still_answers_the_three_questions() {
+    let server = MockServer::start().await;
+    let (h, repo, _ws) = ready(&server, 200).await;
+    let log = count_round_trips(&repo);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(trips(&log), 1, "one fetch of the environment's branch");
+    assert_eq!(c.plan.status, PlanStatus::Clean, "pushed");
+    assert_eq!(c.base, git(&repo.origin, &["rev-parse", "main"]));
+    assert!(
+        !codes(&c).contains(&"BASE_NOT_IN_HISTORY"),
+        "{:?}",
+        codes(&c)
+    );
+    // A commit only the cloud knows is the one case with a second fetch.
+    let before = trips(&log);
+    check(
+        &h.ctx,
+        CheckRequest {
+            commit: Some("abcdef1".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(trips(&log) - before, 2, "the branch and the commit");
+}
+
+#[tokio::test]
+async fn the_answers_after_the_one_fetch_follow_the_remote() {
+    let server = MockServer::start().await;
+    let (h, repo, ws) = ready(&server, 200).await;
+    let log = count_round_trips(&repo);
+    // Not pushed.
+    std::fs::write(ws.join("f.txt"), "f").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-m", "local"]);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert_eq!(c.plan.status, PlanStatus::NotPushed);
+    assert!(!codes(&c).contains(&"BASE_NOT_IN_HISTORY"));
+    // The branch moved on the remote: the new head is the base, and not an ancestor.
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", repo.origin.to_str().unwrap(), "c"],
+    );
+    let other = t.path().join("c");
+    std::fs::write(other.join("x"), "x").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "-m", "moved"]);
+    git(&other, &["push", "-q", "origin", "main"]);
+    let moved = git(&other, &["rev-parse", "HEAD"]);
+    let before = trips(&log);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    // The branch's fetch, and the one more look at every branch for the unpushed commit.
+    assert_eq!(trips(&log) - before, 2);
+    assert_eq!(c.base, moved);
+    assert!(codes(&c).contains(&"BASE_NOT_IN_HISTORY"));
+}
+
+/// A key-connected context whose `iii` reports the cloud's engine and whose
+/// run ends quickly; returns the commit's workspace.
+async fn with_fast_runs(h: &Harness) {
+    let script = h.dir.path().join("iii");
+    std::fs::write(&script, "#!/bin/sh\necho 'iii 0.27.0'\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = h.ctx.config().await;
+    *h.ctx.cfg.write().await = std::sync::Arc::new(iii_cloud::config::Config {
+        iii_bin: script.to_string_lossy().into(),
+        data_dir: h.dir.path().join("data").to_string_lossy().into(),
+        run_timeout_s: 30,
+        ..(*cfg).clone()
+    });
+}
+
+fn running(run: Option<&Run>) -> Run {
+    run.cloned().expect("the check carries a run")
+}
+
+/// The stored run ended; make it a pass, as a real engine would have.
+fn pass_stored_runs(h: &Harness) {
+    h.ctx.store.update(|s| {
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            if let Some(r) = c.run.as_mut() {
+                r.status = RunStatus::Passed;
+                r.error = None;
+            }
+        }
+    });
+}
+
+fn run_req() -> CheckRequest {
+    CheckRequest {
+        run: Some(true),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_passed_run_is_reused_until_something_it_was_made_from_changes() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    with_fast_runs(&h).await;
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let first_run = running(first.run.as_ref());
+    assert!(!first_run.reused);
+    assert_ne!(first_run.status, RunStatus::Passed, "the fake engine fails");
+    // A failed run is never reused.
+    let again = check(&h.ctx, run_req()).await.unwrap();
+    assert_ne!(running(again.run.as_ref()).id, first_run.id);
+    assert!(!running(again.run.as_ref()).reused);
+    // Once a run passed, the same commit, file and environment answer with it.
+    pass_stored_runs(&h);
+    let passed = running(again.run.as_ref()).id;
+    let reused = check(&h.ctx, run_req()).await.unwrap();
+    let r = running(reused.run.as_ref());
+    assert!(r.reused && r.id == passed && r.status == RunStatus::Passed);
+    assert_eq!(r.check_id, reused.id);
+    assert_eq!(r.commit, reused.commit);
+    // The reuse itself survives a second call.
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
+    // `force` runs again.
+    let forced = check(
+        &h.ctx,
+        CheckRequest {
+            force: Some(true),
+            ..run_req()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!running(forced.run.as_ref()).reused);
+    assert_ne!(running(forced.run.as_ref()).id, passed);
+    pass_stored_runs(&h);
+    // A changed env value runs again; the value is nowhere in the store.
+    std::fs::write(ws.join(".env"), "A=one-value-0042\n").unwrap();
+    let env1 = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(env1.run.as_ref()).reused);
+    pass_stored_runs(&h);
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
+    std::fs::write(ws.join(".env"), "A=other-value-0043\n").unwrap();
+    let env2 = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(env2.run.as_ref()).reused);
+    let state = h.ctx.store.read(|s| serde_json::to_string(s).unwrap());
+    assert!(!state.contains("one-value-0042") && !state.contains("other-value-0043"));
+    pass_stored_runs(&h);
+    // A compose file changed and not committed (the commit stays the same) runs again.
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "containers: {}\n# changed\n",
+    )
+    .unwrap();
+    let compose = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(compose.run.as_ref()).reused);
+    git(&ws, &["checkout", "worker-compose.yaml"]);
+    pass_stored_runs(&h);
+    assert!(running(check(&h.ctx, run_req()).await.unwrap().run.as_ref()).reused);
+    // Another commit with the same compose file runs again.
+    std::fs::write(ws.join("other.txt"), "o").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "other"]);
+    let other = check(&h.ctx, run_req()).await.unwrap();
+    assert!(!running(other.run.as_ref()).reused);
+}
+
+/// Each part of the reuse key moves it: the Postgres image, the engine, the
+/// environment, its settings, and the compose file's content with the commit unchanged.
+#[tokio::test]
+async fn each_part_of_the_reuse_key_changes_it() {
+    use iii_cloud::check::run_key;
+    use iii_cloud::local::Manifest;
+    let r = repo();
+    let ws = &r.checkout;
+    let skipped = std::collections::BTreeSet::new();
+    let manifest = || Manifest::load(ws, Some("worker-compose.yaml")).unwrap();
+    let key = |image: &'static str,
+               engine: &'static str,
+               env: &'static str,
+               settings: serde_json::Value| {
+        let m = manifest();
+        let skipped = skipped.clone();
+        async move {
+            run_key(
+                image,
+                ws,
+                Some(&m),
+                Some(engine),
+                env,
+                &settings,
+                &[],
+                &skipped,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let base = key("pg:16", "0.27.0", "env-a", json!({})).await;
+    assert_eq!(base, key("pg:16", "0.27.0", "env-a", json!({})).await);
+    assert_ne!(
+        base,
+        key("pg:17", "0.27.0", "env-a", json!({})).await,
+        "image"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.1", "env-a", json!({})).await,
+        "engine"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-b", json!({})).await,
+        "environment"
+    );
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-a", json!({"build_command": "x"})).await,
+        "settings"
+    );
+    // The compose file changed and not committed: the same HEAD, another key.
+    std::fs::write(ws.join("worker-compose.yaml"), "containers: {}\n# edited\n").unwrap();
+    assert_ne!(
+        base,
+        key("pg:16", "0.27.0", "env-a", json!({})).await,
+        "compose file"
+    );
+}
+
+/// An `iii` whose run never gets its worker: it says who it waits on after the window.
+async fn with_waiting_runs(h: &Harness, ws: &std::path::Path) {
+    waiting_runs_stopping_as(h, ws, "exec sleep 20").await
+}
+
+/// The same, with the compose process's own body (a slow stop, say).
+async fn waiting_runs_stopping_as(h: &Harness, ws: &std::path::Path, compose: &str) {
+    let script = h.dir.path().join("iii-waiting");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) {compose};;\n  call) echo '{{\"workers\":[]}}';;\nesac\n"),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = h.ctx.config().await;
+    *h.ctx.cfg.write().await = std::sync::Arc::new(iii_cloud::config::Config {
+        iii_bin: script.to_string_lossy().into(),
+        data_dir: h.dir.path().join("data").to_string_lossy().into(),
+        run_timeout_s: 30,
+        ..(*cfg).clone()
+    });
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        "startup_timeout: 300s\ncontainers:\n  alpha:\n    worker: package://foo\n",
+    )
+    .unwrap();
+    git(ws, &["commit", "-qam", "a worker"]);
+    // The run's own files are excluded in a real workspace.
+    // (the worktree's `.git` may be a file: ask git where the file is)
+    let exclude = git(
+        ws,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    std::fs::create_dir_all(std::path::Path::new(&exclude).parent().unwrap()).unwrap();
+    std::fs::write(exclude, "*.iii-cloud-run.*\n.iii\nconfig\n").unwrap();
+}
+
+#[tokio::test]
+async fn a_clean_workspace_attaches_to_its_run_and_a_dirty_one_never_does() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    with_waiting_runs(&h, &ws).await;
+    // Back as soon as the run says who it waits on (0.6 s under the test tick).
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let first_run = running(first.run.as_ref());
+    assert!(first_run.waiting_on.is_some(), "{first_run:?}");
+    let again = check(&h.ctx, run_req()).await.unwrap();
+    assert_eq!(
+        running(again.run.as_ref()).id,
+        first_run.id,
+        "the same key attaches"
+    );
+    // Uncommitted work: the key does not see it, so the call must not attach.
+    std::fs::write(ws.join("dirty.txt"), "x").unwrap();
+    let dirty = check(&h.ctx, run_req()).await.unwrap();
+    assert_ne!(running(dirty.run.as_ref()).id, first_run.id);
+    let old = h
+        .ctx
+        .store
+        .read(|s| s.find_check(&first.id).and_then(|c| c.run.clone()))
+        .unwrap();
+    assert_eq!(old.error.unwrap().code, "RUN_REPLACED");
+}
+
+/// The call's deadline starts with the call: a slow plan read leaves the run's wait
+/// only what is left of it (2.4 s under the test tick), not a whole new one.
+#[tokio::test]
+async fn a_slow_plan_read_takes_its_time_from_the_calls_deadline() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready_with(&server, 200, std::time::Duration::from_millis(2200)).await;
+    with_waiting_runs(&h, &ws).await;
+    // Pushed, so the cloud's plan is read (and takes its 2.2 s).
+    git(&ws, &["push", "-q", "origin", "HEAD:main"]);
+    let begun = std::time::Instant::now();
+    let c = check(&h.ctx, run_req()).await.unwrap();
+    // The run says who it waits on 0.6 s after it starts (about 2.8 s in), after the
+    // deadline: the call ends at the deadline with the run still going.
+    assert!(
+        begun.elapsed() < std::time::Duration::from_millis(2650),
+        "{:?}",
+        begun.elapsed()
+    );
+    let run = running(c.run.as_ref());
+    assert_eq!(run.status, RunStatus::Running);
+    assert!(
+        run.waiting_on.is_none(),
+        "{:?} {:?}",
+        begun.elapsed(),
+        run.waiting_on
+    );
+}
+
+/// A replaced run that is still stopping at the deadline is not this call's run: the
+/// call fails, and no reuse key is saved for the old run.
+#[tokio::test]
+async fn a_replaced_run_still_stopping_at_the_deadline_gets_no_reuse_key() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    waiting_runs_stopping_as(&h, &ws, "trap 'sleep 4; exit 0' TERM; sleep 20 & wait").await;
+    let first = check(&h.ctx, run_req()).await.unwrap();
+    let old = running(first.run.as_ref());
+    assert!(old.waiting_on.is_some());
+    let key_before = h.ctx.store.read(|s| s.run_keys.get(&old.id).cloned());
+    assert!(key_before.is_some());
+    // Another value: another key, so the old run is replaced, and it takes 4 s to stop.
+    std::fs::write(ws.join(".env"), "A=changed-value-0099\n").unwrap();
+    let err = check(&h.ctx, run_req()).await.unwrap_err();
+    assert_eq!(err.code, "RUN_TIMEOUT");
+    assert_eq!(
+        h.ctx.store.read(|s| s.run_keys.get(&old.id).cloned()),
+        key_before,
+        "the new key was saved for the old run"
+    );
+}
+
+/// A `use` that lands while a check is in flight does not make the check of the new source.
+#[tokio::test]
+async fn a_check_is_recorded_for_the_source_it_started_on() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/plan$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(600))
+                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp", "plan": {"settings": {}, "resources": [], "issues": [], "deploy_issues": []}})),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    let ctx = h.ctx.clone();
+    let running = tokio::spawn(async move { check(&ctx, CheckRequest::default()).await });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // The `use` of another source lands now.
+    h.ctx.store.update(|s| {
+        s.project
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .source = Some("feat-b".into())
+    });
+    let c = running.await.unwrap().unwrap();
+    let made_for = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .unwrap();
+    assert_eq!(made_for.source, None);
+}
+
+/// What a check is recorded for is the compose file the cloud has, not the cache.
+#[tokio::test]
+async fn a_check_records_the_cloud_s_compose_file_not_the_cached_one() {
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": "z-compose.yaml", "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let made_for = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .unwrap();
+    assert_eq!(made_for.compose.as_deref(), Some("z-compose.yaml"));
+}
+
+/// A hand-off's check made while another environment is selected still records the cloud's compose file.
+#[tokio::test]
+async fn a_hand_offs_check_of_another_environment_still_records_its_compose_file() {
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    let first = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let created = iii_cloud::handoff::create(
+        &h.ctx,
+        HandoffRequest {
+            check_id: Some(first.id.clone()),
+            kind: HandoffKind::Ready,
+            deployment_id: None,
+            text: None,
+            candidate: None,
+        },
+    )
+    .await
+    .unwrap();
+    // The page now shows another environment.
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().environment.as_mut().unwrap().id = "other-env".into();
+    });
+    let c = check(
+        &h.ctx,
+        CheckRequest {
+            handoff_id: Some(created.id),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let rec = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .expect("a record");
+    assert_eq!(rec.compose.as_deref(), Some("worker-compose.yaml"));
+    assert!(!rec.workspace);
 }

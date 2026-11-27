@@ -33,6 +33,8 @@ export type Status = {
   refreshed_at: string | null
   agent?: AgentRun | null
   handoff_brief?: HandoffBrief | null
+  /** The worker's `auto_fix` setting; absent on an older worker (read as on). */
+  auto_fix?: boolean
   /** The worktree's compose files for the app file picker; `choosable` false says why in `issue`. */
   compose_files?: ComposeFile[]
   /** Folders and cloud projects used before, newest first: never the current one, nor a folder that is gone. */
@@ -48,8 +50,6 @@ export type Status = {
   override_choices?: Record<string, OverrideChoice>
   /** The cloud warning codes the person skipped for now (`problem::skip`) in the selected environment, sorted. */
   skipped_problems?: string[]
-  /** The worker's `auto_fix`: the page hands agent-owned problems to the agent by itself. Absent: on. */
-  auto_fix?: boolean
 }
 
 /** A deploy still moving, with where it was made from. A field is null when the worker never knew it (a deploy it first saw in another session). */

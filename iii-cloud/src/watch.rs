@@ -296,7 +296,11 @@ pub fn record(ctx: &Ctx, deploy: &Deploy) {
     } else {
         summary
     };
-    ctx.emit(EventKind::Deploy, &deploy.id, terminal, summary, deploy);
+    // The event carries what the status read would say about where it came from
+    // (the stored record is compared with the cloud's, so it keeps its own value).
+    let mut event = deploy.clone();
+    event.from_console = ctx.store.read(|s| s.from_console(deploy));
+    ctx.emit(EventKind::Deploy, &deploy.id, terminal, summary, &event);
 }
 
 /// The last 20 log lines of a deployment, oldest first.

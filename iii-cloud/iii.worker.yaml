@@ -18,3 +18,4 @@ config:
   postgres_image: pgvector/pgvector:pg17
   run_timeout_s: 900
   data_dir: data/iii-cloud
+  auto_fix: true

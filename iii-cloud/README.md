@@ -84,6 +84,7 @@ merge_method: squash               # merge, squash or rebase: the gh pr merge fl
 postgres_image: pgvector/pgvector:pg17        # the local Postgres for a database resource
 run_timeout_s: 900                 # the whole run here, from install to healthcheck
 data_dir: data/iii-cloud           # records and run logs, relative to the compose directory
+auto_fix: true                     # a check the person starts hands the agent the problems that are its to fix
 ```
 
 ## Event functions

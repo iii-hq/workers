@@ -7,7 +7,7 @@
     "properties": {
       "handoff_id": {
         "default": null,
-        "description": "The hand-off this progress is for (default: the selected environment's open one).",
+        "description": "The hand-off this progress is for, by its id or the 8 characters of the marker (default: the selected environment's open one).",
         "type": [
           "string",
           "null"

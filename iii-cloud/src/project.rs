@@ -1219,6 +1219,7 @@ async fn prepare_worktree(
             (path, Start::Fresh)
         }
     };
+    let mut snapshot: Option<BeforeBring> = None;
     // Never in the person's own checkout, even when it sits on this branch.
     if let Some(head) = &from
         && !same_path(top, &path)
@@ -1227,7 +1228,11 @@ async fn prepare_worktree(
             Some(s) => s.to_string(),
             None => checkout_branch(top).await,
         };
-        take_checkout(&path, head, &label, &origin, &env.branch).await?;
+        // All or nothing: what the worktree was on before anything touches it.
+        snapshot = before_bring(&path).await.ok();
+        if let Err(e) = take_checkout(&path, head, &label, &origin, &env.branch).await {
+            return Err(put_back(&path, snapshot.as_ref(), true, e).await);
+        }
     }
     let mut not_brought = vec![];
     if bring {
@@ -1250,8 +1255,8 @@ async fn prepare_worktree(
         match brought {
             Ok(skipped) => not_brought = skipped,
             Err(e) => {
-                undo_bring(&path, &before).await;
-                return Err(e);
+                // Back to before the source was taken, when it was.
+                return Err(put_back(&path, snapshot.as_ref().or(Some(&before)), false, e).await);
             }
         }
     }
@@ -1578,6 +1583,7 @@ async fn take_checkout(
 /// commit (`git stash create` moves nothing), and its untracked files.
 struct BeforeBring {
     head: String,
+    branch: String,
     changes: Option<String>,
     /// The tracked changes could not be saved: a reset would lose them.
     unsaved: bool,
@@ -1586,6 +1592,10 @@ struct BeforeBring {
 
 async fn before_bring(wt: &Path) -> Res<BeforeBring> {
     let head = git(wt, &["rev-parse", "HEAD"]).await?.trim().to_string();
+    let branch = git(wt, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
     let dirty = !git(wt, &["status", "--porcelain", "--untracked-files=no"])
         .await?
         .trim()
@@ -1602,6 +1612,7 @@ async fn before_bring(wt: &Path) -> Res<BeforeBring> {
         nul_list(&git(wt, &["ls-files", "-z", "--others", "--exclude-standard"]).await?).collect();
     Ok(BeforeBring {
         head,
+        branch,
         unsaved: dirty && changes.is_none(),
         changes,
         untracked,
@@ -1629,6 +1640,53 @@ async fn undo_bring(wt: &Path, before: &BeforeBring) {
         clean.extend(added.iter().map(String::as_str));
         let _ = git(wt, &clean).await;
     }
+}
+
+/// Put the worktree back where `before` found it and hand `error` on. When it
+/// cannot be put back, the error says so and names the worktree.
+/// `only_if_moved`: leave it alone while HEAD and branch are where they were
+/// (a refusal before anything changed, such as an agent's own merge in progress).
+async fn put_back(
+    wt: &Path,
+    before: Option<&BeforeBring>,
+    only_if_moved: bool,
+    error: CloudError,
+) -> CloudError {
+    let Some(before) = before else {
+        return error;
+    };
+    let at = |wt: &Path| {
+        let wt = wt.to_path_buf();
+        async move {
+            (
+                git(&wt, &["rev-parse", "HEAD"]).await.ok(),
+                git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]).await.ok(),
+            )
+        }
+    };
+    let (head, branch) = at(wt).await;
+    let same = head.as_deref().map(str::trim) == Some(before.head.as_str())
+        && branch.as_deref().map(str::trim) == Some(before.branch.as_str());
+    if only_if_moved && same {
+        return error;
+    }
+    undo_bring(wt, before).await;
+    let (head, branch) = at(wt).await;
+    if head.as_deref().map(str::trim) == Some(before.head.as_str())
+        && branch.as_deref().map(str::trim) == Some(before.branch.as_str())
+    {
+        return error;
+    }
+    CloudError::new(
+        &error.code,
+        format!(
+            "{} The worktree {} could not be put back on {} ({}): look at it before using it.",
+            error.message,
+            wt.display(),
+            before.branch,
+            &before.head[..before.head.len().min(7)]
+        ),
+    )
 }
 
 /// A merge is in progress in `wt` (`MERGE_HEAD` is there).

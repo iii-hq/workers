@@ -33,6 +33,7 @@ pub const WATCH_ID: &str = "iii-cloud::watch";
 pub const HANDOFF_ID: &str = "iii-cloud::handoff";
 pub const HANDOFF_STOP_ID: &str = "iii-cloud::handoff::stop";
 pub const HANDOFF_PROGRESS_ID: &str = "iii-cloud::handoff::progress";
+pub const HANDOFF_BRIEF_ID: &str = "iii-cloud::handoff::brief";
 pub const HANDOFF_WORKTREE_ID: &str = "iii-cloud::handoff::worktree";
 pub const VALUES_ID: &str = "iii-cloud::values";
 pub const VALUES_SAVE_ID: &str = "iii-cloud::values::save";
@@ -58,6 +59,7 @@ pub const WATCH_DESC: &str = "Follow a deploy to Ready and bring back the eviden
 pub const HANDOFF_DESC: &str = "The page's own: hand work to the agent. Returns a marker for the top of the prompt; the worker finds the agent's session by it and publishes what the agent is doing as status.agent.";
 pub const HANDOFF_STOP_DESC: &str = "The page's own: stop the agent's running turn for a hand-off, with the harness's own stop. Agents never call it.";
 pub const HANDOFF_PROGRESS_DESC: &str = "Tell the person which problems you start on: call it before each group of fixes with the problem ids or codes (a code stands for every open problem of it) and a short plain note. Clears itself when those problems leave a newer check or the hand-off ends.";
+pub const HANDOFF_BRIEF_DESC: &str = "Your brief, and only it: where to work, the base, the compose file, the problems (id, code, owner, severity, title, detail, file, line, fix) split into yours and the person's, the deploy failure when there is one, the next step, and run_failure ({stage, code, message, log_tail}) when your hand-off's latest local run failed. handoff_id is the id or the 8 characters of the marker line.";
 pub const HANDOFF_WORKTREE_DESC: &str = "Your hand-off's own worktree: {path, branch, base, created, merged_from, conflict}. Work only there, never in the person's folder. A hand-off that points at the person's folder gets one now (from the environment's branch, the person's branch merged in, their changed files brought, never their secrets) and works there from then on; the page's selection does not change. handoff_id defaults to the selected environment's open hand-off.";
 pub const VALUES_DESC: &str = "The names the compose file reads (`${NAME}`, `${NAME:-}`, `${NAME:-default}` in containers) for the selected environment: whether each is set in iii cloud, secret or variable, and where its value can come from (a .env file of the person's folder, the environment's address, a copy from another environment). Names, file names and flags only: never a secret's value. manifest: another worker-compose*.yaml; from: checkout reads the person's folder.";
 pub const VALUES_SAVE_DESC: &str = "The page's own: write the values the person chose to iii cloud, one by one, and the run's .env where the compose file reads `${NAME}`. Agents never call it.";
@@ -119,6 +121,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             HANDOFF_PROGRESS_ID,
             HANDOFF_PROGRESS_DESC,
         ),
+        spec::<HandoffBriefRequest, HandoffBriefResponse>(HANDOFF_BRIEF_ID, HANDOFF_BRIEF_DESC),
         spec::<HandoffWorktreeRequest, HandoffWorktree>(HANDOFF_WORKTREE_ID, HANDOFF_WORKTREE_DESC),
         spec::<ValuesRequest, Values>(VALUES_ID, VALUES_DESC),
         spec::<ValuesSave, ValuesSaved>(VALUES_SAVE_ID, VALUES_SAVE_DESC),
@@ -327,6 +330,14 @@ pub fn register_all(iii: &IIIClient, ctx: &Arc<Ctx>) {
         HANDOFF_PROGRESS_DESC,
         false,
         |c, r: HandoffProgressRequest| async move { crate::handoff::progress(&c, r).await },
+    );
+    register(
+        iii,
+        ctx,
+        HANDOFF_BRIEF_ID,
+        HANDOFF_BRIEF_DESC,
+        false,
+        |c, r: HandoffBriefRequest| async move { crate::handoff::brief_for(&c, r).await },
     );
     register(
         iii,

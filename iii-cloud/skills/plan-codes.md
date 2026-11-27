@@ -74,7 +74,7 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `QUEUE_TOPOLOGY_IMMUTABLE` | block | fix_in_repo | agent | Edit: restore the queue names and settings the environment already has. A new topology needs a new environment: ask the person. Verify: `check` again. |
 | `STATE_ADAPTER_UNSUPPORTED` | block | fix_in_repo | agent | Edit the state worker's config: use an adapter the cloud supports (the message names them). Verify: `check` again. |
 | `LITERAL_CREDENTIAL` | block | fix_in_repo | person | Edit the file at the issue's line: replace the value with `${NAME}`, and ask for it with `iii-cloud::secret`. Tell the person to rotate the value if it was real. Verify: `check` again. |
-| `SECRET_MISSING` | block | resolve_here | person | Call `iii-cloud::values` to see them; tell the person to open Values (Setup) or 'Set values' in the check. Add the why with `iii-cloud::secret {name, description}`. Verify: `status` shows the secret as `set`. |
+| `SECRET_MISSING` | block | resolve_here | person | Call `iii-cloud::values` to see them; tell the person to open Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. Verify: `status` shows the secret as `set`. |
 | `LIMIT_EXCEEDED` | block | resolve_here | person | Person decides: a plan limit is reached. Reduce what the file asks for, or the person changes the plan in the console. Verify: `check` again. |
 | `LOCAL_CONFIG_NOT_SET` | warn | resolve_here | person | Tell the person: a worker setting has no value in the cloud. Set it in the compose file's `config`, or in the console. Verify: `check` again. |
 | `MCP_GLOBAL_MIDDLEWARE` | block | fix_in_repo | agent | Edit the `http` worker's config: remove its global middleware, which would read every MCP client's key. Use route-level middleware. Verify: `check` again. |
@@ -88,15 +88,15 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `QUEUE_WORKER_OUTDATED` | warn | fix_in_repo | agent | Edit the compose file: raise the queue worker to the version the message names, then run `iii compose build -f <manifest>` to refresh the lock. |
 | `WORKER_OUTDATED` | block | fix_in_repo | agent | Edit the compose file: raise the worker to the version the message names, then run `iii compose build -f <manifest>` to refresh the lock. |
 | `WORKER_VERSION_REFUSED` | block | fix_in_repo | agent | Edit the compose file: pick another version of the worker, then run `iii compose build -f <manifest>`. Verify: `check` again. |
-| `EMPTY_DEFAULT_VARIABLE` | warn | none | person | `${NAME:-}` defaults to empty. Call `iii-cloud::values` to see them; tell the person to open Values (Setup) or 'Set values' in the check. Add the why with `iii-cloud::secret {name, description}`. "Leave empty" is a real choice there. |
+| `EMPTY_DEFAULT_VARIABLE` | warn | none | person | `${NAME:-}` defaults to empty. Call `iii-cloud::values` to see them; tell the person to open Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. "Leave empty" is a real choice there. |
 | `COMMAND_VARIABLE_EMPTY` | warn | none | person | A `${NAME}` in a `cloud:` command is empty when it runs. Set the variable with `iii-cloud::secret`, or remove it from the command. |
 | `ENGINE_SECTION_IGNORED` | info | none | none | Info only: the cloud ignores the `engine:` section. No fix needed. |
 | `NAMESPACE_IGNORED` | info | none | none | Info only: the cloud ignores the namespace. No fix needed. |
 | `SANDBOX_ADAPTER_IGNORED` | info | none | none | Info only: the cloud ignores the sandbox adapter. No fix needed. |
-| `BUILD_FAILED` | block | fix_in_repo | agent | Read the deploy's build log, fix `cloud.build.command`, and run it here: `check {run: true}`. Verify: the build stage passes. |
-| `RELEASE_FAILED` | block | fix_in_repo | agent | Read the release log, fix `cloud.release.command` or the migration, and run it here against local Postgres: `check {run: true}`. Verify: the release stage passes. |
-| `ROUTE_OUTSIDE_HTTP_GROUP` | block | resolve_here | person | Person decides: a route is registered by a worker outside the http group. Move that worker into the group, or stop it serving routes. The cloud only routes through `package://http`: add it (pinned version) to the manifest if the app serves routes. Here the run fails this way when routes exist and no `package://http` container does. |
-| `HEALTHCHECK_FAILED` | block | fix_in_repo | agent | Fix the path in `cloud.healthcheck`, or the app so the path answers 200. Run it here: `check {run: true}`. Verify: the healthcheck stage passes. |
+| `BUILD_FAILED` | block | fix_in_repo | agent | Read the deploy's build log, fix `cloud.build.command`, and run it on this machine: `check {run: true}`. Verify: the build stage passes. |
+| `RELEASE_FAILED` | block | fix_in_repo | agent | Read the release log, fix `cloud.release.command` or the migration, and run it in the local run against local Postgres: `check {run: true}`. Verify: the release stage passes. |
+| `ROUTE_OUTSIDE_HTTP_GROUP` | block | resolve_here | person | Person decides: a route is registered by a worker outside the http group. Move that worker into the group, or stop it serving routes. The cloud only routes through `package://http`: add it (pinned version) to the manifest if the app serves routes. The local run fails this way when routes exist and no `package://http` container does. |
+| `HEALTHCHECK_FAILED` | block | fix_in_repo | agent | Fix the path in `cloud.healthcheck`, or the app so the path answers 200. Run it in the local run: `check {run: true}`. Verify: the healthcheck stage passes. |
 | `MISSING_WORKER_DIRECTORY` | block | fix_in_repo | agent | A `path://` is relative to the compose file's directory: point it at the real worker directory, version that directory in the repository, or use `package://`. Verify: the folder exists, then `check`. |
 
 ## Local codes
@@ -106,16 +106,16 @@ These come from the checks on this machine. All block, except where noted. Ready
 | Code | Owner | Fix |
 |---|---|---|
 | `LOCAL_ENGINE_VERSION` | person | Install the iii version the cloud runs (`GET /support-matrix`, field `engine`) and set `iii_bin` to it. Verify: `<iii_bin> --version` prints it. iii 0.26 also refuses the `cloud:` block. |
-| `SDK_TOO_OLD` | agent | Raise `iii-sdk` to the cloud's `minimum_sdk` or newer in the worker's manifest, refresh its lockfile, and commit both. Verify: `check` again, then `check {run: true}`. |
+| `SDK_TOO_OLD` | agent | Raise `iii-sdk` to the cloud's `minimum_sdk` or newer in the worker's manifest, refresh its lockfile, and commit both. The raise can remove APIs the app uses (in 0.26, `registerTrigger` is gone and the app crashes on its first route): after it, type-check the worker, then start its entry point once and read the first error in its output; fix each until it starts. Verify: `check` again, then `check {run: true}`. |
 | `RUNTIME_LOCK_MISSING` | person | Person decides: add the lockfile for the worker's runtime at the root directory (`pnpm-lock.yaml`, `bun.lock`, `package-lock.json`, `uv.lock`, `Cargo.lock`), or change the runtime. Verify: `check` again. |
 | `RELEASE_IN_CI` | agent | Edit the compose file: add `cloud.release` with the migration command the workflow runs, naming the worker and a timeout. Verify: `check {run: true}` passes the release stage. Remove the command from the workflow only if the person agrees. |
 | `HEALTHCHECK_MISSING` | agent | Edit the compose file: add `cloud.healthcheck` with a path that answers 200 (for example `/health`) and a timeout. Verify: `check {run: true}` passes the healthcheck stage. |
-| `LOCAL_VARIABLE_UNSET` | person | Not in the run's `.env` nor in the folder's `.env.<env>`, `.env.local`, `.env` or `.env.production` (the run here takes it from those). Call `iii-cloud::values` to see them; tell the person to open Values (Setup) or 'Set values' in the check. Add the why with `iii-cloud::secret {name, description}`. Or give it a default in the compose file (`${NAME:-default}`). Verify: `check` again. |
+| `LOCAL_VARIABLE_UNSET` | person | Not in the run's `.env` nor in the folder's `.env.<env>`, `.env.local`, `.env` or `.env.production` (the local run takes it from those). Call `iii-cloud::values` to see them; tell the person to open Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. Or give it a default in the compose file (`${NAME:-default}`). Verify: `check` again. |
 | `VARIABLE_SYNTAX_UNSUPPORTED` | agent | iii cloud reads only `${NAME}`, `${NAME:-default}` and, in `config_override`, `${NAME:default}`; `${NAME:?}`, `${NAME?}` and `${NAME-x}` reach the container as literal text. Edit the compose file: write `${NAME}` for a required value or `${NAME:-default}`. Verify: `check` again. |
-| `DATABASE_NOT_MANAGED` | agent | Add the `database` worker (package://database, `version: latest`) to the manifest and set `DATABASE_URL: ${DATABASE_PRIMARY_URL}` on the container that reads it. iii cloud creates a managed Postgres (pgvector included) when the deploy is confirmed; the run here starts a local one. Never ask the person for a database URL. |
+| `DATABASE_NOT_MANAGED` | agent | Add the `database` worker (package://database, `version: latest`) to the manifest and set `DATABASE_URL: ${DATABASE_PRIMARY_URL}` on the container that reads it. iii cloud creates a managed Postgres (pgvector included) when the deploy is confirmed; the local run starts one. Never ask the person for a database URL. |
 | `BASE_NOT_IN_HISTORY` | agent | Run `git fetch origin` and rebase on `origin/<branch>` (or merge it) in the worktree, then run the checks again. Verify: `git merge-base --is-ancestor origin/<branch> HEAD`. |
 | `UNCOMMITTED_CHANGES` | agent | Commit the worktree's changes with `git add -A && git commit` (the run's own files do not count), then check and run again. Verify: `git status --porcelain` is empty. |
-| `OLD_ATTEMPT_COMMITS` | agent | The worktree branch holds commits from an earlier try that are not on the base. Reset to `handoff_brief.base` (`git reset --hard <base sha>`) and redo the fixes. Verify: `check` again. |
+| `OLD_ATTEMPT_COMMITS` | agent | The worktree branch holds commits from an earlier try that are not on the base. Reset to `base.sha` of your brief (`git reset --hard <base sha>`) and redo the fixes. Verify: `check` again. |
 | `SIGN_IN_REQUIRED` | person | Not signed in to iii cloud, so only the checks on this machine ran. Sign in (`iii-cloud::connect`), then check again. |
 | `HTTP_WORKER_NOT_PACKAGE` | agent | A container named `http` (or whose `iii.worker.yaml` says `http`) is not `package://http`; the cloud treats it as plain code and routes nothing to it. Edit the compose file: use `package://http` with a pinned version, move the route code to a worker that registers on it. Verify: `check {run: true}` passes the routes stage. |
 | `PROJECT_DELETED` | person | The selected project was removed in iii cloud (`status.problems`). Tell the person; they choose another with `iii-cloud::project::use`. |
@@ -123,17 +123,44 @@ These come from the checks on this machine. All block, except where noted. Ready
 | `REPOSITORY_MISMATCH` | person | `project::use` refused a project that deploys another repository. Open that repository's folder, or pick a project of this one (`project.cloud_projects`). |
 | `LOCK_MISSING` | agent | Create the lock: run `iii compose build -f <manifest>` with iii 0.27 in the worktree, and commit `<manifest stem>.lock` next to the manifest. Verify: the same command with `--frozen` succeeds. |
 
-## Worker errors
+## Local run failures
 
-Besides problems, a call can fail with a code. New ones:
+A failed `check {run: true}` has `run.error {stage, code, message}` and `run.log_tail`
+(the last 40 lines of the run's log; after a compose or workers failure it also holds
+the compose output). Read the stage, then the log, then fix. The stages, in order:
+`install`, `build`, `release`, `compose_up`, `workers`, `routes`, `healthcheck`.
+The cloud table above also lists `BUILD_FAILED`, `RELEASE_FAILED`,
+`ROUTE_OUTSIDE_HTTP_GROUP` and `HEALTHCHECK_FAILED`; here they are read from the run.
+
+| Code | Owner | Fix |
+|---|---|---|
+| `INSTALL_FAILED` | agent | Stage `install`. The message says which: the compose file is missing or is not YAML; the runtime of a worker is unknown (set `cloud.runtimes`, or give the worker an `iii.worker.yaml`); the repository has no lock for the runtime (`RUNTIME_LOCK_MISSING`); or the frozen install command exited non-zero, and the last lines of `log_tail` are its error. Fix that, commit, run again. |
+| `TOOL_MISSING` | person | A program is not on PATH: the package manager of the install (message names it) or `iii_bin`. Tell the person to install it, or to set `iii_bin` in iii-cloud's config. Verify: run again. |
+| `BUILD_FAILED` | agent | Stage `build`: `cloud.build.command` exited non-zero. The build has no secrets and variables, only PATH, HOME and TMPDIR: a build that reads one fails here as in the cloud. Read the end of `log_tail`, fix the command or the code. |
+| `RELEASE_FAILED` | agent | Stage `release`: the command exited non-zero, or the local Postgres did not start. The release runs as the cloud's database user, a regular login (member of the database's owner role, never a superuser). When `log_tail` says `permission denied` or `must be superuser` (create role or extension, alter system, a database-level setting), remove that statement from the migration: pgvector is already installed. If it is really needed, it is the database administrator's: put it in ONE `harness::ask` to the person and do not work around it. |
+| `DOCKER_MISSING` | person | Docker is not installed, is not running, or could not start Postgres (the message has docker's error). Tell the person to start Docker. Verify: run again. |
+| `PORT_IN_USE` | agent | A port on this machine that the local Postgres needs is taken. Not a failure of the app: check again. |
+| `COMPOSE_FAILED` | agent | Stage `compose_up`: the run's copy of the compose file could not be written, or `iii compose` exited before any worker connected. `log_tail` has the compose output: a bad path, an image that does not build, a port, a config the engine refuses. Fix that line in the compose file. |
+| `WORKERS_NOT_READY` | agent | Stage `workers`. The message names the containers that did not connect; `log_tail` has the last lines of their logs. It ends when a container exited and is not restarting, or at the compose file's `startup_timeout`. Before that, a run with no new worker for a minute says so in `run.waiting_on` and keeps going: act on it then. Read each named container's log first. A worker that crashes: fix the error it prints. A container that is not an iii worker (a plain web server such as a Next.js site) never registers with the engine, so it is never ready: serve the site through `cloud.web` and take it out of the compose file, or make it a worker. That is a choice for the person (`harness::ask`, recommend `cloud.web`). Raise `startup_timeout` only when the log shows a worker still starting. |
+| `NO_ROUTE` | agent | Stage `routes`: the `http` group serves no route, and no web part answers. Find which worker should register routes and why it did not (its log is in `log_tail`; an old SDK that cannot register is `SDK_TOO_OLD`). When the app is only a site, set `cloud.web`. |
+| `ROUTE_OUTSIDE_HTTP_GROUP` | person | Stage `routes`: a route exists and the compose file has no `package://http`. Same decision as in the cloud table: add `package://http`, pinned, or stop the worker serving routes. |
+| `ROUTE_OUTSIDE_PREFIX` | agent | Stage `routes`: routes outside `cloud.web.api.prefix` (the message lists them). Put the routes under the prefix, or change the prefix. |
+| `HEALTHCHECK_FAILED` | agent | Stage `healthcheck`: `GET <path>` did not answer 2xx in its timeout; the message says the last status or "no answer". No answer: the http container is not serving (read its log). A 4xx or 5xx: fix the route or the path in `cloud.healthcheck`. |
+| `RUN_TIMEOUT` | agent | The whole run passed `run_timeout_s` (900 s by default), or one install, build or release command did not end in time; the message says which, and the stage is the one that was running. Read the end of `log_tail` for the command that was still working: a watch mode, a prompt, a server that never exits. Fix the command. Raise `run_timeout_s` only when the work is real and slow. |
+| `RUN_REPLACED` | none | A newer `check {run: true}` of this workspace (another commit, environment, values or settings) replaced this run. Not a failure of the app: read the result of the newer run. |
+| `WORKER_RESTARTED` | none | iii-cloud restarted while the run was going, and the run was finished as failed. Run again. |
+| `RUN_PANIC` | none | The run crashed inside iii-cloud. Run again, and report it if it repeats. |
+
+## Call errors
+
+Besides problems, a call can fail with a code:
 
 - `DATABASE_FROM_CLOUD`: `iii-cloud::secret` refused a database URL. iii cloud creates the database: follow `DATABASE_NOT_MANAGED`. Pass `external: true` only when the person chose a database outside iii cloud.
 - `NOT_SAVED`: a secret went nowhere. Tell the person to set it in the console.
-- `RUN_PANIC`: the run crashed inside the worker. Run again.
 - `PR_HEAD_CHANGED`: the pull request's head moved after the check. Check again.
+- `SOURCE_CHANGED`: the environment's source or compose file changed after the check (the workspace was selected again for another one). Check again.
 - `WORKTREE_FAILED`: `git worktree add` failed. Read the message.
 - `IDEMPOTENCY_KEY_REUSED`: the key was used for another request. Use a new key.
-- `WORKER_RESTARTED`: the worker restarted during a run. Run again.
 - `DEVICE_CODE_EXPIRED`: the sign-in code timed out. Connect again.
 - `ACCOUNT_BLOCKED`: the account is blocked. Tell the person.
 
@@ -156,4 +183,4 @@ belongs to. Add `bun.lock` only when the person wants bun.
 **Migrations run in the CD.** `RELEASE_IN_CI`. A workflow runs `db:migrate`
 before each deploy, and the cloud's deploy does not. Without `cloud.release`,
 new code meets the old schema. Recommend `cloud.release` with the same
-command, and run it here against the local Postgres.
+command, and run it in the local run against the local Postgres.

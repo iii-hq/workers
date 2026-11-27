@@ -17,7 +17,7 @@ Keep the page open beside the chat:
 ade::workspace::open {screen: "ext:iii-cloud"}
 ```
 
-A chat message with the marker `iii-cloud hand-off <id8>` comes from the page. Call `iii-cloud::status`, read `handoff_brief` (`ready`, `deploy_fix`, `import` or `pull_request`), and continue at the step it names.
+A chat message with the marker `iii-cloud hand-off <id8>` comes from the page. Call `iii-cloud::handoff::brief {handoff_id}`, read its `kind` (`ready`, `deploy_fix`, `import` or `pull_request`), and continue at the step it names.
 
 ## 1. Connect
 
@@ -67,7 +67,7 @@ Then move the session:
 ade::working-directory::propose {path: "<project.workspace.path>"}
 ```
 
-Work in that directory from now on. A worktree from an earlier run is reused: the worker resets it when its commits were merged, and otherwise picks a new branch name.
+Work in that directory from now on. A worktree from an earlier run is reused: it is reset when its commits were merged, and otherwise picks a new branch name.
 
 ## 4. Check, and fix
 
@@ -83,9 +83,9 @@ Call `iii-cloud::check`. Read `plan`, `here` and every problem.
 ## 5. Write the `cloud:` block
 
 Put `web`, `build`, `release` and `healthcheck` in the production compose
-file, so they are versioned with the code. The block needs iii 0.27.0 here:
+file, so they are versioned with the code. The block needs iii 0.27.0 on this machine:
 iii 0.26 refuses it. `LOCAL_ENGINE_VERSION` says when it is the wrong one.
-Nothing here checks the block's content. The cloud plan does.
+Only iii cloud's plan checks the block's content.
 
 ## 6. The web part
 
@@ -104,22 +104,23 @@ page. It goes to iii cloud and to the local `.env`. You only see `set`,
 `left_empty` or `failed`. Use `mode: "not_needed"` or `mode: "decide"` to
 mark a name that needs no value or the person's choice.
 
-`NOT_SAVED` means the secret went nowhere (an API key cannot write to the cloud, and the `.env` is tracked): tell the person to set it in the console. `local: "skipped"` means the worker did not write the `.env`: either git tracks it, or the cloud took the value and the compose file does not read `${NAME}`. Never ask for a value in chat, even when the person offers.
+`NOT_SAVED` means the secret went nowhere (an API key cannot write to the cloud, and the `.env` is tracked): tell the person to set it in the console. `local: "skipped"` means nothing was written to the `.env`: either git tracks it, or the cloud took the value and the compose file does not read `${NAME}`. Never ask for a value in chat, even when the person offers.
 
-## 8. Run here like the cloud
+## 8. The local run
 
 Call `iii-cloud::check {run: true}`. It installs, builds, runs the release
 command, starts the compose file with the cloud's engine, waits for every
-worker and the routes, and calls the healthcheck. When the call returns with
-`run.status: "running"`, wait for the end:
+worker and the routes, and calls the healthcheck. It waits for the run itself (up to 240 s). When the call returns with
+`run.status: "running"`, wake on that run, never `sleep`, with an expiry near `run_timeout_s`:
 
 ```
 harness::observe {function_id: "iii-cloud::on-change",
-  filters: {"input.kind": {"$eq": "run"}, "input.terminal": {"$eq": true}}}
+  filters: {"input.kind": {"$eq": "run"}, "input.id": {"$eq": "<run id>"},
+            "input.terminal": {"$eq": true}},
+  lifecycle: {expires_in_ms: 900000}}
 ```
 
-`RUN_PANIC` means the worker's run crashed: run again, and report it if it repeats. On a failed stage, read `run.error` and `run.log_tail`, fix in the worktree
-and run again. The run copy moves every engine, http and ade port to a free one, and never uses 3111, 3112, 3113 or 49134. One run at a time: `RUN_BUSY` means one is going.
+On a failed stage, read `run.error` and `run.log_tail`, and the code in `iii-cloud/plan-codes` ("Local run failures"). Fix in the worktree and run again. The run copy moves every engine, http and ade port to a free one, and never uses 3111, 3112, 3113 or 49134. One run per workspace: a run of the same environment and inputs attaches to the going one, and any other replaces it.
 
 ## 9. Commit, push and open the pull request
 
@@ -132,10 +133,10 @@ gh pr create --base <environment branch> --head <fix branch> \
 Changes: <one line of what you changed>"
 ```
 
-Run it from the worktree. The fix branch is `handoff_brief.worktree.branch`
-(`project.workspace.branch`): it can be `iii-cloud/ready-<environment>-2`.
+Run it from the worktree. The fix branch is `worktree.branch` of the brief
+(`project.workspace.branch`).
 
-An environment on its own branch (`handoff_brief.pushes_directly`) has no pull
+An environment on its own branch (`pushes_directly` in the brief) has no pull
 request: push only your fix branch, check and run, and stop there. The
 person's deploy on the page pushes the checked commit to the environment's
 branch. Never push that branch yourself.
@@ -154,12 +155,12 @@ never do it another way (`gh pr merge`, raw HTTP), even when asked. The merge
 is pinned to what you checked: the merged tree must equal the checked commit's
 tree, and its first parent must be the base. If the person merges on GitHub
 instead, tell them to confirm the waiting deployment on the page ("Confirm
-deploy"). When the page reports `MAIN_MOVED`, `PR_HEAD_CHANGED` or
-`PLAN_CHANGED`, the plan is old: check again. `PUSH_STILL_RUNNING` means the
+deploy"). When the page reports `MAIN_MOVED`, `PR_HEAD_CHANGED`,
+`SOURCE_CHANGED` or `PLAN_CHANGED`, the plan is old: check again. `PUSH_STILL_RUNNING` means the
 plan changed but iii cloud could not cancel the merged commit's deployment:
 watch it.
 
-## 11. Watch the deploy
+## 11. Watch the deployment
 
 ```
 harness::observe {function_id: "iii-cloud::on-change",
@@ -167,10 +168,10 @@ harness::observe {function_id: "iii-cloud::on-change",
             "input.terminal": {"$eq": true}}}
 ```
 
-Use the id of the person's deploy (`status.deploys`). When the worker's own confirmed
-deployment replaces it, that is not the end. When a deployment the worker did
-not create replaces it (a push by someone else), your deploy ends with
-`outcome: "replaced"` and `replaced_by: <id>`. The worker follows the
+Use the id of the person's deployment (`status.deploys`). When iii-cloud's own confirmed
+deployment replaces it, that is not the end. When a deployment iii-cloud did
+not create replaces it (a push by someone else), the deployment ends with
+`outcome: "replaced"` and `replaced_by: <id>`. iii-cloud follows the
 successor: tell the person, and observe the new id.
 
 A `needs_action` event carries the id of the push's deployment, not yours, so
@@ -183,7 +184,7 @@ harness::observe {function_id: "iii-cloud::on-change",
 
 When it fires, tell the person to confirm it on the page ("Confirm deploy").
 
-On `ready`, tell the person the URL and what the run here did not cover. On a
+On `ready`, tell the person the URL and what the local run did not cover. On a
 failure, including `no_route`, read the stage, the code and the log lines in
 the event. Fix in the worktree, run `check {run: true}`, and open a new pull
 request. The previous release keeps serving, and rollback is one click in the

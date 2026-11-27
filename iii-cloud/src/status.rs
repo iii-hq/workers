@@ -70,6 +70,7 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
         done.truncate(20);
         open.extend(done);
         Status {
+            auto_fix: cfg.auto_fix,
             worker: WorkerInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 iii_version: s
@@ -148,7 +149,7 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
                 .filter(|d| env.as_deref().is_none_or(|e| d.environment_id == e))
                 .cloned()
                 .map(|mut d| {
-                    d.from_console = !s.worker_deploys.contains(&d.id);
+                    d.from_console = s.from_console(&d);
                     d
                 })
                 .collect(),
@@ -159,7 +160,7 @@ pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
                 .map(|d| {
                     let o = s.deploy_origins.get(&d.id);
                     let mut deploy = d.clone();
-                    deploy.from_console = !s.worker_deploys.contains(&d.id);
+                    deploy.from_console = s.from_console(d);
                     RunningDeploy {
                         deploy,
                         cloud_project_id: o.and_then(|o| o.cloud_project_id.clone()),

@@ -11,6 +11,7 @@ const DEFAULTS = {
   postgres_image: 'pgvector/pgvector:pg17',
   run_timeout_s: 900,
   data_dir: 'data/iii-cloud',
+  auto_fix: true,
 } as const
 
 type Cfg = Record<string, JsonValue>
@@ -145,6 +146,24 @@ export function createConfigForm(host: Host) {
                   className="iii-cloud-mono"
                   value={text('data_dir')}
                   onChange={(v) => set('data_dir', v)}
+                />
+              )}
+            />
+            <SettingsField
+              id="iii-cloud-auto-fix"
+              field="auto_fix"
+              label="Hand problems to the agent"
+              description="A check you start hands your agent the problems that are its to fix."
+              error={errors?.get('/auto_fix')}
+              renderControl={(p) => (
+                <Select
+                  {...p}
+                  value={cfg.auto_fix === false ? 'off' : 'on'}
+                  options={[
+                    { value: 'on', label: 'On' },
+                    { value: 'off', label: 'Off' },
+                  ]}
+                  onChange={(v) => set('auto_fix', v === 'on')}
                 />
               )}
             />

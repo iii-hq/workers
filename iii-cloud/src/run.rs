@@ -21,14 +21,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
+use tokio::sync::watch;
 
 use crate::check::{default_not_covered, selected, update_check};
-use crate::ctx::{Ctx, new_id, now, short};
+use crate::ctx::{ActiveRun, Ctx, new_id, now, short};
 use crate::error::{CloudError, Res, cut};
 use crate::local::{
     Manifest, database_binding, install_command, lock_for, runtime_base, worker_runtime,
@@ -38,6 +39,85 @@ use crate::types::*;
 
 const MAX_RUNS_KEPT: usize = 20;
 const TAIL: usize = 40;
+/// Lines of a container's own log kept in a failed workers stage.
+const CONTAINER_TAIL: usize = 10;
+/// Seconds in the workers stage with no new worker before the run says who it waits on.
+const NO_PROGRESS_S: u64 = 60;
+/// What a `check {run: true}` call waits for a run, under the harness's 300 s dispatch timeout.
+pub const CALL_WAIT: Duration = Duration::from_secs(240);
+/// Where `iii compose` keeps the run's namespace, under the compose file's folder.
+const COMPOSE_STATE: &str = ".iii/compose/iii-cloud-run";
+/// How long one external command of the teardown or of `recover` (docker, `iii kill`) may take.
+fn cleanup_timeout() -> Duration {
+    // The env name is for tests, which cannot wait 30 s for a hung command.
+    std::env::var("III_CLOUD_CLEANUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(Duration::from_secs(30), Duration::from_millis)
+}
+
+/// `CALL_WAIT` on the test tick's scale.
+pub fn call_wait(ctx: &Ctx) -> Duration {
+    ctx.secs(CALL_WAIT.as_secs())
+}
+
+/// When the process began, as `ps` prints it: with its pid, what names that very
+/// process (a pid is reused after a reboot). Same on Linux and macOS.
+pub fn proc_start(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Remove a container; true when it is gone (a name docker does not know counts).
+async fn remove_container(name: &str) -> bool {
+    let args = ["rm", "-f", name];
+    let rm = tool::run("docker", &args, None, None, "DOCKER_MISSING");
+    match tokio::time::timeout(cleanup_timeout(), rm).await {
+        Ok(Ok(out)) => out.ok() || out.stderr.contains("No such container"),
+        _ => false,
+    }
+}
+
+/// The containers dead in this look and in the one before; `before` becomes this look's.
+pub fn confirm_exited(before: &mut Vec<String>, now: Vec<String>) -> Vec<String> {
+    let confirmed = now.iter().filter(|n| before.contains(n)).cloned().collect();
+    *before = now;
+    confirmed
+}
+
+/// Whether no process has this pid (unix; elsewhere nothing says so).
+fn pid_gone(pid: u64) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only checks that the process exists.
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Kills a process group (the pid of its leader) with SIGKILL when dropped, so a
+/// cancelled stage leaves nothing writing into the workspace. `.0 = None` disarms it.
+struct GroupKill(Option<u32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0 {
+            // SAFETY: a signal to the group of a child this run started.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        }
+    }
+}
 
 struct Fail {
     code: String,
@@ -278,6 +358,37 @@ pub fn free_port() -> u16 {
     }
 }
 
+/// Why `docker run` of the local Postgres failed: a taken port is its own code,
+/// not a missing docker.
+pub fn docker_failure(port: u16, stderr: &str) -> (&'static str, String) {
+    let why = cut(stderr.trim(), 600);
+    if why.contains("already allocated") || why.contains("address already in use") {
+        (
+            "PORT_IN_USE",
+            format!(
+                "Port {port} on this machine is taken, so Postgres could not start; check again. {why}"
+            ),
+        )
+    } else {
+        (
+            "DOCKER_MISSING",
+            format!("docker could not start Postgres: {why}"),
+        )
+    }
+}
+
+/// A free port no other run of this worker holds; kept in `ctx.ports` (and in
+/// `held`, for the run to give back) until the run's teardown.
+fn reserve_port(ctx: &Ctx, held: &mut Vec<u16>) -> u16 {
+    loop {
+        let port = free_port();
+        if ctx.ports.lock().unwrap().insert(port) {
+            held.push(port);
+            return port;
+        }
+    }
+}
+
 fn on_path(bin: &str) -> bool {
     bin.contains('/')
         || std::env::var_os("PATH")
@@ -318,85 +429,244 @@ struct Exec {
     /// the files it writes there are removed after.
     config_before: Option<(PathBuf, Vec<String>)>,
     stage_started: Instant,
+    /// True when a newer commit of the workspace asks this run to stop.
+    cancel: watch::Receiver<bool>,
+    /// The checks that attached to this run.
+    followers: Arc<Mutex<Vec<String>>>,
+    /// Ports this run picked, given back to `Ctx::ports` at the end.
+    ports: Vec<u16>,
+    /// The process group of the stage command now running, kept in `run.json`
+    /// so `recover` can stop it after a crash.
+    stage_group: Option<u32>,
+    /// When that group's leader began (`proc_start`): it names the process itself.
+    stage_start: Option<String>,
 }
 
-/// Start a run for a stored check. One at a time: a second is `RUN_BUSY`.
+/// Start a run for a stored check. One at a time per workspace.
 pub async fn start(ctx: &Arc<Ctx>, check_id: String) -> Res<Run> {
     let sel = selected(ctx)?;
-    start_with(ctx, check_id, sel).await
+    let until = Instant::now() + call_wait(ctx);
+    start_with(ctx, check_id, sel, None, until).await
 }
 
 /// Start a run for a check, on the environment and worktree `sel` names (a
 /// hand-off's own, which may not be the page's current selection).
-pub async fn start_with(ctx: &Arc<Ctx>, check_id: String, sel: crate::check::Selected) -> Res<Run> {
-    if !ctx.busy.lock().unwrap().insert("run".into()) {
-        // Say which run, and since when, so the page can show "already running since …".
-        let running = ctx.store.read(|s| {
-            s.check
-                .iter()
-                .chain(s.checks.iter())
-                .filter_map(|c| c.run.as_ref())
-                .find(|r| r.status == RunStatus::Running)
-                .map(|r| (r.id.clone(), r.started_at.clone()))
-        });
-        let message = match running {
-            Some((id, since)) => format!("A run is already going: run {id}, since {since}."),
-            None => "A run is already going.".to_string(),
-        };
-        return Err(CloudError::new("RUN_BUSY", message));
-    }
-    match prepare(ctx, &check_id, &sel).await {
-        Ok(mut exec) => {
-            exec.publish();
-            let run = exec.run.clone();
-            let ctx2 = ctx.clone();
-            let check_id = exec.check_id.clone();
-            tokio::spawn(async move {
-                // `busy` is cleared however the run ends, a panic included.
-                let _guard = BusyGuard(ctx2.clone(), "run".into());
-                if tokio::spawn(async move { exec.drive().await })
-                    .await
-                    .is_err()
+///
+/// A workspace has one run. A call whose environment and reuse `key` are those
+/// of the running one attaches to it: the run publishes to the call's check
+/// too, and the call returns when the run ends, says it waits on a worker, or
+/// `until` passes. Anything else for the workspace (another commit, another
+/// environment, no key) replaces the running one, after its teardown.
+pub async fn start_with(
+    ctx: &Arc<Ctx>,
+    check_id: String,
+    sel: crate::check::Selected,
+    key: Option<String>,
+    until: Instant,
+) -> Res<Run> {
+    let slot = sel.workspace.to_string_lossy().into_owned();
+    let (id, cancel_rx, guard, followers) = 'slot: loop {
+        let step = {
+            let mut runs = ctx.runs.lock().unwrap();
+            match runs.get(&slot) {
+                // A run already told to stop is not attachable: the call waits for the slot.
+                Some(a)
+                    if key.is_some()
+                        && a.key == key
+                        && a.env_id == sel.env.id
+                        && !*a.cancel.borrow() =>
                 {
-                    update_check(&ctx2, &check_id, |c| {
-                        if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running)
+                    a.followers.lock().unwrap().push(check_id.clone());
+                    Err((a.id.clone(), a.done.clone(), false))
+                }
+                Some(a) => {
+                    let _ = a.cancel.send(true);
+                    Err((a.id.clone(), a.done.clone(), true))
+                }
+                None => {
+                    let id = new_id();
+                    let (cancel_tx, cancel_rx) = watch::channel(false);
+                    let (done_tx, done_rx) = watch::channel(false);
+                    let followers = Arc::new(Mutex::new(vec![]));
+                    runs.insert(
+                        slot.clone(),
+                        ActiveRun {
+                            id: id.clone(),
+                            env_id: sel.env.id.clone(),
+                            key: key.clone(),
+                            followers: followers.clone(),
+                            cancel: cancel_tx,
+                            done: done_rx,
+                        },
+                    );
+                    Ok((
+                        id.clone(),
+                        cancel_rx,
+                        ActiveGuard(ctx.clone(), slot.clone(), id, done_tx),
+                        followers,
+                    ))
+                }
+            }
+        };
+        match step {
+            Ok(own) => break own,
+            // Replaced: wait for its teardown, then take its place.
+            Err((_, mut done, true)) => {
+                let waited = tokio::time::timeout_at(until.into(), done.wait_for(|d| *d)).await;
+                if waited.is_err() {
+                    // Not this call's run: nothing started, and nothing may be keyed to the old one.
+                    return Err(CloudError::new(
+                        "RUN_TIMEOUT",
+                        "The previous run is still stopping; check again.",
+                    ));
+                }
+            }
+            Err((id, done, false)) => {
+                // What the run has now; from here its publishes reach this check.
+                let current = ctx.store.read(|s| {
+                    s.checks
+                        .iter()
+                        .filter_map(|c| c.run.clone())
+                        .find(|r| r.id == id)
+                });
+                if let Some(run) = current.filter(|r| r.check_id != check_id) {
+                    update_check(ctx, &check_id, |c| c.run = Some(run));
+                }
+                loop {
+                    let run = ctx
+                        .store
+                        .read(|s| s.find_check(&check_id).and_then(|c| c.run.clone()))
+                        .filter(|r| r.id == id);
+                    let over = *done.borrow();
+                    if let Some(run) = run {
+                        if over
+                            || run.status != RunStatus::Running
+                            || run.waiting_on.is_some()
+                            || Instant::now() >= until
                         {
-                            let stage = run
-                                .stages
-                                .iter()
-                                .find(|s| s.status == StageStatus::Running)
-                                .map(|s| s.name)
-                                .unwrap_or(StageName::Install);
-                            run.status = RunStatus::Failed;
-                            run.finished_at = Some(now());
-                            run.error = Some(RunError {
-                                stage,
-                                code: "RUN_PANIC".into(),
-                                message: "The run stopped on an internal error.".into(),
-                            });
+                            return Ok(run);
                         }
+                    } else if over {
+                        continue 'slot;
+                    } else if Instant::now() >= until {
+                        return Err(CloudError::new(
+                            "RUN_TIMEOUT",
+                            "The run did not start in time; check again.",
+                        ));
+                    }
+                    tokio::time::sleep(ctx.secs(1).min(Duration::from_millis(100))).await;
+                }
+            }
+        }
+    };
+    // Read once the slot is ours: a commit made while the old run was torn down counts.
+    let commit = workspace_commit(&sel.workspace).await?;
+    let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
+    exec.cancel = cancel_rx;
+    exec.followers = followers.clone();
+    exec.publish();
+    let run = exec.run.clone();
+    let ctx2 = ctx.clone();
+    tokio::spawn(async move {
+        // The workspace is free again however the run ends, a panic included.
+        let _guard = guard;
+        if tokio::spawn(async move { exec.drive().await })
+            .await
+            .is_err()
+        {
+            let updated = update_check(&ctx2, &check_id, |c| {
+                if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
+                    let stage = run
+                        .stages
+                        .iter()
+                        .find(|s| s.status == StageStatus::Running)
+                        .map(|s| s.name)
+                        .unwrap_or(StageName::Install);
+                    run.status = RunStatus::Failed;
+                    run.waiting_on = None;
+                    run.finished_at = Some(now());
+                    run.error = Some(RunError {
+                        stage,
+                        code: "RUN_PANIC".into(),
+                        message: "The run stopped on an internal error.".into(),
                     });
                 }
             });
-            Ok(run)
+            if let Some(run) = updated.and_then(|c| c.run) {
+                put_in_followers(&ctx2, &followers, &check_id, &run);
+                emit_run(&ctx2, &run);
+            }
         }
-        Err(e) => {
-            ctx.busy.lock().unwrap().remove("run");
-            Err(e)
-        }
+    });
+    Ok(run)
+}
+
+/// The run's record into every check that attached to it.
+fn put_in_followers(ctx: &Ctx, followers: &Mutex<Vec<String>>, owner: &str, run: &Run) {
+    let mut ids = followers.lock().unwrap().clone();
+    ids.sort();
+    ids.dedup();
+    for id in ids.iter().filter(|id| *id != owner) {
+        update_check(ctx, id, |c| c.run = Some(run.clone()));
     }
 }
 
-/// Removes its key from `Ctx::busy` when dropped.
-struct BusyGuard(Arc<Ctx>, String);
+/// Frees the workspace's slot and tells the waiters when dropped.
+struct ActiveGuard(Arc<Ctx>, String, String, watch::Sender<bool>);
 
-impl Drop for BusyGuard {
+impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        self.0.busy.lock().unwrap().remove(&self.1);
+        let mut runs = self.0.runs.lock().unwrap();
+        if runs.get(&self.1).is_some_and(|a| a.id == self.2) {
+            runs.remove(&self.1);
+        }
+        drop(runs);
+        let _ = self.3.send(true);
     }
 }
 
-async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -> Res<Exec> {
+/// What the run proves: HEAD, and `+dirty` when anything is uncommitted. Ready
+/// needs it to equal the checked commit.
+async fn workspace_commit(workspace: &Path) -> Res<String> {
+    let head = crate::tool::git(workspace, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
+    let dirty = crate::tool::git(workspace, &["status", "--porcelain"])
+        .await
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(true);
+    Ok(if dirty { format!("{head}+dirty") } else { head })
+}
+
+/// The run's event: terminal once it is no longer running.
+fn emit_run(ctx: &Ctx, run: &Run) {
+    let summary = match (&run.status, &run.error) {
+        (RunStatus::Failed, Some(e)) => format!(
+            "run {} failed at {:?}: {}",
+            short(&run.commit),
+            e.stage,
+            e.code
+        ),
+        (RunStatus::Passed, _) => format!("run {} passed", short(&run.commit)),
+        _ => format!("run {} is going", short(&run.commit)),
+    };
+    ctx.emit(
+        EventKind::Run,
+        &run.id,
+        run.status != RunStatus::Running,
+        summary,
+        run,
+    );
+}
+
+async fn prepare(
+    ctx: &Arc<Ctx>,
+    id: &str,
+    check_id: &str,
+    sel: &crate::check::Selected,
+    commit: &str,
+) -> Res<Exec> {
     let check = ctx
         .store
         .read(|s| s.find_check(check_id).cloned())
@@ -411,27 +681,16 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         // No environment settings, no run: a null here would skip the release,
         // the root directory and the healthcheck without a word.
         .await?;
-    let id = new_id();
-    let dir = cfg.data_path().join("runs").join(&id);
+    let dir = cfg.data_path().join("runs").join(id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| CloudError::new("GIT_FAILED", format!("cannot create the run folder: {e}")))?;
     let engine = crate::check::local_iii_version(&cfg.iii_bin)
         .await
         .unwrap_or_else(|| "unknown".into());
-    // The run proves what the workspace holds now: its HEAD, and `+dirty` when
-    // anything is uncommitted. Ready needs it to equal the checked commit.
-    let head = crate::tool::git(&sel.workspace, &["rev-parse", "HEAD"])
-        .await?
-        .trim()
-        .to_string();
-    let dirty = crate::tool::git(&sel.workspace, &["status", "--porcelain"])
-        .await
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(true);
     let run = Run {
-        id,
+        id: id.to_string(),
         check_id: check.id.clone(),
-        commit: if dirty { format!("{head}+dirty") } else { head },
+        commit: commit.to_string(),
         engine,
         status: RunStatus::Running,
         started_at: now(),
@@ -454,7 +713,10 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         not_covered: default_not_covered(),
         log_tail: vec![],
         error: None,
+        reused: false,
+        waiting_on: None,
     };
+    set_run_live(&dir, true);
     Ok(Exec {
         ctx: ctx.clone(),
         check_id: check.id.clone(),
@@ -479,16 +741,37 @@ async fn prepare(ctx: &Arc<Ctx>, check_id: &str, sel: &crate::check::Selected) -
         child: None,
         config_before: None,
         stage_started: Instant::now(),
+        cancel: watch::channel(false).1,
+        followers: Arc::new(Mutex::new(vec![])),
+        ports: vec![],
+        stage_group: None,
+        stage_start: None,
     })
 }
 
 impl Drop for Exec {
     /// A panic skips `teardown`: remove what is left, without awaiting.
     fn drop(&mut self) {
-        for name in std::mem::take(&mut self.pg) {
-            let _ = std::process::Command::new("docker")
-                .args(["rm", "-f", &name])
-                .output();
+        set_run_live(&self.dir, false);
+        self.give_back_ports();
+        // A graceful stop drops the task: the stage's group was killed with it, so
+        // `run.json` must not keep an id that may name another process by the next start.
+        if self.stage_group.take().is_some() {
+            self.stage_start = None;
+            self.persist_run();
+        }
+        // `Drop` never waits on an external command: a hung docker daemon would hold the
+        // workspace's slot for ever. The names stay in `run.json` (the next teardown or
+        // `recover` removes them); a thread tries now without anyone waiting for it.
+        let names = std::mem::take(&mut self.pg);
+        if !names.is_empty() {
+            std::thread::spawn(move || {
+                for name in names {
+                    let _ = std::process::Command::new("docker")
+                        .args(["rm", "-f", &name])
+                        .output();
+                }
+            });
         }
         if let Some(p) = &self.prep {
             clean_copy(&p.copy);
@@ -497,11 +780,25 @@ impl Drop for Exec {
 }
 
 impl Exec {
+    fn give_back_ports(&mut self) {
+        let mut held = self.ctx.ports.lock().unwrap();
+        for port in self.ports.drain(..) {
+            held.remove(&port);
+        }
+    }
+
     fn persist_run(&self) {
         let files = RunFiles {
             containers: self.pg.clone(),
-            copy: self.prep.as_ref().map(|p| p.copy.clone()),
+            // Only a copy that exists: after `clean_copy` nothing is left to `iii kill`.
+            copy: self
+                .prep
+                .as_ref()
+                .map(|p| p.copy.clone())
+                .filter(|c| c.exists()),
             iii_bin: self.iii_bin.clone(),
+            stage_group: self.stage_group,
+            stage_start: self.stage_start.clone(),
         };
         if let Ok(bytes) = serde_json::to_vec(&files) {
             let _ = std::fs::write(self.dir.join("run.json"), bytes);
@@ -525,23 +822,8 @@ impl Exec {
             e.message = self.redact(&e.message);
         }
         update_check(&self.ctx, &self.check_id, |c| c.run = Some(run.clone()));
-        let summary = match (&run.status, &run.error) {
-            (RunStatus::Failed, Some(e)) => format!(
-                "run {} failed at {:?}: {}",
-                short(&run.commit),
-                e.stage,
-                e.code
-            ),
-            (RunStatus::Passed, _) => format!("run {} passed", short(&run.commit)),
-            _ => format!("run {} is going", short(&run.commit)),
-        };
-        self.ctx.emit(
-            EventKind::Run,
-            &run.id,
-            run.status != RunStatus::Running,
-            summary,
-            &run,
-        );
+        put_in_followers(&self.ctx, &self.followers, &self.check_id, &run);
+        emit_run(&self.ctx, &run);
     }
 
     fn set(&mut self, name: StageName, status: StageStatus, detail: Option<String>) {
@@ -583,11 +865,17 @@ impl Exec {
 
     async fn drive(&mut self) {
         let budget = Duration::from_secs(self.ctx.config().await.run_timeout_s);
-        let outcome = tokio::time::timeout(budget, self.stages()).await;
+        let mut cancel = self.cancel.clone();
+        // None: a newer commit of the workspace replaced this run. Dropping
+        // the stages stops their children; teardown does the rest.
+        let outcome = tokio::select! {
+            r = tokio::time::timeout(budget, self.stages()) => Some(r),
+            _ = cancel.wait_for(|c| *c) => None,
+        };
         match outcome {
-            Ok(Ok(())) => self.run.status = RunStatus::Passed,
-            Ok(Err((stage, f))) => self.finish_failed(stage, f),
-            Err(_) => {
+            Some(Ok(Ok(()))) => self.run.status = RunStatus::Passed,
+            Some(Ok(Err((stage, f)))) => self.finish_failed(stage, f),
+            other => {
                 let stage = self
                     .run
                     .stages
@@ -595,13 +883,18 @@ impl Exec {
                     .find(|s| s.status == StageStatus::Running)
                     .map(|s| s.name)
                     .unwrap_or(StageName::Install);
-                self.finish_failed(
-                    stage,
+                let f = if other.is_none() {
+                    fail(
+                        "RUN_REPLACED",
+                        "A newer commit of this workspace started a run, so this one stopped.",
+                    )
+                } else {
                     fail(
                         "RUN_TIMEOUT",
                         format!("The run passed {} s.", budget.as_secs()),
-                    ),
-                );
+                    )
+                };
+                self.finish_failed(stage, f);
             }
         }
         self.teardown().await;
@@ -610,6 +903,7 @@ impl Exec {
     }
 
     fn finish_failed(&mut self, stage: StageName, f: Fail) {
+        self.run.waiting_on = None;
         self.note(&format!("!! {:?} failed: {}: {}", stage, f.code, f.message));
         self.set(stage, StageStatus::Failed, Some(cut(&f.message, 200)));
         self.run.status = RunStatus::Failed;
@@ -693,8 +987,9 @@ impl Exec {
             .containers()
             .into_iter()
             .filter(|(n, c)| manifest.is_http_worker(n, c))
-            .map(|(n, _)| (n, free_port()))
+            .map(|(n, _)| (n, reserve_port(&self.ctx, &mut self.ports)))
             .collect();
+        let engine_port = reserve_port(&self.ctx, &mut self.ports);
         let stem = manifest
             .file
             .file_stem()
@@ -707,7 +1002,7 @@ impl Exec {
             settings: self.settings.clone(),
             run_env,
             bindings: vec![],
-            engine_port: free_port(),
+            engine_port,
             http_ports,
             dbs: vec![],
             copy,
@@ -742,12 +1037,21 @@ impl Exec {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Its own group, so a cancel or a timeout also stops what `sh` started.
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command
             .spawn()
             .map_err(|e| fail("TOOL_MISSING", format!("cannot start sh: {e}")))?;
+        let mut group = GroupKill(child.id());
+        // On disk while it runs: after a crash `recover` kills the group.
+        self.stage_group = child.id();
+        self.stage_start = child.id().and_then(proc_start);
+        self.persist_run();
         let pumps = self.pump_output(&mut child, "run.log");
-        match tokio::time::timeout(limit, child.wait()).await {
+        let result = match tokio::time::timeout(limit, child.wait()).await {
             Ok(Ok(status)) => {
+                group.0 = None;
                 // Its output is in the log before its result counts; a process
                 // it left running in the background does not hold the run.
                 for p in pumps {
@@ -757,13 +1061,18 @@ impl Exec {
             }
             Ok(Err(e)) => Err(fail("INSTALL_FAILED", e.to_string())),
             Err(_) => {
+                drop(group);
                 let _ = child.kill().await;
                 Err(fail(
                     "RUN_TIMEOUT",
                     format!("`{}` did not end in {} s.", cut(cmd, 60), limit.as_secs()),
                 ))
             }
-        }
+        };
+        self.stage_group = None;
+        self.stage_start = None;
+        self.persist_run();
+        result
     }
 
     async fn install(&mut self) -> Result<Done, Fail> {
@@ -981,9 +1290,13 @@ impl Exec {
     async fn start_postgres(&mut self, image: &str) -> Result<String, Fail> {
         let name = format!("iii-cloud-run-pg-{}-{}", &self.run.id[..8], self.pg.len());
         let password = hex::encode(rand::random::<[u8; 12]>());
-        let port = free_port();
+        let port = reserve_port(&self.ctx, &mut self.ports);
         let publish = format!("127.0.0.1:{port}:5432");
         let pw = format!("POSTGRES_PASSWORD={password}");
+        // Known before it exists: a cancel while `docker run` is in flight still
+        // has the teardown remove it (`rm -f` of a name nothing has is harmless).
+        self.pg.push(name.clone());
+        self.persist_run();
         let out = tool::run(
             "docker",
             &[
@@ -996,17 +1309,10 @@ impl Exec {
         .await
         .map_err(|e| fail(&e.code, e.message))?;
         if !out.ok() {
-            return Err(fail(
-                "DOCKER_MISSING",
-                format!(
-                    "docker could not start Postgres: {}",
-                    cut(out.stderr.trim(), 600)
-                ),
-            ));
+            let (code, message) = docker_failure(port, &out.stderr);
+            return Err(fail(code, message));
         }
-        self.pg.push(name.clone());
         self.secrets.push(password.clone());
-        self.persist_run();
         self.note(&format!("started {name} on 127.0.0.1:{port}"));
         let ready = async {
             loop {
@@ -1055,16 +1361,22 @@ impl Exec {
     }
 
     async fn compose_up(&mut self) -> Result<Done, Fail> {
-        let (copy, lock_from, dir, env, names) = {
+        let ctx = self.ctx.clone();
+        let mut extra = vec![];
+        let rewritten = {
             let p = self.prep.as_ref().unwrap();
-            let rewritten = rewrite_run_copy(
+            rewrite_run_copy(
                 &p.manifest.yaml,
                 p.engine_port,
                 &p.http_ports,
                 &p.dbs,
-                &mut free_port,
+                &mut || reserve_port(&ctx, &mut extra),
             )
-            .map_err(|m| fail("COMPOSE_FAILED", m))?;
+        };
+        self.ports.extend(extra);
+        let rewritten = rewritten.map_err(|m| fail("COMPOSE_FAILED", m))?;
+        let (copy, lock_from, dir, env, names) = {
+            let p = self.prep.as_ref().unwrap();
             let text = serde_yaml_ng::to_string(&rewritten)
                 .map_err(|e| fail("COMPOSE_FAILED", e.to_string()))?;
             std::fs::write(&p.copy, text).map_err(|e| fail("COMPOSE_FAILED", e.to_string()))?;
@@ -1105,6 +1417,8 @@ impl Exec {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 fail(
@@ -1176,61 +1490,196 @@ impl Exec {
             .and_then(Value::as_str)
             .and_then(parse_duration)
             .unwrap_or(Duration::from_secs(60));
+        // Under a test tick the deadline shrinks like the 60 s window does.
+        let startup = if self.ctx.tick.is_some() {
+            self.ctx.secs(startup.as_secs())
+        } else {
+            startup
+        };
         let total = self.run.workers.total;
         let deadline = Instant::now() + startup;
+        // The last time one more worker connected (or the stage began).
+        let mut progress = Instant::now();
         let mut stable_since: Option<Instant> = None;
+        let mut connected: Vec<String> = vec![];
+        let mut dead_before: Vec<String> = vec![];
         loop {
             if let Some(code) = self.compose_exited() {
-                self.append_compose_log();
-                return Err(fail(
-                    "COMPOSE_FAILED",
-                    format!("`iii compose` exited {code} before the workers connected."),
+                // `iii compose` stops itself when a container dies before it registers.
+                let gone = self.exited_in_compose_log();
+                if gone.is_empty() {
+                    self.append_compose_log();
+                    return Err(fail(
+                        "COMPOSE_FAILED",
+                        format!("`iii compose` exited {code} before the workers connected."),
+                    ));
+                }
+                return Err(self.workers_fail(
+                    format!("{} exited before it connected.", gone.join(", ")),
+                    &connected,
+                ));
+            }
+            // Dead twice in a row: `iii compose` records `restarting` only after it
+            // reaped the child, so one look can catch the gap before it.
+            let gone = confirm_exited(&mut dead_before, self.exited_containers());
+            if !gone.is_empty() {
+                return Err(self.workers_fail(
+                    format!("{} exited before all workers connected.", gone.join(", ")),
+                    &connected,
                 ));
             }
             if Instant::now() >= deadline {
-                self.append_compose_log();
-                return Err(fail(
-                    "WORKERS_NOT_READY",
+                return Err(self.workers_fail(
                     format!(
                         "{} of {total} workers connected in {} s.",
                         self.run.workers.ready,
                         startup.as_secs()
                     ),
+                    &connected,
                 ));
             }
             // A container's worker registers under the container's name
             // (verified on iii 0.27.0: `api`, `http`), with status `connected`.
             let names = self.container_names();
-            let ready = self
+            let listed = self
                 .engine_call("engine::workers::list", &[])
                 .await
-                .and_then(|v| v.get("workers").and_then(Value::as_array).cloned())
-                .map(|ws| {
-                    names
-                        .iter()
-                        .filter(|n| {
-                            ws.iter().any(|w| {
-                                w.get("name").and_then(Value::as_str) == Some(n.as_str())
-                                    && matches!(
-                                        w.get("status").and_then(Value::as_str),
-                                        Some("connected" | "available")
-                                    )
-                            })
-                        })
-                        .count() as u32
+                .and_then(|v| v.get("workers").and_then(Value::as_array).cloned());
+            // A list that could not be read says nothing: poll again, and leave
+            // the count, the clock and `waiting_on` as they are.
+            let Some(ws) = listed else {
+                tokio::time::sleep(self.ctx.secs(1)).await;
+                continue;
+            };
+            connected = names
+                .iter()
+                .filter(|n| {
+                    ws.iter().any(|w| {
+                        w.get("name").and_then(Value::as_str) == Some(n.as_str())
+                            && matches!(
+                                w.get("status").and_then(Value::as_str),
+                                Some("connected" | "available")
+                            )
+                    })
                 })
-                .unwrap_or(0);
+                .cloned()
+                .collect();
+            let ready = connected.len() as u32;
+            if ready > self.run.workers.ready {
+                progress = Instant::now();
+                if self.run.waiting_on.take().is_some() {
+                    self.run.workers.ready = ready.min(total);
+                    self.publish();
+                }
+            }
             self.run.workers.ready = ready.min(total);
             if ready >= total {
                 let since = *stable_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= Duration::from_secs(2) {
+                if since.elapsed() >= self.ctx.secs(2) {
+                    self.run.waiting_on = None;
                     return passed(format!("{} of {total}", self.run.workers.ready));
                 }
             } else {
                 stable_since = None;
+                // Not a failure (the cloud waits the startup timeout too): say who it waits on
+                // and show their logs, so the caller can fix and check again.
+                if self.run.waiting_on.is_none()
+                    && progress.elapsed() >= self.ctx.secs(NO_PROGRESS_S)
+                {
+                    let missing = self.missing(&connected);
+                    for name in &missing {
+                        for line in self.container_log(name) {
+                            self.note(&format!("[{name}] {line}"));
+                        }
+                    }
+                    self.run.waiting_on = Some(WaitingOn {
+                        containers: missing,
+                        since: now(),
+                    });
+                    self.publish();
+                }
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(self.ctx.secs(1)).await;
         }
+    }
+
+    /// `WORKERS_NOT_READY` naming the containers that did not connect; the run's
+    /// log gets their own last lines, after `compose.log`'s.
+    fn missing(&self, connected: &[String]) -> Vec<String> {
+        self.container_names()
+            .into_iter()
+            .filter(|n| !connected.contains(n))
+            .collect()
+    }
+
+    fn workers_fail(&self, lead: String, connected: &[String]) -> Fail {
+        let missing = self.missing(connected);
+        self.append_compose_log();
+        for name in &missing {
+            for line in self.container_log(name) {
+                self.note(&format!("[{name}] {line}"));
+            }
+        }
+        fail(
+            "WORKERS_NOT_READY",
+            format!("{lead} Did not connect: {}.", missing.join(", ")),
+        )
+    }
+
+    fn state_dir(&self) -> Option<PathBuf> {
+        Some(self.prep.as_ref()?.manifest.dir.join(COMPOSE_STATE))
+    }
+
+    /// The last lines a container wrote (`iii compose` keeps one file per
+    /// container: a header, then `stdout<TAB>line` / `stderr<TAB>line`).
+    fn container_log(&self, name: &str) -> Vec<String> {
+        let Some(dir) = self.state_dir() else {
+            return vec![];
+        };
+        let text = std::fs::read_to_string(dir.join("logs").join(format!("{name}.log")))
+            .unwrap_or_default();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .collect();
+        lines[lines.len().saturating_sub(CONTAINER_TAIL)..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    /// Containers whose process is gone, by the pids `iii compose` keeps in its
+    /// state file (it lists a container once it is up).
+    fn exited_containers(&self) -> Vec<String> {
+        let Some(dir) = self.state_dir() else {
+            return vec![];
+        };
+        let state = std::fs::read_to_string(dir.join("state.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        state
+            .as_ref()
+            .and_then(|s| s.get("containers").and_then(Value::as_object))
+            .into_iter()
+            .flatten()
+            // `restart: on-failure` keeps a dead pid in the record while it backs off.
+            .filter(|(_, c)| c.get("status").and_then(Value::as_str) != Some("restarting"))
+            .filter(|(_, c)| c.get("pid").and_then(Value::as_u64).is_some_and(pid_gone))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// `container 'x' exited with N before it registered`, from `compose.log`.
+    fn exited_in_compose_log(&self) -> Vec<String> {
+        let text = std::fs::read_to_string(self.dir.join("compose.log")).unwrap_or_default();
+        text.lines()
+            .filter(|l| l.contains("before it registered"))
+            .filter_map(|l| {
+                let rest = l.split_once("container '")?.1;
+                Some(rest.split_once('\'')?.0.to_string())
+            })
+            .collect()
     }
 
     fn append_compose_log(&self) {
@@ -1400,25 +1849,44 @@ impl Exec {
                 // SAFETY: plain signal to our own child process.
                 unsafe { libc::kill(pid as i32, libc::SIGTERM) };
             }
+            let pid = child.id();
             if tokio::time::timeout(Duration::from_secs(30), child.wait())
                 .await
                 .is_err()
             {
+                // It did not stop: its whole group goes.
+                drop(GroupKill(pid));
                 let _ = child.kill().await;
             }
         }
+        self.stage_group = None;
+        self.stage_start = None;
+        // A stuck docker daemon must not hold the workspace's slot for ever, nor make
+        // the container forgotten: what could not be removed stays on record.
+        let mut left = vec![];
         for name in std::mem::take(&mut self.pg) {
-            let _ = tool::run("docker", &["rm", "-f", &name], None, None, "DOCKER_MISSING").await;
+            if !remove_container(&name).await {
+                left.push(name);
+            }
         }
+        self.pg = left;
+        self.give_back_ports();
         if let Some(p) = &self.prep {
             clean_copy(&p.copy);
         }
         if let Some((dir, before)) = self.config_before.take() {
             remove_new_files(&dir, &before);
         }
-        let _ = std::fs::remove_file(self.dir.join("run.json"));
-        if let Some(runs) = self.dir.parent() {
-            prune(runs, MAX_RUNS_KEPT);
+        if self.pg.is_empty() {
+            let _ = std::fs::remove_file(self.dir.join("run.json"));
+        } else {
+            // The next `recover` tries again; `Drop` tries once more too.
+            self.persist_run();
+        }
+        // Not awaited: a hung docker daemon adds its timeout per old container,
+        // and the workspace's slot must not wait for it.
+        if let Some(runs) = self.dir.parent().map(Path::to_path_buf) {
+            tokio::spawn(async move { prune(&runs, MAX_RUNS_KEPT).await });
         }
     }
 }
@@ -1429,6 +1897,12 @@ struct RunFiles {
     containers: Vec<String>,
     copy: Option<PathBuf>,
     iii_bin: String,
+    /// The process group of a stage command that was running.
+    #[serde(default)]
+    stage_group: Option<u32>,
+    /// `proc_start` of that group's leader: `recover` kills only a process that still shows it.
+    #[serde(default)]
+    stage_start: Option<String>,
 }
 
 /// The names of the files in `dir` (empty when it does not exist).
@@ -1547,13 +2021,13 @@ fn clean_copy(copy: &Path) {
     let _ = std::fs::remove_file(copy);
     let _ = std::fs::remove_file(copy.with_extension("lock"));
     if let Some(dir) = copy.parent() {
-        let _ = std::fs::remove_dir_all(dir.join(".iii/compose/iii-cloud-run"));
+        let _ = std::fs::remove_dir_all(dir.join(COMPOSE_STATE));
     }
 }
 
 /// On start: fail the runs a crash left `running`, remove their containers,
 /// `iii kill --compose` a copy that remains, and delete it.
-pub async fn recover(ctx: &Arc<Ctx>) {
+pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
     let cfg = ctx.config().await;
     let stuck: Vec<String> = ctx.store.read(|s| {
         s.check
@@ -1573,7 +2047,7 @@ pub async fn recover(ctx: &Arc<Ctx>) {
             continue;
         }
         done.push(id.clone());
-        update_check(ctx, &id, |c| {
+        let updated = update_check(ctx, &id, |c| {
             if let Some(run) = c.run.as_mut().filter(|r| r.status == RunStatus::Running) {
                 let stage = run
                     .stages
@@ -1582,6 +2056,7 @@ pub async fn recover(ctx: &Arc<Ctx>) {
                     .map(|s| s.name)
                     .unwrap_or(StageName::Install);
                 run.status = RunStatus::Failed;
+                run.waiting_on = None;
                 run.finished_at = Some(now());
                 run.error = Some(RunError {
                     stage,
@@ -1597,34 +2072,105 @@ pub async fn recover(ctx: &Arc<Ctx>) {
                 }
             }
         });
-    }
-    let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) else {
-        return;
-    };
-    for entry in read.flatten() {
-        let file = entry.path().join("run.json");
-        let Some(files) = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
-        else {
-            continue;
-        };
-        for name in &files.containers {
-            let _ = tool::run("docker", &["rm", "-f", name], None, None, "DOCKER_MISSING").await;
+        // Whoever waits for this run's end hears it.
+        if let Some(run) = updated.and_then(|c| c.run) {
+            emit_run(ctx, &run);
         }
-        if let Some(copy) = files.copy.filter(|c| c.exists()) {
-            let _ = tool::run(
-                &files.iii_bin,
-                &["kill", "--compose", &copy.to_string_lossy()],
-                None,
-                None,
-                "TOOL_MISSING",
-            )
-            .await;
-            clean_copy(&copy);
-        }
-        let _ = std::fs::remove_file(file);
     }
+    let mut stale = vec![];
+    if let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) {
+        for entry in read.flatten() {
+            let file = entry.path().join("run.json");
+            let Some(files) = std::fs::read(&file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+            else {
+                continue;
+            };
+            // What is keyed by the workspace (a group, `iii compose`'s namespace and its
+            // copy) goes now, before any run of this process can use the same ones.
+            // A stage command the crash left running (its own group, so the worker's
+            // death did not reach it): only when that pid is still the very process
+            // that was recorded, since a pid is reused after a reboot.
+            if let (Some(pid), Some(start)) = (files.stage_group, files.stage_start.as_deref())
+                && proc_start(pid).as_deref() == Some(start)
+            {
+                drop(GroupKill(Some(pid)));
+            }
+            if let Some(copy) = files.copy.filter(|c| c.exists()) {
+                let copy_arg = copy.to_string_lossy().into_owned();
+                let args = ["kill", "--compose", copy_arg.as_str()];
+                let kill = tool::run(&files.iii_bin, &args, None, None, "TOOL_MISSING");
+                let _ = tokio::time::timeout(cleanup_timeout(), kill).await;
+                clean_copy(&copy);
+            }
+            // What is left is the containers, named by run id: they can wait.
+            let rest = RunFiles {
+                containers: files.containers,
+                iii_bin: files.iii_bin,
+                ..Default::default()
+            };
+            if rest.containers.is_empty() {
+                let _ = std::fs::remove_file(&file);
+            } else {
+                write_run_files(&file, &rest);
+                stale.push((file, rest.containers));
+            }
+        }
+    }
+    Stale(stale)
+}
+
+fn write_run_files(file: &Path, files: &RunFiles) {
+    if let Ok(bytes) = serde_json::to_vec(files) {
+        let _ = std::fs::write(file, bytes);
+    }
+}
+
+/// The containers earlier runs left, with the `run.json` that names them.
+pub struct Stale(Vec<(PathBuf, Vec<String>)>);
+
+/// `recover_runs` and `clean_stale` one after the other.
+pub async fn recover(ctx: &Arc<Ctx>) {
+    let stale = recover_runs(ctx).await;
+    clean_stale(stale).await;
+}
+
+/// Remove the containers earlier runs left (their names carry the run id, so this
+/// cannot touch a run of this process). Each removal has a timeout; one that could
+/// not be done stays on record for the next start.
+pub async fn clean_stale(stale: Stale) {
+    for (file, containers) in stale.0 {
+        let left = remove_containers(&containers).await;
+        if left.is_empty() {
+            let _ = std::fs::remove_file(file);
+        } else {
+            let iii_bin = std::fs::read(&file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+                .map(|f| f.iii_bin)
+                .unwrap_or_default();
+            write_run_files(
+                &file,
+                &RunFiles {
+                    containers: left,
+                    iii_bin,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+}
+
+/// Try to remove each container; the names that are still there.
+async fn remove_containers(names: &[String]) -> Vec<String> {
+    let mut left = vec![];
+    for name in names {
+        if !remove_container(name).await {
+            left.push(name.clone());
+        }
+    }
+    left
 }
 
 /// Hide the password of every `scheme://user:password@host` in `text`.
@@ -1705,8 +2251,20 @@ fn tail_of(file: &Path) -> Vec<String> {
     lines[lines.len().saturating_sub(TAIL)..].to_vec()
 }
 
+/// The folders of the runs that are going now: `prune` never touches them
+/// (a live run's `run.json` already names its Postgres).
+static LIVE_RUNS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_run_live(dir: &Path, live: bool) {
+    let mut runs = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    runs.retain(|d| d != dir);
+    if live {
+        runs.push(dir.to_path_buf());
+    }
+}
+
 /// Keep the newest `keep` run folders.
-pub fn prune(runs: &Path, keep: usize) {
+pub async fn prune(runs: &Path, keep: usize) {
     let Ok(read) = std::fs::read_dir(runs) else {
         return;
     };
@@ -1717,6 +2275,33 @@ pub fn prune(runs: &Path, keep: usize) {
     dirs.sort();
     let extra = dirs.len().saturating_sub(keep);
     for (_, path) in dirs.into_iter().take(extra) {
+        if LIVE_RUNS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&path)
+        {
+            continue;
+        }
+        // A folder whose record still names containers is the only trace of them:
+        // it goes once they are removed, and stays while one is not.
+        let file = path.join("run.json");
+        if let Some(files) = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+            .filter(|f| !f.containers.is_empty())
+        {
+            let left = remove_containers(&files.containers).await;
+            if !left.is_empty() {
+                write_run_files(
+                    &file,
+                    &RunFiles {
+                        containers: left,
+                        ..files
+                    },
+                );
+                continue;
+            }
+        }
         let _ = std::fs::remove_dir_all(path);
     }
 }
