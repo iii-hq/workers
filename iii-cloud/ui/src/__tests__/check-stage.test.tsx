@@ -1507,6 +1507,30 @@ describe('small things the review found', () => {
     expect(region('Your agent')?.textContent).toContain('waiting for your answer')
   })
 
+  it('COMMAND_PRINTS_ENVIRONMENT is an ordinary agent-owned row', async () => {
+    const p = {
+      ...rcVariables[0],
+      id: 'p-env',
+      code: 'COMMAND_PRINTS_ENVIRONMENT',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'agent' as const,
+      title: 'The release command prints its whole environment',
+      detail: 'It would write every secret into the log.',
+      fix: 'Remove the `env` call from the script.',
+    }
+    const w = { ...rcFixing, agent: null, handoff_brief: null }
+    await stage({
+      ...w,
+      check: { ...w.check!, problems: [p], run: { ...w.check!.run!, status: 'passed' as const, error: null } },
+    })
+    expect(title()).toBe('1 for your agent to fix')
+    expect(region('Your agent')?.textContent).toContain('The release command prints its whole environment')
+    expect(region('Your agent')?.textContent).toContain('It would write every secret into the log.')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
