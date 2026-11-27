@@ -1311,6 +1311,9 @@ export function CheckStage(props: CheckStageProps) {
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
             {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
             {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}
+            {agentRun && (agentAsks(s) || (launch?.kind === 'asks' && launch.check === c?.id))
+              ? " Answer your agent's question in the chat first."
+              : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
             {tail.length ? <LogPath path={run?.log_path} /> : null}
           </>
@@ -1318,16 +1321,19 @@ export function CheckStage(props: CheckStageProps) {
         // The agent's to fix: its hand-off first (unless it is already on it); running again repeats the failure.
         acts: agentRun
           ? [
-              ...(agentWorking(s)
-                ? []
-                : [
-                    {
-                      label: sendLabel(s, 'ready', 'Fix with your agent'),
-                      // An agent that waits has a hand-off open: the worker puts what failed into its chat.
-                      onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
-                      disabled: !canAsk,
-                    },
-                  ]),
+              // A real question of the agent's is answered first: the hand-off would answer it for the person.
+              ...(agentAsks(s)
+                ? [{ label: 'Open chat', onClick: () => void openAgentChat(host, s) }]
+                : agentWorking(s)
+                  ? []
+                  : [
+                      {
+                        label: sendLabel(s, 'ready', 'Fix with your agent'),
+                        // An agent that waits has a hand-off open: the worker puts what failed into its chat.
+                        onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
+                        disabled: !canAsk,
+                      },
+                    ]),
               { label: 'Run again', onClick: checkAgain, disabled: running },
             ]
           : [{ label: 'Run again', onClick: checkAgain, disabled: running }],

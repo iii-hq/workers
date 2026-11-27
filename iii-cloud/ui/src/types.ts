@@ -423,6 +423,8 @@ export type HandoffResult = {
   reused?: boolean
   /** With `reused`: the worker put the latest check's problems and failed run into that chat (false: it could not, tell it there). */
   sent?: boolean
+  /** With `reused`: the agent has a real question open; nothing was sent, the person answers it first. */
+  asks?: boolean
   session_id?: string | null
 }
 

@@ -75,7 +75,13 @@ export async function handOff(
     // `sent: false`: the chat is open but nothing was put in it: the person tells it.
     const check = status.check?.id
     setLaunch(
-      made.sent === false ? { kind: 'told', check } : made.session_id ? { kind: 'sent', check } : { kind: 'waiting' },
+      made.asks
+        ? { kind: 'asks', check }
+        : made.sent === false
+          ? { kind: 'told', check }
+          : made.session_id
+            ? { kind: 'sent', check }
+            : { kind: 'waiting' },
     )
     return true
   }

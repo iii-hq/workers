@@ -1988,6 +1988,28 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(region('Your agent')?.textContent ?? '').not.toContain('The local run stopped at Release')
   })
 
+  it('a real question open: no "Fix with your agent", answer it first; a worker "asks" answer says the same', async () => {
+    const asking = { ...note, question: 'Which database should the migration use?', question_source: 'agent' as const }
+    const openScreen = vi.fn()
+    await stage(release(asking), {}, { openScreen })
+    expect(buttonsOf()).toEqual(['Open chat', 'Run again'])
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    expect(openScreen).toHaveBeenCalled()
+    // the status shows no question, but the worker says one is open
+    const reply = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: false, asks: true, session_id: 'sess-1' },
+    }
+    const quietNote = { ...note, check: undefined }
+    await stage({ ...release(quietNote), check: { ...release(note).check!, id: 'chk-asks' } }, reply, {
+      openScreen: vi.fn(),
+    })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
