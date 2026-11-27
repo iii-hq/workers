@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import tarfile
 from pathlib import Path
@@ -75,6 +76,7 @@ class TestDecide:
             "current": "0.4.0",
             "latest": "0.4.0",
             "published": {"0.3.0", "0.4.0"},
+            "pending": [],
             "same_as_latest": False,
             "messages": ["feat: x"],
             "bump": "auto",
@@ -82,41 +84,62 @@ class TestDecide:
         args.update(overrides)
         return release.decide(**args)
 
-    def test_first_publication_ships_package_json_as_is(self):
+    def test_first_publication_stages_package_json_as_is(self):
         plan = self.plan(current="0.1.0", latest=None, published=set(), same_as_latest=None)
-        assert (plan.action, plan.version) == ("publish", "0.1.0")
+        assert (plan.action, plan.version, plan.sync) == ("stage", "0.1.0", "")
 
     def test_changed_files_bump_from_the_commits(self):
-        assert self.plan().version == "0.5.0"
+        assert (self.plan().action, self.plan().version) == ("stage", "0.5.0")
         assert self.plan(messages=["fix: x"]).version == "0.4.1"
 
-    def test_unchanged_files_publish_nothing(self):
-        assert self.plan(same_as_latest=True).action == "none"
+    def test_unchanged_files_stage_nothing(self):
+        plan = self.plan(same_as_latest=True)
+        assert (plan.action, plan.sync) == ("none", "")
 
-    def test_registry_ahead_of_package_json_only_syncs(self):
+    def test_an_approved_stage_is_synced_into_package_json(self):
         plan = self.plan(current="0.4.0", latest="0.5.0", published={"0.4.0", "0.5.0"}, same_as_latest=True)
-        assert (plan.action, plan.version) == ("sync", "0.5.0")
+        assert (plan.action, plan.sync) == ("none", "0.5.0")
 
-    def test_registry_ahead_with_new_changes_bumps_from_the_registry(self):
+    def test_registry_ahead_with_new_changes_syncs_and_bumps_from_the_registry(self):
         plan = self.plan(current="0.4.0", latest="0.5.0", published={"0.4.0", "0.5.0"}, messages=["fix: x"])
-        assert (plan.action, plan.version) == ("publish", "0.5.1")
+        assert (plan.action, plan.version, plan.sync) == ("stage", "0.5.1", "0.5.0")
+
+    def test_a_pending_stage_blocks_the_next_one(self):
+        plan = self.plan(pending=["0.5.0"])
+        assert (plan.action, plan.version) == ("awaiting", "0.5.0")
+        assert self.plan(pending=["0.5.0"], bump="major").action == "awaiting"
 
     def test_hand_bump_ahead_of_the_registry_is_kept(self):
         plan = self.plan(current="1.0.0", same_as_latest=None)
-        assert (plan.action, plan.version) == ("publish", "1.0.0")
+        assert (plan.action, plan.version) == ("stage", "1.0.0")
 
     def test_hand_bump_already_published_but_not_latest_fails(self):
         with pytest.raises(ValueError, match="dist-tag"):
             self.plan(current="0.5.0", published={"0.4.0", "0.5.0"}, same_as_latest=None)
 
-    def test_forced_bump_publishes_even_unchanged_files(self):
+    def test_forced_bump_stages_even_unchanged_files(self):
         plan = self.plan(bump="patch", same_as_latest=None)
-        assert (plan.action, plan.version) == ("publish", "0.4.1")
+        assert (plan.action, plan.version) == ("stage", "0.4.1")
         assert self.plan(bump="major", current="1.0.0", latest="0.4.0", same_as_latest=None).version == "2.0.0"
 
     def test_forced_bump_never_reuses_a_published_version(self):
         with pytest.raises(ValueError, match="already"):
             self.plan(bump="patch", current="0.4.0", latest="0.4.0", published={"0.4.0", "0.4.1"})
+
+
+class TestPendingStages:
+    def test_only_open_stages_of_unpublished_versions_of_this_package(self):
+        items = [
+            {"id": "a", "packageName": "@x/p", "version": "0.5.0", "status": "pending"},
+            {"id": "b", "packageName": "@x/p", "version": "0.4.0", "status": "approved"},
+            {"id": "c", "packageName": "@x/p", "version": "0.6.0", "status": "Rejected"},
+            {"id": "d", "packageName": "@x/other", "version": "9.0.0", "status": "pending"},
+            {"id": "e", "packageName": "@x/p", "version": "0.10.0", "status": "awaiting_approval"},
+        ]
+        assert release.pending_stages(items, "@x/p", {"0.4.0"}) == ["0.5.0", "0.10.0"]
+
+    def test_nothing_staged(self):
+        assert release.pending_stages([], "@x/p", set()) == []
 
 
 class TestTarballContents:
@@ -201,6 +224,13 @@ class TestWorkflow:
         text = WORKFLOW.read_text(encoding="utf-8")
         assert "--message 'chore(release): sync package manifests to published versions'" in text
         assert "gh workflow run deploy-descriptor-index.yml --ref main" in text
+
+    def test_the_token_only_stages_and_an_hourly_run_syncs_approvals(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        assert workflow[True]["schedule"]
+        commands = [step.get("run", "") for step in workflow["jobs"]["publish"]["steps"]]
+        assert any("npm stage publish" in command for command in commands)
+        assert not any(re.search(r"\bnpm publish\b", command) for command in commands)
 
     def test_dispatch_values_are_never_rendered_into_shell_source(self):
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))

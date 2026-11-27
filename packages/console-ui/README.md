@@ -366,11 +366,14 @@ reads its types. A stale release teaches an API the console no longer has:
 
 Publishing is automatic:
 [`publish-npm-packages.yml`](../../.github/workflows/publish-npm-packages.yml)
-runs on every push to `main` that touches this folder, packs it, and publishes
-a new version when the packed files differ from npm's `latest`. The version
-comes from the conventional commits since the last release (`feat` → minor,
-`!` or `BREAKING CHANGE` → major, minor below 1.0.0, anything else → patch);
-the workflow then commits it to `package.json` and tags `@iii-dev/console-ui@<version>`.
+runs on every push to `main` that touches this folder, packs it, and stages
+a new version on npm when the packed files differ from npm's `latest`. The
+version comes from the conventional commits since the last release (`feat` →
+minor, `!` or `BREAKING CHANGE` → major, minor below 1.0.0, anything else →
+patch). The org token can only stage: a maintainer approves the stage with
+2FA (`npm stage approve <id>`, the id is in the run's summary), and the next
+run (at most an hour later) commits the version to `package.json` and tags
+`@iii-dev/console-ui@<version>`.
 To pick the version yourself, bump `version` in `package.json` in your PR; to
 force a bump or dry-run the plan, dispatch the workflow by hand.
 
