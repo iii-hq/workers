@@ -461,10 +461,15 @@ async fn refresh(ctx: &Arc<Ctx>) {
             }
         });
     }
-    // The pull request. An environment on its own branch has none.
-    if let Some(project) = ctx.store.read(|s| s.project.clone())
+    // The pull request: only production deploys by one. A stale one of an
+    // assisted environment must not show.
+    if !sel.env.production {
+        ctx.store.update(|s| {
+            s.pr = None;
+            s.pr_error = None;
+        });
+    } else if let Some(project) = ctx.store.read(|s| s.project.clone())
         && let Some(ws) = project.workspace.as_ref()
-        && !crate::project::tracks_other_branch(project.default_branch.as_deref(), &sel.env.branch)
     {
         let base = ctx.store.read(|s| s.check.as_ref().map(|c| c.base.clone()));
         let started = ctx.store.read(|s| {

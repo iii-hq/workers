@@ -3214,4 +3214,16 @@ async fn a_hand_off_and_the_lists_follow_the_environment_as_iii_cloud_has_it_now
         .await
         .unwrap();
     assert_eq!(again.env.branch, "iii-cloud/production");
+    // Production keeps its pull request; the same hand-off of a non-production environment gets none.
+    assert!(!brief_of(&h).pushes_directly);
+    h.ctx.store.update(|s| {
+        s.handoffs[0].env.as_mut().unwrap().production = false;
+    });
+    let b = brief_of(&h);
+    assert!(b.pushes_directly, "every environment but production");
+    assert!(
+        b.next_step.contains("production gets an assisted deploy") && !b.next_step.contains("main"),
+        "{}",
+        b.next_step
+    );
 }
