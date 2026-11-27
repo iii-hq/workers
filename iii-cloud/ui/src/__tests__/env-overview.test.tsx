@@ -251,6 +251,16 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(n.detail).not.toContain('Working')
   })
 
+  it('"Your agent is fixing N problems meanwhile" only while it works, not while it waits, stalls or asks', () => {
+    const needs = { ...needsYou }
+    for (const state of ['waiting', 'stalled', 'waiting_for_you'] as const) {
+      const ag = { ...agent(state), working_on: ['p1'], waiting_for: 'the deploy to end' }
+      expect(next(dev({ check: needs, agent: ag })).detail, state).not.toContain('is fixing')
+    }
+    const w = { ...agent('working'), working_on: ['p1'] }
+    expect(next(dev({ check: needs, agent: w })).detail).toContain('Your agent is fixing 1 problem meanwhile.')
+  })
+
   it.each([
     'waiting_for_you',
     'stalled',
