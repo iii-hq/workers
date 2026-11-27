@@ -67,6 +67,7 @@ type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation:
 
 interface AgentList {
   agents: AgentRow[];
+  inventory_status?: 'available' | 'unavailable';
   config_id?: string;
   external_visibility?: string | null;
   detail?: string;
@@ -373,7 +374,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     : listed.filter((row) => !row.external_only).map((row) => ({ ...row, short_id: undefined }));
   const activeConfirmation =
     confirmation &&
-    (!confirmation.row.external_only ||
+    ((!confirmation.row.external_only &&
+      !(confirmation.action === 'stop' && confirmation.row.kind === 'background')) ||
       (currentVisibility &&
         confirmation.generation === visibility &&
         rows.some((row) => row.id === confirmation.row.id)))
@@ -440,6 +442,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
 
   const stop = async (row: AgentRow) => {
     const background = row.kind === 'background';
+    // Even a worker-known background row uses a permission-gated host action.
+    const noticeRow = background ? { ...row, external_only: true } : row;
     setFailure(null);
     setStopping(row.id);
     try {
@@ -455,13 +459,21 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             { timeoutMs: ACTION_TIMEOUT_MS },
           );
       if (res?.stopped === false) {
-        reportFailure(row, res.reason ?? 'The session was not running.');
+        reportFailure(
+          noticeRow,
+          background
+            ? 'Could not stop the host session. Refresh and try again.'
+            : (res.reason ?? 'The session was not running.'),
+        );
         setStopping(null);
       } else {
-        announce(row, `Stopped ${nameOf(row)}`);
+        announce(noticeRow, `Stopped ${nameOf(row)}`);
       }
     } catch (err) {
-      reportFailure(row, errorMessage(err));
+      reportFailure(
+        noticeRow,
+        background ? 'Could not stop the host session. Refresh and try again.' : errorMessage(err),
+      );
       setStopping(null);
     }
     refresh();
@@ -597,6 +609,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       </ListGroup>
     ) : null;
 
+  const hostUnavailable = sessions.data?.inventory_status === 'unavailable';
   let body: React.ReactNode;
   if (sessions.error && !sessions.data) {
     body = (
@@ -604,7 +617,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         role="alert"
         variant="alert"
         headline="Could not list sessions"
-        detail={sessions.error}
+        detail="Refresh to try again."
         action={
           <Button size="sm" variant="ghost" onClick={refresh}>
             Retry
@@ -631,6 +644,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         ))}
       </div>
     );
+  } else if (rows.length === 0 && hostUnavailable) {
+    body = null; // The inventory warning below replaces the successful empty state.
   } else if (rows.length === 0) {
     body = (
       <EmptyState
@@ -731,7 +746,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
               role="alert"
               variant="warn"
               headline="Sessions may be out of date"
-              detail={sessions.error}
+              detail="Refresh to try again."
               action={
                 <Button size="sm" variant="ghost" onClick={refresh}>
                   Retry
@@ -743,7 +758,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       ) : null}
       <div className="claude-sessions-scroll">
         {body}
-        {currentVisibility && sessions.data?.detail ? (
+        {hostUnavailable ? (
+          <StatusPanel
+            role="status"
+            variant="warn"
+            headline="Host sessions unavailable"
+            detail="Refresh to try reading the terminal host again."
+          />
+        ) : currentVisibility && sessions.data?.detail ? (
           <p className="claude-sessions-note">{sessions.data.detail}</p>
         ) : null}
       </div>

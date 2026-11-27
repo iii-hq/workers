@@ -149,13 +149,7 @@ void settleStaleTurns(iii, ranSinceStart);
 // sink's sessions), what a session runs, who pays for it, and
 // the console page that opens it.
 const tracker = registerActivity(iii, emit);
-const agents = registerAgents(
-  iii,
-  () => inventoryHost(prepared),
-  () => holder.current.external_sessions,
-  tracker,
-  () => replyPermission.epoch,
-);
+const agents = registerAgents(iii, () => inventoryHost(prepared), tracker, replyPermission);
 registerExternalReplies(iii, replyPermission, agents.replyRow);
 registerTerminal(
   iii,

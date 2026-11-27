@@ -455,6 +455,29 @@ function barrier() {
 }
 
 describe('observation', () => {
+  it('advances bounded pages independently of later observer admissions', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // Escaped JSON fits one reply, not two.
+      await observe(s, 'first');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, large), answer(3, 2, large), answer(4, 3, large)),
+      );
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+      await observe(s, 'later');
+      await appendFile(s.file, lines(answer(5, 4, 'small')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'first')).toEqual(
+        [2, 3, 4, 5].map((n) => ({ id: recordId(n), text: n === 5 ? 'small' : large })),
+      );
+      expect(seen(s, 'later')).toEqual([{ id: recordId(5), text: 'small' }]);
+      expect(s.host.snapshots.every((packet) => Buffer.byteLength(packet) <= 48 * 1024)).toBe(true);
+    });
+  });
+
   it('keeps a physical boundary per accepted observer and targets only its new active replies', async () => {
     await withSyntheticHost(async (s) => {
       await appendFile(s.file, lines(answer(2, 1, 'old sibling')));
@@ -603,6 +626,45 @@ async function setPermission(s: SyntheticHost, enabled: boolean) {
 }
 
 describe('authorization', () => {
+  it.each([
+    'lookup',
+    'watch',
+    'poll',
+    'viewer',
+  ] as const)('recovers %s from a failed confirmation on the same connection', async (entry) => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'original');
+      const operation = () => {
+        if (entry === 'lookup') return lookup(s);
+        if (entry === 'watch') return observe(s, 'new');
+        if (entry === 'poll') return s.poll();
+        return s.client.call({
+          function_id: 'claude::agents::follow-snapshot',
+          payload: { claude_session_id: id },
+        });
+      };
+      s.host.config = async () => null;
+      const before = s.host.calls.length;
+      if (entry === 'poll') await operation();
+      else await expect(operation()).rejects.toThrow('reply access disabled');
+      expect(s.host.calls.slice(before).map((c) => c.function_id)).toContain('configuration::get');
+      expect(
+        s.host.calls.slice(before).filter((c) => /^(shell|state)::/.test(c.function_id)),
+      ).toEqual([]);
+      await appendFile(s.file, lines(answer(2, 1, 'during outage')));
+      s.host.config = async () => ({ external_sessions: true });
+      const recovered = await operation();
+      if (entry === 'lookup' || entry === 'viewer')
+        expect(recovered).toMatchObject({ last_reply: { id: recordId(2) } });
+      await s.poll(); // A new generation takes a fresh baseline, even if polling missed the outage.
+      expect(seen(s, 'original')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after recovery')));
+      await s.poll();
+      expect(seen(s, 'original')).toEqual([{ id: recordId(3), text: 'after recovery' }]);
+      if (entry === 'watch') expect(seen(s, 'new')).toEqual(seen(s, 'original'));
+    });
+  });
+
   it.each([
     'configuration:deleted',
     'configuration:registered',
@@ -809,7 +871,7 @@ describe('authorization', () => {
       const count = s.host.calls.length;
       await appendFile(s.file, lines(answer(4, 3, 'while disabled')));
       await s.poll();
-      expect(s.host.calls).toHaveLength(count);
+      expect(s.host.calls.slice(count).map((c) => c.function_id)).toEqual(['configuration::get']);
       await setPermission(s, true);
       await s.poll();
       expect(seen(s, 'A')).toEqual([]);

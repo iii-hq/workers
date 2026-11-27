@@ -183,6 +183,38 @@ async function testSessionActions(code) {
     return { document, click, text, shortcut, follow, focus, until };
   }
 
+  for (const refuseConfigWatch of [false, true]) {
+    await test(`distinguishes partial, unavailable and empty inventory with ${refuseConfigWatch ? 'unconfirmed' : 'confirmed'} access`, async (t) => {
+      const { click, document, text, shortcut, until } = setup(t, { refuseConfigWatch });
+      const choose = (value) => {
+        const select = document.querySelector('select');
+        select.value = value;
+        select.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
+      };
+      await text('Console original');
+      choose('empty');
+      await text('No sessions listed');
+      assert.doesNotMatch(document.body.textContent, /Host sessions unavailable/);
+      choose('unavailable');
+      await text('Host sessions unavailable');
+      assert.doesNotMatch(document.body.textContent, /No sessions listed|private-inventory/);
+      choose('partial');
+      await text('Worker run');
+      assert.match(document.body.textContent, /Host sessions unavailable/);
+      shortcut('KeyR');
+      await click('Refresh sessions');
+      await until(() => document.querySelector('[aria-label="Message Worker run"]'));
+      assert.match(document.body.textContent, /Host sessions unavailable/);
+      assert.doesNotMatch(
+        document.body.textContent,
+        /No sessions listed|private-inventory|external-only/,
+      );
+      choose('empty');
+      await text('No sessions listed');
+      assert.doesNotMatch(document.body.textContent, /Host sessions unavailable|private-inventory/);
+    });
+  }
+
   await test('hides replies on the config event without waiting for refresh or polling', async (t) => {
     const { follow, shortcut, text, document } = setup(t, { heartbeat: false });
     await follow();

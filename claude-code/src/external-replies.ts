@@ -1,7 +1,7 @@
 import { type Call, type IIIClient, type Observer, ObserveRejection } from 'iii-sdk';
 import { z } from 'zod';
 import type { AgentRow } from './agents.js';
-import type { ReplyPermission } from './configuration.js';
+import { type ReplyAccess, replyLease } from './configuration.js';
 import { jsonSchema } from './run.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
 
@@ -34,7 +34,7 @@ type Group = {
  * share a poll; a later admission never advances an earlier observer. */
 export function registerExternalReplies(
   iii: IIIClient,
-  permission: ReplyPermission,
+  permission: ReplyAccess,
   rowFor: Row,
   schedule: Schedule = schedulePoll,
 ) {
@@ -43,28 +43,16 @@ export function registerExternalReplies(
   process.env.III_DISABLE_TRACE_PAYLOADS = '1';
   const groups = new Map<string, Group>();
   let count = 0;
-  const guard = (epoch: number | null) => {
-    if (epoch === null || epoch !== permission.epoch) throw new Error('reply access disabled');
-    return epoch;
-  };
-  // Check also on rejection: even a negative inventory result reveals existence.
-  async function authorized<T>(epoch: number, read: () => Promise<T>) {
-    guard(epoch);
-    try {
-      return await read();
-    } finally {
-      guard(epoch);
-    }
-  }
+  const acquire = async () => replyLease(permission, await permission.confirm());
 
   iii.registerFunction(
     'claude::agents::get',
     async (args: unknown) => {
-      const epoch = guard(permission.epoch);
+      const lease = await acquire();
       const id = sessionId(args);
-      const { row, env } = await authorized(epoch, () => rowFor(id));
-      const { replies } = await authorized(epoch, () => readTranscript(iii, env, id, 'last'));
-      guard(epoch);
+      const { row, env } = await lease.read(() => rowFor(id));
+      const { replies } = await lease.read(() => readTranscript(iii, env, id, 'last'));
+      lease.check();
       return {
         claude_session_id: id,
         name: row.name ?? null,
@@ -134,8 +122,8 @@ export function registerExternalReplies(
   }
 
   async function poll(id: string, g: Group) {
-    const epoch = permission.epoch;
-    if (epoch === null) return;
+    const lease = await acquire();
+    const { epoch } = lease;
     const batches = new Map<string, Array<[string, Watch]>>();
     for (const entry of g.watches) {
       const w = entry[1];
@@ -146,15 +134,15 @@ export function registerExternalReplies(
       batches.set(cursor, batch);
     }
     if (!batches.size) return;
-    const { env } = await authorized(epoch, () => rowFor(id));
+    const { env } = await lease.read(() => rowFor(id));
     for (const [cursor, batch] of batches) {
       if (!batch.some(([key, w]) => g.watches.get(key) === w)) continue;
-      const next = await authorized(epoch, () =>
+      const next = await lease.read(() =>
         readTranscript(iii, env, id, cursor ? 'since' : 'baseline', cursor),
       );
       for (const [key, w] of batch) {
         for (const reply of next.replies) {
-          guard(epoch);
+          lease.check();
           if (g.watches.get(key) !== w) break;
           requireOpenSocket();
           await iii.call({
@@ -197,21 +185,21 @@ export function registerExternalReplies(
       response_format: jsonSchema(Event),
     })
     .onObserverAdded(async (obs) => {
-      const epoch = guard(permission.epoch);
+      const lease = await acquire();
       const id = sessionId(obs.args);
       if (count >= 256) throw new ObserveRejection('OBSERVER_LIMIT', 'reply observer limit');
       const g: Group = groups.get(id) ?? { watches: new Map(), tail: Promise.resolve() };
-      const w: Watch = { epoch, cursor: '', active: false };
+      const w: Watch = { epoch: lease.epoch, cursor: '', active: false };
       g.watches.set(obs.id, w);
       groups.set(id, g);
       count++;
       try {
         await serialize(g, async () => {
-          const { env } = await authorized(epoch, () => rowFor(id));
-          const next = await authorized(epoch, () => readTranscript(iii, env, id, 'baseline'));
+          const { env } = await lease.read(() => rowFor(id));
+          const next = await lease.read(() => readTranscript(iii, env, id, 'baseline'));
           w.cursor = next.cursor;
         });
-        guard(epoch);
+        lease.check();
         void obs.accepted().then(
           () => {
             if (g.watches.get(obs.id) !== w) return;

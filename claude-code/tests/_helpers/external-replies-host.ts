@@ -152,7 +152,11 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
         if (env?.CLAUDE_CONFIG_DIR !== root) {
           throw new Error('missing synthetic configuration directory');
         }
-        if (payload.command === "'fixture-cli' agents --json --all") {
+        if (
+          ["'fixture-cli' agents --json --all", "'fixture-cli' agents --json"].includes(
+            String(payload.command),
+          )
+        ) {
           await host.beforeInventory();
           return {
             exit_code: host.inventoryOK ? 0 : 1,
@@ -160,6 +164,9 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
             stderr: 'host diagnostic',
           };
         }
+        // Record the request only. Never invoke a real CLI action.
+        if (payload.command === "'fixture-cli' stop deadbeef")
+          return { exit_code: 0, stdout: '', stderr: '' };
         if (payload.command !== 'python3') throw new Error('unexpected host command');
         await host.beforeRead();
         const r = spawnSync('python3', payload.args as string[], {
@@ -215,9 +222,8 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
       detail: '',
       workspace: '',
     }),
-    () => external,
     { has: () => false },
-    () => permission.epoch,
+    permission,
   );
   const register = () =>
     registerExternalReplies(iii, permission, agents.replyRow, (f) => {

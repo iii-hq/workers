@@ -104,12 +104,37 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
+export type ReplyAccess = { readonly epoch: number | null; confirm(): Promise<number | null> };
+
+/** Bind a series of reads to one grant. Even a rejected inventory lookup can
+ * disclose whether a session exists; check the grant before and after each read. */
+export function replyLease(access: ReplyAccess, epoch: number | null) {
+  const check = () => {
+    if (epoch === null || epoch !== access.epoch) throw new Error('reply access disabled');
+    return epoch;
+  };
+  return {
+    epoch: check(),
+    check,
+    async read<T>(read: () => Promise<T>) {
+      check();
+      try {
+        return await read();
+      } finally {
+        check();
+      }
+    },
+  };
+}
+
 /** A lease on a confirmed live value, never on a seed or a fallback. Starting a
  * refresh revokes outstanding leases before waiting on the configuration worker. */
 export class ReplyPermission {
   private generation = 0;
   private currentEpoch: number | null = null;
   private refreshConnection: number | null = null;
+  private reloading = false;
+  private confirmation?: Promise<number | null>;
   private watch?: { iii: IIIClient; handle: ObserverHandle };
 
   trackWatch(iii: IIIClient, handle: ObserverHandle) {
@@ -140,10 +165,7 @@ export class ReplyPermission {
 
   get epoch() {
     const connection = this.watchConnection();
-    if (connection !== this.refreshConnection) {
-      if (connection === null) this.invalidate();
-      else if (this.watch) void this.refresh(this.watch.iii);
-    }
+    if (connection !== this.refreshConnection) this.invalidate();
     return this.currentEpoch;
   }
 
@@ -151,6 +173,31 @@ export class ReplyPermission {
     this.generation++;
     this.currentEpoch = null;
     this.refreshConnection = null;
+    this.reloading = false;
+    this.confirmation = undefined;
+  }
+
+  // An explicit probe, admission or poll can recover on the same connection.
+  // Concurrent readers share a probe; a config event always supersedes it.
+  async confirm(): Promise<number | null> {
+    const connection = this.watchConnection();
+    if (connection !== this.refreshConnection) this.invalidate();
+    if (!this.watch || connection === null || this.reloading) return null;
+    if (!this.confirmation) {
+      const generation = this.generation;
+      this.refreshConnection = connection;
+      this.confirmation = fetchRuntime(this.watch.iii).then((runtime) => {
+        if (generation !== this.generation) return null;
+        this.confirmation = undefined;
+        if (connection !== this.watchConnection() || runtime?.external_sessions !== true) {
+          this.invalidate();
+          return null;
+        }
+        this.currentEpoch = generation;
+        return generation;
+      });
+    }
+    return this.confirmation;
   }
 
   async refresh(iii: IIIClient) {
@@ -158,7 +205,9 @@ export class ReplyPermission {
     const generation = this.generation;
     const connection = this.watchConnection();
     this.refreshConnection = connection;
+    this.reloading = true;
     const runtime = await fetchRuntime(iii);
+    if (generation === this.generation) this.reloading = false;
     if (
       generation === this.generation &&
       runtime?.external_sessions === true &&

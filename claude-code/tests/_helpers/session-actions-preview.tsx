@@ -52,6 +52,15 @@ const notifyConfig = () =>
   emit('configuration::on-updated', { id: configId, event_type: 'configuration:updated' });
 let visibility = 1;
 const externalVisibility = () => (allowed ? `fixture-${visibility}` : null);
+type Listing = 'normal' | 'empty' | 'unavailable' | 'partial';
+let listing: Listing = 'normal';
+const workerRow = {
+  id: 'fixture-worker',
+  name: 'Worker run',
+  kind: 'headless',
+  status: 'done',
+  alive: false,
+};
 let sourceAvailable = true;
 let backgroundFinished = false;
 const currentRow = (row: (typeof rows)[number]) =>
@@ -154,18 +163,26 @@ const host = {
           document.getElementById('root')?.setAttribute('data-inventory-waiting', 'true');
           await holdVisibilityList;
         }
+        const unavailable = listing === 'partial' || listing === 'unavailable';
         return {
-          agents: rows
-            .map((row) =>
-              row === rows[0] && orderingScenario
-                ? { ...row, status: 'waiting', waiting_for: 'permission confirmation' }
-                : currentRow(row),
-            )
-            .filter(
-              (row) =>
-                (allowed || !row.external_only) &&
-                (p.all || row.kind !== 'background' || row.alive),
-            ),
+          inventory_status: unavailable ? 'unavailable' : 'available',
+          ...(unavailable ? { detail: 'synthetic diagnostic at /fixture/private-inventory' } : {}),
+          agents:
+            listing === 'partial'
+              ? [workerRow]
+              : listing !== 'normal'
+                ? []
+                : rows
+                    .map((row) =>
+                      row === rows[0] && orderingScenario
+                        ? { ...row, status: 'waiting', waiting_for: 'permission confirmation' }
+                        : currentRow(row),
+                    )
+                    .filter(
+                      (row) =>
+                        (allowed || !row.external_only) &&
+                        (p.all || row.kind !== 'background' || row.alive),
+                    ),
           ...(p.include_config_id
             ? { config_id: configId, external_visibility: externalVisibility() }
             : {}),
@@ -264,6 +281,10 @@ function Preview() {
       });
       return true;
     },
+  };
+  const changeListing = (value: Listing) => {
+    listing = value;
+    emit('claude::terminal::activity', {});
   };
   const deliver = () => {
     if (allowed) {
@@ -385,6 +406,18 @@ function Preview() {
         >
           <header className="flex flex-wrap items-center gap-3 border-b p-2 text-sm">
             <strong>Synthetic controls</strong>
+            <label>
+              Inventory fixture{' '}
+              <select
+                defaultValue="normal"
+                onChange={(e) => changeListing(e.currentTarget.value as Listing)}
+              >
+                <option value="normal">Listed sessions</option>
+                <option value="empty">Empty</option>
+                <option value="unavailable">Unavailable</option>
+                <option value="partial">Unavailable with worker run</option>
+              </select>
+            </label>
             <button type="button" onClick={deliver}>
               Deliver reply (Alt+U)
             </button>

@@ -9,7 +9,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import { CONFIG_ID, fetchRuntime } from './configuration.js';
+import { CONFIG_ID, type ReplyAccess, replyLease } from './configuration.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
 import { readTranscript, Reply } from './terminal/external-transcript.js';
@@ -178,7 +178,12 @@ export function mergeInventory(input: {
       alive: typeof row.pid === 'number',
       claude_session_id: sessionId,
       // Only where claude::agents::stop would act on it.
-      ...(input.external && kind === 'background' && str(row.id) ? { short_id: str(row.id) } : {}),
+      ...(input.external &&
+      kind === 'background' &&
+      typeof row.id === 'string' &&
+      SHORT_ID.test(row.id)
+        ? { short_id: str(row.id) }
+        : {}),
       ...(pty ? { pty_session_id: pty } : {}),
       ...(str(row.name) ? { name: str(row.name) } : {}),
       ...(str(row.cwd) ? { cwd: str(row.cwd) } : {}),
@@ -269,9 +274,8 @@ async function claudePtys(iii: IIIClient): Promise<PtyRow[] | null> {
 export function registerAgents(
   iii: IIIClient,
   current: () => Prepared,
-  external: () => boolean,
   tracker: { has(sessionId: string): boolean },
-  visibilityEpoch: () => number | null,
+  access: ReplyAccess,
 ): {
   replyRow: (id: string) => Promise<{ row: AgentRow; env: Prepared['env'] }>;
   /** How a terminal opens a listed session; throws why one cannot be. */
@@ -331,15 +335,11 @@ export function registerAgents(
     'claude::agents::visibility',
     async (payload: unknown) => {
       const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
-      const epoch = visibilityEpoch();
-      if (epoch === null) return { external_visibility: null };
-      // A browser notice may precede the worker's reload, or arrive after it.
-      // Check the live entry as well as the worker lease when the order is unclear.
-      if (confirm_live_config) {
-        const runtime = await fetchRuntime(iii);
-        if (runtime?.external_sessions !== true || epoch !== visibilityEpoch())
-          return { external_visibility: null };
-      }
+      // Retry an uncertain grant on the same acknowledged connection. A normal
+      // heartbeat otherwise only checks the watch, not the host inventory.
+      const epoch =
+        confirm_live_config || access.epoch === null ? await access.confirm() : access.epoch;
+      if (epoch === null || epoch !== access.epoch) return { external_visibility: null };
       return {
         external_visibility: visibilityToken(epoch),
         ...(confirm_live_config ? { live_config_confirmed: true } : {}),
@@ -363,13 +363,13 @@ export function registerAgents(
     'claude::agents::list',
     async (payload: unknown) => {
       const { all, include_config_id } = ListPayloadSchema.parse(payload ?? {});
-      const epoch = visibilityEpoch();
+      const epoch = await access.confirm();
       const { merge, detail } = await inventory(all === true, {
         showAll: false,
         markExternal: include_config_id,
       });
       // Recheck at publication; merge the same snapshot without external rows if revoked.
-      const currentEpoch = visibilityEpoch();
+      const currentEpoch = access.epoch;
       const authorized = epoch !== null && epoch === currentEpoch;
       const { agents, hidden } = merge(authorized);
       const details = detail ? [authorized ? detail : INVENTORY_UNAVAILABLE] : [];
@@ -380,6 +380,7 @@ export function registerAgents(
       }
       return {
         agents,
+        inventory_status: detail ? 'unavailable' : 'available',
         ...(include_config_id
           ? {
               config_id: CONFIG_ID,
@@ -396,6 +397,7 @@ export function registerAgents(
       response_format: jsonSchema(
         z.object({
           agents: z.array(AgentRowSchema),
+          inventory_status: z.enum(['available', 'unavailable']),
           config_id: z.string().optional(),
           external_visibility: visibilitySchema.optional(),
           detail: z.string().optional(),
@@ -409,12 +411,9 @@ export function registerAgents(
     async (payload: unknown) => {
       const { id } = StopPayloadSchema.parse(payload ?? {});
       const refuse = (reason: string) => ({ id, stopped: false, reason });
-      if (!external()) {
-        return refuse('external_sessions is off: this worker does not stop host sessions');
-      }
-      const epoch = visibilityEpoch();
-      if (epoch === null) return refuse(INVENTORY_UNAVAILABLE);
-      const authorized = () => epoch === visibilityEpoch();
+      const epoch = await access.confirm();
+      const authorized = () => epoch !== null && epoch === access.epoch;
+      if (!authorized()) return refuse(INVENTORY_UNAVAILABLE);
       const prepared = current();
       // Fresh, never cached: the short id is what `claude stop` acts on, and
       // a stale one could name a session that has since been replaced.
@@ -453,12 +452,11 @@ export function registerAgents(
   );
 
   const resolveOpen: ResolveOpen = async (id, request) => {
-    const epoch = visibilityEpoch();
+    const epoch = access.epoch;
     const { merge, detail } = await inventory(true, {
       showAll: epoch !== null,
     });
-    if (epoch !== visibilityEpoch())
-      throw new Error('session visibility changed; refresh the list');
+    if (epoch !== access.epoch) throw new Error('session visibility changed; refresh the list');
     if (detail)
       throw new Error(request || epoch === null ? 'session inventory unavailable' : detail);
     const { agents } = merge();
@@ -538,20 +536,8 @@ export function registerAgents(
   iii.registerFunction(
     'claude::agents::follow-snapshot',
     async (payload: unknown) => {
-      const epoch = visibilityEpoch();
-      const guard = () => {
-        if (epoch === null || epoch !== visibilityEpoch()) throw new Error('reply access disabled');
-        return epoch;
-      };
-      async function authorized<T>(read: () => Promise<T>) {
-        guard();
-        try {
-          return await read();
-        } finally {
-          guard();
-        }
-      }
-      const generation = guard();
+      const lease = replyLease(access, await access.confirm());
+      const generation = lease.epoch;
       const { claude_session_id: id, cursor } = followArgs.parse(payload);
       let boundary: string | undefined;
       if (cursor !== undefined) {
@@ -563,16 +549,16 @@ export function registerAgents(
           throw new Error('invalid follow cursor');
         boundary = parsed[1];
       }
-      const { row, env } = await authorized(() => replyRow(id));
+      const { row, env } = await lease.read(() => replyRow(id));
       const since = boundary
-        ? await authorized(() => readTranscript(iii, env, id, 'since', boundary))
+        ? await lease.read(() => readTranscript(iii, env, id, 'recent', boundary))
         : undefined;
       // A sibling may still have an older reply. Only combine results from
       // the same snapshot; another event or heartbeat can retry a moving file.
       const latest = since?.replies.length
         ? since
-        : await authorized(() => readTranscript(iii, env, id, 'last'));
-      guard();
+        : await lease.read(() => readTranscript(iii, env, id, 'last'));
+      lease.check();
       if (since && since.cursor !== latest.cursor) return { retry: true };
       return {
         claude_session_id: id,

@@ -70,9 +70,13 @@ function setup(
     const agents = registerAgents(
       iii,
       () => ({ ...host, args: [], workspace: '' }),
-      () => true,
       { has: () => false },
-      visibilityEpoch,
+      {
+        get epoch() {
+          return visibilityEpoch();
+        },
+        confirm: async () => visibilityEpoch(),
+      },
     );
     resolveOpen.mockImplementation(agents.resolveOpen);
   }

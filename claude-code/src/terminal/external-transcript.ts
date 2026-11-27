@@ -11,7 +11,7 @@ const MAX_STDOUT_BYTES = 4 * Math.ceil((MAX_RESULT_BYTES + TAG_BYTES) / 3);
 // The IDE's pinned Rust SDK redacts env values with `secret` in the key,
 // but records stdout verbatim. Only the one-use pad goes in that field.
 const SECRET_PAD_ENV = 'CLAUDE_REPLY_SECRET_PAD';
-type ReadMode = 'last' | 'baseline' | 'since';
+type ReadMode = 'last' | 'baseline' | 'since' | 'recent';
 
 // Runs on the *terminal* host. Paths and conversation records never leave it.
 // -I -S excludes user configuration, sitecustomize and PYTHONPATH from startup.
@@ -155,7 +155,7 @@ def visible(content):
     return '\n'.join(part['text'] for part in content if part['type'] == 'text' and part['text'].strip())
 
 def scan(sid, mode, previous):
-    require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since'))
+    require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since', 'recent'))
     with ExitStack() as stack:
         f = transcript(sid, stack)
         info = os.fstat(f.fileno())
@@ -170,7 +170,7 @@ def scan(sid, mode, previous):
         digest = hashlib.sha256(memoryview(data)[:offset]).hexdigest()
         return identity + ':' + str(offset) + ':' + digest
     boundary = end
-    if mode == 'since':
+    if mode in ('since', 'recent'):
         offset = int(previous.split(':')[2])
         if 0 <= offset <= end and cursor(offset) == previous:
             boundary = offset
@@ -210,9 +210,28 @@ def scan(sid, mode, previous):
             text = visible(content)
             if text.strip() and (mode == 'last' or pos > boundary):
                 if mode != 'last' or not replies:
-                    replies.append({'id': leaf, 'text': text})
+                    replies.append((pos, {'id': leaf, 'text': text}))
         leaf = parent
-    out = json.dumps({'cursor': cursor(end), 'replies': replies[::-1]}, separators=(',', ':'))
+    # Validate the entire chain before selecting a page. Watches start at the
+    # oldest unread reply; a viewer needs the newest suffix and the actual tip.
+    encode = lambda obj: json.dumps(obj, separators=(',', ':'))
+    parts, size, offset = [], 0, end
+    envelope = len(encode({'cursor': identity + '::' + '0' * 64, 'replies': []}))
+    for pos, reply in (reversed(replies) if mode == 'since' else replies):
+        part = encode(reply)
+        candidate = pos if mode == 'since' else end
+        added = len(part) + bool(parts)
+        if envelope + len(str(candidate)) + size + added > MAX_RESULT:
+            require(parts)  # A single unrepresentable reply is not an empty page.
+            break
+        parts.append(part)
+        size += added
+        offset = candidate
+    if len(parts) == len(replies) and envelope + len(str(end)) + size <= MAX_RESULT:
+        offset = end
+    if mode == 'recent':
+        parts.reverse()
+    out = '{"cursor":' + encode(cursor(offset)) + ',"replies":[' + ','.join(parts) + ']}'
     require(len(out) <= MAX_RESULT)
     return out
 

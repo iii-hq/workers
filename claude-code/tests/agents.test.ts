@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
-import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
+import { observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
   deferred,
@@ -104,7 +104,7 @@ describe('mergeInventory', () => {
 
   it('maps background sessions, alive only with a pid', () => {
     const { agents } = merge([
-      background('b-work', 'working', { pid: 7, status: 'busy' }),
+      background('b-work', 'working', { id: 'abcdef01', pid: 7, status: 'busy' }),
       background('b-block', 'blocked', { pid: 8, waitingFor: 'input' }),
       background('b-done', 'done'),
       background('b-fail', 'failed'),
@@ -115,7 +115,7 @@ describe('mergeInventory', () => {
       kind: 'background',
       status: 'busy',
       alive: true,
-      short_id: 'b-work',
+      short_id: 'abcdef01',
     });
     expect(byId(agents, 'b-block')).toMatchObject({ status: 'waiting', waiting_for: 'input' });
     expect(byId(agents, 'b-done')).toMatchObject({ status: 'done', alive: false });
@@ -284,9 +284,15 @@ function host(
   const agents = registerAgents(
     fake.iii,
     () => options.prepared ?? prepared,
-    () => options.external ?? false,
     { has: (id) => tracked.has(id) },
-    options.visibilityEpoch ?? (() => (options.external ? 1 : null)),
+    {
+      get epoch() {
+        return options.visibilityEpoch ? options.visibilityEpoch() : options.external ? 1 : null;
+      },
+      async confirm() {
+        return this.epoch;
+      },
+    },
   );
   return { ...fake, ...agents };
 }
@@ -347,33 +353,60 @@ describe('claude::agents::list', () => {
     expect(await probe()).not.toEqual(visible);
   });
 
-  it('reconfirms a visibility lease against the live setting without listing sessions', async () => {
-    let epoch: number | null = 1;
-    const fake = host(ok([]), { visibilityEpoch: () => epoch });
-    const visibility = fake.registered.get('claude::agents::visibility');
-    const probe = () => visibility?.({ confirm_live_config: true });
-    const key = `configuration/${CONFIG_ID}`;
-
-    const lease = (await visibility?.({})) as { external_visibility: string };
-    expect(lease).toEqual({ external_visibility: expect.any(String) });
-    expect(await probe()).toEqual({ external_visibility: null });
-    fake.state.set(key, { external_sessions: false });
-    expect(await probe()).toEqual({ external_visibility: null });
-    fake.state.set(key, { external_sessions: 'true' });
-    expect(await probe()).toEqual({ external_visibility: null });
-    fake.state.set(key, { external_sessions: true });
-    expect(await probe()).toEqual({ ...lease, live_config_confirmed: true });
-
-    const pending = probe();
-    epoch = 2;
-    expect(await pending).toEqual({ external_visibility: null });
-    expect(await probe()).toEqual({
-      external_visibility: expect.any(String),
-      live_config_confirmed: true,
+  it('reconfirms the live setting without inventory and never restores a superseded lease', async () => {
+    await withSyntheticHost(async (s) => {
+      const probe = (confirm = true) =>
+        s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: { confirm_live_config: confirm },
+        });
+      const lease = await probe(false);
+      expect(lease).toEqual({ external_visibility: expect.any(String) });
+      expect(await probe()).toEqual({ ...lease, live_config_confirmed: true });
+      for (const value of [null, { external_sessions: false }, { external_sessions: 'true' }]) {
+        s.host.config = async () => value;
+        expect(await probe()).toEqual({ external_visibility: null });
+      }
+      s.host.config = async () => ({ external_sessions: true });
+      const recovered = await probe();
+      expect(recovered).toEqual({
+        external_visibility: expect.any(String),
+        live_config_confirmed: true,
+      });
+      expect(recovered).not.toEqual({ ...lease, live_config_confirmed: true });
+      const response = deferred<unknown>();
+      s.host.config = () => response.promise;
+      const stale = probe();
+      s.host.config = async () => ({ external_sessions: false });
+      await s.refresh();
+      response.resolve({ external_sessions: true });
+      expect(await stale).toEqual({ external_visibility: null });
+      expect(await probe(false)).toEqual({ external_visibility: null });
+      expect(
+        s.host.calls.filter(
+          (c) =>
+            c.function_id !== 'configuration::get' &&
+            c.function_id !== 'claude::agents::visibility',
+        ),
+      ).toEqual([]);
     });
-    epoch = null;
-    expect(await probe()).toEqual({ external_visibility: null });
-    expect(fake.calls.map((call) => call.function_id)).toEqual(Array(6).fill('configuration::get'));
+  });
+
+  it('distinguishes empty and unavailable listings without external permission', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.cli.length = 0;
+      expect(await s.list()).toMatchObject({ agents: [], inventory_status: 'available' });
+      s.host.inventoryOK = false;
+      expect(await s.list()).toMatchObject({
+        agents: [],
+        inventory_status: 'unavailable',
+        detail: 'Terminal host inventory unavailable',
+      });
+      s.host.records.push(record('owned', 'done'));
+      const partial = await s.list();
+      expect(partial).toMatchObject({ agents: [{ id: 'owned' }], inventory_status: 'unavailable' });
+      expect(JSON.stringify(partial)).not.toContain('host diagnostic');
+    }, false);
   });
 
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
@@ -556,7 +589,7 @@ describe('claude::agents::stop', () => {
       'external_sessions is off',
       [background(BG, 'working', { pid: 7 })],
       false,
-      'external_sessions is off',
+      'Terminal host inventory unavailable',
     ],
     ['an unknown id', [], true, 'no background session with that id'],
     [
@@ -578,6 +611,39 @@ describe('claude::agents::stop', () => {
     expect(res.stopped).toBe(false);
     expect(res.reason).toContain(reason);
     expect(commands(fake).some((c) => String(c).includes(' stop '))).toBe(false);
+  });
+
+  it('lists and acts on a fresh grant even if ordinary settings still say off', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.config = async () => ({ external_sessions: false });
+      await s.configEvent('configuration:updated');
+      s.host.config = async () => ({ external_sessions: true });
+      expect(s.externalSetting).toBe(false);
+      s.host.cli[0] = {
+        kind: 'background',
+        sessionId: s.claude_session_id,
+        pid: 7,
+        id: 'deadbeef',
+      };
+      expect(await s.list()).toMatchObject({ agents: [{ short_id: 'deadbeef' }] });
+      const action = () =>
+        s.client.call({
+          function_id: 'claude::agents::stop',
+          payload: { id: s.claude_session_id },
+        });
+      expect(await action()).toMatchObject({ stopped: true });
+      s.host.config = async () => null;
+      s.host.calls.length = 0;
+      expect(await action()).toMatchObject({
+        stopped: false,
+        reason: 'Terminal host inventory unavailable',
+      });
+      expect(s.host.calls.map((c) => c.function_id)).toEqual([
+        'claude::agents::stop',
+        'configuration::get',
+      ]);
+      expect((await s.list()).agents).toEqual([]);
+    });
   });
 
   it('refuses before inventory when live permission is unconfirmed', async () => {
@@ -690,6 +756,39 @@ describe('claude::agents::stop', () => {
 
 describe('claude::agents::follow-snapshot', () => {
   const function_id = 'claude::agents::follow-snapshot';
+
+  it('returns the newest bounded suffix and a tip cursor even when the burst needs several watch pages', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, cursor },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string };
+          replies: Array<{ id: string }>;
+        }>;
+      const baseline = await snapshot();
+      const text = 'x'.repeat(30000);
+      await appendFile(
+        s.file,
+        [2, 3, 4]
+          .map((n) => JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text)))
+          .join('\n') +
+          '\n' +
+          JSON.stringify(transcriptRecord(5, 4, 'assistant', 'latest')) +
+          '\n',
+      );
+      const page = await snapshot(baseline.cursor);
+      expect(page.last_reply).toEqual({ id: recordId(5), text: 'latest' });
+      expect(page.replies.map((r) => r.id)).toEqual([recordId(4), recordId(5)]);
+      expect(await snapshot(page.cursor)).toMatchObject({
+        replies: [],
+        last_reply: page.last_reply,
+      });
+      expect(s.host.snapshots.every((packet) => Buffer.byteLength(packet) <= 48 * 1024)).toBe(true);
+    });
+  });
 
   it('reads an ordered burst and excludes a branch abandoned since the first view', async () => {
     await withSyntheticHost(async ({ client, claude_session_id, file }) => {

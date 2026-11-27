@@ -266,7 +266,7 @@ one row per session:
 
 That output has no versioned contract, so a value this worker does not know
 reads as `unknown`, and a failed or unreadable listing leaves only the
-headless rows, with the reason in `detail`. By default a host session is
+headless rows. Check `inventory_status`: `available` with no rows means the list is empty; `unavailable` means the host could not be read. The console shows a generic warning alongside any worker rows. By default a host session is
 listed only when this worker saw it (its hooks reached
 `claude::terminal::activity`) or it runs in a console terminal; the others are
 counted in `detail`. A confirmed live `external_sessions: true` setting is
@@ -294,7 +294,7 @@ copy. Use the original terminal to continue the conversation.
 
 Close the viewer to stop following. ADE uses `claude::agents::on-reply` as a
 wakeup and reads the active branch before showing text. A bounded snapshot also
-catches replies completed after the first view but before the observer starts.
+catches replies completed after the first view but before the observer starts. If a burst exceeds one snapshot, the viewer shows the newest replies that fit, ending at the latest active-branch reply.
 This is not a transcript archive or a durable feed. If access or the source is
 lost, the viewer clears the reply and shows that replies are unavailable.
 
@@ -322,7 +322,7 @@ The reader sends a protected result rather than plaintext on the IDE exec path. 
 
 The watch argument is `{ claude_session_id: string }` (a full UUID). Admission rejects with `OBSERVER_LIMIT` at 256 watches, including pending admissions. A closed gate or failed baseline rejects with `OBSERVE_REJECTED`; an invalid argument can be rejected by the engine as `INVALID_ARGS`. Targets receive the call fields they capture: with `capture: ['output']`, `output` contains `{ claude_session_id, reply: { id, text } }`. The worker dispatches directly to the matching observer while permission is current; its private poller receives no result.
 
-Each watch starts at its **own** successful baseline; it does not send the current answer. Lookup and subscribe are not atomic: an answer between them can be missed. Polling is best effort, not a durable feed. Only newly appended replies still on the active branch at a successful poll are delivered. Failed reads leave the cursor unchanged; replacement, truncation or prefix changes establish a new baseline without replay. A closed or uncertain live setting pauses watches; renewed permission takes a fresh baseline. Worker restarts, branch switches, permission changes, limits and delivery failures can leave gaps. Use the reply’s record ID, not its text, to deduplicate. Dispose the watch when finished.
+Each watch starts at its **own** successful baseline; it does not send the current answer. Lookup and subscribe are not atomic: an answer between them can be missed. Polling is best effort, not a durable feed. Only newly appended replies still on the active branch at a successful poll are delivered. Bursts larger than one bounded result are delivered in order over successive polls, provided each reply fits. Failed reads leave the cursor unchanged; replacement, truncation or prefix changes establish a new baseline without replay. A closed or uncertain live setting pauses watches; the next successful live confirmation restores access without a reconnect or configuration edit. Each existing watch takes a new baseline on its next authorized poll, without replaying the gap. Worker restarts, branch switches, permission changes, limits and delivery failures can leave gaps. Use the reply’s record ID, not its text, to deduplicate. Dispose the watch when finished.
 
 ## The agent on the bus
 
