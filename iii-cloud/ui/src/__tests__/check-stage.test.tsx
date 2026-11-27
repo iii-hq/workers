@@ -1475,7 +1475,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
 })
 
 describe("the run's last lines", () => {
-  it('keep the failure line and what follows it when a stack trace comes after, and see through prefixes, colours and box rules', () => {
+  it('start at the failure line even when a stack trace comes after, and see through prefixes, colours and box rules', () => {
     const log = [
       '[api] ────────────────',
       '[api] \u001b[31mInvalid environment variables:\u001b[0m',
@@ -1490,10 +1490,47 @@ describe("the run's last lines", () => {
     expect(tail.length).toBeLessThanOrEqual(6)
     expect(tail.join('\n')).toContain('Invalid environment variables:')
     expect(tail.join('\n')).toContain('JWT_SECRET: required')
-    expect(tail).toContain('…')
-    expect(tail.join('\n')).toContain('Node.js v20.1.0')
+    expect(tail).toHaveLength(6)
     // the prefix stays in what is shown; a box rule and a codes-only line are not lines
     expect(tail[0]).toMatch(/^\[api\] /)
     expect(tail.some((l) => l.includes('────') || l.trim() === '[31m')).toBe(false)
+  })
+
+  const P = '[worker-release-control] '
+  const real = (vars: string[]) => [
+    `${P}────────────`,
+    `${P}Invalid environment variables:`,
+    ...vars.map((v) => `${P}  ${v}: required`),
+    `${P}────────────`,
+    '',
+    `${P}Exiting with error code 1`,
+    '!! Workers failed: release-control',
+  ]
+  const noise = [
+    ...Array.from({ length: 10 }, (_, i) => `${P}step ${i}`),
+    'WARN missing peer dependency react@18',
+    'Registering error handlers',
+    'WARN a required option was ignored',
+    ...Array.from({ length: 17 }, (_, i) => `${P}more ${i}`),
+  ]
+
+  it('the real tail after thirty noisy lines keeps the message and the names', () => {
+    const tail = runTail([...noise, ...real(['JWT_SECRET', 'REDIS_URL'])])
+    expect(tail.join('\n')).toContain('Invalid environment variables:')
+    expect(tail.join('\n')).toContain('JWT_SECRET: required')
+    expect(tail.join('\n')).toContain('Exiting with error code 1')
+    expect(tail.length).toBeLessThanOrEqual(6)
+  })
+
+  it('four missing variables: the message and all four names, six lines, no wasted slot', () => {
+    const tail = runTail(real(['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']))
+    expect(tail).toHaveLength(6)
+    for (const n of ['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']) expect(tail.join('\n')).toContain(n)
+    expect(tail).not.toContain('…')
+  })
+
+  it('no matching line: the last six', () => {
+    const tail = runTail(Array.from({ length: 12 }, (_, i) => `plain ${i}`))
+    expect(tail).toEqual(Array.from({ length: 6 }, (_, i) => `plain ${i + 6}`))
   })
 })

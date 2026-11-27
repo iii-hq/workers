@@ -503,25 +503,25 @@ const FAILURE = /invalid|missing|required|not set|error/i
 
 /**
  * The run's last lines that say something, for a stop: no blanks or separators (`[worker] ` prefixes and colour codes
- * do not hide them), at most `max`. The first line that names the failure and the ones right after it are kept, so
- * a stack trace after the message does not push it out; a "…" line stands between parts that are not adjacent.
+ * do not hide them), at most `max`, from the start of the last run of lines that name the failure.
  */
 export function runTail(log: string[], max = 6): string[] {
   const kept = log
     .map((raw) => ({ raw, plain: raw.replace(ANSI, '').replace(/^\s*\[[^\]]+\]\s*/, '') }))
     .filter((l) => l.plain.trim() && !DRAWING.test(l.plain))
   if (kept.length <= max) return kept.map((l) => l.raw)
-  const f = kept.findIndex((l) => FAILURE.test(l.plain))
-  if (f < 0 || f >= kept.length - max) return kept.slice(-max).map((l) => l.raw)
-  const at = new Set([f, f + 1, f + 2, kept.length - 2, kept.length - 1])
-  const out: string[] = []
-  let last = -1
-  for (const i of [...at].sort((x, y) => x - y)) {
-    if (last >= 0 && i > last + 1) out.push('…')
-    out.push(kept[i].raw)
-    last = i
-  }
-  return out
+  // Anchor on the start of the LAST run of failure lines before the final two (those are usually the exit lines), so an
+  // earlier "missing peer …" or "error handlers" line does not take the place of the message; fill from there.
+  const hit = (i: number) => FAILURE.test(kept[i].plain)
+  let f = -1
+  for (let i = kept.length - 3; i >= 0; i--)
+    if (hit(i)) {
+      f = i
+      break
+    }
+  if (f < 0) return kept.slice(-max).map((l) => l.raw)
+  while (f > 0 && hit(f - 1)) f--
+  return kept.slice(f, f + max).map((l) => l.raw)
 }
 
 /** The agent is actually working: `starting` or `working`. Not `waiting` (a wake), `stalled` (no progress) or `waiting_for_you` (its question). */
