@@ -28,14 +28,25 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     encode(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
 }
 
-fn noise_png(side: u32) -> Vec<u8> {
+fn noise(side: u32, format: ImageFormat) -> Vec<u8> {
     let mut seed: u32 = 7;
     let img = RgbImage::from_fn(side, side, |_, _| {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let [_, r, g, b] = seed.to_le_bytes();
         image::Rgb([r, g, b])
     });
-    encode(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
+    encode(&DynamicImage::ImageRgb8(img), format)
+}
+
+/// A 64x64 baseline JPEG whose APP1 holds a fake EXIF thumbnail, EOI and all.
+fn jpeg_with_thumbnail() -> Vec<u8> {
+    let jpeg = noise(64, ImageFormat::Jpeg);
+    let app1 = [
+        b"\xFF\xE1\x00\x0CExif\x00\x00".as_slice(),
+        b"\xFF\xD8\xFF\xD9",
+    ]
+    .concat();
+    [&jpeg[..2], &app1, &jpeg[2..]].concat()
 }
 
 struct Call {
@@ -150,7 +161,7 @@ async fn read_image_enforces_cap() {
 
 #[tokio::test]
 async fn large_input_in_64k_frames_resizes() {
-    let input = noise_png(300);
+    let input = noise(300, ImageFormat::Png);
     assert!(
         input.len() > 65_536,
         "{} bytes fit in one frame",
@@ -290,6 +301,23 @@ async fn undecodable_input_is_invalid_args_and_aborts_output() {
 
     let message = rejected(call(b"not an image".to_vec(), None).await);
     assert!(message.contains("not a recognized image"), "{message}");
+}
+
+#[tokio::test]
+async fn jpeg_cut_inside_its_scan_is_invalid_args() {
+    for jpeg in [noise(64, ImageFormat::Jpeg), jpeg_with_thumbnail()] {
+        let message = rejected(call(jpeg[..jpeg.len() / 2].to_vec(), None).await);
+        assert!(message.contains("truncated"), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn complete_jpeg_resizes_despite_trailing_bytes_or_an_eoi_in_app1() {
+    let trailing = [noise(64, ImageFormat::Jpeg), b"garbage\xFF\xD8".to_vec()].concat();
+    for jpeg in [trailing, jpeg_with_thumbnail()] {
+        let result = call(jpeg, None).await.result.unwrap();
+        assert_eq!((result.source_width, result.source_height), (64, 64));
+    }
 }
 
 #[tokio::test]

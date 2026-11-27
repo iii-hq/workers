@@ -129,6 +129,39 @@ fn webp_exif(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// Whether a JPEG ends after its first SOS without an EOI; decoders would fill
+/// the missing rows with grey. Segments are skipped by length, so an EOI inside
+/// one (an EXIF thumbnail's) does not count.
+fn jpeg_truncated(bytes: &[u8]) -> bool {
+    let mut rest = bytes.get(2..).unwrap_or_default(); // past SOI
+    let mut scanned = false;
+    loop {
+        // In scan data FF00 is a stuffed byte, FFD0-FFD7 a restart and FFFF fill.
+        let Some(p) = rest
+            .windows(2)
+            .position(|m| m[0] == 0xFF && !matches!(m[1], 0x00 | 0xD0..=0xD7 | 0xFF))
+        else {
+            return scanned;
+        };
+        let marker = rest[p + 1];
+        rest = &rest[p + 2..];
+        scanned |= marker == 0xDA;
+        match marker {
+            0xD9 => return false,
+            0x01 | 0xD8 => {} // no length
+            _ => {
+                let [hi, lo, ..] = *rest else {
+                    return scanned;
+                };
+                let Some(tail) = rest.get(usize::from(u16::from_be_bytes([hi, lo]))..) else {
+                    return scanned;
+                };
+                rest = tail;
+            }
+        }
+    }
+}
+
 /// Largest image decoded, in pixels. The resize keeps an f32 buffer of up to
 /// 16 bytes per source pixel, so this bounds memory per image.
 pub const MAX_PIXELS: u64 = 50_000_000;
@@ -136,6 +169,11 @@ pub const MAX_PIXELS: u64 = 50_000_000;
 fn decode(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Error> {
     let undecodable =
         |e: image::ImageError| invalid(format!("could not decode the {format:?} image: {e}"));
+    if format == ImageFormat::Jpeg && jpeg_truncated(bytes) {
+        return Err(invalid(
+            "the JPEG is truncated: its data ends before the end-of-image marker",
+        ));
+    }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
     // into_decoder does not charge the pixel buffer (checked below); this
@@ -472,6 +510,36 @@ mod tests {
     fn crop_to_fit_never_exceeds_the_box() {
         let result = resize_crop_to_fit(make_rgb_image(5000, 1009, 10, 20, 30), 100, 1000);
         assert_eq!((result.width(), result.height()), (100, 1000));
+    }
+
+    #[test]
+    fn jpeg_truncated_follows_segments_restarts_and_scans() {
+        // SOI, a DQT holding FFD9, a scan with stuffing, a restart and fill,
+        // a DHT, a second scan, EOI.
+        let jpeg = b"\xFF\xD8\xFF\xDB\x00\x04\xFF\xD9\xFF\xDA\x00\x03\x00\x12\xFF\x00\xFF\xD3\
+            \x34\xFF\xFF\xFF\xC4\x00\x03\x00\xFF\xDA\x00\x02\x56\xFF\xD9";
+        assert!(!jpeg_truncated(jpeg));
+        assert!(!jpeg_truncated(
+            &[jpeg.as_slice(), b"\xFF\xDAtrailing"].concat()
+        ));
+        // Before the first SOS the decoder reports the damage itself.
+        for n in 0..jpeg.len() {
+            assert_eq!(jpeg_truncated(&jpeg[..n]), n >= 10, "first {n} bytes");
+        }
+    }
+
+    #[test]
+    fn jpeg_truncated_survives_bad_lengths() {
+        for (bytes, truncated) in [
+            (b"\xFF\xD8\xFF\xE1\x00\x00\xFF\xDA".as_slice(), true),
+            (b"\xFF\xD8\xFF\xE1\x00\x01", false),
+            (b"\xFF\xD8\xFF\xE1\xFF\xFF\xFF\xDA\x00\x02\xFF\xD9", false),
+            (b"\xFF\xD8\xFF\xDA\xFF\xFF\xFF\xD9", true),
+            (b"\xFF\xD8\xFF\xDA\x00", true),
+            (b"\xFF", false),
+        ] {
+            assert_eq!(jpeg_truncated(bytes), truncated, "{bytes:02X?}");
+        }
     }
 
     #[test]

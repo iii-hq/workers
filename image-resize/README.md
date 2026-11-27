@@ -113,8 +113,9 @@ page shows an error that tells you to update the ade worker.
 - JPEG output flattens transparency onto white.
 - The output is always re-encoded, even when the image already fits, so it
   can be larger than the input.
-- A JPEG cut off inside its scan data still decodes, with the missing rows
-  grey, as libjpeg and ImageMagick do.
+- A JPEG must end with its end-of-image marker: one that stops after its
+  first scan begins fails with `INVALID_ARGS`, even when only the marker is
+  missing. Bytes after the marker are ignored.
 - A bad image, `metadata` or request key fails with code `INVALID_ARGS` and
   aborts `output_channel`. A missing or malformed `input_channel` or
   `output_channel` ref fails before the handler runs, as `invocation_failed`.
@@ -137,6 +138,8 @@ page shows an error that tells you to update the ade worker.
   16-bit, and alpha is written only when the source has it (a tRNS chunk
   counts). Palette and 1/2/4-bit PNGs come out as 8-bit gray, RGB or RGBA.
 - `quality` outside 1-100 is an error.
+- A truncated JPEG, one that ends before its end-of-image marker, is rejected
+  with `INVALID_ARGS`; it used to decode with the missing rows grey.
 - Configuration moved to the `configuration` worker: `./config.yaml` is no
   longer read and no longer shipped, `--config` only seeds an empty entry,
   compose's `config_override` now takes effect, and the worker needs the
