@@ -365,6 +365,8 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         continue_refused: false,
         check_failures: 0,
         waited_run: None,
+        person_check: None,
+        person_check_told: None,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -956,6 +958,41 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     }
     if waiting_for.is_some() {
         phase = AgentPhase::Waiting;
+        // A check the person started ended while the agent waits: what it owns goes to
+        // the agent now, whatever the wake says.
+        if let Some(check_id) = handoff
+            .person_check
+            .clone()
+            .filter(|c| handoff.person_check_told.as_deref() != Some(c.as_str()))
+        {
+            let mine = person_check_lines(ctx, &check_id);
+            let sent = if mine.is_empty() {
+                Continue::Spent
+            } else {
+                send_continue(ctx, &handoff, &session, &mine, &secrets, None).await
+            };
+            if sent != Continue::Refused {
+                ctx.store.update(|s| {
+                    if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                        h.person_check_told = Some(check_id.clone());
+                    }
+                });
+            }
+        }
+        // Our "continue" is queued: the turn has not begun yet, for as long as the grace lasts.
+        let queued = ctx.store.read(|s| {
+            s.handoffs.iter().find(|h| h.id == id).is_some_and(|h| {
+                !h.continue_refused
+                    && h.continue_at_ms.is_some_and(|at| {
+                        now_ms() - at < ctx.secs(STALL_SECONDS).as_millis() as i64
+                    })
+                    && h.person_check_told.is_some()
+                    && h.person_check == h.person_check_told
+            })
+        });
+        if queued {
+            phase = AgentPhase::Working;
+        }
     } else if phase == AgentPhase::Done && continuing {
         if handoff.continue_refused {
             // The chat refused our "continue"; the page can say so and point at the chat.
@@ -1299,6 +1336,50 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
                     .collect()
             })
             .unwrap_or_default()
+    })
+}
+
+/// A check the person started on a hand-off's worktree has ended: when the agent
+/// waits on a wake, the poll tells it what it owns (`person_check_lines`). Called
+/// where the check ends (`check::check`, a request with no hand-off).
+pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path) {
+    let path = workspace.to_string_lossy().into_owned();
+    ctx.store.update(|s| {
+        if let Some(h) = s.handoffs.iter_mut().find(|h| {
+            h.environment_id == check.environment_id
+                && h.workspace_path == path
+                && h.agent.state == AgentPhase::Waiting
+        }) {
+            h.person_check = Some(check.id.clone());
+        }
+    });
+}
+
+/// What the agent owns in that check: its blocking problems, and a failed local run
+/// that is its to fix. Nothing when the check is ready or only the person's things are open.
+fn person_check_lines(ctx: &Ctx, check_id: &str) -> Vec<(String, String)> {
+    ctx.store.read(|s| {
+        let Some(c) = s.find_check(check_id).filter(|c| !c.ready) else {
+            return vec![];
+        };
+        let mut lines: Vec<(String, String)> = c
+            .problems
+            .iter()
+            .filter(|p| p.owner == Owner::Agent && p.severity == Severity::Block)
+            .map(|p| (p.code.clone(), p.title.clone()))
+            .collect();
+        if let Some(run) = c.run.as_ref().filter(|r| r.status == RunStatus::Failed) {
+            let (code, line) = run_failure_of(run);
+            match run_code_owner(&code) {
+                RunOwner::Agent => lines.push((code, line)),
+                RunOwner::Interrupted => lines.push((
+                    code,
+                    "the local run was interrupted; run `check {run: true}` again".into(),
+                )),
+                RunOwner::Person => {}
+            }
+        }
+        lines
     })
 }
 

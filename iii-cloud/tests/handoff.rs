@@ -3227,3 +3227,79 @@ async fn a_hand_off_and_the_lists_follow_the_environment_as_iii_cloud_has_it_now
         b.next_step
     );
 }
+
+/// A hand-off whose agent ended its turn on an armed wake (so it is `Waiting`), and a check the
+/// person starts on its worktree, with the given problems and run.
+async fn person_check_while_waiting(
+    problems: Vec<Problem>,
+    run: Option<Run>,
+    ready: bool,
+    times: usize,
+) -> (Harness, Vec<String>) {
+    let (h, _s, _r, ws) = setup().await;
+    clean_manifest(&ws);
+    accept_sends(&h);
+    let w = world();
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
+    h.fake.on("harness::observers::list", |_| {
+        Ok(json!({"observers": [wake_row(0, NOW_FN() + 3_600_000)]}))
+    });
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    *w.status.lock().unwrap() = "idle".into();
+    until(&h, "waiting", |a| a.state == AgentPhase::Waiting).await;
+    let mut check = h.ctx.store.read(|s| s.check.clone().unwrap());
+    check.id = "person-check".into();
+    check.handoff_id = None;
+    check.problems = problems;
+    check.run = run;
+    check.ready = ready;
+    h.ctx.store.update(|s| s.put_check(check.clone()));
+    for _ in 0..times {
+        iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let told = sent(&h)
+        .into_iter()
+        .filter(|m| m.contains("continue"))
+        .collect();
+    (h, told)
+}
+
+#[tokio::test]
+async fn a_check_the_person_started_with_a_failed_run_wakes_an_agent_waiting_on_a_wake_once() {
+    let (h, told) =
+        person_check_while_waiting(vec![], Some(failed_run("person-check", "abc")), false, 2).await;
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].contains("WORKERS_NOT_READY") && told[0].contains("api did not connect"),
+        "{}",
+        told[0]
+    );
+    // The agent is going on: not waiting on the wake any more, and not stuck "working".
+    let a = iii_cloud::status::status(&h.ctx, StatusRequest::default())
+        .await
+        .unwrap()
+        .agent
+        .unwrap();
+    assert_ne!(a.state, AgentPhase::Stalled);
+    // "Working" lasts only as long as the grace of a queued continue: the wake still stands after it.
+    tokio::time::sleep(Duration::from_millis(2_200)).await;
+    let a = iii_cloud::status::status(&h.ctx, StatusRequest::default())
+        .await
+        .unwrap()
+        .agent
+        .unwrap();
+    assert_eq!(a.state, AgentPhase::Waiting);
+}
+
+#[tokio::test]
+async fn a_ready_check_or_one_with_only_the_persons_things_open_sends_the_agent_nothing() {
+    let (_h, told) = person_check_while_waiting(vec![], None, true, 1).await;
+    assert!(told.is_empty(), "{told:?}");
+    let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
+    values.owner = Owner::Person;
+    let (_h, told) = person_check_while_waiting(vec![values], None, false, 1).await;
+    assert!(told.is_empty(), "{told:?}");
+}
