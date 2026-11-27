@@ -635,10 +635,12 @@ fn language_runtime(language: &str) -> &str {
 
 /// A worker's runtime: the plan's, else `cloud.runtimes`, else its own
 /// `iii.worker.yaml`.
-pub fn worker_runtime(
+/// The runtime the cloud itself would use: the plan's, else `cloud.runtimes`. (Not the worker's
+/// `iii.worker.yaml` language: the cloud detects a bun project from its start command, so that
+/// guess may differ from what it will run.)
+pub fn declared_runtime(
     manifest: &Manifest,
     name: &str,
-    dir: &Path,
     plan: Option<&[(String, Option<String>)]>,
 ) -> Option<String> {
     if let Some(r) = plan
@@ -647,12 +649,21 @@ pub fn worker_runtime(
     {
         return Some(r);
     }
-    if let Some(r) = manifest
+    manifest
         .cloud()
         .and_then(|c| c.pointer(&format!("/runtimes/{name}")))
         .and_then(Value::as_str)
-    {
-        return Some(r.to_string());
+        .map(str::to_owned)
+}
+
+pub fn worker_runtime(
+    manifest: &Manifest,
+    name: &str,
+    dir: &Path,
+    plan: Option<&[(String, Option<String>)]>,
+) -> Option<String> {
+    if let Some(r) = declared_runtime(manifest, name, plan) {
+        return Some(r);
     }
     let own: Value =
         serde_yaml_ng::from_str(&std::fs::read_to_string(dir.join("iii.worker.yaml")).ok()?)
@@ -960,7 +971,13 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                     .map(|c| ("run", c)),
                 release.as_ref().map(|r| ("release", r.command.as_str())),
             ];
+            // Only a runtime the cloud itself declares: not the folder's language guess.
+            let declared =
+                declared_runtime(m, &name, i.plan_workers).map(|r| runtime_base(&r).to_string());
             for (what, command) in commands.into_iter().flatten() {
+                if declared.as_deref() != Some(base.as_str()) {
+                    break;
+                }
                 for tool in tools_missing_in_image(&base, command) {
                     out.push(here(
                         "RUN_COMMAND_NOT_IN_IMAGE",
