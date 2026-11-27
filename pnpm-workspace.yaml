@@ -22,6 +22,7 @@ packages:
   - browser/native-ui
   - web/ui
   - a2ui/ui
+  - artifact/ui
   - canvas/ui
   - sandbox-code-runner/ui
   - code-runner/ui

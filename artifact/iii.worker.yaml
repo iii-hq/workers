@@ -1,0 +1,13 @@
+iii: v1
+name: artifact
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+license: Apache-2.0
+bin: artifact
+tags: [artifact, prototype, design, rfc, html, markdown, svg, share, preview]
+description: Store versioned single-file artifacts — HTML designs and prototypes, markdown RFCs and docs, SVG drawings — and share a frozen version through an expiring, token-guarded link, locally or through a quick-tunnel.
+dependencies:
+  state: "latest"
+  configuration: "latest"
