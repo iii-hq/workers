@@ -94,7 +94,7 @@ export async function handOff(
             ? { kind: 'told', check }
             : made.session_id
               ? { kind: 'sent', check }
-              : { kind: 'waiting' },
+              : { kind: 'waiting', check },
     )
     return true
   }
@@ -105,7 +105,7 @@ export async function handOff(
   }
   // The agent is mid-run on something else: the worker turns this into a follow-up in its session.
   if (followUp(status, kind)) {
-    setLaunch({ kind: 'waiting' })
+    setLaunch({ kind: 'waiting', check: status.check?.id })
     return true
   }
   const marked = [made?.marker, plain].filter(Boolean).join('\n')

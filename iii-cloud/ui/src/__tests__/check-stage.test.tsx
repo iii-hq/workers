@@ -5,6 +5,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
+import { setLaunch } from '../asked'
 import { CheckStage, deployLockReason, retryPayload } from '../CheckStage'
 import { findings } from '../findings'
 import { boards } from '../fixtures'
@@ -2330,6 +2331,76 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(openScreen).toHaveBeenCalled()
     // the compose fallback is not used: nothing goes into a chat
     expect(compose.compose).not.toHaveBeenCalled()
+  })
+
+  it("withheld names the person's blocking problem even when the page hides it (a database variable)", async () => {
+    const hidden = {
+      ...rcVariables[0],
+      id: 'p-db-person',
+      code: 'LOCAL_VARIABLE_UNSET',
+      file: null,
+      line: null,
+      source: 'cloud_plan' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'DATABASE_URL has no value here',
+      detail: null,
+    }
+    await stage(owned('agent', {}, true, [hidden]))
+    expect(stop()?.textContent).toContain('Your part comes first: DATABASE_URL has no value here.')
+  })
+
+  it("a route outside the http group is the person's: the worker's message, and the compose file to open (or the chat)", async () => {
+    const route = {
+      stage: 'routes' as const,
+      code: 'ROUTE_OUTSIDE_HTTP_GROUP',
+      message: 'A route is outside the http group.',
+    }
+    await stage(owned('person', route))
+    expect(stop()?.textContent).toContain('A route is outside the http group.')
+    const link = [...(stop()?.querySelectorAll('a') ?? [])].find((a) => a.textContent === 'Open the compose file')
+    expect(link?.getAttribute('href')).toContain('/blob/')
+    const st = owned('person', route)
+    await stage({ ...st, project: { ...st.project!, repository: '' } } as Status)
+    expect(stop()?.textContent).toContain('Tell your agent in the chat.')
+    expect([...(stop()?.querySelectorAll('a') ?? [])].some((a) => a.textContent === 'Open the compose file')).toBe(
+      false,
+    )
+  })
+
+  it('the "waiting" note is tied to its check like the others', async () => {
+    const st = release(note)
+    setLaunch({ kind: 'waiting', check: 'chk-another' })
+    await stage(st)
+    expect(text()).not.toContain('Waiting for it to pick this up')
+    setLaunch({ kind: 'waiting', check: st.check!.id })
+    await stage(st)
+    expect(text()).toContain('Waiting for it to pick this up')
+    setLaunch(null)
+  })
+
+  it("a run replaced by another environment's says whose", async () => {
+    const st = owned('replaced', { code: 'RUN_REPLACED', message: 'replaced' })
+    const other = {
+      ...st.checks![0],
+      id: 'chk-staging',
+      environment_id: 'e-staging',
+      checked_at: '2999-01-01T00:00:00.000Z',
+    }
+    const p = st.project!
+    await stage({
+      ...st,
+      checks: [other, ...(st.checks ?? [])],
+      project: { ...p, environments: [...p.environments, { ...p.environments[0], id: 'e-staging', name: 'staging' }] },
+    } as Status)
+    const replaced = [...el.querySelectorAll('[role=status]')].find((x) =>
+      x.textContent?.includes('A newer run replaced this one'),
+    )
+    expect(replaced?.textContent).toContain('A newer run replaced this one in staging.')
+    await stage(owned('replaced', { code: 'RUN_REPLACED', message: 'replaced' }))
+    expect(
+      [...el.querySelectorAll('[role=status]')].some((x) => x.textContent?.includes('A newer run replaced this one.')),
+    ).toBe(true)
   })
 
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {

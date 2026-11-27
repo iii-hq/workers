@@ -69,7 +69,7 @@ export type Launch =
   | { kind: 'told'; check?: string }
   /** The agent has a question open: the person answers it in the chat first. */
   | { kind: 'asks'; check?: string }
-  | { kind: 'waiting' }
+  | { kind: 'waiting'; check?: string }
   | { kind: 'started' }
   | { kind: 'error'; retry: () => void }
   | null

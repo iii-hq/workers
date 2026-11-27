@@ -1160,13 +1160,17 @@ export function CheckStage(props: CheckStageProps) {
         !openProblems(s, true).some((x) => x.source === 'check_here') &&
         !missing.length)
   // What the person owes first, said for a withheld failure.
+  // (a blocking problem of the person's that the page hides, such as a database variable, is named by its own title)
+  const hiddenOwn = s.check?.problems.find((p) => p.owner === 'person' && p.severity === 'block')
   const yours =
     needItems[0]?.title ??
     (missing.length
       ? `${plural(missing.length, 'value')} to set`
       : decide[0]
         ? `${decide[0].setting} to decide`
-        : 'what waits for you above')
+        : hiddenOwn
+          ? problemTitle(hiddenOwn)
+          : 'what waits for you above')
   if (agentRun && runError)
     lines.push({
       key: 'run-failed',
@@ -1354,11 +1358,16 @@ export function CheckStage(props: CheckStageProps) {
         ],
       })
     } else if (err?.owner === 'replaced') {
+      // When the newer run is another environment's on the same folder, say whose.
+      const newer = (s.checks ?? []).find(
+        (x) => x.environment_id !== c.environment_id && Date.parse(x.checked_at) > Date.parse(c.checked_at),
+      )
+      const newerEnv = newer && p?.environments.find((e) => e.id === newer.environment_id)?.name
       // A newer run took its place: nothing to fix and nothing to offer; the newer run speaks for itself.
       stops.push({
         key: 'run',
         variant: 'info',
-        headline: 'A newer run replaced this one.',
+        headline: `A newer run replaced this one${newerEnv ? ` in ${newerEnv}` : ''}.`,
         detail: '',
         acts: [],
       })
@@ -1378,6 +1387,9 @@ export function CheckStage(props: CheckStageProps) {
           <>
             {plainMessage(err)}
             {err.owner === 'person' ? " This one is yours to fix here, not your agent's." : ''}
+            {err.owner === 'person' && err.code === 'ROUTE_OUTSIDE_HTTP_GROUP' && !(s.project?.repository && c)
+              ? ' Tell your agent in the chat.'
+              : ''}
             {err.owner === 'interrupted' ? ' The run was interrupted: run it again.' : ''}
             {err.owner === 'agent' && err.withheld ? ` Your part comes first: ${yours}.` : ''}
             {agentRun && settling && !agentWorking(s) && !agentAsks(s) ? ' Checking whether your agent took it…' : ''}
@@ -1412,7 +1424,13 @@ export function CheckStage(props: CheckStageProps) {
             ]
           : planStop
             ? []
-            : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+            : [
+                // A route outside the http group is the person's to move in their compose file: say where it is.
+                ...(err.owner === 'person' && err.code === 'ROUTE_OUTSIDE_HTTP_GROUP' && s.project?.repository && c
+                  ? [{ label: 'Open the compose file', href: github(s, `blob/${c.commit}/${appFile(s).path}`) }]
+                  : []),
+                { label: 'Run again', onClick: checkAgain, disabled: running },
+              ],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
