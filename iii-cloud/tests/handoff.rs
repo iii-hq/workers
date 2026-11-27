@@ -250,6 +250,7 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
         restored: vec![],
         moved: vec![],
         log_path: None,
+        left_redacted: false,
     };
     h.ctx.store.update(|s| {
         // The agent's own check carries its hand-off's id.
@@ -1268,6 +1269,7 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
             restored: vec![],
             moved: vec![],
             log_path: None,
+            left_redacted: false,
         });
         s.put_check(c);
     });
@@ -1372,6 +1374,7 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
             restored: vec![],
             moved: vec![],
             log_path: None,
+            left_redacted: false,
         });
         s.put_check(c);
     });
@@ -2655,6 +2658,7 @@ fn failed_run(check_id: &str, commit: &str) -> Run {
         restored: vec![],
         moved: vec![],
         log_path: None,
+        left_redacted: false,
     }
 }
 
@@ -2898,6 +2902,7 @@ fn a_run_codes_owner_is_the_one_the_skills_table_gives_it() {
         let owner = match cells[2] {
             "agent" => RunOwner::Agent,
             "person" => RunOwner::Person,
+            "none" if code == "RUN_REPLACED" => RunOwner::Replaced,
             "none" => RunOwner::Interrupted,
             other => panic!("{code}: owner {other}"),
         };
@@ -3779,4 +3784,57 @@ async fn the_pages_own_text_is_never_delivered_beside_an_open_ask_or_a_continue(
     let new: Vec<String> = sent(&h).into_iter().skip(before).collect();
     assert_eq!(new.len(), 1, "{new:?}");
     assert!(new[0].contains("RELEASE_FAILED") && !new[0].contains("PAGE TEXT"));
+}
+
+/// The hand-off's own run was replaced by a newer one (the person's): there is nothing to fix and
+/// nothing to send, and the page is told so by `owner`.
+#[tokio::test]
+async fn a_run_the_persons_newer_run_replaced_sends_the_agent_nothing_from_any_place() {
+    use iii_cloud::handoff::RunOwner;
+    let (h, _w, _created, _keep) = idle_with_run(run_with("RUN_REPLACED", |_| {})).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(continues(&h).is_empty(), "{:?}", continues(&h));
+    // The owner the page sees.
+    let c = iii_cloud::check::update_check(&h.ctx, "agent-check", |_| {}).unwrap();
+    let e = c.run.unwrap().error.unwrap();
+    assert_eq!((e.owner, e.withheld), (Some(RunOwner::Replaced), false));
+}
+
+#[tokio::test]
+async fn asking_again_for_a_check_already_told_answers_that_something_went() {
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    let first = create(&h.ctx, ready_req()).await.unwrap();
+    assert_eq!(first.sent, Some(true));
+    let before = continues(&h).len();
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(true), "{again:?}");
+    assert_eq!(continues(&h).len(), before, "no second message");
+}
+
+#[tokio::test]
+async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_chat() {
+    // The old hand-off is quiet for over 30 minutes (not reused) with a real ask still open.
+    let (h, _ws, w, _keep) = ended_agent().await;
+    *w.question.lock().unwrap() = Some("Which role do you want?".into());
+    until(&h, "a real ask", |a| {
+        a.question_source == Some(QuestionSource::Agent)
+    })
+    .await;
+    h.ctx.store.update(|s| {
+        s.handoffs[0].agent.last_activity_at =
+            Some((chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339());
+    });
+    let before = sent(&h).len();
+    let made = create(
+        &h.ctx,
+        HandoffRequest {
+            text: Some("PAGE TEXT".into()),
+            ..ready_req()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!made.reused && made.asks && !made.delivered, "{made:?}");
+    assert_eq!(sent(&h).len(), before, "nothing went into the old chat");
 }

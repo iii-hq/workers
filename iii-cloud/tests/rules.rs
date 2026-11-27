@@ -199,6 +199,7 @@ fn passed_run(commit: &str) -> Run {
         restored: vec![],
         moved: vec![],
         log_path: None,
+        left_redacted: false,
     }
 }
 
@@ -1744,6 +1745,8 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "pnpm build 2>&1 | tee log",
         "node a.js > out.txt",
         "export FOO=1\nnode x",
+        "cat <<'SH' > run.sh\nenv\nset\nSH\nnode x",
+        "cat <<-EOF\nprintenv\nEOF",
     ] {
         assert!(prints_environment(no).is_none(), "{no}");
     }

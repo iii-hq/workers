@@ -99,6 +99,7 @@ fn passed_run(commit: &str) -> Run {
         restored: vec![],
         moved: vec![],
         log_path: None,
+        left_redacted: false,
     }
 }
 

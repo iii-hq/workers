@@ -607,26 +607,37 @@ pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
     let log = match request.log {
         None => None,
         Some(slice) => {
-            let text = std::fs::read_to_string(&log_path)
+            use std::io::BufRead;
+            let file = std::fs::File::open(&log_path)
                 .map_err(|_| CloudError::invalid("the log of that run is gone"))?;
-            let all: Vec<&str> = text.lines().collect();
             let from = slice.from_line.unwrap_or(1).max(1);
             let take = slice.lines.unwrap_or(LOG_LINES_MAX).min(LOG_LINES_MAX);
+            // Streamed: the log has no size cap, and the slice is a few lines of it.
+            let (mut total, mut lines) = (0u32, vec![]);
+            for line in std::io::BufReader::new(file).lines() {
+                let Ok(line) = line else { break };
+                total += 1;
+                if total >= from && (lines.len() as u32) < take {
+                    lines.push(crate::run::redact(&line, &secrets));
+                }
+            }
             Some(LogLines {
                 from_line: from,
-                total_lines: all.len() as u32,
-                lines: all
-                    .iter()
-                    .skip(from as usize - 1)
-                    .take(take as usize)
-                    .map(|l| crate::run::redact(l, &secrets))
-                    .collect(),
+                total_lines: total,
+                lines,
             })
         }
     };
     let left = match request.left {
         None => None,
         Some(path) => {
+            // The copies of an older run were written with no secret replaced: never served.
+            if !run.left_redacted {
+                return Err(CloudError::new(
+                    "NOT_AVAILABLE",
+                    "The kept files of that run are not available to read.",
+                ));
+            }
             // Only what the worker itself kept for this run: a path of its lists, never another.
             if !run
                 .restored
@@ -638,12 +649,31 @@ pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
                     "that path is not one the run's restored or moved lists name",
                 ));
             }
-            let file = log_path
+            let run_dir = log_path
                 .parent()
-                .map(|d| d.join("left").join(&path))
                 .ok_or_else(|| CloudError::invalid("that run has no kept files"))?;
-            let meta = std::fs::metadata(&file)
-                .map_err(|_| CloudError::invalid("nothing is kept for that path (a deletion)"))?;
+            if !run_dir.join("left").is_dir() {
+                return Err(CloudError::new(
+                    "NOT_AVAILABLE",
+                    "The folder of that run is gone (only the latest runs are kept).",
+                ));
+            }
+            // A path the listing shows redacted is read by that name: the index maps it back.
+            let real = std::fs::read_to_string(run_dir.join("left/.paths.json"))
+                .ok()
+                .and_then(|t| {
+                    serde_json::from_str::<std::collections::BTreeMap<String, String>>(&t).ok()
+                })
+                .and_then(|m| m.get(&path).cloned())
+                .unwrap_or_else(|| path.clone());
+            let file = run_dir.join("left").join(&real);
+            // A deletion keeps nothing; a link under `left/` is never followed.
+            let meta = std::fs::symlink_metadata(&file).map_err(|_| {
+                CloudError::invalid("nothing is kept for that path (the run deleted it)")
+            })?;
+            if !meta.is_file() {
+                return Err(CloudError::invalid("the kept entry is not a plain file"));
+            }
             if meta.len() > LEFT_BYTES_MAX {
                 return Err(CloudError::invalid("the kept file is over 256 KiB"));
             }
@@ -992,8 +1022,11 @@ fn plan_may_come(status: u16, body: &Value) -> bool {
                 .is_some_and(|f| f.to_lowercase().contains("try again")))
 }
 
-/// `fetch_plan`, again when the cloud says to: at most 3 tries, 2 s apart, never past the check's own
-/// `deadline`. The worst this adds is 4 s (two waits) and two more requests.
+/// `fetch_plan`, again when the cloud says to. The cloud answers `SOURCE_UNAVAILABLE` for a repository
+/// it can't read yet AND for a suspended installation (one code, "Try again in a moment": they can't
+/// be told apart), so the retry is rationed: one run of up to 3 tries, 2 s apart, per environment per
+/// minute, and a try starts only if it can end inside the check's own `deadline` (a request is given
+/// 30 s). The worst this adds is 4 s, once a minute per environment.
 async fn fetch_plan_again(
     ctx: &Ctx,
     sel: &Selected,
@@ -1001,20 +1034,35 @@ async fn fetch_plan_again(
     manifest: Option<&str>,
     deadline: Instant,
 ) -> Res<(u16, Value)> {
+    static LAST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Instant>>> =
+        std::sync::OnceLock::new();
     let mut tries = 1;
+    let mut allowed: Option<bool> = None;
     loop {
         let answer = fetch_plan(ctx, sel, commit, manifest).await;
-        match &answer {
-            Ok((status, body))
-                if plan_may_come(*status, body)
-                    && tries < 3
-                    && Instant::now() + ctx.secs(2) < deadline =>
-            {
-                tries += 1;
-                tokio::time::sleep(ctx.secs(2)).await;
+        let again = match &answer {
+            Ok((status, body)) if plan_may_come(*status, body) && tries < 3 => {
+                // Asked of the environment's minute once, on the first refusal.
+                let allowed = *allowed.get_or_insert_with(|| {
+                    let mut last = LAST.get_or_init(Default::default).lock().unwrap();
+                    let now = Instant::now();
+                    let free = last
+                        .get(&sel.env.id)
+                        .is_none_or(|t| now.duration_since(*t) >= ctx.secs(60));
+                    if free {
+                        last.insert(sel.env.id.clone(), now);
+                    }
+                    free
+                });
+                allowed && Instant::now() + ctx.secs(2 + 30) < deadline
             }
-            _ => return answer,
+            _ => false,
+        };
+        if !again {
+            return answer;
         }
+        tries += 1;
+        tokio::time::sleep(ctx.secs(2)).await;
     }
 }
 
@@ -1756,10 +1804,12 @@ pub fn update_check(ctx: &Ctx, id: &str, f: impl FnOnce(&mut Check)) -> Option<C
             .problems
             .iter()
             .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
-        if let Some(e) = found.run.as_mut().and_then(|r| r.error.as_mut()) {
-            let owner = crate::handoff::run_code_owner(&e.code);
-            e.owner = Some(owner);
-            e.withheld = persons_open && owner != crate::handoff::RunOwner::Person;
+        if let Some(run) = found.run.as_mut()
+            && let Some(ask) = crate::handoff::run_ask(run, persons_open)
+            && let Some(e) = run.error.as_mut()
+        {
+            e.owner = Some(ask.owner);
+            e.withheld = ask.withheld;
         }
         found.ready = is_ready(
             &found.plan,

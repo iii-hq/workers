@@ -762,6 +762,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             restored: vec![],
             moved: vec![],
             log_path: None,
+            left_redacted: false,
         };
         c.run = Some(run);
         s.put_check(c);

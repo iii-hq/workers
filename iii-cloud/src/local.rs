@@ -567,8 +567,32 @@ const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
 /// The parts of a shell command, split on `&&`, `||`, `;` and `|`: each part's words from its command
 /// word on (leading `NAME=value` words and `exec` skipped).
 fn command_parts(command: &str) -> Vec<Vec<&str>> {
-    command
-        .split(['&', '|', ';', '\n'])
+    // The body of a heredoc (`<<WORD` ... `WORD`) is data, not commands: its lines are skipped.
+    let mut end: Option<String> = None;
+    let mut code: Vec<&str> = vec![];
+    for line in command.lines() {
+        if let Some(word) = &end {
+            if line.trim() == word {
+                end = None;
+            }
+            continue;
+        }
+        code.push(line);
+        if let Some(at) = line.find("<<") {
+            let word: String = line[at + 2..]
+                .trim_start_matches('-')
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '\'' || c == '"')
+                .to_string();
+            if !word.is_empty() {
+                end = Some(word);
+            }
+        }
+    }
+    code.into_iter()
+        .flat_map(|line| line.split(['&', '|', ';']))
         .map(|part| {
             // Redirections are not part of the command: `env > /tmp/x` is `env`.
             let mut words: Vec<&str> = vec![];
