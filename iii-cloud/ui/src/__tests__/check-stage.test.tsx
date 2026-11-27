@@ -2029,7 +2029,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
   })
 
   const owned = (
-    owner: 'agent' | 'person' | 'interrupted',
+    owner: 'agent' | 'person' | 'interrupted' | 'replaced',
     over: object = {},
     withheld = false,
     problems: object[] = [],
@@ -2174,6 +2174,16 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     // nothing went in
     await press({ sent: false, delivered: false })
     expect(stop()?.textContent).toContain('Tell it in the chat.')
+  })
+
+  it('replaced: a newer run took its place, nothing to fix and no action', async () => {
+    await stage(owned('replaced', { code: 'RUN_REPLACED', message: 'A newer run replaced this one.' }))
+    const replaced = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('A newer run replaced this one.'),
+    )
+    expect(replaced).toBeTruthy()
+    expect(replaced?.querySelectorAll('button')).toHaveLength(0)
+    expect(title() ?? '').not.toContain('for your agent to fix')
   })
 
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {

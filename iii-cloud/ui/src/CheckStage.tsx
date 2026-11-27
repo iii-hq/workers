@@ -1328,6 +1328,15 @@ export function CheckStage(props: CheckStageProps) {
           { label: 'How to start Docker', href: DOCKER_DOCS },
         ],
       })
+    } else if (err?.owner === 'replaced') {
+      // A newer run took its place: nothing to fix and nothing to offer; the newer run speaks for itself.
+      stops.push({
+        key: 'run',
+        variant: 'info',
+        headline: 'A newer run replaced this one.',
+        detail: '',
+        acts: [],
+      })
     } else if (
       err &&
       err.code !== 'RUN_REPLACED' &&

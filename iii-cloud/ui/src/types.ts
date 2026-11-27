@@ -296,7 +296,7 @@ export type Run = {
     code: string
     message: string
     /** Whose the failure is, as the worker judges it (absent from an older shape). */
-    owner?: 'agent' | 'person' | 'interrupted'
+    owner?: 'agent' | 'person' | 'interrupted' | 'replaced'
     /** A person-owned blocking problem is open: the worker would not send this failure to the agent. */
     withheld?: boolean
   } | null
