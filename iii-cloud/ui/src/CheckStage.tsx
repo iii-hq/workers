@@ -16,6 +16,7 @@ import {
   DialogTitle,
   Input,
   Skeleton,
+  TerminalStream,
 } from '@iii-dev/console-ui'
 import { ChevronRight, CircleAlert, CircleDashed, Check as Done, Info, Loader2 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
@@ -1196,6 +1197,8 @@ export function CheckStage(props: CheckStageProps) {
       })
     }
     const err = run?.status === 'failed' ? run.error : null
+    // The last lines that say something (not blank, not a separator): what the generic line above does not.
+    const tail = (run?.log_tail ?? []).filter((l) => l.trim() && !/^[\s\-=_*#~.]+$/.test(l)).slice(-6)
     if (err?.code === 'DOCKER_MISSING') {
       const cloudN = open.filter((x) => x.source === 'cloud_plan').length
       stops.push({
@@ -1218,7 +1221,12 @@ export function CheckStage(props: CheckStageProps) {
         key: 'run',
         variant: 'alert',
         headline: `The local run stopped at ${stageLabel(err.stage)}`,
-        detail: plainMessage(err),
+        detail: (
+          <>
+            {plainMessage(err)}
+            {tail.length ? <TerminalStream label="Last lines of the local run" text={tail.join('\n')} /> : null}
+          </>
+        ),
         acts: [{ label: 'Run again', onClick: checkAgain, disabled: running }],
       })
     }

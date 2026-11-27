@@ -1338,6 +1338,30 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(region('Your agent')?.textContent).not.toContain('is not working on this')
   })
 
+  it("the run's stop shows the last meaningful lines, not blanks or separators, six at most", async () => {
+    const w = waiting(true)
+    const log = [
+      '',
+      '-----',
+      ...Array.from({ length: 8 }, (_, i) => `line ${i}`),
+      'JWT_SECRET is empty',
+      'REDIS_URL is not set',
+      '=====',
+      '',
+    ]
+    await stage({ ...w, check: { ...w.check!, run: { ...w.check!.run!, log_tail: log } } })
+    const stop = [...el.querySelectorAll('[role=status]')].find((p) =>
+      p.textContent?.includes('The local run stopped at'),
+    )
+    const t = stop?.textContent ?? ''
+    expect(t).toContain('JWT_SECRET is empty')
+    expect(t).toContain('REDIS_URL is not set')
+    expect(t).not.toContain('-----')
+    expect(t).not.toContain('=====')
+    expect(t).not.toContain('line 0')
+    expect((t.match(/line \d/g) ?? []).length + 2).toBeLessThanOrEqual(6)
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
