@@ -140,6 +140,7 @@ class ProfileContractTests(unittest.TestCase):
                                          "its few-tickets rule does not merge them back",
                                          "would keep only items whose Verify calls are project commands",
                                          "`moved` kept as stored",
+                                         "also gets the new keys on that bullet",
                                          "A card whose every Acceptance sentence a reason breaks, or that",
                                          "Moved: <new KEY>: <the sentences it took>",
                                          '`"moved":["<new KEY>: <the sentences it took>",…]`',
