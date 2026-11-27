@@ -4493,3 +4493,51 @@ async fn a_checks_file_is_kept_only_while_the_environment_still_has_the_file_it_
     assert_eq!(st.work_file("B", Some("other.yaml")), None);
     assert_eq!(st.work_file("C", Some("y.yaml")), None);
 }
+
+/// An assisted environment already on its own branch, which GitHub deleted after a merge.
+async fn on_a_deleted_own_branch(s: &Setup, f: Option<&EnvFile>) {
+    not_production(s).await;
+    s.h.ctx.store.update(|st| {
+        let p = st.project.as_mut().unwrap();
+        p.environment.as_mut().unwrap().branch = OWN.into();
+        p.default_branch = Some("main".into());
+    });
+    if let Some(f) = f {
+        *f.branch.lock().unwrap() = OWN.into();
+    }
+    assert!(origin_branch(s, OWN).is_none());
+}
+
+#[tokio::test]
+async fn a_deleted_own_branch_takes_the_default_branch_as_the_base_of_the_check() {
+    let s = setup(plan(false)).await;
+    on_a_deleted_own_branch(&s, None).await;
+    let c = iii_cloud::check::check(&s.h.ctx, CheckRequest::default())
+        .await
+        .unwrap();
+    assert!(
+        !c.problems.iter().any(|p| p.code == "BASE_NOT_IN_HISTORY"),
+        "{:?}",
+        c.problems.iter().map(|p| &p.code).collect::<Vec<_>>()
+    );
+    assert_eq!(c.base, s.check.base);
+}
+
+#[tokio::test]
+async fn a_deleted_own_branch_is_created_again_by_the_deploy() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    on_a_deleted_own_branch(&s, Some(&f)).await;
+    list_of_commit(&s, &f, Some("queued")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+    assert!(
+        f.log().is_empty(),
+        "the environment already follows it: no PATCH"
+    );
+}

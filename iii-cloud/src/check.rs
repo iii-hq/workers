@@ -873,7 +873,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "manifest must be a worker-compose*.yaml of the repository, from its root, such as api/worker-compose.yaml",
         ));
     }
-    let sel = selected_for(ctx, request.handoff_id.as_deref()).await?;
+    let mut sel = selected_for(ctx, request.handoff_id.as_deref()).await?;
     // What this check is made for, read before anything slow: a `use` that lands meanwhile is not its source.
     let made_for = ctx.store.read(|s| s.checked_for_now(&sel.env.id));
     // Without a credential the checks on this machine still run; the plan is
@@ -890,6 +890,24 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         }
         Err(e) => return Err(e),
     };
+    // An assisted environment's own branch that GitHub deleted (a head branch
+    // removed after a merge) leaves nothing to compare with: the base is the
+    // default branch, and the deploy creates the branch again.
+    if !sel.env.production
+        && sel.env.branch == crate::project::own_branch(&sel.env.name)
+        && matches!(remote_ref(&sel.workspace, &sel.env.branch).await, Ok(None))
+    {
+        let stored = ctx
+            .store
+            .read(|s| s.project.as_ref().and_then(|p| p.default_branch.clone()));
+        let default = match crate::project::live_default_branch(&sel.workspace).await {
+            Ok(d) => Some(d),
+            Err(_) => stored,
+        };
+        if let Some(d) = default {
+            sel.env.branch = d;
+        }
+    }
     let cfg = ctx.config().await;
     let explicit = request.commit.clone();
     let commit = match explicit {

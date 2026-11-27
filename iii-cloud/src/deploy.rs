@@ -856,6 +856,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
             target
         }
         (None, None) => {
+            let mut default_now: Option<String> = None;
             // Production deploys by pull request; any other environment gets an
             // assisted deploy. The environment is read live first: its branch may
             // have moved since the page last looked (a first deploy that failed
@@ -891,6 +892,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                         )
                     })?;
                 let default = Some(live_default);
+                default_now = default.clone();
                 let others: Vec<(String, String)> = envs
                     .iter()
                     .filter(|e| e.id != sel.env.id)
@@ -968,13 +970,23 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 way => {
                     // Deploy takes commits of the environment's branch only: the plan of any
                     // commit is readable, the deploy is not (the cloud answers 422).
-                    let on_branch = is_ancestor(
-                        &sel.workspace,
-                        &sel.env.branch,
-                        &check.commit,
-                        &format!("origin/{}", sel.env.branch),
-                    )
-                    .await?;
+                    // An environment's own branch that GitHub deleted (a head branch
+                    // removed after a merge) is gone: the check took the default branch
+                    // as the base, and the push creates the branch again.
+                    let gone = way != Way::PullRequest
+                        && sel.env.branch == crate::project::own_branch(&sel.env.name)
+                        && matches!(
+                            crate::check::remote_ref(&sel.workspace, &sel.env.branch).await,
+                            Ok(None)
+                        );
+                    let on_branch = !gone
+                        && is_ancestor(
+                            &sel.workspace,
+                            &sel.env.branch,
+                            &check.commit,
+                            &format!("origin/{}", sel.env.branch),
+                        )
+                        .await?;
                     if way == Way::PullRequest && !on_branch {
                         return Err(CloudError::new(
                             "MERGE_FIRST",
@@ -984,10 +996,15 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                     if !on_branch {
                         // An environment on its own branch has no pull request: this deploy
                         // pushes the checked commit to it, on top of the base it was checked on.
-                        if remote_head(&sel.workspace, &sel.env.branch).await? != check.base {
+                        let was_on = if gone {
+                            default_now.as_deref().unwrap_or_default()
+                        } else {
+                            &sel.env.branch
+                        };
+                        if remote_head(&sel.workspace, was_on).await? != check.base {
                             return Err(CloudError::new(
                                 "MAIN_MOVED",
-                                format!("{} moved since the check. Check again.", sel.env.branch),
+                                format!("{was_on} moved since the check. Check again."),
                             ));
                         }
                         // Before the push: the push deployment it starts plans the new file.
@@ -999,7 +1016,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                             &sel.workspace,
                             &sel.env.branch,
                             &check.commit,
-                            Some(&check.base),
+                            (!gone).then_some(check.base.as_str()),
                         )
                         .await
                         {
