@@ -512,9 +512,9 @@ export function envPageUrl(s: Status, page: string, env?: string): string | null
   if (!p?.team?.slug || !p.cloud_project?.slug || !name) return null
   return `${s.connection.cloud_url.replace(/\/$/, '')}/${p.team.slug}/${p.cloud_project.slug}/${name}${page ? `/${page}` : ''}`
 }
-/** Where a team's deleted projects and environments are listed in the iii cloud console. */
-export function deletionsUrl(s: Status, teamSlug?: string): string {
-  return `${s.connection.cloud_url.replace(/\/$/, '')}/${teamSlug ?? s.project?.team?.slug ?? ''}/deletions`
+/** Where a team's deleted projects and environments are listed in the iii cloud console; null when the team is not known. */
+export function deletionsUrl(s: Status, teamSlug: string | null | undefined): string | null {
+  return teamSlug ? `${s.connection.cloud_url.replace(/\/$/, '')}/${teamSlug}/deletions` : null
 }
 
 /**

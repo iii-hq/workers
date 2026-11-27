@@ -291,3 +291,7 @@
   top: 10px;
   right: 10px;
 }
+/* "as of 12:20" in the bar stays on one line, on a phone too. */
+[data-iii-ui='iii-cloud'] .iii-cloud-envhead .iii-cloud-desc {
+  white-space: nowrap;
+}

@@ -352,7 +352,9 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       description={description}
       trailing={
         gone ? (
-          <LinkButton href={cloud}>Open in iii cloud</LinkButton>
+          cloud ? (
+            <LinkButton href={cloud}>Open in iii cloud</LinkButton>
+          ) : undefined
         ) : (
           <Button
             size="sm"
@@ -422,7 +424,7 @@ function Account({ host, status }: { host: Host; status: Status }) {
 const FOOTNOTE =
   "Opening a project doesn't stop the others. A check, a deploy and your agent keep going, and the project's row says what they are doing."
 const FOOTNOTE_PHONE =
-  'The whole row opens the project. Checks, deploys and your agent run on the computer; this phone follows them and answers what needs you.'
+  'The whole row opens the project. A check, a deploy and your agent keep going on this machine, and the row says what they are doing.'
 
 /** The projects on this machine: desktop one column, phone one row per project. */
 export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt<'start'>>) {
@@ -514,7 +516,7 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
             }
           />
         ) : null}
-        {narrow && !offline && !key ? <p className="iii-cloud-desc">{`On this computer · ${whoIs(status)}`}</p> : null}
+        {narrow && !offline && !key ? <p className="iii-cloud-desc">{`Signed in as ${whoIs(status)}`}</p> : null}
         {places.length ? (
           narrow ? (
             <>
