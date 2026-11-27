@@ -61,12 +61,13 @@ and the base in history.
 
 ## Rules you do not break
 
-- `iii-cloud::secret` is only for the value of ONE secret the compose file
-  reads (a variable name such as `SESSION_SECRET`). Never for a decision, a
-  worker, a group, a setting: those go in the `harness::ask` card.
-- Never ask for a secret value in chat. Use `iii-cloud::secret`. If the person
-  pastes one, do not repeat it, store it, or put it in a command. Tell them to
-  type it on the page.
+- Never ask for a variable's or secret's value, in chat or with a tool: the page
+  asks for them where they are set. The only case where you still call
+  `iii-cloud::secret` is a literal credential you replaced with `${NAME}` in the
+  compose file (`LITERAL_CREDENTIAL`), and only for that one name. Never for a
+  decision, a worker, a group, a setting: those go in the `harness::ask` card.
+- If the person pastes a value in chat, do not repeat it, store it, or put it in
+  a command. Tell them to type it on the page.
 - Never read a `.env` file or print a token.
 - Only the person deploys, approves a deployment, merges the pull request,
   rolls back, or writes variables, secrets or environment settings, on the

@@ -74,12 +74,12 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `QUEUE_ADAPTER_MISSING` | block | fix_in_repo | agent | Edit the queue worker's config: declare the adapter explicitly. Verify: `check` again. |
 | `QUEUE_TOPOLOGY_IMMUTABLE` | block | fix_in_repo | agent | Edit: restore the queue names and settings the environment already has. A new topology needs a new environment: ask the person. Verify: `check` again. |
 | `STATE_ADAPTER_UNSUPPORTED` | block | fix_in_repo | agent | Edit the state worker's config: use an adapter the cloud supports (the message names them). Verify: `check` again. |
-| `LITERAL_CREDENTIAL` | block | fix_in_repo | person | Edit the file at the issue's line: replace the value with `${NAME}`, and ask for it with `iii-cloud::secret`. Tell the person to rotate the value if it was real. Verify: `check` again. |
+| `LITERAL_CREDENTIAL` | block | fix_in_repo | person | Edit the file at the issue's line: replace the value with `${NAME}`, then call `iii-cloud::secret` for that one name (the only case where you still ask). Tell the person to rotate the value if it was real. Verify: `check` again. |
 | `SECRET_MISSING` | block | resolve_here | person | The page asks for it where it is set: do not ask or list it. Verify: `status` shows the secret as `set`. |
 | `LIMIT_EXCEEDED` | block | resolve_here | person | Person decides: a plan limit is reached. Reduce what the file asks for, or the person changes the plan in the console. Verify: `check` again. |
 | `LOCAL_CONFIG_NOT_SET` | warn | resolve_here | person | Tell the person: a worker setting has no value in the cloud. Set it in the compose file's `config`, or in the console. Verify: `check` again. |
 | `MCP_GLOBAL_MIDDLEWARE` | block | fix_in_repo | agent | Edit the `http` worker's config: remove its global middleware, which would read every MCP client's key. Use route-level middleware. Verify: `check` again. |
-| `ENV_FILE_MISSING` | warn | resolve_here | person | Tell the person: the file references an `.env` the repository does not have. Move the values to `variables` and `iii-cloud::secret`. Verify: `check` again. |
+| `ENV_FILE_MISSING` | warn | resolve_here | person | Tell the person: the file references an `.env` the repository does not have. Move the values to the compose file's `variables`; the page asks for their values. Verify: `check` again. |
 | `ENV_FILE_SHADOWED` | warn | none | person | Note only: the environment's variables replace the `.env` values. Tell the person. No fix needed. |
 | `PRE_RUN_REPLICATED` | warn | none | person | Note only: a pre-run step runs on every replica. Tell the person; move it to `cloud.release` if it must run once. |
 | `CUSTOM_REGISTRY_PACKAGE` | warn | none | person | Note only: the package comes from a custom registry. Tell the person. No fix needed. |
@@ -90,7 +90,7 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `WORKER_OUTDATED` | block | fix_in_repo | agent | Edit the compose file: raise the worker to the version the message names, then run `iii compose build -f <manifest>` to refresh the lock. |
 | `WORKER_VERSION_REFUSED` | block | fix_in_repo | agent | Edit the compose file: pick another version of the worker, then run `iii compose build -f <manifest>`. Verify: `check` again. |
 | `EMPTY_DEFAULT_VARIABLE` | warn | none | person | `${NAME:-}` defaults to empty. A value the app needs to start (a URL, a number, an id) becomes `${NAME}` with no default: iii cloud then asks the person and the local run reads their env files. A non-secret with a sensible value gets it as the default. Keep `${NAME:-}` only for what the app treats as optional; the local run's log names the ones it refuses, and never copy a row of them from another file unchecked. Do it without asking; the person's values are set on the page. |
-| `COMMAND_VARIABLE_EMPTY` | warn | none | person | A `${NAME}` in a `cloud:` command is empty when it runs. Set the variable with `iii-cloud::secret`, or remove it from the command. |
+| `COMMAND_VARIABLE_EMPTY` | warn | none | person | A `${NAME}` in a `cloud:` command is empty when it runs. Map it in the release worker's `environment`, or remove it from the command; a build command never gets it. |
 | `ENGINE_SECTION_IGNORED` | info | none | none | Info only: the cloud ignores the `engine:` section. No fix needed. |
 | `NAMESPACE_IGNORED` | info | none | none | Info only: the cloud ignores the namespace. No fix needed. |
 | `SANDBOX_ADAPTER_IGNORED` | info | none | none | Info only: the cloud ignores the sandbox adapter. No fix needed. |
