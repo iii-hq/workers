@@ -1019,9 +1019,39 @@ pub async fn default_branch_of(top: &Path, known: Option<&str>) -> Option<String
     .filter(|b| !b.is_empty())
 }
 
-/// An environment that tracks a branch other than the default: no pull
-/// request. The agent works on a fix branch; the person's deploy pushes the
-/// checked commit to the environment's branch.
+/// How an environment gets a deploy: production by a pull request into its
+/// branch; every other environment by an assisted deploy, which pushes the
+/// checked commit to a branch only that environment follows (`own`: the branch
+/// it moves to on its first deploy, when its current one is not its own).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Way {
+    PullRequest,
+    Assisted { own: Option<String> },
+}
+
+/// The branch an environment's assisted deploys push to.
+pub fn own_branch(name: &str) -> String {
+    format!("iii-cloud/{name}")
+}
+
+/// `others`: the branches the project's other environments follow. A branch
+/// that is the default, shared, or whose default is unknown is never pushed:
+/// the environment gets its own. Mirrored by `deployWay` in `ui/src/model.ts`.
+pub fn deploy_way(default: Option<&str>, env: &EnvironmentInfo, others: &[String]) -> Way {
+    if env.production {
+        return Way::PullRequest;
+    }
+    let own = own_branch(&env.name);
+    let moves = env.branch != own
+        && (default.is_none_or(|d| d == env.branch) || others.contains(&env.branch));
+    Way::Assisted {
+        own: moves.then_some(own),
+    }
+}
+
+/// An environment that tracks a branch other than the default. Only the
+/// worktree setup uses it, to start from the default branch while the
+/// environment's own branch is not on origin yet.
 pub fn tracks_other_branch(default: Option<&str>, env_branch: &str) -> bool {
     default.is_some_and(|d| d != env_branch)
 }

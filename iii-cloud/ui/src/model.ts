@@ -560,6 +560,33 @@ export function isDirectEnv(s: Status, env: { id: string; branch: string }): boo
   return !!base && env.branch !== base
 }
 
+/** The branch an environment's assisted deploys push to (`project::own_branch`). */
+export const ownBranch = (name: string) => `iii-cloud/${name}`
+
+/**
+ * How an environment gets a deploy, from production alone (`project::deploy_way`; both read
+ * `tests/fixtures/deploy-way.json`). `own` is the branch an assisted environment moves to on its first deploy:
+ * its branch is the default one, one another environment follows, or the default is unknown. `envs` is the
+ * project's environments, this one included.
+ */
+export type DeployWay = { way: 'pull_request' } | { way: 'assisted'; own: string | null }
+export function deployWay(
+  base: string | null,
+  env: { name: string; production: boolean; branch: string },
+  envs: { name: string; branch: string }[],
+): DeployWay {
+  if (env.production) return { way: 'pull_request' }
+  const own = ownBranch(env.name)
+  const shared = envs.some((e) => e.name !== env.name && e.branch === env.branch)
+  const moves = env.branch !== own && (base === null || base === env.branch || shared)
+  return { way: 'assisted', own: moves ? own : null }
+}
+
+export const ASSISTED = 'Assisted deploy'
+/** The one sentence that says what an assisted deploy is. */
+export const assistedHow = (env: string) =>
+  `This page checks a commit in a clean copy of your code (what is committed, plus your agent's fixes) and, when you confirm, sends that commit to ${env}'s own branch, where iii cloud deploys it.`
+
 /** The head of an environment's branch on GitHub, as the last refresh read it (`null` when unknown). */
 export function envHead(s: Status, envId = s.project?.environment?.id): string | null {
   for (const p of s.project?.cloud_projects ?? []) {

@@ -1541,3 +1541,49 @@ fn a_running_deploy_is_never_pruned_by_newer_ones() {
     assert!(s.deploys.iter().all(|d| d.id != "old-ready"));
     assert_eq!(s.deploys.len(), 21);
 }
+
+// ------------------------------------------------------------ how an environment deploys
+
+/// The cases `ui/src/__tests__/logic.test.tsx` reads too: one rule, two languages.
+#[test]
+fn an_environment_deploys_by_pull_request_only_in_production() {
+    use iii_cloud::project::{Way, deploy_way};
+    let cases: Vec<Value> = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/deploy-way.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(cases.len() >= 8);
+    for c in cases {
+        let e = &c["env"];
+        let env = EnvironmentInfo {
+            id: "e".into(),
+            name: e["name"].as_str().unwrap().into(),
+            production: e["production"].as_bool().unwrap(),
+            branch: e["branch"].as_str().unwrap().into(),
+            manifest: None,
+            url: None,
+        };
+        let others: Vec<String> = c["others"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_str().unwrap().to_string())
+            .collect();
+        let want = match c["way"].as_str().unwrap() {
+            "pull_request" => Way::PullRequest,
+            _ => Way::Assisted {
+                own: c["own"].as_str().map(str::to_owned),
+            },
+        };
+        assert_eq!(
+            deploy_way(c["default"].as_str(), &env, &others),
+            want,
+            "{}",
+            c["case"]
+        );
+    }
+}

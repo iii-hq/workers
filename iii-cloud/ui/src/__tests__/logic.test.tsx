@@ -3,6 +3,8 @@ import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import setup from '../../page'
+// The shared cases the worker's Rust rule reads too.
+import wayCases from '../../../tests/fixtures/deploy-way.json'
 import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
@@ -12,6 +14,7 @@ import {
   configDir,
   deployOrigin,
   deployState,
+  deployWay,
   listMayHideServing,
   liveOf,
   opensToPublic,
@@ -30,6 +33,17 @@ vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
 
 usePage()
+
+describe('how an environment deploys', () => {
+  it('follows the cases the worker reads too', () => {
+    expect(wayCases.length).toBeGreaterThanOrEqual(8)
+    for (const c of wayCases) {
+      const others = c.others.map((branch, i) => ({ name: `other-${i}`, branch }))
+      const got = deployWay(c.default, c.env, [c.env, ...others])
+      expect(got, c.case).toEqual(c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own })
+    }
+  })
+})
 
 describe('the header who-line (P5)', () => {
   it('names the person (name, else email) and the team with its role; an API key and signed out say so; never "as you"', () => {
