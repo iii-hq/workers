@@ -302,6 +302,17 @@ pub(crate) fn adopt_moved_root(
 ) -> Option<String> {
     let root = proposed?;
     let previous = record.options.filesystem_root()?.to_string();
+    // An orchestrator adds worktrees for its sub-agents; moving it into one
+    // jails it out of the checkout and every sibling worktree.
+    let stays = record
+        .options
+        .agent
+        .as_ref()
+        .and_then(|a| a.follow_worktrees)
+        == Some(false);
+    if stays {
+        return None;
+    }
     if data.is_error || !std::path::Path::new(&root).is_absolute() || root == previous {
         return None;
     }
@@ -8191,6 +8202,28 @@ mod tests {
             let moved = super::adopt_moved_root(&mut record, &mut data, Some(root.into()));
             assert_eq!(moved.is_some(), moves, "{root}");
             assert_eq!(record.failed_calls.is_empty(), moves, "{root}");
+        }
+    }
+
+    /// A profile with `follow_worktrees: false` (an orchestrator adding
+    /// worktrees for its sub-agents) keeps its root; the default follows.
+    #[test]
+    fn a_profile_that_does_not_follow_worktrees_keeps_its_root() {
+        for (follow, moves) in [(Some(false), false), (None, true), (Some(true), true)] {
+            let mut record = crate::types::turn::tests::record();
+            record.options.set_filesystem_root("/repo");
+            record.options.agent = Some(crate::types::turn::AgentIdentity {
+                id: "orchestrator".into(),
+                name: None,
+                icon: None,
+                color: None,
+                follow_worktrees: follow,
+            });
+            let mut data = dispatched("ok");
+            let moved = super::adopt_moved_root(&mut record, &mut data, Some("/repo-wt".into()));
+            assert_eq!(moved.is_some(), moves, "{follow:?}");
+            let root = if moves { "/repo-wt" } else { "/repo" };
+            assert_eq!(record.options.filesystem_root(), Some(root), "{follow:?}");
         }
     }
 

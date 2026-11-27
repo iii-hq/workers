@@ -1277,6 +1277,7 @@ mod tests {
             name: Some("Linkly".into()),
             icon: None,
             color: None,
+            follow_worktrees: None,
         });
         record
     }
@@ -2241,6 +2242,7 @@ mod tests {
                 name: Some(name.to_string()),
                 icon: None,
                 color: None,
+                follow_worktrees: None,
             },
             prompt: format!("You are {name}. Work."),
             skills: Vec::new(),

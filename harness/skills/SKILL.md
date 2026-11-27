@@ -178,7 +178,8 @@ run in the new root, and session metadata gets `fs_scope { root, moved_from }`.
 Under `workspace` an approved `git worktree add` moves the boundary too, for
 sub-agents as well. A send that names a root still wins, so a client must
 adopt the mirrored root. A re-tasked sub-agent keeps its own root unless the
-spawn names one.
+spawn names one. A profile with `follow_worktrees: false` never moves: use it for an
+orchestrator that adds worktrees for its sub-agents.
 
 ## Attachments
 

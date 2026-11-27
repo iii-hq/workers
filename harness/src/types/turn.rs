@@ -115,6 +115,12 @@ pub struct AgentIdentity {
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// `false` when the profile sets `follow_worktrees: false`: a worktree
+    /// this session's own call creates never moves its working directory
+    /// (`turn_loop::adopt_moved_root`). An orchestrator adds worktrees for its
+    /// sub-agents, not for itself. `None` = follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_worktrees: Option<bool>,
 }
 
 /// The language every user-facing text of a session is written in: detected
@@ -1081,6 +1087,7 @@ pub(crate) mod tests {
             name: Some("Tech Leader".into()),
             icon: Some("agent".into()),
             color: Some("purple".into()),
+            follow_worktrees: None,
         });
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);
