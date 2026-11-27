@@ -1502,7 +1502,8 @@ export function CheckStage(props: CheckStageProps) {
   const nudge: { line: string; chat: boolean } | null =
     !stuck || !(lines.length > 0 || run?.status === 'failed')
       ? null
-      : running
+      : // Only a waiting agent is continued when a check ends; a stalled one has no wake armed.
+        running && a?.state === 'waiting'
         ? { line: 'Your agent goes on when the check ends.', chat: false }
         : !lines.length && missing.length
           ? {
@@ -1633,7 +1634,8 @@ export function CheckStage(props: CheckStageProps) {
               {a.state === 'waiting_for_you'
                 ? (a.question ?? 'Your agent has a question in its chat.')
                 : a.state === 'stalled'
-                  ? (a.question ?? `No progress for ${minutesLabel(idle)}. It may be stuck: open its chat, or stop it.`)
+                  ? (a.question ??
+                    `${a.last_activity_at ? `No progress for ${minutesLabel(idle)}.` : 'No progress.'} It may be stuck: ${a.session_id && canOpenChat(host) ? 'open its chat, or stop it' : 'stop it, or check again'}.`)
                   : folder}
             </p>
           ) : null}

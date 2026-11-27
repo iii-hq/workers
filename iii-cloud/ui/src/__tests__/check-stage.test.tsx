@@ -1468,6 +1468,27 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")
   })
 
+  it('a stalled agent is not told it goes on by itself, says no minutes it cannot know, and names the chat only when one opens', async () => {
+    const openScreen = vi.fn()
+    const st = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'stalled' as const, question: null } }
+    // a check running: a stalled agent has no wake, so no "goes on"
+    await stage(
+      { ...st, check: { ...st.check!, run: { ...st.check!.run!, status: 'running' as const } } },
+      {},
+      { openScreen },
+    )
+    expect(region('Your agent')?.textContent).not.toContain('goes on when the check ends')
+    expect(region('Your agent')?.textContent).toContain('open its chat, or stop it')
+    // no activity time: no number
+    await stage({ ...st, agent: { ...st.agent!, last_activity_at: null } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('No progress. It may be stuck')
+    expect(region('Your agent')?.textContent).not.toMatch(/No progress for/)
+    // no chat to open: the card does not send the person there
+    await stage({ ...st, agent: { ...st.agent!, session_id: null } })
+    expect(region('Your agent')?.textContent).toContain('stop it, or check again')
+    expect(region('Your agent')?.textContent).not.toContain('open its chat')
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)
