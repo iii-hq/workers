@@ -97,6 +97,7 @@ fn passed_run(commit: &str) -> Run {
         reused: false,
         waiting_on: None,
         restored: vec![],
+        moved: vec![],
     }
 }
 

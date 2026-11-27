@@ -419,6 +419,14 @@
             },
             "type": "array"
           },
+          "moved": {
+            "default": [],
+            "description": "The untracked files the run created, moved out of the copy into the run's `left/` folder when it ended (at most 500).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "not_covered": {
             "items": {
               "type": "string"

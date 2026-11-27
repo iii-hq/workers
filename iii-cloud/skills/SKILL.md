@@ -34,6 +34,7 @@ Load `iii://iii-cloud/onboarding` only when the work starts from nothing
   replaced with `${NAME}`: it opens a request on the page, and you only see
   whether it was saved.
 - An empty string is a value. Before you write `${NAME:-}`, read how the app parses that name: if it is parsed as a number or a boolean, or validated, the app starts with `""` and exits. Give it the app's own default (`${NAME:-8}`, `${NAME:-false}`), or leave the variable out of the compose file; keep `${NAME:-}` only for a name the app reads as an optional string.
+- Stage your changes by path (`git add <file>`): never `git add -A`, `git add .` or `git commit -a`; the local run's data is not yours to commit.
 - Never print or store a token or an API key.
 - iii cloud's GitHub App is read-only. Pull requests use the person's own `gh` login.
 - Only the person deploys, approves a deployment, merges the pull request,

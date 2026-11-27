@@ -1135,6 +1135,10 @@ pub struct Run {
     /// (at most 500; their rewritten versions are kept in the run's `left/` folder).
     #[serde(default)]
     pub restored: Vec<String>,
+    /// The untracked files the run created, moved out of the copy into the run's `left/` folder
+    /// when it ended (at most 500).
+    #[serde(default)]
+    pub moved: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
