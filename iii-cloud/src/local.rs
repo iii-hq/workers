@@ -581,7 +581,6 @@ fn command_parts(command: &str) -> Vec<Vec<&str>> {
         if let Some(at) = line.find("<<") {
             let word: String = line[at + 2..]
                 .trim_start_matches('-')
-                .trim()
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
