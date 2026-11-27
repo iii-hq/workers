@@ -252,6 +252,8 @@ function EnvPage(props: ManageProps) {
     <>
       <PathBar
         path={pathOf(route, status)}
+        status={status}
+        route={route}
         go={go}
         narrow={narrow}
         rule={!tabs}

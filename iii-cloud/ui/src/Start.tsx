@@ -236,13 +236,20 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
       (place.current ? !m.other : m.path === place.path && (!place.cp || m.cloudProject === place.cp)),
   )
   const run = going?.deploy
-  // A deployment iii cloud holds for approval: the current project's is in `whatWaits`, another project's is named here.
-  const held = place.current
-    ? undefined
-    : moving(status).find(
-        (m) => needsAction(m.deploy) && m.path === place.path && (!place.cp || m.cloudProject === place.cp),
-      )
-  const waits = place.current ? whatWaits(status) : held ? ['a held deployment'] : []
+  // A deployment iii cloud holds for approval, named in the row: the selected environment's of the project in use
+  // is in `whatWaits`; any other environment's, and another project's, is named here.
+  const held = moving(status).find(
+    (m) =>
+      needsAction(m.deploy) &&
+      (place.current
+        ? !m.other && m.deploy.environment_id !== p?.environment?.id
+        : m.path === place.path && (!place.cp || m.cloudProject === place.cp)),
+  )
+  const waits = place.current
+    ? [...whatWaits(status), ...(held ? ['a held deployment'] : [])]
+    : held
+      ? ['a held deployment']
+      : []
 
   let line1: ReactNode
   if (gone) {

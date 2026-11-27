@@ -289,6 +289,21 @@ export function Notice({ variant = 'info', className, headline, ...rest }: Statu
 }
 
 /**
+ * A deployment of any project on this machine waits for the person (iii cloud holds it for approval) and the
+ * screen does not already show it: not the deploy screen of that deployment, nor its environment's page.
+ */
+export function waitingElsewhere(s: Status, r?: Route): boolean {
+  const on =
+    r && (r.at === 'env' || r.at === 'deploy' || r.at === 'secrets') ? r.env || s.project?.environment?.id : null
+  return moving(s).some(
+    (m) =>
+      needsAction(m.deploy) &&
+      !(r?.at === 'deploy' && r.deploy === m.deploy.id) &&
+      !(!m.other && on && m.deploy.environment_id === on),
+  )
+}
+
+/**
  * The one path bar at the top of every area's PageMain: the ancestors as links, " / ", the place itself as
  * the page's heading. Narrow: a back button to the parent (the last ancestor that goes somewhere) and the
  * place only. `children` follow the name (a chip, the address); `end` holds "as of", Refresh and actions.
@@ -300,6 +315,8 @@ export function PathBar({
   rule,
   children,
   end,
+  status,
+  route,
 }: {
   path: PathItem[]
   go: (r: Route) => void
@@ -308,12 +325,15 @@ export function PathBar({
   rule?: boolean
   children?: ReactNode
   end?: ReactNode
-  /** Not read: no board has a deploy pill in the bar (Projects' rows say what is going on); callers may stop passing them. */
-  host?: Host
+  /** With the status and the page's route, the "Projects" crumb carries a dot while a held deployment is not on this screen. */
   status?: Status
   route?: Route
+  /** Not read. */
+  host?: Host
 }) {
   const here = path[path.length - 1]
+  const held = status ? waitingElsewhere(status, route) : false
+  const dot = <StatusDot tone="warn" className="iii-cloud-crumb-dot" aria-hidden />
   const up = path.slice(0, -1)
   const parent = up.filter((p) => p.to).at(-1)
   return (
@@ -321,8 +341,18 @@ export function PathBar({
       {narrow ? (
         <>
           {parent?.to ? (
-            <IconButton label={`Back to ${parent.label}`} variant="ghost" onClick={() => go(parent.to as Route)}>
+            <IconButton
+              label={
+                held && parent.to.at === 'start'
+                  ? `Back to ${parent.label}. A deployment needs you`
+                  : `Back to ${parent.label}`
+              }
+              variant="ghost"
+              className="iii-cloud-crumb-back"
+              onClick={() => go(parent.to as Route)}
+            >
               <ArrowLeft />
+              {held && parent.to.at === 'start' ? dot : null}
             </IconButton>
           ) : null}
           <h2 className="iii-cloud-head-title iii-cloud-head-name">{here.label}</h2>
@@ -332,8 +362,14 @@ export function PathBar({
           {up.map((p) => (
             <Fragment key={p.to?.at ?? p.label}>
               {p.to ? (
-                <button type="button" className="iii-cloud-crumbs-up" onClick={() => go(p.to as Route)}>
+                <button
+                  type="button"
+                  className="iii-cloud-crumbs-up"
+                  aria-label={held && p.to.at === 'start' ? 'A deployment needs you: see Projects' : undefined}
+                  onClick={() => go(p.to as Route)}
+                >
                   {p.label}
+                  {held && p.to.at === 'start' ? dot : null}
                 </button>
               ) : (
                 <span>{p.label}</span>

@@ -82,6 +82,8 @@ export function SetupArea(props: AreaProps<RouteAt<'setup'>>) {
     <PageMain className="iii-cloud-main">
       <PathBar
         path={pathOf(route, status)}
+        status={status}
+        route={route}
         go={go}
         narrow={narrow}
         rule

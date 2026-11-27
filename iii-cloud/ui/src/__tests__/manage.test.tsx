@@ -148,6 +148,8 @@ describe('the environment page on a phone (Phone-Env)', () => {
     // Each deployment row leads with its number; the footer is the two phone links.
     expect(el.querySelector('.iii-cloud-dep-title .iii-cloud-dep-num')?.textContent).toMatch(/^#\d+ · $/)
     expect(el.querySelector('.iii-cloud-envfoot')?.textContent).toContain('More in iii cloud')
+    // How the environment gets a deploy is in the card too (the desktop "Deploys from" words, in one line).
+    expect(card?.textContent).toMatch(/Deploys from (a pull request|an assisted deploy), /)
   })
 })
 

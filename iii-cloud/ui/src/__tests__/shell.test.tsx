@@ -277,6 +277,44 @@ describe("every project's deploys going on (running_deploys)", () => {
     expect(text()).toContain('billingNeeds youdev · deployment #8 needs your action')
   })
 
+  it('the project in use: a held deployment of another environment says Needs you on its row, naming both', async () => {
+    const b = boards['start-moving']
+    const other = { id: 'e-staging', name: 'staging', production: false, branch: 'staging' }
+    const withOther = {
+      ...b.status,
+      project: { ...b.status.project!, environments: [...b.status.project!.environments, other] },
+    }
+    const [here, billing] = b.status.running_deploys ?? []
+    const held = {
+      ...here,
+      environment_name: other.name,
+      deploy: { ...here.deploy, environment_id: other.id, status: 'needs_action' as const },
+    }
+    await mount({ ...withOther, running_deploys: [held, billing] }, ctx({ at: 'start' }), cloudAnswers(b.cloud ?? {}))
+    expect(text()).toContain(`registryNeeds you${other.name} · deployment #${here.deploy.number} needs your action`)
+  })
+
+  it('the "Projects" crumb carries a warn dot while a held deployment is not on the screen, and not for a running one', async () => {
+    const b = boards['start-moving']
+    const [here, billing] = b.status.running_deploys ?? []
+    const held = { ...billing, deploy: { ...billing.deploy, status: 'needs_action' as const } }
+    const crumb = () => el.querySelector('button.iii-cloud-crumbs-up')
+    await mount(
+      { ...b.status, running_deploys: [here, held] },
+      ctx({ at: 'env', env: '' }),
+      cloudAnswers(b.cloud ?? {}),
+    )
+    expect(crumb()?.getAttribute('aria-label')).toBe('A deployment needs you: see Projects')
+    expect(crumb()?.querySelector('[data-dot=warn]')).not.toBeNull()
+    await mount(
+      { ...b.status, running_deploys: [here, billing] },
+      ctx({ at: 'env', env: '' }),
+      cloudAnswers(b.cloud ?? {}),
+    )
+    expect(crumb()?.getAttribute('aria-label')).toBeNull()
+    expect(crumb()?.querySelector('[data-dot]')).toBeNull()
+  })
+
   it('Start: every row with a deploy going on says it; Open on another project takes it up first', async () => {
     const h = await board('start-moving')
     expect(text()).toMatch(/registryDeployingproduction · deployment #6 is running · \d+ min so far/)

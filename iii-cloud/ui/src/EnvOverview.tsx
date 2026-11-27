@@ -387,6 +387,16 @@ export function LiveNow({
   if (!env) return null
   const h = health.data ? healthOf(health.data, env.name) : null
   const way = wayOf(status, env)
+  // The two sentences of the "Deploys from" cell; a phone's card says them in one line.
+  const words = {
+    value: way.way === 'assisted' ? 'an assisted deploy' : 'a pull request',
+    detail:
+      way.way === 'pull_request'
+        ? `when one into ${status.pr?.base ?? env.branch} is merged`
+        : way.own
+          ? `the first one moves ${env.name} from ${env.branch} to its own branch, ${way.own}`
+          : `to ${env.branch}; a push to it from anywhere else deploys without the check`,
+  }
   if (narrow) {
     const live = liveOf(feed.data?.deployments, feed.data?.next_cursor)
     const url = p?.environment?.id === envId ? p.environment.url : null
@@ -417,6 +427,7 @@ export function LiveNow({
         ) : (
           <span className="iii-cloud-text">Nothing is live yet</span>
         )}
+        <span className="iii-cloud-desc">{`Deploys from ${words.value}, ${words.detail}`}</span>
       </Panel>
     )
   }
@@ -460,14 +471,8 @@ export function LiveNow({
       </div>
       <div className="iii-cloud-cell">
         <span className="iii-cloud-cell-label">Deploys from</span>
-        <span className="iii-cloud-cell-value">{way.way === 'assisted' ? 'an assisted deploy' : 'a pull request'}</span>
-        <span className="iii-cloud-desc">
-          {way.way === 'pull_request'
-            ? `when one into ${status.pr?.base ?? env.branch} is merged`
-            : way.own
-              ? `the first one moves ${env.name} from ${env.branch} to its own branch, ${way.own}`
-              : `to ${env.branch}; a push to it from anywhere else deploys without the check`}
-        </span>
+        <span className="iii-cloud-cell-value">{words.value}</span>
+        <span className="iii-cloud-desc">{words.detail}</span>
       </div>
     </Panel>
   )
