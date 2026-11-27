@@ -1150,11 +1150,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     });
     let mut here_problems = here_problems;
     // A rebase, merge or checkout stops on the files a local run left in tracked paths.
-    let restore_first = ctx.store.read(|s| {
-        s.run_wrote
-            .get(&sel.workspace.to_string_lossy().into_owned())
-            .is_some_and(|w| !w.files.is_empty())
-    });
+    let restore_first = crate::run::tracked_aside_dirty(ctx, &sel.workspace).await;
     let restore_note = if restore_first {
         " Restore the local run's files first."
     } else {
@@ -1295,6 +1291,18 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             )),
             Owner::Agent,
             None,
+        ));
+    }
+    // The tracked files the last run rewrote and the worker put back: said once per check.
+    if let Some((restored, Some(dir))) = ctx.store.read(|s| {
+        s.run_wrote
+            .get(&sel.workspace.to_string_lossy().into_owned())
+            .map(|w| (w.restored.clone(), w.left_dir.clone()))
+    }) && !restored.is_empty()
+    {
+        here_problems.push(crate::run::restored_problem(
+            &restored,
+            std::path::Path::new(&dir),
         ));
     }
     // What a local run left is not counted; one of those could still be the agent's own edit.

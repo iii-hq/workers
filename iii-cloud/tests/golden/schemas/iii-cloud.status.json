@@ -2089,6 +2089,14 @@
             },
             "type": "array"
           },
+          "restored": {
+            "default": [],
+            "description": "The tracked files the run rewrote and the worker put back as committed when it ended (at most 500; their rewritten versions are kept in the run's `left/` folder).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "reused": {
             "default": false,
             "description": "A passed run of an earlier check answered this one: nothing ran again.",

@@ -58,6 +58,7 @@ async fn a_restart_fails_the_running_run_and_cleans_up_its_files() {
         error: None,
         reused: false,
         waiting_on: None,
+        restored: vec![],
     };
     let (part, _) =
         iii_cloud::check::plan_part(&serde_json::json!({"can_deploy": true, "plan": {}}));

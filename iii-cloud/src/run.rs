@@ -564,10 +564,17 @@ pub async fn start_with(
     // Read once the slot is ours: a commit made while the old run was torn down counts.
     let commit = workspace_commit(ctx, &sel.workspace).await?;
     // What was dirty before the run: what it changes or adds is the run's, not the agent's.
-    let before = dirty_snapshot(&sel.workspace).await;
-    if before.is_none() {
-        mark_unrecorded(ctx, &sel.workspace);
-    }
+    // Decided now, not at the end: in the person's own folder nothing of this run is set aside
+    // or put back, whatever the selection is by then.
+    let before = if is_persons_folder(ctx, &sel.workspace) {
+        None
+    } else {
+        let snapshot = dirty_snapshot(&sel.workspace).await;
+        if snapshot.is_none() {
+            mark_unrecorded(ctx, &sel.workspace);
+        }
+        snapshot
+    };
     let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
     exec.cancel = cancel_rx;
     exec.wrote_before = before.clone();
@@ -727,6 +734,33 @@ fn fingerprint(path: &Path) -> String {
     }
 }
 
+/// The one info line for the tracked files a run rewrote and the worker put back. Never their content.
+pub fn restored_problem(restored: &[String], dir: &Path) -> Problem {
+    let mut p = crate::local::here(
+        "RUN_FILES_RESTORED",
+        format!(
+            "The local run rewrote {} tracked file{}; they are back as committed",
+            restored.len(),
+            if restored.len() == 1 { "" } else { "s" }
+        ),
+        Some(format!(
+            "{}{}. The rewritten versions are in {}. If one of them was your own edit made during the run, apply it again and commit it.",
+            restored
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            if restored.len() > 5 { " and more" } else { "" },
+            dir.display()
+        )),
+        Owner::None,
+        None,
+    );
+    p.severity = Severity::Info;
+    p
+}
+
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
@@ -746,18 +780,85 @@ pub async fn set_aside(
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
 ) -> Option<String> {
+    set_aside_run(ctx, ws, before, None).await.note
+}
+
+/// What a run's end did to its worktree.
+#[derive(Default)]
+pub struct SetAside {
+    /// A line for the run's record (more than `MAX_WROTE` paths).
+    pub note: Option<String>,
+    /// The tracked files put back as committed.
+    pub restored: Vec<String>,
+    /// Where their rewritten versions were kept.
+    pub saved_in: Option<PathBuf>,
+}
+
+/// `set_aside`, and with the run's folder: each tracked file that was clean when the run began and
+/// that it rewrote or deleted is saved under `<run folder>/left/<path>` (0600, folders 0700) and
+/// put back with `git checkout -- <path>`, only once the save worked. Never in the person's own
+/// folder; a file over `HASH_LIMIT`, or more than `MAX_WROTE` files, stay set aside as they are;
+/// a path dirty before the run is never touched; untracked files are not deleted. What an older
+/// run kept in its `left/` goes when this one ends.
+pub async fn set_aside_run(
+    ctx: &Ctx,
+    ws: &Path,
+    before: &std::collections::BTreeMap<String, String>,
+    run_dir: Option<&Path>,
+) -> SetAside {
     // The person's own folder: every change in it is theirs to judge, none is the run's.
     if is_persons_folder(ctx, ws) {
-        return None;
+        return SetAside::default();
     }
-    let Some(after) = dirty_entries(ws, Fingerprints::All).await else {
+    let Some(mut after) = dirty_entries(ws, Fingerprints::All).await else {
         mark_unrecorded(ctx, ws);
-        return None;
+        return SetAside::default();
     };
     let previous = ctx
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
         .unwrap_or_default();
+    // Tracked files the run rewrote or deleted, clean when it began: back as committed.
+    let mut restored: Vec<String> = vec![];
+    let mut left_dir: Option<PathBuf> = None;
+    if let Some(run_dir) = run_dir {
+        let tracked: std::collections::BTreeSet<String> =
+            tool::git(ws, &["ls-files", "-z", "--modified", "--deleted"])
+                .await
+                .map(|o| {
+                    o.split('\0')
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+        let candidates: Vec<String> = after
+            .keys()
+            .filter(|p| !before.contains_key(*p) && tracked.contains(*p))
+            .cloned()
+            .collect();
+        if !candidates.is_empty() && candidates.len() <= MAX_WROTE {
+            let dir = run_dir.join("left");
+            let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
+            let saved: Vec<String> = tokio::task::spawn_blocking(move || {
+                candidates
+                    .into_iter()
+                    .filter(|p| save_left(&ws2, &dir2, p))
+                    .collect()
+            })
+            .await
+            .unwrap_or_default();
+            for p in saved {
+                if tool::git(ws, &["checkout", "--", &p]).await.is_ok() {
+                    after.remove(&p);
+                    restored.push(p);
+                }
+            }
+            if !restored.is_empty() {
+                left_dir = Some(dir);
+            }
+        }
+    }
     let mut files: std::collections::BTreeMap<String, String> = after
         .into_iter()
         .filter(|(p, _)| {
@@ -774,15 +875,67 @@ pub async fn set_aside(
     if note.is_some() {
         files.clear();
     }
+    // Only the newest run of a worktree keeps its rewritten versions.
+    if let Some(old) = previous.left_dir.as_deref()
+        && left_dir.as_deref().is_none_or(|n| n != Path::new(old))
+    {
+        let _ = std::fs::remove_dir_all(old);
+    }
     ctx.store.update(|s| {
         // A record of a worktree that is gone goes with it.
         s.run_wrote.retain(|p, _| Path::new(p).exists());
+        s.run_unrecorded.retain(|p| Path::new(p).exists());
         s.run_wrote.insert(
             ws.to_string_lossy().into_owned(),
-            crate::store::RunWrote { files },
+            crate::store::RunWrote {
+                files,
+                restored: restored.clone(),
+                left_dir: left_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
+            },
         );
     });
-    note
+    SetAside {
+        note,
+        restored,
+        saved_in: left_dir,
+    }
+}
+
+/// Keep what the run left of one tracked file under `dir` (0600, folders 0700). A deletion has
+/// nothing to keep. False when it can't be kept: the file then stays as the run left it.
+fn save_left(ws: &Path, dir: &Path, rel: &str) -> bool {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let from = ws.join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&from) else {
+        return true; // deleted
+    };
+    if !meta.is_file() || meta.len() > HASH_LIMIT {
+        return false;
+    }
+    let to = dir.join(rel);
+    let Some(parent) = to.parent() else {
+        return false;
+    };
+    if std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&from) else {
+        return false;
+    };
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&to)
+        .and_then(|mut f| f.write_all(&bytes))
+        .is_ok()
 }
 
 /// The changed paths of the worktree that are the agent's: not what the last local run left
@@ -797,6 +950,23 @@ pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
 fn mark_unrecorded(ctx: &Ctx, ws: &Path) {
     ctx.store
         .update(|s| s.run_unrecorded.insert(ws.to_string_lossy().into_owned()));
+}
+
+/// Set-aside paths that are tracked and modified or deleted now (a rebase, merge or checkout
+/// would stop on them).
+pub async fn tracked_aside_dirty(ctx: &Ctx, ws: &Path) -> bool {
+    let aside: Vec<String> = ctx.store.read(|s| {
+        s.run_wrote
+            .get(&ws.to_string_lossy().into_owned())
+            .map(|w| w.files.keys().cloned().collect())
+            .unwrap_or_default()
+    });
+    if aside.is_empty() {
+        return false;
+    }
+    tool::git(ws, &["ls-files", "-z", "--modified", "--deleted"])
+        .await
+        .is_ok_and(|o| o.split('\0').any(|p| aside.iter().any(|a| a == p)))
 }
 
 /// The worktree has a run's unrecorded leftovers (see `mark_unrecorded`).
@@ -826,14 +996,15 @@ pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<Strin
         Some(l) => dirty_entries(ws, Fingerprints::Only(&l.files)).await?,
         None => dirty_entries(ws, Fingerprints::None).await?,
     };
-    if now.is_empty() && unrecorded(ctx, ws) {
-        ctx.store
-            .update(|s| s.run_unrecorded.remove(&ws.to_string_lossy().into_owned()));
-    }
     let left = left.unwrap_or_default();
     let (aside, agent): (Vec<_>, Vec<_>) = now
         .into_iter()
         .partition(|(p, h)| left.files.get(p) == Some(h));
+    // Nothing of the agent's is dirty: whatever a run left unrecorded is gone or set aside.
+    if agent.is_empty() && unrecorded(ctx, ws) {
+        ctx.store
+            .update(|s| s.run_unrecorded.remove(&ws.to_string_lossy().into_owned()));
+    }
     Some((
         agent.into_iter().map(|(p, _)| p).collect(),
         aside.into_iter().map(|(p, _)| p).collect(),
@@ -929,6 +1100,7 @@ async fn prepare(
         error: None,
         reused: false,
         waiting_on: None,
+        restored: vec![],
     };
     set_run_live(&dir, true);
     Ok(Exec {
@@ -1114,11 +1286,35 @@ impl Exec {
         }
         self.teardown().await;
         // What the run left in the worktree is set aside before its last event goes out.
-        if let Some(before) = self.wrote_before.take()
-            && let Some(note) = set_aside(&self.ctx, &self.workspace, &before).await
-        {
-            // Into the run's own log, so the last publish carries it (it rebuilds `log_tail` from there).
-            self.note(&note);
+        if let Some(before) = self.wrote_before.take() {
+            let done = set_aside_run(
+                &self.ctx,
+                &self.workspace,
+                &before,
+                Some(self.dir.as_path()),
+            )
+            .await;
+            if let Some(note) = done.note {
+                // Into the run's own log, so the last publish carries it (it rebuilds `log_tail` from there).
+                self.note(&note);
+            }
+            if !done.restored.is_empty() {
+                self.run.restored = done.restored.clone();
+                if let Some(dir) = &done.saved_in {
+                    let problem = restored_problem(&done.restored, dir);
+                    let mut ids = self.followers.lock().unwrap().clone();
+                    ids.push(self.check_id.clone());
+                    ids.sort();
+                    ids.dedup();
+                    for id in ids {
+                        update_check(&self.ctx, &id, |c| {
+                            if !c.problems.iter().any(|p| p.code == problem.code) {
+                                c.problems.push(problem.clone());
+                            }
+                        });
+                    }
+                }
+            }
         }
         self.run.finished_at = Some(now());
         self.publish();

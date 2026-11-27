@@ -67,6 +67,7 @@ and the base in history.
   compose file (`LITERAL_CREDENTIAL`), and only for that one name. Never for a
   decision, a worker, a group, a setting: those go in the `harness::ask` card.
 - An empty string is a value. Before you write `${NAME:-}`, read how the app parses that name: if it is parsed as a number or a boolean, or validated, the app starts with `""` and exits. Give it the app's own default (`${NAME:-8}`, `${NAME:-false}`), or leave the variable out of the compose file; keep `${NAME:-}` only for a name the app reads as an optional string.
+- The local run's rewrites of tracked files are undone when it ends; never commit a file you did not edit.
 - The local run uses this machine's tools: a command that works here can be missing in the cloud's image; the run command must use the declared runtime.
 - If the person pastes a value in chat, do not repeat it, store it, or put it in
   a command. Tell them to type it on the page.

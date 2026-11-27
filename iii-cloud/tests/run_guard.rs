@@ -1135,3 +1135,49 @@ async fn a_run_that_leaves_over_five_hundred_files_says_so_in_the_run_it_publish
         run.log_tail
     );
 }
+
+#[tokio::test]
+async fn a_run_that_rewrites_a_tracked_file_leaves_it_as_committed_and_keeps_the_rewrite() {
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    std::fs::write(
+        ws.join("seed.yaml"),
+        "# the committed seed\nport: ${PORT}\n",
+    )
+    .unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "seed"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    // The engine normalizes the seed file while the workers start.
+    let bin = fake_iii(&h, "printf 'port: 8080\\n' > seed.yaml;");
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    assert_eq!(run.restored, vec!["seed.yaml"]);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("seed.yaml")).unwrap(),
+        "# the committed seed\nport: ${PORT}\n"
+    );
+    let kept = h
+        .dir
+        .path()
+        .join("data/runs")
+        .join(&run.id)
+        .join("left/seed.yaml");
+    assert_eq!(std::fs::read_to_string(kept).unwrap(), "port: 8080\n");
+    let c = h.ctx.store.read(|s| s.find_check("chk").cloned()).unwrap();
+    assert_eq!(
+        c.problems
+            .iter()
+            .filter(|p| p.code == "RUN_FILES_RESTORED")
+            .count(),
+        1
+    );
+}

@@ -1131,6 +1131,10 @@ pub struct Run {
     /// The run is still `running`; null otherwise.
     #[serde(default)]
     pub waiting_on: Option<WaitingOn>,
+    /// The tracked files the run rewrote and the worker put back as committed when it ended
+    /// (at most 500; their rewritten versions are kept in the run's `left/` folder).
+    #[serde(default)]
+    pub restored: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

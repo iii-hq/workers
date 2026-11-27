@@ -196,6 +196,7 @@ fn passed_run(commit: &str) -> Run {
         error: None,
         reused: false,
         waiting_on: None,
+        restored: vec![],
     }
 }
 
