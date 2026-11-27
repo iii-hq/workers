@@ -750,16 +750,18 @@ async fn the_replacing_run_is_of_the_commit_the_workspace_has_when_it_takes_the_
 }
 
 fn alive(pid: u32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // A zombie is gone for our purposes: nothing runs.
-        Ok(stat) => !stat
-            .rsplit(')')
-            .next()
-            .unwrap_or("")
-            .trim_start()
-            .starts_with('Z'),
-        Err(_) => false,
-    }
+    // Portable (Linux and macOS): the pid exists, and is not a zombie (nothing runs).
+    // SAFETY: signal 0 only checks that the process exists.
+    let exists = unsafe { libc::kill(pid as i32, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    exists
+        && std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| {
+                let stat = String::from_utf8_lossy(&o.stdout);
+                !stat.trim().is_empty() && !stat.trim().starts_with('Z')
+            })
 }
 
 #[tokio::test]

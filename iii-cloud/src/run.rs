@@ -48,7 +48,13 @@ pub const CALL_WAIT: Duration = Duration::from_secs(240);
 /// Where `iii compose` keeps the run's namespace, under the compose file's folder.
 const COMPOSE_STATE: &str = ".iii/compose/iii-cloud-run";
 /// How long one external command of the teardown or of `recover` (docker, `iii kill`) may take.
-const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+fn cleanup_timeout() -> Duration {
+    // The env name is for tests, which cannot wait 30 s for a hung command.
+    std::env::var("III_CLOUD_CLEANUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map_or(Duration::from_secs(30), Duration::from_millis)
+}
 
 /// `CALL_WAIT` on the test tick's scale.
 pub fn call_wait(ctx: &Ctx) -> Duration {
@@ -71,7 +77,7 @@ pub fn proc_start(pid: u32) -> Option<String> {
 async fn remove_container(name: &str) -> bool {
     let args = ["rm", "-f", name];
     let rm = tool::run("docker", &args, None, None, "DOCKER_MISSING");
-    match tokio::time::timeout(CLEANUP_TIMEOUT, rm).await {
+    match tokio::time::timeout(cleanup_timeout(), rm).await {
         Ok(Ok(out)) => out.ok() || out.stderr.contains("No such container"),
         _ => false,
     }
@@ -752,10 +758,18 @@ impl Drop for Exec {
             self.stage_start = None;
             self.persist_run();
         }
-        for name in std::mem::take(&mut self.pg) {
-            let _ = std::process::Command::new("docker")
-                .args(["rm", "-f", &name])
-                .output();
+        // `Drop` never waits on an external command: a hung docker daemon would hold the
+        // workspace's slot for ever. The names stay in `run.json` (the next teardown or
+        // `recover` removes them); a thread tries now without anyone waiting for it.
+        let names = std::mem::take(&mut self.pg);
+        if !names.is_empty() {
+            std::thread::spawn(move || {
+                for name in names {
+                    let _ = std::process::Command::new("docker")
+                        .args(["rm", "-f", &name])
+                        .output();
+                }
+            });
         }
         if let Some(p) = &self.prep {
             clean_copy(&p.copy);
@@ -774,7 +788,12 @@ impl Exec {
     fn persist_run(&self) {
         let files = RunFiles {
             containers: self.pg.clone(),
-            copy: self.prep.as_ref().map(|p| p.copy.clone()),
+            // Only a copy that exists: after `clean_copy` nothing is left to `iii kill`.
+            copy: self
+                .prep
+                .as_ref()
+                .map(|p| p.copy.clone())
+                .filter(|c| c.exists()),
             iii_bin: self.iii_bin.clone(),
             stage_group: self.stage_group,
             stage_start: self.stage_start.clone(),
@@ -1863,7 +1882,7 @@ impl Exec {
             self.persist_run();
         }
         if let Some(runs) = self.dir.parent() {
-            prune(runs, MAX_RUNS_KEPT);
+            prune(runs, MAX_RUNS_KEPT).await;
         }
     }
 }
@@ -2058,19 +2077,54 @@ pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
     if let Ok(read) = std::fs::read_dir(cfg.data_path().join("runs")) {
         for entry in read.flatten() {
             let file = entry.path().join("run.json");
-            if let Some(files) = std::fs::read(&file)
+            let Some(files) = std::fs::read(&file)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+            else {
+                continue;
+            };
+            // What is keyed by the workspace (a group, `iii compose`'s namespace and its
+            // copy) goes now, before any run of this process can use the same ones.
+            // A stage command the crash left running (its own group, so the worker's
+            // death did not reach it): only when that pid is still the very process
+            // that was recorded, since a pid is reused after a reboot.
+            if let (Some(pid), Some(start)) = (files.stage_group, files.stage_start.as_deref())
+                && proc_start(pid).as_deref() == Some(start)
             {
-                stale.push((file, files));
+                drop(GroupKill(Some(pid)));
+            }
+            if let Some(copy) = files.copy.filter(|c| c.exists()) {
+                let copy_arg = copy.to_string_lossy().into_owned();
+                let args = ["kill", "--compose", copy_arg.as_str()];
+                let kill = tool::run(&files.iii_bin, &args, None, None, "TOOL_MISSING");
+                let _ = tokio::time::timeout(cleanup_timeout(), kill).await;
+                clean_copy(&copy);
+            }
+            // What is left is the containers, named by run id: they can wait.
+            let rest = RunFiles {
+                containers: files.containers,
+                iii_bin: files.iii_bin,
+                ..Default::default()
+            };
+            if rest.containers.is_empty() {
+                let _ = std::fs::remove_file(&file);
+            } else {
+                write_run_files(&file, &rest);
+                stale.push((file, rest.containers));
             }
         }
     }
     Stale(stale)
 }
 
-/// What earlier runs left behind, read at the start (before any run of this process).
-pub struct Stale(Vec<(PathBuf, RunFiles)>);
+fn write_run_files(file: &Path, files: &RunFiles) {
+    if let Ok(bytes) = serde_json::to_vec(files) {
+        let _ = std::fs::write(file, bytes);
+    }
+}
+
+/// The containers earlier runs left, with the `run.json` that names them.
+pub struct Stale(Vec<(PathBuf, Vec<String>)>);
 
 /// `recover_runs` and `clean_stale` one after the other.
 pub async fn recover(ctx: &Arc<Ctx>) {
@@ -2078,45 +2132,41 @@ pub async fn recover(ctx: &Arc<Ctx>) {
     clean_stale(stale).await;
 }
 
-/// Stop what the crashed runs left (their stage, `iii compose`, containers). Each
-/// external command has a timeout; a container that could not be removed stays
-/// on record for the next start.
+/// Remove the containers earlier runs left (their names carry the run id, so this
+/// cannot touch a run of this process). Each removal has a timeout; one that could
+/// not be done stays on record for the next start.
 pub async fn clean_stale(stale: Stale) {
-    for (file, files) in stale.0 {
-        // A stage command the crash left running (its own group, so the worker's
-        // death did not reach it): only when that pid is still the very process
-        // that was recorded, since a pid is reused after a reboot.
-        if let (Some(pid), Some(start)) = (files.stage_group, files.stage_start.as_deref())
-            && proc_start(pid).as_deref() == Some(start)
-        {
-            drop(GroupKill(Some(pid)));
-        }
-        let mut left = vec![];
-        for name in &files.containers {
-            if !remove_container(name).await {
-                left.push(name.clone());
-            }
-        }
-        if let Some(copy) = files.copy.filter(|c| c.exists()) {
-            let copy_arg = copy.to_string_lossy().into_owned();
-            let args = ["kill", "--compose", copy_arg.as_str()];
-            let kill = tool::run(&files.iii_bin, &args, None, None, "TOOL_MISSING");
-            let _ = tokio::time::timeout(CLEANUP_TIMEOUT, kill).await;
-            clean_copy(&copy);
-        }
+    for (file, containers) in stale.0 {
+        let left = remove_containers(&containers).await;
         if left.is_empty() {
             let _ = std::fs::remove_file(file);
         } else {
-            let rest = RunFiles {
-                containers: left,
-                iii_bin: files.iii_bin,
-                ..Default::default()
-            };
-            if let Ok(bytes) = serde_json::to_vec(&rest) {
-                let _ = std::fs::write(file, bytes);
-            }
+            let iii_bin = std::fs::read(&file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+                .map(|f| f.iii_bin)
+                .unwrap_or_default();
+            write_run_files(
+                &file,
+                &RunFiles {
+                    containers: left,
+                    iii_bin,
+                    ..Default::default()
+                },
+            );
         }
     }
+}
+
+/// Try to remove each container; the names that are still there.
+async fn remove_containers(names: &[String]) -> Vec<String> {
+    let mut left = vec![];
+    for name in names {
+        if !remove_container(name).await {
+            left.push(name.clone());
+        }
+    }
+    left
 }
 
 /// Hide the password of every `scheme://user:password@host` in `text`.
@@ -2198,7 +2248,7 @@ fn tail_of(file: &Path) -> Vec<String> {
 }
 
 /// Keep the newest `keep` run folders.
-pub fn prune(runs: &Path, keep: usize) {
+pub async fn prune(runs: &Path, keep: usize) {
     let Ok(read) = std::fs::read_dir(runs) else {
         return;
     };
@@ -2209,6 +2259,26 @@ pub fn prune(runs: &Path, keep: usize) {
     dirs.sort();
     let extra = dirs.len().saturating_sub(keep);
     for (_, path) in dirs.into_iter().take(extra) {
+        // A folder whose record still names containers is the only trace of them:
+        // it goes once they are removed, and stays while one is not.
+        let file = path.join("run.json");
+        if let Some(files) = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<RunFiles>(&b).ok())
+            .filter(|f| !f.containers.is_empty())
+        {
+            let left = remove_containers(&files.containers).await;
+            if !left.is_empty() {
+                write_run_files(
+                    &file,
+                    &RunFiles {
+                        containers: left,
+                        ..files
+                    },
+                );
+                continue;
+            }
+        }
         let _ = std::fs::remove_dir_all(path);
     }
 }
