@@ -500,8 +500,41 @@ async fn a_commit_an_older_worker_made_of_copied_files_is_a_problem_before_any_d
     let detail = p.detail.as_deref().unwrap();
     assert!(
         detail.contains("Uncommitted changes from feat/search")
-            && detail.contains("git reset --hard"),
+            && detail.contains("git rebase --onto")
+            && !detail.contains("reset --hard"),
         "{detail}"
     );
     assert!(!c.ready);
+}
+
+#[tokio::test]
+async fn files_uncommitted_in_the_folder_and_the_worktree_alike_are_copies_not_work_to_commit() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    // The person's folder has an untracked file and a change to a tracked one.
+    std::fs::write(repo.checkout.join("notes.txt"), "mine\n").unwrap();
+    std::fs::write(repo.checkout.join("README.md"), "changed in the folder\n").unwrap();
+    // An older worker copied them into the worktree, uncommitted.
+    std::fs::write(ws.join("notes.txt"), "mine\n").unwrap();
+    std::fs::write(ws.join("README.md"), "changed in the folder\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "BROUGHT_FILES")
+        .expect("the copies are named");
+    assert_eq!((p.owner, p.severity), (Owner::Agent, Severity::Block));
+    let detail = p.detail.as_deref().unwrap();
+    assert!(
+        detail.contains("notes.txt")
+            && detail.contains("Do not commit them")
+            && detail.contains("git checkout --"),
+        "{detail}"
+    );
+    assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    // The agent's own edit of the same file (other content) is work: commit it.
+    std::fs::write(ws.join("README.md"), "the agent's own edit\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    assert!(!c.problems.iter().any(|p| p.code == "BROUGHT_FILES"));
 }

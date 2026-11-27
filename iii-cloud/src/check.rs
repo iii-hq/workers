@@ -2,7 +2,7 @@
 //! one list of problems, and the readiness rule. The pure rules (issue to
 //! problem, owner table, plan digest, ready, report) are public for the tests.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -761,6 +761,39 @@ pub async fn selected_for(ctx: &Ctx, handoff_id: Option<&str>) -> Res<Selected> 
 /// Commits of the worktree branch made before the worktree was started that are
 /// not on the base: an earlier try's. Only for a worktree this worker made. The
 /// commits it took from the person's checkout (`from_head`) are the base too.
+/// The paths `git status` lists as changed in `dir` (`-z`; a rename or copy is not
+/// compared: `None`).
+async fn changed_paths(dir: &Path) -> Option<Vec<String>> {
+    let out = git(dir, &["status", "--porcelain", "-z"]).await.ok()?;
+    let mut paths = vec![];
+    for entry in out.split('\0').filter(|e| !e.is_empty()) {
+        if entry.len() < 4 || entry.starts_with(['R', 'C']) || entry[1..2].starts_with(['R', 'C']) {
+            return None;
+        }
+        paths.push(entry[3..].to_string());
+    }
+    Some(paths)
+}
+
+/// Every uncommitted path of the worktree is uncommitted in the person's folder
+/// too, with the same content: the files an older worker copied. Paths and
+/// bytes only; anything else is not a copy.
+async fn copies_of_the_folders_changes(ws: &Path, folder: &Path) -> Option<Vec<String>> {
+    let mine = changed_paths(ws).await?;
+    let theirs = changed_paths(folder).await?;
+    if mine.is_empty() {
+        return None;
+    }
+    for p in &mine {
+        if !theirs.contains(p)
+            || std::fs::read(ws.join(p)).ok() != std::fs::read(folder.join(p)).ok()
+        {
+            return None;
+        }
+    }
+    Some(mine)
+}
+
 async fn old_attempt_commits(ctx: &Ctx, sel: &Selected, commit: &str) -> Option<usize> {
     let (path, branch, from_head) = ctx.store.read(|s| {
         s.project
@@ -1160,18 +1193,19 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     if !base_head.is_empty()
         && let Ok(subjects) = git(
             &sel.workspace,
-            &["log", "--format=%s", &format!("{base_head}..{commit}")],
+            &["log", "--format=%H %s", &format!("{base_head}..{commit}")],
         )
         .await
-        && let Some(subject) = subjects
+        && let Some((sha, subject)) = subjects
             .lines()
-            .find(|l| l.starts_with("Uncommitted changes from "))
+            .filter_map(|l| l.split_once(' '))
+            .find(|(_, s)| s.starts_with("Uncommitted changes from "))
     {
         here_problems.push(crate::local::here(
             "BROUGHT_FILES_COMMIT",
             "A commit holds files copied from your folder".into(),
             Some(format!(
-                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Start from the base (`git reset --hard {base_head}`) and redo only the fixes, or ask your agent to drop that commit."
+                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Drop only that commit and keep the rest: `git rebase --onto {sha}^ {sha}`, then check again."
             )),
             Owner::Agent,
             None,
@@ -1182,7 +1216,32 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         .await
         .map(|s| !s.trim().is_empty())
         .unwrap_or(true);
-    if request.commit.is_none() && dirty {
+    let folder = ctx.store.read(|s| {
+        s.project
+            .as_ref()
+            .map(|p| std::path::PathBuf::from(&p.path))
+    });
+    let copies = match &folder {
+        Some(f) if request.commit.is_none() && dirty && *f != sel.workspace => {
+            copies_of_the_folders_changes(&sel.workspace, f).await
+        }
+        _ => None,
+    };
+    if let Some(files) = copies {
+        // The same files, with the same content, are uncommitted in the person's
+        // folder: an older worker copied them here. Committing them would send them.
+        let shown = files.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        here_problems.push(crate::local::here(
+            "BROUGHT_FILES",
+            "The worktree holds copies of files from your folder".into(),
+            Some(format!(
+                "{shown}{} are uncommitted in your folder too, with the same content: an older version of this worker copied them here. Do not commit them: remove them from the copy (`git checkout -- <file>` for a tracked one, delete an untracked one), then check again.",
+                if files.len() > 5 { " and more" } else { "" }
+            )),
+            Owner::Agent,
+            None,
+        ));
+    } else if request.commit.is_none() && dirty {
         here_problems.push(crate::local::here(
             "UNCOMMITTED_CHANGES",
             "The worktree has changes that are not committed".into(),
