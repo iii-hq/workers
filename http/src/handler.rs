@@ -80,9 +80,10 @@ const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const FRAME_BUFFER: usize = 64;
 
 /// A task of a request, stopped when the request goes away before it ends:
-/// the client left, the request timed out, or its response body was dropped.
-/// A dropped `JoinHandle` only detaches its task, which then keeps the call,
-/// its channel connections and their memory until it ends by itself.
+/// the client left or the request timed out (and, for the reader of a
+/// streamed response, its body was dropped). A dropped `JoinHandle` only
+/// detaches its task, which then keeps the call, its channel connections and
+/// their memory until it ends by itself.
 struct RequestTask(Option<AbortHandle>);
 
 impl RequestTask {
@@ -90,7 +91,7 @@ impl RequestTask {
         Self(Some(task.abort_handle()))
     }
 
-    /// Lets the task finish by itself: the response is complete.
+    /// Lets the task finish by itself.
     fn release(mut self) {
         self.0 = None;
     }
@@ -574,33 +575,31 @@ async fn respond(
         },
     };
 
-    // Streaming response. The body owns the call and the forward task: the
-    // forward task keeps feeding `rx` until the function closes the channel,
-    // and the call is left to complete on its own then (the function's return
-    // value is irrelevant once it streams). A body dropped before (the client
-    // left, or an idle timeout) stops both. Snapshot status/headers now -- all
-    // control preceding `first_chunk` is applied.
+    // Streaming response. The call is left to complete on its own (the
+    // function's return value is irrelevant once it streams): the body can
+    // end before the call answers (a stated content-length is done at its
+    // last byte), so the body's end cannot tell the call to stop. The body
+    // owns the forward task, which keeps feeding `rx` until the function
+    // closes the channel; a body dropped before (the client left, an idle
+    // timeout) stops it, which closes the channel under the function.
+    // Snapshot status/headers now -- all control preceding `first_chunk` is
+    // applied.
+    call_task.release();
     let (status_code, response_headers) = {
         let guard = control.lock().expect("control mutex poisoned");
         (guard.0, guard.1.clone())
     };
 
     let stream = futures::stream::unfold(
-        (first_chunk, rx, forward_task, call_task),
-        move |(pending, mut rx, forward_task, call_task)| async move {
+        (first_chunk, rx, forward_task),
+        move |(pending, mut rx, forward_task)| async move {
             if let Some(chunk) = pending {
-                return Some((
-                    Ok::<Vec<u8>, Infallible>(chunk),
-                    (None, rx, forward_task, call_task),
-                ));
+                return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx, forward_task)));
             }
             // Idle-bound each subsequent frame wait.
             match tokio::time::timeout(stream_timeout, rx.recv()).await {
-                Ok(Some(data)) => Some((Ok(data), (None, rx, forward_task, call_task))),
-                Ok(None) => {
-                    call_task.release();
-                    None
-                }
+                Ok(Some(data)) => Some((Ok(data), (None, rx, forward_task))),
+                Ok(None) => None,
                 Err(_) => {
                     tracing::warn!("Streaming drain idle timeout; ending stream");
                     None
