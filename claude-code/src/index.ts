@@ -150,7 +150,7 @@ void settleStaleTurns(iii, ranSinceStart);
 // the console page that opens it.
 const tracker = registerActivity(iii, emit);
 const agents = registerAgents(iii, () => inventoryHost(prepared), tracker, replyPermission);
-registerExternalReplies(iii, replyPermission, agents.replyRow);
+registerExternalReplies(iii, replyPermission, agents.replyRow, () => prepared.env);
 registerTerminal(
   iii,
   () => prepared,

@@ -918,6 +918,48 @@ describe('claude::agents::stop', () => {
 describe('claude::agents::follow-snapshot', () => {
   const function_id = 'claude::agents::follow-snapshot';
 
+  it.each([
+    0, 21_000,
+  ])('returns the latest reply before the viewer deadline with a %ims retained checkpoint', async (checkpointDelay) => {
+    await withSyntheticHost(async (s) => {
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(
+        s.file,
+        JSON.stringify(transcriptRecord(2, 1, 'assistant', 'latest fixture reply')) + '\n',
+      );
+      s.host.config = async () => ({ external_sessions: true });
+
+      vi.useFakeTimers();
+      try {
+        let reads = 0;
+        s.host.beforeInventory = () =>
+          new Promise((resolve) => setTimeout(resolve, ++reads === 1 ? 21_000 : 10_000));
+        let transcripts = 0;
+        s.host.beforeRead = () =>
+          new Promise((resolve) => setTimeout(resolve, ++transcripts === 1 ? checkpointDelay : 0));
+        const response = s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id },
+        });
+        const viewer = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('viewer deadline exceeded'), 30_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(31_200 + checkpointDelay);
+        expect(await response).toMatchObject({
+          last_reply: { id: recordId(2), text: 'latest fixture reply' },
+        });
+        expect(await viewer).toMatchObject({
+          last_reply: { id: recordId(2), text: 'latest fixture reply' },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('returns the newest bounded suffix and a tip cursor even when the burst needs several watch pages', async () => {
     await withSyntheticHost(async (s) => {
       const snapshot = (cursor?: string) =>

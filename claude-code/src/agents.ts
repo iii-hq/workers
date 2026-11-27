@@ -371,12 +371,11 @@ export function registerAgents(
     'claude::agents::visibility',
     async (payload: unknown) => {
       const { confirm_live_config } = visibilityArgs.parse(payload ?? {});
-      // Confirm the live setting without waiting for retained watches to
-      // rebaseline on the host. A normal heartbeat can reuse a current grant.
-      const epoch =
-        confirm_live_config || access.epoch === null
-          ? await access.confirm({ waitForWatchRecovery: false })
-          : access.epoch;
+      // Acknowledge an explicit confirmation after the retained-watch
+      // checkpoint, without waiting for its inventory lookup.
+      const epoch = confirm_live_config
+        ? await access.confirm()
+        : (access.epoch ?? (await access.confirm({ waitForWatchCheckpoint: false })));
       if (epoch === null || epoch !== access.epoch) return { external_visibility: null };
       return {
         external_visibility: visibilityToken(epoch),
@@ -404,7 +403,7 @@ export function registerAgents(
       // The ordinary worker listing needs inventory even with external access off.
       // Read it alongside confirmation, but authorize external rows only at publication.
       const [epoch, { merge, detail }] = await Promise.all([
-        access.confirm({ waitForWatchRecovery: !include_config_id }),
+        access.confirm({ waitForWatchCheckpoint: !include_config_id }),
         inventory(all === true, {
           showAll: false,
           markExternal: include_config_id,
@@ -589,7 +588,8 @@ export function registerAgents(
   iii.registerFunction(
     'claude::agents::follow-snapshot',
     async (payload: unknown) => {
-      const lease = replyLease(access, await access.confirm());
+      // A fresh live grant is enough for this independently validated read.
+      const lease = replyLease(access, await access.confirm({ waitForWatchCheckpoint: false }));
       const generation = lease.epoch;
       const { claude_session_id: id, cursor } = followArgs.parse(payload);
       let boundary: string | undefined;

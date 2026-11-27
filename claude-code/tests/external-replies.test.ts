@@ -765,6 +765,50 @@ describe('standalone terminal describe authorization', () => {
 });
 
 describe('authorization', () => {
+  it('delivers replies appended after live confirmation while recovery inventory is pending', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const inventory = barrier();
+      const checkpoint = barrier();
+      s.host.beforeInventory = inventory.wait;
+      s.host.beforeRead = checkpoint.wait;
+      const before = reads(s).length;
+      const confirmation = s.client.call({
+        function_id: 'claude::agents::visibility',
+        payload: { confirm_live_config: true },
+      });
+      try {
+        await inventory.entered;
+        expect(reads(s)).toHaveLength(before + 1);
+        expect(
+          await Promise.race([
+            confirmation,
+            new Promise((resolve) => setImmediate(() => resolve('checkpoint pending'))),
+          ]),
+        ).toBe('checkpoint pending');
+        checkpoint.release();
+        expect(await confirmation).toMatchObject({ live_config_confirmed: true });
+        await appendFile(s.file, lines(answer(3, 2, 'first after live confirmation')));
+        expect(seen(s, 'retained')).toEqual([]); // Inventory has not confirmed the session yet.
+      } finally {
+        checkpoint.release();
+        inventory.release();
+      }
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after inventory completes')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'first after live confirmation' },
+        { id: recordId(4), text: 'after inventory completes' },
+      ]);
+    });
+  });
+
   it.each([
     'lookup',
     'watch',

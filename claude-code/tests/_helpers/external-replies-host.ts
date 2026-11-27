@@ -224,12 +224,13 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   const permission = new ReplyPermission();
   const refresh = () => permission.refresh(iii);
   let external = true;
+  const env = { CLAUDE_CONFIG_DIR: root };
   // An enabled legacy setting never authorizes live inventory or reply disclosure.
   const agents = registerAgents(
     iii,
     () => ({
       executable: 'fixture-cli',
-      env: { CLAUDE_CONFIG_DIR: root },
+      env,
       args: [],
       detail: '',
       workspace: '',
@@ -238,10 +239,16 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
     permission,
   );
   const register = () =>
-    registerExternalReplies(iii, permission, agents.replyRow, (f) => {
-      timers.add(f);
-      return () => timers.delete(f);
-    });
+    registerExternalReplies(
+      iii,
+      permission,
+      agents.replyRow,
+      () => env,
+      (f) => {
+        timers.add(f);
+        return () => timers.delete(f);
+      },
+    );
   register();
   if (!confirmed) host.config = async () => null;
   await observeReplyConfig(iii, permission, (runtime) => {

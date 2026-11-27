@@ -24,9 +24,11 @@ function sessionId(args: unknown) {
 }
 
 type Watch = { epoch: number; cursor: string; active: boolean };
+type Recovery = { epoch: number; env: Record<string, string>; cursor?: string };
 type Group = {
   watches: Map<string, Watch>;
   tail: Promise<void>;
+  recovery?: Recovery;
   cancel?: () => void;
 };
 
@@ -36,6 +38,7 @@ export function registerExternalReplies(
   iii: IIIClient,
   permission: ReplyPermission,
   rowFor: Row,
+  currentEnv: () => Record<string, string>,
   schedule: Schedule = schedulePoll,
 ) {
   // The pinned SDK records invocation payloads independently of observable
@@ -122,42 +125,58 @@ export function registerExternalReplies(
   }
 
   permission.onConfirmedRecovery(async (epoch) => {
+    const lease = replyLease(permission, epoch);
     const needsBaseline = (w: Watch) => w.active && w.epoch !== epoch;
-    const baselines = [];
+    const checkpoints = [];
     for (const [id, g] of groups) {
-      if (![...g.watches.values()].some(needsBaseline)) continue;
-      baselines.push(
-        serialize(g, async () => {
-          const recovering = [...g.watches.values()].filter(needsBaseline);
-          if (!recovering.length) return;
-          const lease = replyLease(permission, epoch);
-          const { env } = await lease.read(() => rowFor(id));
-          const next = await lease.read(() => readTranscript(iii, env, id, 'baseline'));
-          for (const w of recovering) {
-            w.cursor = next.cursor;
-            w.epoch = epoch;
-          }
-        }).catch(() => {
-          // Keep the stale epoch so a later authorized poll can rebaseline.
-        }),
-      );
+      if (g.recovery?.epoch === epoch || ![...g.watches.values()].some(needsBaseline)) continue;
+      const recovery: Recovery = { epoch, env: currentEnv() };
+      g.recovery = recovery;
+      // Capture only a cursor for a previously admitted session, before slow
+      // inventory can move the cutoff. This does not authorize any delivery.
+      const checkpoint = lease
+        .read(() => readTranscript(iii, recovery.env, id, 'baseline'))
+        .then(
+          ({ cursor }) => {
+            recovery.cursor = cursor;
+          },
+          () => {},
+        );
+      checkpoints.push(checkpoint);
+      void serialize(g, async () => {
+        if (![...g.watches.values()].some(needsBaseline)) return;
+        const { env } = await lease.read(() => rowFor(id));
+        await checkpoint;
+        lease.check();
+        if (env !== recovery.env || !recovery.cursor) return;
+        for (const w of g.watches.values()) {
+          if (!needsBaseline(w)) continue;
+          w.cursor = recovery.cursor;
+          w.epoch = epoch;
+        }
+      }).catch(() => {
+        // If inventory failed, an authorized poll can still use this checkpoint.
+      });
     }
-    await Promise.all(baselines);
+    await Promise.all(checkpoints);
   });
 
   async function poll(id: string, g: Group, lease: ReturnType<typeof replyLease>) {
     const { epoch } = lease;
+    if (![...g.watches.values()].some((w) => w.active)) return;
+    const { env } = await lease.read(() => rowFor(id));
+    const recovery = g.recovery;
+    const checkpoint =
+      recovery?.epoch === epoch && recovery.env === env ? recovery.cursor : undefined;
     const batches = new Map<string, Array<[string, Watch]>>();
     for (const entry of g.watches) {
       const w = entry[1];
       if (!w.active) continue;
-      const cursor = w.epoch === epoch ? w.cursor : '';
+      const cursor = w.epoch === epoch ? w.cursor : (checkpoint ?? '');
       const batch = batches.get(cursor) ?? [];
       batch.push(entry);
       batches.set(cursor, batch);
     }
-    if (!batches.size) return;
-    const { env } = await lease.read(() => rowFor(id));
     for (const [cursor, batch] of batches) {
       if (!batch.some(([key, w]) => g.watches.get(key) === w)) continue;
       let next: Awaited<ReturnType<typeof readTranscript>>;
@@ -191,7 +210,7 @@ export function registerExternalReplies(
     if (g.cancel || !Array.from(g.watches.values()).some((w) => w.active)) return;
     const cancel = schedule(async () => {
       try {
-        // Confirmation can itself queue a recovery baseline on this group.
+        // Confirmation can queue a recovery inventory check on this group.
         const lease = await acquire();
         await serialize(g, () => poll(id, g, lease));
       } catch {

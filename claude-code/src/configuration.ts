@@ -104,7 +104,7 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
-type ConfirmOptions = { waitForWatchRecovery?: boolean };
+type ConfirmOptions = { waitForWatchCheckpoint?: boolean };
 export type ReplyAccess = {
   readonly epoch: number | null;
   confirm(options?: ConfirmOptions): Promise<number | null>;
@@ -139,7 +139,7 @@ export class ReplyPermission {
   private refreshConnection: number | null = null;
   private reloading = false;
   private confirmation?: Promise<number | null>;
-  private watchRecovery?: Promise<void>;
+  private watchCheckpoint?: Promise<void>;
   private recoverWatches?: (epoch: number) => Promise<void>;
   private watch?: { iii: IIIClient; handle: ObserverHandle };
 
@@ -181,7 +181,7 @@ export class ReplyPermission {
     this.refreshConnection = null;
     this.reloading = false;
     this.confirmation = undefined;
-    this.watchRecovery = undefined;
+    this.watchCheckpoint = undefined;
   }
 
   onConfirmedRecovery(recover: (epoch: number) => Promise<void>) {
@@ -190,7 +190,7 @@ export class ReplyPermission {
 
   // An explicit probe, admission or poll can recover on the same connection.
   // Concurrent readers share a probe; a config event always supersedes it.
-  async confirm({ waitForWatchRecovery = true }: ConfirmOptions = {}): Promise<number | null> {
+  async confirm({ waitForWatchCheckpoint = true }: ConfirmOptions = {}): Promise<number | null> {
     const connection = this.watchConnection();
     if (connection !== this.refreshConnection) this.invalidate();
     if (!this.watch || connection === null || this.reloading) return null;
@@ -205,15 +205,15 @@ export class ReplyPermission {
           return null;
         }
         this.currentEpoch = generation;
-        // Share rebaselining separately so inventory callers need only the
-        // live config read. A slow recovery must not cache its positive probe.
-        if (!this.watchRecovery && this.recoverWatches) {
-          this.watchRecovery = this.recoverWatches(generation)
+        // Run watch checkpointing separately from the live config read.
+        // A slow checkpoint must not cache a positive config probe.
+        if (!this.watchCheckpoint && this.recoverWatches) {
+          this.watchCheckpoint = this.recoverWatches(generation)
             .catch(() => {
-              // An authorized poll can still rebaseline a stale watch.
+              // An authorized poll can still establish a conservative baseline.
             })
             .finally(() => {
-              if (generation === this.generation) this.watchRecovery = undefined;
+              if (generation === this.generation) this.watchCheckpoint = undefined;
             });
         }
         return generation;
@@ -221,7 +221,7 @@ export class ReplyPermission {
     }
     const epoch = await this.confirmation;
     if (epoch === null || epoch !== this.epoch) return null;
-    if (waitForWatchRecovery) await this.watchRecovery;
+    if (waitForWatchCheckpoint) await this.watchCheckpoint;
     return epoch === this.epoch ? epoch : null;
   }
 
