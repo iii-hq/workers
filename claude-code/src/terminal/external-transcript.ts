@@ -161,69 +161,104 @@ def visible(content):
         return content
     return '\n'.join(part['text'] for part in content if part['type'] == 'text' and part['text'].strip())
 
+# Cursors carry a digest of only the final bytes before their observed size,
+# so a poll reads what was appended instead of rehashing the whole file.
+TAIL = 1 << 16
+TRUNCATED = '\n[reply truncated]'
+CHAIN = ('assistant', 'user', 'system', 'progress', 'attachment')
+
+def tail_digest(fd, observed):
+    lo = max(0, observed - TAIL)
+    chunk = os.pread(fd, observed - lo, lo)
+    require(len(chunk) == observed - lo)
+    return hashlib.sha256(chunk)
+
+def cursor_text(identity, observed, offset, digest):
+    prefix = f'{identity}:{observed}:'
+    if observed == offset:
+        return prefix + (digest.hexdigest() if digest else '0' * 64)
+    # Partial watch pages also carry the delivery offset. Use compact
+    # base64 here to leave room for it without shrinking the reply budget.
+    tag = base64.urlsafe_b64encode(digest.digest()).decode('ascii') if digest else '0' * 44
+    return f'{prefix}{tag}:{offset}'
+
+def find_record(fd, key, before):
+    # Searches the bytes before a parsed range backwards for the record whose
+    # own uuid field is key. A uuid named only inside another record (a
+    # parentUuid, a logicalParentUuid or message text) does not count.
+    needle = b'"' + key.encode('ascii') + b'"'
+    rest, pos = b'', before
+    while pos > 0:
+        step = min(1 << 20, pos)
+        pos -= step
+        chunk = os.pread(fd, step, pos)
+        require(len(chunk) == step)
+        buf = chunk + rest
+        first = buf.find(b'\n')
+        if pos > 0 and first < 0:
+            rest = buf
+            require(len(rest) <= MAX_FILE)
+            continue
+        # Only lines whose start is known are complete here.
+        cut = 0 if pos == 0 else first + 1
+        body = buf[cut:]
+        if needle in body:
+            line_end = pos + len(buf)
+            for line in reversed(body.split(b'\n')[:-1]):
+                line_start = line_end - len(line) - 1
+                if needle in line:
+                    row = json.loads(line.decode('utf-8'), parse_constant=reject_constant,
+                                     object_pairs_hook=unique_members)
+                    if isinstance(row, dict) and row.get('uuid') == key:
+                        require(row.get('type') in CHAIN and isinstance(row.get('isSidechain', False), bool))
+                        return row, line_end, line_start
+                line_end = line_start
+        rest = buf[:cut]
+        require(len(rest) <= MAX_FILE)
+    raise ValueError()
+
 def scan(sid, mode, previous):
     require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since', 'recent'))
-    # The previously observed prefix length, whose digest a cursor carries.
-    mark = int(previous.split(':')[2]) if mode in ('since', 'recent') else None
-    mark = mark if mark is not None and mark >= 0 else None
     with ExitStack() as stack:
         f = transcript(sid, stack)
-        info = os.fstat(f.fileno())
-        total = info.st_size
-        # Parse only the final MAX_FILE bytes, plus the byte before them to find
-        # the first complete line. Hash everything before them, so cursors and
-        # rewrite detection still cover the whole file.
-        lead = max(0, total - MAX_FILE - 1)
-        h = hashlib.sha256()
-        marked = h.copy() if mark == 0 else None
-        done = 0
-        while done < lead:
-            step = min(1 << 20, lead - done)
-            if mark is not None and done < mark:
-                step = min(step, mark - done)
-            chunk = f.read(step)
-            require(len(chunk) == step)
-            h.update(chunk)
-            done += step
-            if done == mark:
-                marked = h.copy()
-        data = f.read(total - lead + 1)
-        after = os.fstat(f.fileno())
-        require(len(data) == total - lead and total == after.st_size and info.st_mtime_ns == after.st_mtime_ns)
-    # File offsets are absolute; data starts at offset lead.
-    # A trailing line without its newline is still being written: ignore it.
-    end = lead + data.rfind(b'\n') + 1
-    windowed = total > MAX_FILE
-    start = lead + data.index(b'\n') + 1 if windowed else 0
-    # A window without one complete record of its own is covered by a line
-    # longer than the window: fail closed, never report an earlier or empty chain.
-    require(not windowed or start < end)
+        return read(f.fileno(), sid, mode, previous)
+
+def read(fd, sid, mode, previous):
+    info = os.fstat(fd)
+    total = info.st_size
     identity = str(info.st_dev) + ':' + str(info.st_ino)
-    def digest_at(observed):
-        if observed >= lead:
-            digest = h.copy()
-            digest.update(memoryview(data)[:observed - lead])
-            return digest
-        require(observed == mark and marked is not None)
-        return marked
-    def cursor(observed, offset, sizing=False):
-        digest = None if sizing else digest_at(observed)
-        prefix = f'{identity}:{observed}:'
-        if observed == offset:
-            return prefix + (digest.hexdigest() if digest else '0' * 64)
-        # Partial watch pages also carry the delivery offset. Use compact
-        # base64 here to leave room for it without shrinking the reply budget.
-        tag = base64.urlsafe_b64encode(digest.digest()).decode('ascii') if digest else '0' * 44
-        return f'{prefix}{tag}:{offset}'
-    boundary = end
+    boundary, pending = None, False
     if mode in ('since', 'recent'):
         fields = previous.split(':')
         observed = int(fields[2])
         offset = int(fields[4]) if mode == 'since' and len(fields) == 5 else observed
-        # A pending page is valid only if the entire previously observed
-        # complete prefix still exists unchanged, not just what was delivered.
-        if 0 <= offset <= observed <= end and cursor(observed, offset) == previous:
-            boundary = offset
+        # A pending page is valid only if the final bytes of the previously
+        # observed complete prefix still exist unchanged, not just what was
+        # delivered. Rewrites earlier in the file are not detected.
+        if 0 <= offset <= observed <= total and cursor_text(
+                identity, observed, offset, tail_digest(fd, observed)) == previous:
+            boundary, pending = offset, mode == 'since' and offset < observed
+    if boundary is not None and total - boundary <= MAX_FILE:
+        # Parse only what changed since the cursor.
+        lead = start = boundary
+    else:
+        # Parse only the final MAX_FILE bytes, plus the byte before them to
+        # find the first complete line.
+        lead, start = max(0, total - MAX_FILE - 1), None
+    data = os.pread(fd, total - lead + 1, lead)
+    require(len(data) == total - lead)
+    # File offsets are absolute; data starts at offset lead.
+    # A trailing line without its newline is still being written: ignore it.
+    end = lead + data.rfind(b'\n') + 1
+    if start is None:
+        start = lead + data.index(b'\n') + 1 if total > MAX_FILE else 0
+        # A window without one complete record of its own is covered by a line
+        # longer than the window: fail closed, never report an earlier or empty chain.
+        require(start == 0 or start < end)
+    if boundary is None:
+        boundary = end
+    def cursor(observed, offset, sizing=False):
+        return cursor_text(identity, observed, offset, None if sizing else tail_digest(fd, observed))
     nodes, leaf, i = {}, None, start - lead
     for count in range(65537):
         if i == end - lead:
@@ -237,7 +272,7 @@ def scan(sid, mode, previous):
         kind = row['type']
         if kind in ANNOTATIONS:
             continue
-        if kind not in ('assistant', 'user', 'system', 'progress', 'attachment'):
+        if kind not in CHAIN:
             # Newer CLI records without a uuid (session-owner) cannot be a
             # chain node. An unknown record that can be one is unsupported.
             require('uuid' not in row)
@@ -268,7 +303,14 @@ def scan(sid, mode, previous):
                 continue
             parent = row['parentUuid']
             if parent is not None and parent not in nodes:
-                require(windowed and isinstance(parent, str) and UUID.fullmatch(parent))
+                # The walk ends at an ancestor that exists before the window;
+                # an ancestor missing from the whole file fails the read.
+                require(start > 0 and isinstance(parent, str) and UUID.fullmatch(parent))
+                try:
+                    find_record(fd, parent, start)
+                except Exception:
+                    missing.append(parent)
+                    raise
                 parent = None
             if found is None and row['type'] == 'assistant' and not any(row.get(k) for k in HIDDEN):
                 text = visible(content)
@@ -276,7 +318,7 @@ def scan(sid, mode, previous):
                     found = {'id': key, 'text': text}
             key, limit = parent, pos
         return found
-    replies, crossing = [], None
+    replies, crossing, floor, missing = [], None, start, []
     while leaf is not None:
         row, pos = nodes[leaf]
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
@@ -292,10 +334,16 @@ def scan(sid, mode, previous):
             if mode == 'last' and not replies:
                 crossing = (row.get('logicalParentUuid'), pos)
         elif parent is not None and parent not in nodes:
-            # Only an ancestor before the parsed window may be absent: the
-            # walk ends there. Otherwise a missing parent fails closed.
-            require(windowed and isinstance(parent, str) and UUID.fullmatch(parent))
-            parent = None
+            # Only an ancestor before the parsed range may be absent, and it
+            # must exist there. Otherwise a missing parent fails closed.
+            require(floor > 0 and isinstance(parent, str) and UUID.fullmatch(parent))
+            found, found_end, found_start = find_record(fd, parent, floor)
+            if pending and found_end > boundary:
+                # A pending page is never acknowledged past an undelivered
+                # reply before the window: keep walking back to it.
+                nodes[parent], floor = (found, found_end), found_start
+            else:
+                parent = None
         elif parent is not None:
             # Parents strictly precede children, so the walk cannot cycle.
             require(nodes[parent][1] < pos)
@@ -312,20 +360,40 @@ def scan(sid, mode, previous):
             found = before_compaction(*crossing)
         except Exception:
             found = None
+        require(not missing)
         if found is not None:
             replies.append((end, found))
     # Validate the entire chain before selecting a page. Watches start at the
     # oldest unread reply; a viewer needs the newest suffix and the actual tip.
     encode = lambda obj: json.dumps(obj, separators=(',', ':'))
+    def truncate(reply, room):
+        # Cuts the text on a code-point boundary (a str index never splits a
+        # surrogate pair in the escaped output) so the reply fits the room.
+        text, low, high = reply['text'], 0, len(reply['text'])
+        fit = lambda n: encode({'id': reply['id'], 'text': text[:n] + TRUNCATED})
+        require(len(fit(0)) <= room)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if len(fit(mid)) <= room:
+                low = mid
+            else:
+                high = mid - 1
+        return fit(low)
     parts, size, offset = [], 0, end
     envelope = len(encode({'cursor': '', 'replies': []}))
     for pos, reply in (reversed(replies) if mode == 'since' else replies):
         part = encode(reply)
         candidate = pos if mode == 'since' else end
         added = len(part) + bool(parts)
-        if envelope + len(cursor(end, candidate, sizing=True)) + size + added > MAX_RESULT:
-            require(parts)  # A single unrepresentable reply is not an empty page.
-            break
+        room = MAX_RESULT - envelope - len(cursor(end, candidate, sizing=True)) - size
+        if added > room:
+            require(parts or mode == 'since')  # Only a watch delivers a cut reply.
+            if parts:
+                break
+            # A reply too large for a page alone is delivered cut, so it never
+            # blocks the replies after it. It fills the page.
+            part = truncate(reply, room)
+            added = len(part)
         parts.append(part)
         size += added
         offset = candidate
@@ -335,6 +403,8 @@ def scan(sid, mode, previous):
         parts.reverse()
     out = '{"cursor":' + encode(cursor(end, offset)) + ',"replies":[' + ','.join(parts) + ']}'
     require(len(out) <= MAX_RESULT)
+    after = os.fstat(fd)
+    require(total == after.st_size and info.st_mtime_ns == after.st_mtime_ns)
     return out
 
 try:
