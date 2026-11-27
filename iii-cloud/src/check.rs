@@ -1227,11 +1227,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             None,
         ));
     }
-    // As the run reads it: unreadable counts as dirty.
-    let dirty = git(&sel.workspace, &["status", "--porcelain"])
-        .await
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(true);
+    // As the run reads it: unreadable counts as dirty. What a local run left in the
+    // worktree (rewritten seed files, data) is not the agent's: it counts again only
+    // once its content is not what the run left.
+    let own_changes = crate::run::dirty_paths(ctx, &sel.workspace).await;
+    let dirty = own_changes.as_ref().is_none_or(|p| !p.is_empty());
     let folder = ctx.store.read(|s| {
         s.project
             .as_ref()
@@ -1261,10 +1261,17 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         here_problems.push(crate::local::here(
             "UNCOMMITTED_CHANGES",
             "The worktree has changes that are not committed".into(),
-            Some(
-                "The check is of the commit; commit the changes (or drop them), then check again."
-                    .into(),
-            ),
+            Some(format!(
+                "{}Commit your own changes (`git add <paths>`; the files the local run wrote are not yours: do not commit them), then check and run again.",
+                match &own_changes {
+                    Some(p) => format!(
+                        "{}{}. ",
+                        p.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                        if p.len() > 5 { " and more" } else { "" }
+                    ),
+                    None => String::new(),
+                }
+            )),
             Owner::Agent,
             None,
         ));

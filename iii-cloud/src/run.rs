@@ -560,13 +560,16 @@ pub async fn start_with(
         }
     };
     // Read once the slot is ours: a commit made while the old run was torn down counts.
-    let commit = workspace_commit(&sel.workspace).await?;
+    let commit = workspace_commit(ctx, &sel.workspace).await?;
+    // What was dirty before the run: what it changes or adds is the run's, not the agent's.
+    let before = dirty_snapshot(&sel.workspace).await;
     let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
     exec.cancel = cancel_rx;
     exec.followers = followers.clone();
     exec.publish();
     let run = exec.run.clone();
     let ctx2 = ctx.clone();
+    let wrote_ws = sel.workspace.clone();
     tokio::spawn(async move {
         // The workspace is free again however the run ends, a panic included.
         let _guard = guard;
@@ -597,6 +600,8 @@ pub async fn start_with(
                 emit_run(&ctx2, &run);
             }
         }
+        // However it ended (passed, failed, stopped): what it left dirty is set aside.
+        set_aside(&ctx2, &check_id, &wrote_ws, &before).await;
     });
     Ok(run)
 }
@@ -625,17 +630,107 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// What the run proves: HEAD, and `+dirty` when anything is uncommitted. Ready
+/// The most paths a run's leftovers are kept for; beyond that none are, and the run says so.
+const MAX_WROTE: usize = 500;
+
+/// Every changed path of the worktree (`status --porcelain -z --untracked-files=all`, so an
+/// untracked directory is its files) with a hash of its content now (`-` when it is gone).
+/// None when git can't say.
+async fn dirty_entries(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
+    use sha2::{Digest, Sha256};
+    let out = tool::git(
+        ws,
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )
+    .await
+    .ok()?;
+    let mut entries = out.split('\0').filter(|e| !e.is_empty());
+    let mut found = std::collections::BTreeMap::new();
+    while let Some(e) = entries.next() {
+        if e.len() < 4 {
+            return None;
+        }
+        // A rename or copy lists the old path next: not a path of its own.
+        if e.starts_with(['R', 'C']) || e[1..2].starts_with(['R', 'C']) {
+            entries.next();
+        }
+        let path = e[3..].to_string();
+        let hash = match std::fs::read(ws.join(&path)) {
+            Ok(bytes) => hex::encode(Sha256::digest(bytes)),
+            Err(_) => "-".to_string(),
+        };
+        found.insert(path, hash);
+    }
+    Some(found)
+}
+
+/// What the worktree has changed now, to compare with when a run ends (`set_aside`).
+pub async fn dirty_snapshot(ws: &Path) -> std::collections::BTreeMap<String, String> {
+    dirty_entries(ws).await.unwrap_or_default()
+}
+
+/// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
+/// content stays what it left. Nothing is deleted or restored (an edit the agent made meanwhile is
+/// never lost). Replaces the worktree's earlier record; more than `MAX_WROTE` paths keep none, and
+/// the run says so.
+pub async fn set_aside(
+    ctx: &Ctx,
+    check_id: &str,
+    ws: &Path,
+    before: &std::collections::BTreeMap<String, String>,
+) {
+    let Some(after) = dirty_entries(ws).await else {
+        return;
+    };
+    let mut files: std::collections::BTreeMap<String, String> = after
+        .into_iter()
+        .filter(|(p, h)| before.get(p) != Some(h))
+        .collect();
+    if files.len() > MAX_WROTE {
+        update_check(ctx, check_id, |c| {
+            if let Some(run) = c.run.as_mut() {
+                run.log_tail.push(format!(
+                    "The run left more than {MAX_WROTE} changed files in the worktree; none are set aside, so all of them count as uncommitted changes."
+                ));
+            }
+        });
+        files.clear();
+    }
+    ctx.store.update(|s| {
+        s.run_wrote.insert(
+            ws.to_string_lossy().into_owned(),
+            crate::store::RunWrote { files },
+        );
+    });
+}
+
+/// The changed paths of the worktree that are the agent's: not what the last local run left
+/// there (a path counts again once its content is not what the run left). None when git
+/// can't say: that counts as dirty.
+pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
+    let left = ctx
+        .store
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
+        .unwrap_or_default();
+    let now = dirty_entries(ws).await?;
+    Some(
+        now.into_iter()
+            .filter(|(p, h)| left.files.get(p) != Some(h))
+            .map(|(p, _)| p)
+            .collect(),
+    )
+}
+
+/// What the run proves: HEAD, and `+dirty` when the agent has anything uncommitted. Ready
 /// needs it to equal the checked commit.
-async fn workspace_commit(workspace: &Path) -> Res<String> {
+async fn workspace_commit(ctx: &Ctx, workspace: &Path) -> Res<String> {
     let head = crate::tool::git(workspace, &["rev-parse", "HEAD"])
         .await?
         .trim()
         .to_string();
-    let dirty = crate::tool::git(workspace, &["status", "--porcelain"])
+    let dirty = dirty_paths(ctx, workspace)
         .await
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(true);
+        .is_none_or(|p| !p.is_empty());
     Ok(if dirty { format!("{head}+dirty") } else { head })
 }
 
