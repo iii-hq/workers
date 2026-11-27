@@ -652,6 +652,8 @@ pub fn follow(ctx: &Arc<Ctx>, id: String) {
                     let h = s.handoffs.iter_mut().find(|h| h.id == id)?;
                     h.agent.state = AgentPhase::Stalled;
                     h.agent.question = Some(NO_PROGRESS_TEXT.to_string());
+                    // The chat never started: the person acts in the chat.
+                    h.agent.question_source = Some(QuestionSource::Agent);
                     Some(h.agent.clone())
                 });
                 if let Some(agent) = agent {
@@ -793,10 +795,12 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 {
                     agent.state = AgentPhase::WaitingForYou;
                     agent.question = Some(NO_CHAT_TEXT.to_string());
+                    agent.question_source = Some(QuestionSource::Agent);
                     ctx.store.update(|s| {
                         if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                             h.agent.state = agent.state;
                             h.agent.question = agent.question.clone();
+                            h.agent.question_source = agent.question_source;
                         }
                     });
                     emit(ctx, &agent);
@@ -1096,6 +1100,8 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                                     }
                                     h.agent.state = AgentPhase::Stalled;
                                     h.agent.question = Some(message);
+                                    // The worker's own words about a check that keeps failing.
+                                    h.agent.question_source = Some(QuestionSource::Check);
                                     Some(h.agent.clone())
                                 });
                                 if let Some(a) = stalled
@@ -1182,8 +1188,10 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
         current
     };
     agent.current = current.map(|c| crate::run::redact(&c, &secrets));
+    // "agent": the person must answer in the chat (the agent's own ask, the folder to confirm, a
+    // chat that stopped). "check": the page already lists what waits (the values, the run missing).
     agent.question_source = question.as_ref().map(|q| {
-        if obs.question.as_ref() == Some(q) {
+        if obs.question.as_ref() == Some(q) || q == CONFIRM_TEXT || q == STOPPED_TEXT {
             QuestionSource::Agent
         } else {
             QuestionSource::Check

@@ -899,6 +899,8 @@ async fn a_turn_that_ends_on_a_folder_proposal_is_waiting_for_the_person_not_don
         a.question.as_deref(),
         Some("Confirm the worktree folder in the chat (Use for chat), then the agent continues.")
     );
+    // The person answers in the chat: the page must count it as theirs.
+    assert_eq!(a.question_source, Some(QuestionSource::Agent));
     assert!(
         h.fake.kinds().iter().all(|k| k != "agent:true"),
         "not a terminal event: {:?}",
@@ -1149,6 +1151,11 @@ async fn a_refused_continue_is_not_counted_and_is_tried_again_after_the_window()
     assert_eq!(
         a.question.as_deref(),
         Some("Your agent stopped; open the chat to see what it needs.")
+    );
+    assert_eq!(
+        a.question_source,
+        Some(QuestionSource::Agent),
+        "the chat is where to look"
     );
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(sent(&h).len(), 1, "one try inside the window");
@@ -1978,6 +1985,16 @@ async fn a_turn_that_ended_on_an_armed_wake_waits_for_the_event_not_the_person()
             Some("Your agent stopped before running it here like the cloud."),
             None
         )
+    );
+    assert_eq!(
+        iii_cloud::status::status(&h.ctx, StatusRequest::default())
+            .await
+            .unwrap()
+            .agent
+            .unwrap()
+            .question_source,
+        Some(QuestionSource::Check),
+        "the page lists the missing run itself"
     );
 }
 
