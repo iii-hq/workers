@@ -1216,6 +1216,8 @@ export function CheckStage(props: CheckStageProps) {
   const fixed = [...f.person, ...f.agent].filter((i) => i.fixed)
   const past = historyOf(s, c, envId)
 
+  // The seconds after a page check ends, while the worker may still be sending the agent on.
+  const settling = hubOf(host).checkEndedAt() > 0 && now - hubOf(host).checkEndedAt() < 6000
   const stops: Stop[] = []
   if (c) {
     if (s.connection.status === 'expired' || signInRequired(s)) {
@@ -1308,6 +1310,7 @@ export function CheckStage(props: CheckStageProps) {
             {err.owner === 'person' ? " This one is yours to fix here, not your agent's." : ''}
             {err.owner === 'interrupted' ? ' The run was interrupted: run it again.' : ''}
             {err.owner === 'agent' && err.withheld ? ` Your part comes first: ${yours}.` : ''}
+            {agentRun && settling && !agentWorking(s) && !agentAsks(s) ? ' Checking whether your agent took it…' : ''}
             {agentRun && agentWorking(s) ? ' Your agent is on it.' : ''}
             {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
             {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}
@@ -1331,7 +1334,8 @@ export function CheckStage(props: CheckStageProps) {
                         label: sendLabel(s, 'ready', 'Fix with your agent'),
                         // An agent that waits has a hand-off open: the worker puts what failed into its chat.
                         onClick: () => void handOff(host, s, 'ready', undefined, undefined, undefined, { call: true }),
-                        disabled: !canAsk,
+                        // The worker continues the agent by itself within seconds of a page check's end: wait for that.
+                        disabled: !canAsk || settling,
                       },
                     ]),
               { label: 'Run again', onClick: checkAgain, disabled: running },

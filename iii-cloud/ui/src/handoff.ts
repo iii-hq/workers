@@ -56,7 +56,8 @@ export async function handOff(
     // The worker tries to deliver to the agent's own chat first: when it does, no new chat is opened.
     made = await host.iii.call<HandoffResult>('iii-cloud::handoff', {
       kind,
-      text: plain,
+      // A hand-off of this kind is open: the worker's own continue is the one message, so no text goes with it.
+      ...(more.call && activeSameKind(status, kind) ? {} : { text: plain }),
       ...(status.check ? { check_id: status.check.id } : {}),
       ...(deploy ? { deployment_id: deploy.id } : {}),
       ...(more.candidate ? { candidate: true } : {}),

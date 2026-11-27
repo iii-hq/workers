@@ -2010,6 +2010,32 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
+  it("after a page check ends the button waits six seconds for the worker's own continue", async () => {
+    const h = await stage(release(note), {}, { openScreen: vi.fn() })
+    await act(async () => {
+      hubOf(h.host).checking(1)
+      hubOf(h.host).checking(-1)
+    })
+    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    expect(first().disabled).toBe(true)
+    expect(stop()?.textContent).toContain('Checking whether your agent took it…')
+  })
+
+  it("with a hand-off open the call carries no text (the worker's continue is the one message); without one it does", async () => {
+    const reused = {
+      'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
+    }
+    const h = await stage(release(note), reused, { openScreen: vi.fn() })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(handoffs(h)).toHaveLength(1)
+    expect(h.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).not.toHaveProperty('text')
+    const h2 = await stage({ ...release(note), agent: null, handoff_brief: null }, marker)
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(h2.calls.find((c) => c.id === 'iii-cloud::handoff')?.payload).toHaveProperty('text')
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
