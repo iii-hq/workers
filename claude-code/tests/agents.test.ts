@@ -615,7 +615,10 @@ describe('claude::agents::stop', () => {
     });
     expect(await pending).toEqual({ id: BG, stopped: false, reason });
     expect(fake.calls).toMatchObject([
-      { function_id: 'shell::exec', payload: { command: "'/opt/claude bin/claude' agents --json" } },
+      {
+        function_id: 'shell::exec',
+        payload: { command: "'/opt/claude bin/claude' agents --json" },
+      },
     ]);
   });
 
@@ -636,24 +639,23 @@ describe('claude::agents::stop', () => {
     expect(commands(fake)).toEqual(["'/opt/claude bin/claude' agents --json"]);
   });
 
-  it.each(['exit failure', 'exception'])(
-    'returns a generic stop failure after permission changes: %s',
-    async (failure) => {
-      let epoch: number | null = 1;
-      const fake = host(
-        (command) => {
-          if (command.endsWith('agents --json'))
-            return ok([background(BG, 'working', { pid: 7 })])();
-          epoch = null;
-          const detail = 'stop unavailable at /fixture/diagnostic';
-          if (failure === 'exception') throw new Error(detail);
-          return { stdout: '', stderr: detail, exit_code: 1 };
-        },
-        { external: true, visibilityEpoch: () => epoch },
-      );
-      expect(await stop(fake)).toEqual({ id: BG, stopped: false, reason: 'claude stop failed' });
-    },
-  );
+  it.each([
+    'exit failure',
+    'exception',
+  ])('returns a generic stop failure after permission changes: %s', async (failure) => {
+    let epoch: number | null = 1;
+    const fake = host(
+      (command) => {
+        if (command.endsWith('agents --json')) return ok([background(BG, 'working', { pid: 7 })])();
+        epoch = null;
+        const detail = 'stop unavailable at /fixture/diagnostic';
+        if (failure === 'exception') throw new Error(detail);
+        return { stdout: '', stderr: detail, exit_code: 1 };
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    expect(await stop(fake)).toEqual({ id: BG, stopped: false, reason: 'claude stop failed' });
+  });
 
   it('never reads a killed claude stop as stopped', async () => {
     const fake = host(
