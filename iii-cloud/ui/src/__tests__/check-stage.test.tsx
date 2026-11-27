@@ -2318,6 +2318,20 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(region('Secrets and variables')?.textContent ?? '').not.toContain('values are not the cause')
   })
 
+  it("a new hand-off answered with asks (the previous chat has a real question): the sentence, the chat, and none of the page's text", async () => {
+    const reply = {
+      'iii-cloud::handoff': { id: 'ho-new', marker: '[m]', asks: true, delivered: false, session_id: 'sess-old' },
+    }
+    const openScreen = vi.fn()
+    const compose = await stage({ ...release(note), agent: null, handoff_brief: null }, reply, { openScreen })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(openScreen).toHaveBeenCalled()
+    // the compose fallback is not used: nothing goes into a chat
+    expect(compose.compose).not.toHaveBeenCalled()
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
