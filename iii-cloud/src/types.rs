@@ -552,6 +552,10 @@ pub struct Handoff {
     pub person_check: Option<String>,
     #[serde(default)]
     pub person_check_told: Option<String>,
+    /// The check `person_check_told` names, when the agent was really sent a message for it
+    /// (told without a send: the agent was working, the cap was reached, a wake was armed).
+    #[serde(default)]
+    pub person_check_sent: Option<String>,
 }
 
 impl Handoff {

@@ -443,6 +443,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         waited_run: None,
         person_check: None,
         person_check_told: None,
+        person_check_sent: None,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -1088,6 +1089,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             ctx.store.update(|s| {
                 if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                     h.person_check_told = Some(check_id.clone());
+                    h.person_check_sent = (sent == Continue::Sent).then(|| check_id.clone());
                 }
             });
         }
@@ -1133,6 +1135,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 ctx.store.update(|s| {
                     if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                         h.person_check_told = Some(check_id.clone());
+                        h.person_check_sent = (sent == Continue::Sent).then(|| check_id.clone());
                     }
                 });
             }
@@ -1567,9 +1570,10 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
     }) else {
         return false;
     };
-    // That check was already told (the poll, or this button a moment ago): not twice. Something did
-    // go to the agent for it, so the answer is yes.
-    if h.person_check_told.as_deref() == Some(check_id.as_str()) {
+    // That check was already sent to the agent (the poll, or this button a moment ago): not twice,
+    // and the answer is yes. One only marked told (the agent was working, the cap was reached, a
+    // wake was armed) sent nothing: it goes now when the cap allows, else the page's text goes.
+    if h.person_check_sent.as_deref() == Some(check_id.as_str()) {
         return true;
     }
     let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
@@ -1582,6 +1586,7 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
         ctx.store.update(|s| {
             if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
                 h2.person_check_told = Some(check_id.clone());
+                h2.person_check_sent = Some(check_id.clone());
             }
         });
     }
