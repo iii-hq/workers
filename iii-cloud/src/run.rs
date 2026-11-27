@@ -670,9 +670,11 @@ pub async fn dirty_snapshot(ws: &Path) -> std::collections::BTreeMap<String, Str
 }
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
-/// content stays what it left. Nothing is deleted or restored (an edit the agent made meanwhile is
-/// never lost). Replaces the worktree's earlier record; more than `MAX_WROTE` paths keep none, and
-/// the run says so.
+/// content stays what it left; what an earlier run left and is still there with that content stays
+/// the run's (a run that writes nothing, or the same bytes again, drops nothing). A path that was
+/// dirty before the run with content that was not the run's stays the agent's, even if the run
+/// rewrote it. Nothing is deleted or restored. More than `MAX_WROTE` paths keep none, and the run
+/// says so.
 pub async fn set_aside(
     ctx: &Ctx,
     check_id: &str,
@@ -682,9 +684,17 @@ pub async fn set_aside(
     let Some(after) = dirty_entries(ws).await else {
         return;
     };
+    let previous = ctx
+        .store
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
+        .unwrap_or_default();
     let mut files: std::collections::BTreeMap<String, String> = after
         .into_iter()
-        .filter(|(p, h)| before.get(p) != Some(h))
+        .filter(|(p, _)| {
+            before
+                .get(p)
+                .is_none_or(|b| previous.files.get(p) == Some(b))
+        })
         .collect();
     if files.len() > MAX_WROTE {
         update_check(ctx, check_id, |c| {

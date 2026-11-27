@@ -640,3 +640,48 @@ async fn more_than_five_hundred_files_from_a_run_are_not_set_aside() {
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
 }
+
+#[tokio::test]
+async fn a_second_run_keeps_what_the_first_left_and_a_run_that_writes_nothing_drops_nothing() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let counts = |h: &Harness| {
+        let h = h
+            .ctx
+            .store
+            .read(|s| s.run_wrote.values().map(|w| w.files.len()).sum::<usize>());
+        h
+    };
+    let before = a_run_left_files(&ws).await;
+    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    assert_eq!(counts(&h), 3);
+    // A second run rewrites the same bytes: the paths were dirty before it, with what the run left.
+    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    std::fs::write(ws.join("README.md"), "normalized by the engine\n").unwrap();
+    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    assert_eq!(counts(&h), 3);
+    // A run that writes nothing (failed before the engine, stopped, another environment's).
+    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    assert_eq!(counts(&h), 3);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+}
+
+#[tokio::test]
+async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::write(ws.join("README.md"), "the agent's edit\n").unwrap();
+    // The run starts with that edit in the worktree and rewrites the file.
+    let before = iii_cloud::run::dirty_snapshot(&ws).await;
+    std::fs::write(ws.join("README.md"), "the engine's version of it\n").unwrap();
+    iii_cloud::run::set_aside(&h.ctx, "none", &ws, &before).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .expect("it was dirty before the run, and not the run's");
+    assert!(p.detail.as_deref().unwrap().starts_with("README.md. "));
+}
