@@ -336,7 +336,7 @@ describe('the environment page', () => {
     expect(el.querySelector('section[aria-label="Live now"] [data-dot]')).toBeNull()
     expect(card()?.querySelector('.iii-cloud-mono')?.textContent).toBe('2be71d0')
     expect(card()?.querySelector('.iii-cloud-next-label')?.textContent).toBe('Next')
-    expect(liveNow).toContain("Deploys fromthis machine, after the checka push to dev's branch deploys without it")
+    expect(liveNow).toContain("Deploys froman assisted deployto dev; a push to it from anywhere else deploys without the check")
     expect(text()).toContain('Secrets and variables')
     expect(text()).toContain("Machines, domains, rollback and a new environment are in iii cloud's console.")
     expect(byText('a', "iii cloud's console")?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/registry/dev')
@@ -354,8 +354,31 @@ describe('the environment page', () => {
     await mount(base, ctx({ at: 'env', env: ENV.id }), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
     await settle()
     const liveNow = el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
-    expect(liveNow).toContain('Deploys fromwhen its pull request is mergedinto its base branch')
+    expect(liveNow).toContain('Deploys froma pull requestwhen one into main is merged')
     expect(liveNow).toContain('Nothing is live yet')
+  })
+
+  it('an assisted environment says where its deploy goes: its own branch when it must not push the shared one', async () => {
+    const as = (name: string, branch: string): Status => {
+      const e = { ...ENV, name, production: false, branch, manifest: null, url: null }
+      return {
+        ...base,
+        // The brief says nothing: the page decides from production.
+        handoff_brief: null,
+        project: { ...base.project!, default_branch: 'main', environment: e, environments: [e] },
+      }
+    }
+    const liveNow = async (s: Status) => {
+      await mount(s, ctx({ at: 'env', env: ENV.id }), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
+      await settle()
+      return el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
+    }
+    expect(await liveNow(as('test', 'main'))).toContain(
+      'Deploys froman assisted deploythe first one moves test from main to its own branch, iii-cloud/test',
+    )
+    expect(await liveNow(as('test', 'iii-cloud/test'))).toContain(
+      'Deploys froman assisted deployto iii-cloud/test; a push to it from anywhere else deploys without the check',
+    )
   })
 
   it('a refused check is not lost on the way: the Deploy place shows what it said', async () => {

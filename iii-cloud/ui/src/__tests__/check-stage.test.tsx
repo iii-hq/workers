@@ -433,7 +433,7 @@ describe('Ready', () => {
     expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: expect.any(String), deploy: 'dep-9' })
   })
 
-  it("the agent's fixes going back to the person's branch is stated as a fact", async () => {
+  it("an assisted deploy says the agent's fixes land on the environment's branch and the person's branch is not changed", async () => {
     // Newest first: two commits by the agent, then the last one the folder gave (the workspace's from_head).
     const commits = [
       { sha: 'a'.repeat(40), message: 'Pin search' },
@@ -441,9 +441,65 @@ describe('Ready', () => {
       { sha: 'e41a7c3'.padEnd(40, '0'), message: 'Search worker' },
     ]
     await stage({ ...dev, check: { ...passed, commits } })
+    // `dev` is not production: an assisted deploy puts the fixes on the environment's own branch, never on billing.
     expect(region('What this deploy does')?.textContent).toContain(
-      "After the deploy, billing gets your agent's 2 fixes",
+      "After the deploy, dev has your agent's 2 fixes, and billing is not changed",
     )
+  })
+
+  // An environment that is not production, on the default branch, with no pull request anywhere.
+  const onDefault = (brief?: boolean): Status => {
+    const p = dev.project!
+    const env = { ...p.environment!, name: 'test', production: false, branch: 'main' }
+    return {
+      ...dev,
+      pr: null,
+      project: {
+        ...p,
+        default_branch: 'main',
+        environment: env,
+        environments: [{ ...env }, { ...env, id: 'other-prod', name: 'prod', production: true }],
+      },
+      ...(brief === undefined
+        ? {}
+        : { handoff_brief: { ...(dev.handoff_brief ?? ({} as NonNullable<Status['handoff_brief']>)), pushes_directly: brief } }),
+    }
+  }
+
+  it('an assisted deploy of an environment on the default branch: no pull request, its own branch, Deploy enabled', async () => {
+    // Whatever the hand-off's brief says: the page decides from production alone.
+    for (const brief of [undefined, false, true]) {
+      const h = await stage(onDefault(brief), { 'iii-cloud::deploy': { id: 'dep-9', number: 9 } })
+      const card = region('What this deploy does')?.textContent ?? ''
+      expect(card, String(brief)).toContain('How it shipsAssisted deploy')
+      expect(card).toContain('This page sends 9c04e7f to iii-cloud/test, and iii cloud deploys it.')
+      expect(card).toContain('Branchtest moves from main to its own branch, iii-cloud/testmain is not pushed.')
+      expect(text()).not.toContain('Ask your agent to open it')
+      expect(btn('Deploy 9c04e7f to test')?.hasAttribute('disabled')).toBe(false)
+      await click(btn('Deploy 9c04e7f to test'))
+      expect(h.calls.find((c) => c.id === 'iii-cloud::deploy')?.payload).toEqual({ check_id: dev.check!.id })
+    }
+  })
+
+  it('the Branch row warns about merges only when something serves the environment', async () => {
+    await stage(onDefault(), cloudAnswers({}))
+    expect(region('What this deploy does')?.textContent).not.toContain('no longer deploys')
+    const s = onDefault()
+    const env = s.project!.environment!.id
+    const serving = {
+      id: serving5.id,
+      number: serving5.number,
+      environment_id: env,
+      type: 'push',
+      status: 'ready',
+      current: true,
+      commit: { sha: serving5.commit.sha },
+      triggered_by: { user_id: null, api_key_id: null },
+      created_at: serving5.created_at,
+      finished_at: null,
+    }
+    await stage({ ...s, deploys: [serving5] }, cloudAnswers({ [apiPath('/deployments', env)]: { deployments: [serving] } }))
+    expect(region('What this deploy does')?.textContent).toContain('After this deploy, a merge into main no longer deploys test.')
   })
 
   it('a local run that was reused is still a pass', async () => {
@@ -731,11 +787,13 @@ describe('the review: what a check that is not ready still offers', () => {
   it('the production name dialog locks when the check it was opened for stops being the ready one (another pane changed the source)', async () => {
     const s = B('deploy-passed')
     const prod = { ...s.project!, environment: { ...s.project!.environment!, production: true } }
-    const h = await stage({ ...s, project: prod }, { 'iii-cloud::deploy': {} })
-    await click(deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? '')))
+    // Production deploys by pull request: the check's own, open and not behind.
+    const open = { ...pr, state: 'OPEN' as const, head_sha: s.check!.commit, main_moved: false }
+    const h = await stage({ ...s, project: prod, pr: open }, { 'iii-cloud::deploy': {} })
+    await click(btn('Merge to main and deploy to dev…'))
     const dialog = () => el.querySelector('[role=dialog]')
     await type(dialog()?.querySelector('input') ?? null, 'dev')
-    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Deploy')
+    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Merge and deploy')
     expect(go()?.hasAttribute('disabled')).toBe(false)
     await act(async () => hubOf(h.host).used(s.check!.environment_id, true))
     expect(go()?.hasAttribute('disabled')).toBe(true)
@@ -745,11 +803,13 @@ describe('the review: what a check that is not ready still offers', () => {
   it('the production name dialog locks when a newer READY check arrives while it is open, with no other lock, and says to close it', async () => {
     const s = B('deploy-passed')
     const prod = { ...s.project!, environment: { ...s.project!.environment!, production: true } }
-    const h = await stage({ ...s, project: prod }, { 'iii-cloud::deploy': {} })
-    await click(deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? '')))
+    // Production deploys by pull request: the check's own, open and not behind.
+    const open = { ...pr, state: 'OPEN' as const, head_sha: s.check!.commit, main_moved: false }
+    const h = await stage({ ...s, project: prod, pr: open }, { 'iii-cloud::deploy': {} })
+    await click(btn('Merge to main and deploy to dev…'))
     const dialog = () => el.querySelector('[role=dialog]')
     await type(dialog()?.querySelector('input') ?? null, 'dev')
-    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Deploy')
+    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Merge and deploy')
     expect(go()?.hasAttribute('disabled')).toBe(false)
     await fire(h, {
       kind: 'check',

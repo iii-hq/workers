@@ -97,8 +97,8 @@ describe('Deployments', () => {
     }
     await mount(status, ctx({ at: 'env', env: DEV.id }), cloud)
     await settle()
-    expect(rowOf(6)?.textContent).toContain('you, from this machine · checked, your agent fixed 2')
-    expect(rowOf(5)?.textContent).toContain('you, from this machine · checked')
+    expect(rowOf(6)?.textContent).toContain('you, from this page · checked, your agent fixed 2')
+    expect(rowOf(5)?.textContent).toContain('you, from this page · checked')
     expect(rowOf(5)?.textContent).not.toContain('your agent')
     // A check of a hand-off that is no longer on file: said without a count.
     await mount({ ...status, handoff_brief: null }, ctx({ at: 'env', env: DEV.id }, 2), cloud)
@@ -199,7 +199,7 @@ describe("a failed deployment's record (Env3)", () => {
     await settle()
     expect(el.querySelector('h2.iii-cloud-h')?.textContent).toBe('Search: rank by stars')
     const cells = [...el.querySelectorAll('.iii-cloud-cell')].map((c) => c.textContent)
-    expect(cells[1]).toContain('you, from this machine')
+    expect(cells[1]).toContain('you, from this page')
     expect(cells[2]).toBe('Checked firstYes, before it was deployed.')
     expect(byText('a', 'Full log in iii cloud')).not.toBeUndefined()
     expect(btn('Fix with your agent')).toBeNull()

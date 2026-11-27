@@ -23,9 +23,10 @@ import {
 import { handOff } from './handoff'
 import { hubOf, useActions, useChecking } from './hub'
 import {
+  ASSISTED,
+  assistedHow,
   COMPOSE_ISSUE,
   composeFile,
-  isDirectEnv,
   liveOf,
   needsConnect,
   plural,
@@ -424,23 +425,22 @@ function Confirm({
   }
 
   // ── the four rows, closed ──
-  const direct = (e: { id: string; branch: string }) =>
-    isDirectEnv(status, e)
-      ? 'You deploy it from this machine, after the check.'
-      : `Deploys when a pull request into ${e.branch} is merged.`
+  const pullRequest = (branch: string) => `Deploys when a pull request into ${branch} is merged.`
+  // Production deploys by pull request; every other environment gets an assisted deploy.
+  const wayRow = (e: { production?: boolean; branch: string }) => (e.production ? pullRequest(e.branch) : ASSISTED)
+  const wayNote = (e: { name: string; production?: boolean; branch: string }) =>
+    e.production ? pullRequest(e.branch) : `${ASSISTED}. ${assistedHow(e.name)}`
   const projectValue = creatingProject ? `New project: ${repoName}` : (cp?.name ?? '')
   const projectNote = creatingProject
     ? `No project in ${teams.find((t) => t.id === team)?.name ? `team ${teams.find((t) => t.id === team)?.name}` : 'your team'} is built from this repository yet`
     : `It is built from this repository · ${plural(envList.length, 'environment')}`
   const envValue = creatingProject || creatingEnv ? `New environment: ${envName || '…'}` : (env?.name ?? 'None yet')
   const envNote = creatingProject
-    ? np.production
-      ? `Deploys when a pull request into ${base} is merged.`
-      : 'You deploy it from this machine, after the check.'
+    ? wayNote({ name: np.env, production: np.production, branch: base })
     : creatingEnv
-      ? `Deploys from ${newEnv.branch}. ${newEnv.copy === 'start-empty' ? 'You set everything.' : 'Its secrets and settings start as a copy.'}`
+      ? `${ASSISTED}. ${newEnv.copy === 'start-empty' ? 'You set everything.' : 'Its secrets and settings start as a copy.'}`
       : env
-        ? direct(env)
+        ? wayNote(env)
         : undefined
   const fileValue = file?.path ?? composeFile(project?.environment?.manifest)
   const fileNoteText = file ? fileNote(file, false, false) : 'None found in this folder yet'
@@ -549,7 +549,7 @@ function Confirm({
               ...envList.map((e) => ({
                 id: e.id,
                 label: e.name,
-                description: direct(e),
+                description: wayRow(e),
                 trailing: (
                   <EnvLive
                     host={host}
@@ -563,11 +563,14 @@ function Confirm({
                 id: NEW,
                 label: 'New environment',
                 description:
-                  'You pick a name. Its secrets and settings start as a copy, and you deploy it from this machine.',
+                  'You pick a name. Its secrets and settings start as a copy, and it gets an assisted deploy.',
               },
             ]}
             onPick={setEnvPick}
           />
+          {creatingEnv || envList.some((e) => !e.production) ? (
+            <p className="iii-cloud-desc">{`${ASSISTED}: ${assistedHow('the environment')}`}</p>
+          ) : null}
           {creatingEnv && cp ? (
             <NewEnvironmentFields
               project={cp}

@@ -7,6 +7,7 @@ import { boards, cardRecords } from '../fixtures'
 import { base, project, TEAM } from '../fixtures/base'
 import { chosen, DEV, FILE, notImported, registry } from '../fixtures/setup'
 import { startStatus } from '../fixtures/start'
+import { assistedHow } from '../model'
 import type { Status } from '../types'
 import { type Call, fakeHost } from './host'
 import { board, btn, click, cloudAnswers, ctx, el, flush, lastCall, mount, root, text, type, usePage } from './util'
@@ -170,7 +171,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
     })
     expect(detail('Environment')).toMatchObject({
       value: 'New environment: test',
-      note: 'You deploy it from this machine, after the check.',
+      note: `Assisted deploy. ${assistedHow('test')}`,
     })
     expect(detail('Compose file')).toMatchObject({ value: FILE, note: 'It has a cloud section · 9 workers' })
     for (const label of ['Folder', 'Project', 'Environment', 'Compose file']) {
@@ -189,7 +190,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
       note: 'It is built from this repository · 2 environments',
     })
     expect(detail('Environment')?.value).toBe('dev')
-    expect(detail('Environment')?.note).toBe('You deploy it from this machine, after the check.')
+    expect(detail('Environment')?.note).toBe(`Assisted deploy. ${assistedHow('dev')}`)
     expect(detail('Compose file')?.value).toBe(FILE)
   })
 
@@ -298,9 +299,11 @@ describe('Change: each row opens in place, one at a time', () => {
     )
     expect(radios('Environment').map((r) => r.textContent)).toEqual([
       'productionDeploys when a pull request into main is merged.',
-      'devYou deploy it from this machine, after the check.Live · 9c04e7f',
-      'New environmentYou pick a name. Its secrets and settings start as a copy, and you deploy it from this machine.',
+      'devAssisted deployLive · 9c04e7f',
+      'New environmentYou pick a name. Its secrets and settings start as a copy, and it gets an assisted deploy.',
     ])
+    // The one sentence of the assisted deploy is said once, under the rows.
+    expect(text()).toContain(`Assisted deploy: ${assistedHow('the environment')}`)
     expect(checked('Environment')).toMatch(/^dev/)
     await click(radio('Environment', 'production') ?? null)
     await click(btn('Done'))
@@ -315,6 +318,26 @@ describe('Change: each row opens in place, one at a time', () => {
     await click(btn('Done'))
     expect(detail('Environment')?.value).toBe('New environment: staging')
     expect(primary()?.textContent).toBe('Create staging and check it')
+  })
+
+  it('New environment: the branch hint says whether it gets its own branch (default, shared, own)', async () => {
+    await board('setup-existing')
+    await click(changeOf('Environment') ?? null)
+    await click(radio('Environment', 'New environment') ?? null)
+    await type(el.querySelector('#iii-cloud-ne-name'), 'staging')
+    const hint = () => el.querySelector('#iii-cloud-ne-branch-hint')?.textContent
+    const branch = el.querySelector('#iii-cloud-ne-branch')
+    expect(el.querySelector('label[for=iii-cloud-ne-branch]')?.textContent).toBe('Branch')
+    // The default branch: never pushed.
+    expect(hint()).toBe('Its first assisted deploy gives it its own branch, iii-cloud/staging. main is never pushed.')
+    // A branch another environment follows (dev's).
+    await type(branch, 'develop')
+    expect(hint()).toBe('Its first assisted deploy gives it its own branch, iii-cloud/staging. develop is never pushed.')
+    // A branch nobody follows.
+    await type(branch, 'feature')
+    expect(hint()).toBe(
+      'An assisted deploy sends the checked commit to feature. A push to feature from anywhere else deploys without the check.',
+    )
   })
 
   it('Environment of a new project: its name and whether it is production', async () => {

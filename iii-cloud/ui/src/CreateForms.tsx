@@ -3,7 +3,7 @@
 
 import { Checkbox, Input, ListItem, Select } from '@iii-dev/console-ui'
 import { Circle, CircleDot } from 'lucide-react'
-import { composeFile, plainDetail, plainMessage } from './model'
+import { composeFile, deployWay, plainDetail, plainMessage } from './model'
 import { Notice } from './parts'
 import type { CloudProjectChoice, WorkerError } from './types'
 
@@ -172,7 +172,7 @@ export function NewEnvironmentFields({
 }: {
   project: CloudProjectChoice
   copyFrom: { id: string; name: string }[]
-  /** The repository's default branch: with it, the branch field says how the environment deploys. */
+  /** The repository's default branch: with it, the branch field says whether the environment gets its own branch. */
   baseBranch?: string | null
   value: NewEnv
   onChange: (v: NewEnv) => void
@@ -181,12 +181,13 @@ export function NewEnvironmentFields({
   const n = value.name.trim()
   const b = value.branch.trim()
   const badName = n !== '' && !validName(n)
-  const how =
-    !baseBranch || !b
-      ? null
-      : b === baseBranch
-        ? `It deploys when a pull request into ${b} is merged.`
-        : 'You deploy it from this machine, after the check. A push from anywhere else deploys right away.'
+  // A new environment is never production here: it gets an assisted deploy, on its own branch when this one is shared.
+  const way = deployWay(baseBranch ?? null, { name: n || '…', production: false, branch: b }, project.environments ?? [])
+  const how = !b
+    ? null
+    : way.way === 'assisted' && way.own
+      ? `Its first assisted deploy gives it its own branch, ${way.own}. ${b} is never pushed.`
+      : `An assisted deploy sends the checked commit to ${b}. A push to ${b} from anywhere else deploys without the check.`
   const choices: Choice[] = [
     ...sources.map((e) => ({
       value: e.id,
@@ -221,7 +222,7 @@ export function NewEnvironmentFields({
       )}
       {field(
         'iii-cloud-ne-branch',
-        'Deploys from',
+        'Branch',
         <>
           <Input
             id="iii-cloud-ne-branch"

@@ -1,4 +1,4 @@
-// The one screen every deploy from this machine goes through, as far as the check: its header says the next thing
+// The one screen every deploy from this page goes through, as far as the check: its header says the next thing
 // to do, You lists what only the person can do (with the action in the item), Your agent lists what it fixes, one
 // closed fold holds the rest, and when a check passes "What this deploy does" takes the lists' place. DeployFlow
 // puts it in the area and shows the deployment itself.
@@ -29,6 +29,7 @@ import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom 
 import {
   activeSameKind,
   appFile,
+  ASSISTED,
   CHECK_AGAIN,
   cloudPending,
   cloudPendingNote,
@@ -39,7 +40,6 @@ import {
   envHead,
   envPageUrl,
   fixBranch,
-  isDirectEnv,
   isFailedDeploy,
   listMayHideServing,
   minutesLabel,
@@ -66,6 +66,7 @@ import {
   typicalDeployMs,
   usablePr,
   variableOf,
+  wayOf,
   workingOnIds,
 } from './model'
 import {
@@ -170,7 +171,7 @@ export function deployLockReason(
 }
 
 /**
- * A deployment iii cloud holds for confirmation that is not this machine's: the worker's own markers on the record
+ * A deployment iii cloud holds for confirmation that is not this page's: the worker's own markers on the record
  * (a `check_id`, or the flag it sets when it approved or created it) say it started it. A matching commit proves
  * nothing: a push by hand of the checked commit makes the check's base the branch head, and the worker refuses
  * that Confirm as MAIN_MOVED. A held one without the markers is "elsewhere": it locks nothing, and deploying from
@@ -860,8 +861,11 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const launching = useLaunch()?.kind === 'launching'
   const feed = useDeployments(host, s, env?.id ?? '')
   if (!p || !env) return null
-  const direct = isDirectEnv(s, env)
-  const pr = direct ? null : usablePr(s)
+  // Production deploys by pull request; every other environment gets an assisted deploy.
+  const assisted = !env.production
+  const way = wayOf(s, env)
+  const target = way.way === 'assisted' && way.own ? way.own : env.branch
+  const pr = assisted ? null : usablePr(s)
   const file = appFile(s)
   const { resources, overrides } = c.plan.confirmations
   const role = roleOf(s)
@@ -949,11 +953,27 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
           </DetailRow>
         ) : null}
         {fixes && branch ? (
-          <DetailRow label="Your branch" note="The next deploy starts from it.">
-            {`After the deploy, ${branch} gets ${fixes}`}
+          <DetailRow label="Your branch" note={assisted ? `The next deploy starts from ${target}.` : 'The next deploy starts from it.'}>
+            {assisted
+              ? `After the deploy, ${target} has ${fixes}, and ${branch} is not changed`
+              : `When the pull request is merged, ${env.branch} gets ${fixes}`}
           </DetailRow>
         ) : null}
-        {direct ? null : (
+        {assisted ? (
+          <>
+            <DetailRow label="How it ships" note={`This page sends ${sha7(c.commit)} to ${target}, and iii cloud deploys it.`}>
+              {ASSISTED}
+            </DetailRow>
+            {way.way === 'assisted' && way.own ? (
+              <DetailRow
+                label="Branch"
+                note={`${env.branch} is not pushed.${serving ? ` After this deploy, a merge into ${env.branch} no longer deploys ${env.name}.` : ''}`}
+              >
+                {`${env.name} moves from ${env.branch} to its own branch, ${way.own}`}
+              </DetailRow>
+            ) : null}
+          </>
+        ) : (
           <DetailRow
             label="How it ships"
             note={[
@@ -1163,8 +1183,8 @@ export function CheckStage(props: CheckStageProps) {
   const working = fixing(s) && !ready
   const a = s.agent
 
-  const direct = !!p?.environment && isDirectEnv(s, p.environment)
-  const pr = direct ? null : usablePr(s)
+  const assisted = !!p?.environment && !p.environment.production
+  const pr = assisted ? null : usablePr(s)
   const production = !!p?.environment?.production
   const deploy = async () => {
     const d = await call<Deploy>(
@@ -1350,7 +1370,7 @@ export function CheckStage(props: CheckStageProps) {
   }
   const lock = stops.find((x) => x.lock)?.lock
   const prLock =
-    !direct && ready && (!pr || pr.main_moved)
+    !assisted && ready && (!pr || pr.main_moved)
       ? 'Open the pull request, and check again if the branch moved.'
       : undefined
   const staleDeploy = !!error && CHECK_AGAIN.has(error.code)
@@ -1443,7 +1463,7 @@ export function CheckStage(props: CheckStageProps) {
     const off = ready ? (lock ?? prLock ?? deployLock) : undefined
     action = ready ? (
       <PageAction disabled={!!off} onClick={startDeploy}>
-        {direct
+        {assisted
           ? `Deploy ${c ? sha7(c.commit) : ''} to ${env}${production ? '…' : ''}`
           : `Merge to ${pr?.base ?? p?.environment?.branch} and deploy to ${env}${production ? '…' : ''}`}
       </PageAction>

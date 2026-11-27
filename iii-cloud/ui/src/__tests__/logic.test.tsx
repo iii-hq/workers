@@ -140,8 +140,8 @@ describe('one source per fact (the review, defects 1, 2 and 7)', () => {
     // Made by this worker: it was checked first, and an API key from iii cloud is still "you".
     const mine = dep({ id: 'm', type: 'manual', check_id: 'chk-1', checked_ready: true })
     const viaKey = cloud(mine, { triggered_by: { user_id: null, api_key_id: 'k' } })
-    expect(deployOrigin(at(mine), mine, viaKey).line).toBe('you, from this machine · checked')
-    expect(deployOrigin(at(mine), mine).line).toBe('you, from this machine · checked')
+    expect(deployOrigin(at(mine), mine, viaKey).line).toBe('you, from this page · checked')
+    expect(deployOrigin(at(mine), mine).line).toBe('you, from this page · checked')
     // A merge, a console deployment, a teammate by name (iii cloud wins for who).
     const merged = dep({ id: 'g', pr: 12, approved_by_worker: true, checked_ready: true })
     expect(deployOrigin(at(merged), merged).line).toBe('you, from the merge of #12 · checked')
@@ -242,6 +242,10 @@ describe("codes that keep the worker's own words", () => {
       MERGE_IN_PROGRESS: 'A merge is still open in the worktree ~/w.',
       WORKTREE_PATH_TAKEN: '~/w-iii-cloud is already a folder of another repository.',
       NO_ACCESS: 'You are not a member of team acme.',
+      OWN_BRANCH_TAKEN:
+        "GitHub already has a branch iii-cloud/test with other commits. Delete it, or set test's branch in iii cloud. Nothing changed.",
+      BRANCH_NOT_MOVED:
+        'test could not move to its own branch iii-cloud/test (iii cloud answered 403). Nothing was deployed. Deploy again to retry.',
     }
     for (const [code, message] of Object.entries(own)) {
       expect(plainMessage({ code, message })).toBe(message)
