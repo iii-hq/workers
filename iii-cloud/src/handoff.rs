@@ -1786,7 +1786,10 @@ fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
 }
 
 /// Who a failed local run's code belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum RunOwner {
     /// The agent fixes it in the worktree.
     Agent,

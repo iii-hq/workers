@@ -1161,6 +1161,14 @@ pub struct RunError {
     pub stage: StageName,
     pub code: String,
     pub message: String,
+    /// Whose the failure is (`run_code_owner`): the agent fixes it, the person must, or the run was
+    /// cut short. Set whenever the check is stored.
+    #[serde(default)]
+    pub owner: Option<crate::handoff::RunOwner>,
+    /// The worker would not send this failure to the agent now: the person has a blocking problem
+    /// open (a missing value fails the run too), so it is theirs first.
+    #[serde(default)]
+    pub withheld: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

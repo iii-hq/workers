@@ -605,6 +605,8 @@ pub async fn start_with(
                         stage,
                         code: "RUN_PANIC".into(),
                         message: "The run stopped on an internal error.".into(),
+                        owner: None,
+                        withheld: false,
                     });
                 }
             });
@@ -1621,6 +1623,8 @@ impl Exec {
             stage,
             code: f.code,
             message: cut(&f.message, 600),
+            owner: None,
+            withheld: false,
         });
     }
 
@@ -2780,6 +2784,8 @@ pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
                     stage,
                     code: "WORKER_RESTARTED".into(),
                     message: "The worker restarted while the run was going.".into(),
+                    owner: None,
+                    withheld: false,
                 });
                 for s in run
                     .stages

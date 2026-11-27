@@ -1713,6 +1713,17 @@ pub fn update_check(ctx: &Ctx, id: &str, f: impl FnOnce(&mut Check)) -> Option<C
     let updated = ctx.store.update(|s| {
         let mut found = s.find_check(id).cloned()?;
         f(&mut found);
+        // The page must not guess whose a failed run is: the worker says (and whether it is held
+        // back because the person has something open first).
+        let persons_open = found
+            .problems
+            .iter()
+            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
+        if let Some(e) = found.run.as_mut().and_then(|r| r.error.as_mut()) {
+            let owner = crate::handoff::run_code_owner(&e.code);
+            e.owner = Some(owner);
+            e.withheld = persons_open && owner != crate::handoff::RunOwner::Person;
+        }
         found.ready = is_ready(
             &found.plan,
             &found.problems,

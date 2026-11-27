@@ -1260,6 +1260,8 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
                 stage: StageName::Workers,
                 code: "WORKERS_NOT_READY".into(),
                 message: "x".into(),
+                owner: None,
+                withheld: false,
             }),
             reused: false,
             waiting_on: None,
@@ -1362,6 +1364,8 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
                 stage: StageName::Workers,
                 code: "WORKERS_NOT_READY".into(),
                 message: "api did not connect".into(),
+                owner: None,
+                withheld: false,
             }),
             reused: false,
             waiting_on: None,
@@ -2643,6 +2647,8 @@ fn failed_run(check_id: &str, commit: &str) -> Run {
             stage: StageName::Workers,
             code: "WORKERS_NOT_READY".into(),
             message: "api did not connect".into(),
+            owner: None,
+            withheld: false,
         }),
         reused: false,
         waiting_on: None,
@@ -3122,6 +3128,8 @@ async fn the_first_waiting_continue_goes_once_for_its_run_and_does_not_use_the_c
             stage: StageName::Workers,
             code: "WORKERS_NOT_READY".into(),
             message: "api did not connect".into(),
+            owner: None,
+            withheld: false,
         });
     });
     *w.status.lock().unwrap() = "working".into();
@@ -3482,6 +3490,8 @@ async fn a_person_run_that_a_newer_run_replaced_sends_the_agent_nothing() {
         stage: StageName::Workers,
         code: "RUN_REPLACED".into(),
         message: "A newer commit of this workspace started a run, so this one stopped.".into(),
+        owner: None,
+        withheld: false,
     });
     let (_h, told) = person_check_while_waiting(vec![], Some(run), false, 1).await;
     assert!(told.is_empty(), "{told:?}");
@@ -3566,6 +3576,8 @@ fn release_failed() -> Run {
         stage: StageName::Release,
         code: "RELEASE_FAILED".into(),
         message: "`pnpm db:migrate` exited 1".into(),
+        owner: None,
+        withheld: false,
     });
     run
 }
@@ -3685,4 +3697,51 @@ async fn an_old_dead_or_homeless_hand_off_is_not_reused_for_a_new_one() {
     if let Ok(again) = create(&h.ctx, ready_req()).await {
         assert!(!again.reused && again.id != old_id, "{again:?}");
     }
+}
+
+#[tokio::test]
+async fn a_failed_run_carries_whose_it_is_and_whether_the_worker_holds_it_back() {
+    use iii_cloud::handoff::RunOwner;
+    let (h, _s, _r, _ws) = setup().await;
+    let id = h.ctx.store.read(|s| s.check.clone().unwrap().id);
+    let owner_of = |code: &str, person_open: bool| {
+        let mut run = failed_run(&id, "abc");
+        run.error.as_mut().unwrap().code = code.into();
+        let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
+        values.owner = Owner::Person;
+        let c = iii_cloud::check::update_check(&h.ctx, &id, |c| {
+            c.run = Some(run);
+            c.problems = if person_open { vec![values] } else { vec![] };
+        })
+        .unwrap();
+        let e = c.run.unwrap().error.unwrap();
+        (e.owner, e.withheld)
+    };
+    // The agent's code, the person's, and a cut-short run.
+    assert_eq!(
+        owner_of("WORKERS_NOT_READY", false),
+        (Some(RunOwner::Agent), false)
+    );
+    assert_eq!(
+        owner_of("DOCKER_MISSING", false),
+        (Some(RunOwner::Person), false)
+    );
+    assert_eq!(
+        owner_of("WORKER_RESTARTED", false),
+        (Some(RunOwner::Interrupted), false)
+    );
+    // With a value of the person's open, the worker holds the agent's failure back.
+    assert_eq!(
+        owner_of("WORKERS_NOT_READY", true),
+        (Some(RunOwner::Agent), true)
+    );
+    assert_eq!(
+        owner_of("WORKER_RESTARTED", true),
+        (Some(RunOwner::Interrupted), true)
+    );
+    // The person's own code is never "held back from the agent": it was never the agent's.
+    assert_eq!(
+        owner_of("DOCKER_MISSING", true),
+        (Some(RunOwner::Person), false)
+    );
 }
