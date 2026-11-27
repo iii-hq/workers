@@ -66,19 +66,12 @@ pub struct ImageMetadata {
     pub height: Option<Value>,
 }
 
-impl ImageMetadata {
-    /// The deprecated keys this call sent, for a warning.
-    #[allow(deprecated)]
-    pub fn deprecated_keys(&self) -> Vec<&'static str> {
-        [
-            ("format", &self.format),
-            ("width", &self.width),
-            ("height", &self.height),
-        ]
+/// The deprecated keys a `metadata` object carries, whatever their value (even `null`), for a warning.
+pub fn deprecated_keys(fields: &serde_json::Map<String, Value>) -> Vec<&'static str> {
+    ["format", "width", "height"]
         .into_iter()
-        .filter_map(|(key, value)| value.is_some().then_some(key))
+        .filter(|key| fields.contains_key(*key))
         .collect()
-    }
 }
 
 /// The call result: the output's format and size, and the source's size after
@@ -312,19 +305,12 @@ mod tests {
     use image::{ImageEncoder, RgbImage};
 
     #[test]
-    fn deprecated_keys_lists_what_the_call_sent() {
-        let meta = |v: Value| ImageMetadata::deserialize(&v).unwrap();
-        assert!(
-            meta(serde_json::json!({ "target_width": 10 }))
-                .deprecated_keys()
-                .is_empty()
-        );
+    fn deprecated_keys_counts_a_key_whatever_its_value() {
+        let keys = |v: Value| deprecated_keys(v.as_object().unwrap());
+        assert!(keys(serde_json::json!({ "target_width": 10 })).is_empty());
+        assert_eq!(keys(serde_json::json!({ "width": null })), ["width"]);
         assert_eq!(
-            meta(serde_json::json!({ "width": 1, "format": "jpeg" })).deprecated_keys(),
-            ["format", "width"]
-        );
-        assert_eq!(
-            meta(serde_json::json!({ "format": "png", "width": 1, "height": 1 })).deprecated_keys(),
+            keys(serde_json::json!({ "height": 1, "format": "png", "width": 1 })),
             ["format", "width", "height"]
         );
     }

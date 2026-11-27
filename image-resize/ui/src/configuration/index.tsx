@@ -43,6 +43,17 @@ export function withPath(value: JsonValue | undefined, path: readonly string[], 
   return copy
 }
 
+/**
+ * A typed setting as a number. `Number`, not `parseInt`: "1e3" is 1000 and
+ * "85.5" stays fractional so the schema check rejects it. Blank or not a
+ * number clears the key, restoring the default.
+ */
+export function settingNumber(raw: string): number | undefined {
+  if (raw.trim() === '') return undefined
+  const n = Number(raw)
+  return Number.isNaN(n) ? undefined : n
+}
+
 function read(value: JsonValue, path: readonly string[]): JsonValue | undefined {
   return path.reduce<JsonValue | undefined>((node, key) => draftOf(node)[key], value)
 }
@@ -77,10 +88,7 @@ export function ImageResizeConfigForm({ value, onChange, errors, focusField }: C
             step={1}
             value={typeof current === 'number' ? String(current) : ''}
             placeholder={String(fallback)}
-            onChange={(next) => {
-              const n = Number.parseInt(next, 10)
-              onChange(withPath(value, path, Number.isNaN(n) ? undefined : n))
-            }}
+            onChange={(next) => onChange(withPath(value, path, settingNumber(next)))}
           />
         )}
       />

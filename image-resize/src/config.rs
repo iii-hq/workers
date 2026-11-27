@@ -62,10 +62,20 @@ impl Default for QualityConfig {
 impl ResizeConfig {
     /// A value from the configuration worker or a seed file; missing keys take the defaults.
     pub fn from_json(value: &Value) -> Result<Self, String> {
+        // Serde also takes these structs as positional arrays; the schema only allows objects.
+        if !value.is_object() || value.get("quality").is_some_and(|q| !q.is_object()) {
+            return Err(
+                "invalid image-resize config: expected an object, with `quality` an object".into(),
+            );
+        }
         let config =
             Self::deserialize(value).map_err(|e| format!("invalid image-resize config: {e}"))?;
-        for quality in [config.quality.jpeg, config.quality.webp] {
-            check_quality(quality).map_err(|e| format!("invalid image-resize config: {e}"))?;
+        for (key, quality) in [
+            ("quality.jpeg", config.quality.jpeg),
+            ("quality.webp", config.quality.webp),
+        ] {
+            check_quality(quality)
+                .map_err(|e| format!("invalid image-resize config: {key}: {e}"))?;
         }
         Ok(config)
     }
@@ -154,6 +164,9 @@ mod tests {
             json!({"width": 0}),
             json!({"quality": {"webp": 101}}),
             json!({"quality": {"jpeg": 0}}),
+            json!([200, 200, "scale-to-fit", {"jpeg": 85, "webp": 80}]),
+            json!({"quality": [70, 60]}),
+            json!(null),
         ] {
             let err = ResizeConfig::from_json(&value).unwrap_err();
             assert!(
@@ -161,6 +174,14 @@ mod tests {
                 "{value}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn quality_errors_name_the_setting() {
+        let err = ResizeConfig::from_json(&json!({"quality": {"webp": 101}})).unwrap_err();
+        assert!(err.contains("quality.webp"), "{err}");
+        let err = ResizeConfig::from_json(&json!({"quality": {"jpeg": 0}})).unwrap_err();
+        assert!(err.contains("quality.jpeg"), "{err}");
     }
 
     #[test]

@@ -335,6 +335,13 @@ async fn handle_ws(client: WebSocket, upstream: Upstream) {
         _ = client_to_engine => {}
         _ = engine_to_client => {}
     }
+    // Tungstenite queues its reply to a peer's Close until the next write or
+    // flush; send it before the sockets drop, bounded so a stalled peer
+    // cannot hold the task, and concurrently so it cannot starve the other.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(client_tx.flush(), engine_tx.flush())
+    })
+    .await;
 }
 
 /// If `text` is the browser SDK's `engine::workers::register` invocation,

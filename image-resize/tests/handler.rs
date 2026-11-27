@@ -216,6 +216,21 @@ async fn bad_metadata_is_invalid_args_and_aborts_output() {
     // No input bytes: only a check that runs before the input is read can report the metadata.
     let message = rejected(call(Vec::new(), Some(json!({ "strategy": "crop" }))).await);
     assert!(message.contains("invalid metadata"), "{message}");
+    // The same holds for an out-of-range quality.
+    let message = rejected(call(Vec::new(), Some(json!({ "quality": 0 }))).await);
+    assert!(message.contains("quality must be 1-100"), "{message}");
+}
+
+#[tokio::test]
+async fn metadata_must_be_an_object() {
+    // Serde would read this array positionally as a 12x12 PNG request.
+    for metadata in [json!(["png", 80, "scale-to-fit", 12, 12]), json!("png")] {
+        let message = rejected(call(png(40, 40), Some(metadata.clone())).await);
+        assert!(
+            message.contains("invalid metadata: expected an object"),
+            "{metadata}: {message}"
+        );
+    }
 }
 
 #[tokio::test]

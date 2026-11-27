@@ -1471,6 +1471,11 @@ async fn ws_channel_route_relays_a_writer_to_the_engine_channel_path() {
         }
         other => panic!("expected the close, got {other:?}"),
     }
+    // The browser's close gets its reply, so the SDK sees a normal close.
+    assert!(matches!(
+        next_frame(&mut client, "the close reply").await,
+        Message::Close(_)
+    ));
 }
 
 /// The engine's frames reach the reading end as sent, and its error close
@@ -1524,6 +1529,11 @@ async fn ws_channel_route_relays_a_reader_with_its_close_reason() {
         }
         other => panic!("expected the close, got {other:?}"),
     }
+    // The engine's close gets its reply too.
+    assert!(matches!(
+        next_frame(&mut engine_ws, "the close reply").await,
+        Message::Close(_)
+    ));
 }
 
 /// On a channel the close frame is the end of the data, so a writer whose

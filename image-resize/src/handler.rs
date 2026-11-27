@@ -8,9 +8,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::config::ResizeConfig;
+use crate::config::{ResizeConfig, check_quality};
 use crate::processing::{
-    ImageMetadata, ThumbnailMetadata, invalid, process_image, resolve_params, sniff,
+    ImageMetadata, ThumbnailMetadata, deprecated_keys, invalid, process_image, resolve_params,
+    sniff,
 };
 
 /// Largest input read from `input_channel`.
@@ -86,15 +87,24 @@ async fn run(
     }
     let meta = match &req.metadata {
         None | Some(Value::Null) => ImageMetadata::default(),
-        Some(value) => ImageMetadata::deserialize(value)
-            .map_err(|e| invalid(format!("invalid metadata: {e}")))?,
+        // Serde would also take the struct as a positional array.
+        Some(value @ Value::Object(fields)) => {
+            let meta = ImageMetadata::deserialize(value)
+                .map_err(|e| invalid(format!("invalid metadata: {e}")))?;
+            let deprecated = deprecated_keys(fields);
+            if !deprecated.is_empty() {
+                tracing::warn!(
+                    keys = ?deprecated,
+                    "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
+                );
+            }
+            meta
+        }
+        Some(_) => return Err(invalid("invalid metadata: expected an object")),
     };
-    let deprecated = meta.deprecated_keys();
-    if !deprecated.is_empty() {
-        tracing::warn!(
-            keys = ?deprecated,
-            "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
-        );
+    // Fail a bad override before waiting on the input stream.
+    if let Some(quality) = meta.quality {
+        check_quality(quality).map_err(invalid)?;
     }
     let bytes = read_image(req.input_channel.frames(), MAX_INPUT_BYTES).await?;
     let params = resolve_params(config, &meta, sniff(&bytes)?)?;

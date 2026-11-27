@@ -2,7 +2,7 @@ import type { JsonValue } from '@iii-dev/console-ui'
 import type { ComponentProps, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { ImageResizeConfigForm, withPath } from './index'
+import { ImageResizeConfigForm, settingNumber, withPath } from './index'
 
 vi.mock('@iii-dev/console-ui', () => ({
   Input: ({ onChange: _onChange, ...props }: { onChange?: unknown } & Omit<ComponentProps<'input'>, 'onChange'>) => (
@@ -109,5 +109,19 @@ describe('withPath', () => {
     expect(withPath(null, ['width'], 300)).toEqual({ width: 300 })
     expect(withPath([1, 2], ['quality', 'jpeg'], 50)).toEqual({ quality: { jpeg: 50 } })
     expect(withPath('raw', ['strategy'], undefined)).toEqual({})
+  })
+})
+
+describe('settingNumber', () => {
+  it('reads the whole value, keeping fractions for the schema to reject', () => {
+    expect(settingNumber('320')).toBe(320)
+    expect(settingNumber('1e3')).toBe(1000)
+    expect(settingNumber('85.5')).toBe(85.5)
+  })
+
+  it('clears the key for blank or non-numeric input', () => {
+    expect(settingNumber('')).toBeUndefined()
+    expect(settingNumber('  ')).toBeUndefined()
+    expect(settingNumber('abc')).toBeUndefined()
   })
 })
