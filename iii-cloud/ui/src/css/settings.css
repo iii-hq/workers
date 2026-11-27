@@ -23,6 +23,13 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-set-form {
   padding: 12px;
 }
+/* The choices above a row's input (env files, this environment's address). */
+[data-iii-ui='iii-cloud'] .iii-cloud-set-offers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 0 8px;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-set-skel {
   display: block;
   height: 120px;

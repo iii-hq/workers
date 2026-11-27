@@ -39,8 +39,8 @@ import { plainMessage, plural, servingDeploy, valueMessage, when } from './model
 import { ErrorPanel, Mono, Notice } from './parts'
 import type { EnvTabProps } from './route'
 import { SecretEntry } from './SecretEntry'
-import type { SecretRequest, Status, ValueItem, Values, ValuesSaved, WorkerError } from './types'
-import { parseEnv, ReadOnly, useValues, type ValuesRead } from './ValuesEditor'
+import type { SaveItem, SecretRequest, Status, ValueItem, Values, ValuesSaved, WorkerError } from './types'
+import { parseEnv, ReadOnly, useValues, ValuesDialog, type ValuesRead } from './ValuesEditor'
 
 /* ── what iii cloud answers (cloud-v1.yaml: Variable) ── */
 
@@ -213,6 +213,7 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
   const [open, setOpen] = useState<{ name: string; kind: Kind } | null>(null)
   const [adding, setAdding] = useState(false)
   const [pasting, setPasting] = useState(false)
+  const [reviewing, setReviewing] = useState(false)
   const c: Ctx = { host, status, envId, envName: status.project?.environment?.name ?? 'this environment' }
   const v = values.data
   const rows = secretRows(status, envId, v, vars.data?.variables ?? null)
@@ -221,6 +222,15 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
   const optional = rows.filter((r) => !r.set && r.optional).length
   const missing = rows.filter((r) => !r.set && !r.optional && r.kind !== 'managed').length
   const reads = rows.find((r) => r.required_by.length > 0)
+  // Names not in iii cloud whose value an env file or this environment's address can give; the worker decides which.
+  const offered = (v?.items ?? []).filter(
+    (i) =>
+      i.in_cloud === 'unset' &&
+      !i.database &&
+      !i.invalid_name &&
+      !i.skipped &&
+      i.suggestions.some((x) => x.source === 'env_file' || x.source === 'env_url'),
+  )
 
   const done = () => {
     setOpen(null)
@@ -286,7 +296,20 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
         Delete
       </Button>
     ) : null
-  const form = (r: Row) =>
+  const form = (r: Row) => (
+    <>
+      <Offers
+        host={host}
+        values={v}
+        item={v?.items.find((i) => i.name === r.name)}
+        kind={open?.kind ?? 'secret'}
+        disabled={readOnly}
+        onSaved={done}
+      />
+      {entry(r)}
+    </>
+  )
+  const entry = (r: Row) =>
     open?.kind === 'secret' ? (
       <SecretEntry
         host={host}
@@ -345,6 +368,18 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
         </span>
       </div>
       {v && readOnly ? <ReadOnly host={host} status={status} values={v} /> : null}
+      {offered.length ? (
+        <Notice
+          variant="info"
+          headline={`${plural(offered.length, 'value')} can come from your env files`}
+          detail="Review where each one comes from. Nothing is written until you save."
+          action={
+            <Button size="sm" variant="secondary" disabled={readOnly} onClick={() => setReviewing(true)}>
+              Review and save
+            </Button>
+          }
+        />
+      ) : null}
       <Restart c={c} vars={vars.data?.variables ?? []} dismissed={dismissed} dismiss={dismiss} ask={setConfirm} />
       <Asked c={c} />
       {values.error ? (
@@ -456,6 +491,18 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
         {reads ? ` A name a worker needs can't be deleted: ${and(reads.required_by)} reads ${reads.name}.` : ''} A value
         a deploy is missing shows up in its check, where you enter it.
       </p>
+      {reviewing && v ? (
+        <ValuesDialog
+          host={host}
+          status={status}
+          narrow={narrow}
+          manifest={v.manifest}
+          read={values}
+          only={offered.map((i) => i.name)}
+          onClose={() => setReviewing(false)}
+          onSaved={vars.refetch}
+        />
+      ) : null}
       {pasting && v ? (
         <PasteEnv host={host} values={v} read={values} onClose={() => setPasting(false)} onSaved={vars.refetch} />
       ) : null}
@@ -468,6 +515,85 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
         tone={confirm?.tone}
         onConfirm={() => confirm?.run()}
       />
+    </div>
+  )
+}
+
+type Choice = { key: string; label: string; file?: string; save: SaveItem }
+
+/**
+ * The choices a name's own editor offers next to its input: each env file, and this environment's address. A choice
+ * saves at once through `values::save` with no value (the worker reads the file); the input stays for typing.
+ */
+function Offers({
+  host,
+  values: v,
+  item,
+  kind,
+  disabled,
+  onSaved,
+}: {
+  host: Host
+  values: Values | null
+  item: ValueItem | undefined
+  kind: Kind
+  disabled: boolean
+  onSaved: () => void
+}) {
+  const { busy, call } = useActions(host)
+  const [failed, setFailed] = useState<string | null>(null)
+  if (!v || !item || item.database || item.invalid_name) return null
+  const choices = item.suggestions.flatMap<Choice>((x) =>
+    x.source === 'env_file'
+      ? [
+          {
+            key: x.file,
+            label: `From ${x.file}`,
+            file: x.file,
+            save: { name: item.name, from: 'env_file', type: kind, file: x.file } as SaveItem,
+          },
+        ]
+      : x.source === 'env_url'
+        ? [
+            {
+              key: 'url',
+              label: "This environment's address",
+              file: undefined,
+              save: { name: item.name, from: 'env_url' } as SaveItem,
+            },
+          ]
+        : [],
+  )
+  if (!choices.length) return null
+  const pick = async (c: Choice) => {
+    setFailed(null)
+    const out = await call<ValuesSaved>('save', 'iii-cloud::values::save', {
+      environment_id: v.environment_id,
+      manifest: v.manifest,
+      items: [c.save],
+    })
+    if (out === null) return
+    const bad = (out.results ?? []).find((r) => !r.ok)
+    if (!bad) return onSaved()
+    const why = bad.error ?? { code: 'NOT_SAVED', message: '' }
+    setFailed(valueMessage(why, { env: v.environment, name: item.name, file: c.file }))
+  }
+  return (
+    <div className="iii-cloud-set-offers">
+      <span className="iii-cloud-row">
+        {choices.map((c) => (
+          <Button
+            key={c.key}
+            size="sm"
+            variant="secondary"
+            disabled={disabled || busy === 'save'}
+            onClick={() => void pick(c)}
+          >
+            {c.label}
+          </Button>
+        ))}
+      </span>
+      {failed ? <Notice variant="alert" headline={`${item.name} did not save`} detail={failed} /> : null}
     </div>
   )
 }

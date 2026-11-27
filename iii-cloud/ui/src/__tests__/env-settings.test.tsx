@@ -4,6 +4,7 @@ import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { apiPath, request } from '../fixtures/base'
 import { DEV, devSecretValues, devVariables, settingsStatus } from '../fixtures/settings'
+import { valueItem } from '../fixtures/values'
 import { when } from '../model'
 import type { Status, Values } from '../types'
 import type { Call } from './host'
@@ -462,6 +463,105 @@ describe('a key that cannot write, or a role that cannot', () => {
     await open({}, { ...devSecretValues, save: 'role' })
     await settle()
     expect(text()).toContain("Changing production's secrets and variables takes Owner or Admin.")
+  })
+})
+
+describe('values that can come from env files', () => {
+  const file = (f: string, preselect: boolean) => ({ source: 'env_file' as const, file: f, preselect, local: false })
+  const offered: Values = {
+    ...devSecretValues,
+    items: [
+      ...devSecretValues.items.filter((i) => i.name !== 'ASSET_BUCKET_KEY'),
+      valueItem('ASSET_BUCKET_KEY', { containers: ['search'], suggestions: [file('api/.env.test', true), file('api/.env', false)] }),
+      valueItem('PUBLIC_URL', {
+        containers: ['search'],
+        type: 'variable',
+        suggestions: [{ source: 'env_url', url: 'https://dev.example.test', preselect: true }],
+      }),
+      valueItem('NOTHING', { containers: ['search'] }),
+    ],
+  }
+  const saved = (names: string[]) => ({
+    'iii-cloud::values::save': { environment_id: DEV.id, results: names.map((name) => ({ name, ok: true })) },
+  })
+
+  it('one row above the table counts the names with a suggestion; absent without any', async () => {
+    await open({}, offered)
+    await settle()
+    expect(text()).toContain('2 values can come from your env files')
+    expect(btn('Review and save')).toBeTruthy()
+    await board('manage-settings')
+    await settle()
+    expect(text()).not.toContain('can come from your env files')
+    expect(btn('Review and save')).toBeNull()
+  })
+
+  it('Review and save opens the review: it sends env_file and env_url items and never a value', async () => {
+    const h = await open({}, offered, {}, saved(['ASSET_BUCKET_KEY', 'PUBLIC_URL']))
+    await settle()
+    await click(btn('Review and save'))
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
+    expect(el.querySelector('[role=dialog]')?.textContent).toContain('From api/.env.test')
+    await click(btn('Save 2 values'))
+    await settle()
+    expect(of(h, 'iii-cloud::values::save')).toEqual([
+      {
+        environment_id: DEV.id,
+        manifest: 'api/worker-compose-prod.yaml',
+        items: [
+          { name: 'ASSET_BUCKET_KEY', from: 'env_file', type: 'secret', file: 'api/.env.test' },
+          { name: 'PUBLIC_URL', from: 'env_url' },
+        ],
+      },
+    ])
+    expect(el.querySelector('[role=dialog]')).toBeNull()
+  })
+
+  it('an item that failed stays in the review with its reason; the others are saved', async () => {
+    const h = await open({}, offered, {}, {
+      'iii-cloud::values::save': {
+        environment_id: DEV.id,
+        results: [
+          { name: 'ASSET_BUCKET_KEY', ok: false, error: { code: 'FILE_CHANGED', message: 'gone' } },
+          { name: 'PUBLIC_URL', ok: true },
+        ],
+      },
+    })
+    await settle()
+    await click(btn('Review and save'))
+    await click(btn('Save 2 values'))
+    await settle()
+    expect(of(h, 'iii-cloud::values::save')).toHaveLength(1)
+    const dialog = el.querySelector('[role=dialog]')
+    expect(dialog?.textContent).toContain('api/.env.test no longer has ASSET_BUCKET_KEY')
+  })
+
+  it("a row's editor offers each env file and the address; a choice saves that item with no typing", async () => {
+    const h = await open({}, offered, {}, saved(['ASSET_BUCKET_KEY']))
+    await settle()
+    await click(btn('Set ASSET_BUCKET_KEY'))
+    expect(btn('From api/.env')).toBeTruthy()
+    await click(btn('From api/.env.test'))
+    await settle()
+    expect(of(h, 'iii-cloud::values::save')).toEqual([
+      {
+        environment_id: DEV.id,
+        manifest: 'api/worker-compose-prod.yaml',
+        items: [{ name: 'ASSET_BUCKET_KEY', from: 'env_file', type: 'secret', file: 'api/.env.test' }],
+      },
+    ])
+    await click(btn('Set PUBLIC_URL'))
+    await click(btn("This environment's address"))
+    await settle()
+    expect(of(h, 'iii-cloud::values::save')[1]).toMatchObject({ items: [{ name: 'PUBLIC_URL', from: 'env_url' }] })
+  })
+
+  it('a connection that cannot write sees the row disabled', async () => {
+    const h = await open({}, { ...offered, save: 'api_key' })
+    await settle()
+    expect(text()).toContain('2 values can come from your env files')
+    expect((btn('Review and save') as HTMLButtonElement).disabled).toBe(true)
+    expect(of(h, 'iii-cloud::values::save')).toEqual([])
   })
 })
 
