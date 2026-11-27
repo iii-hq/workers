@@ -446,7 +446,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       if (!(await terminal.open({ key, spec })))
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
       setFollow(null);
-      setComposing(null);
+      // Another row's open draft is not this fork's to close.
+      setComposing((open) => (open === row.id ? null : open));
       announce(row, `Opened a fork of ${name}`);
     } catch (err) {
       reportFailure(row, errorMessage(err));
@@ -523,7 +524,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const status = STATUS[row.status];
     const isStopping = stopping === row.id;
     // A message to the same transcript would put a second writer on it.
-    const inTerminal = row.id === onScreen || row.id === opening;
+    const inTerminal = row.id === onScreen;
+    // A fork being confirmed or opened only holds the row's actions; its draft stays.
+    const isOpening = row.id === opening;
     const canMessage =
       row.kind === 'headless' && !row.alive && row.status !== 'unknown' && !inTerminal;
     // A background session is stoppable where the list gives it a short id.
@@ -594,7 +597,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                     variant="ghost"
                     label={`Message ${name}`}
                     aria-expanded={composing === row.id}
+                    aria-disabled={isOpening}
                     onClick={(event) => {
+                      if (isOpening) return;
                       opener.current = event.currentTarget;
                       setComposing((open) => (open === row.id ? null : row.id));
                     }}
