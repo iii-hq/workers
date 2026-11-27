@@ -2216,6 +2216,13 @@
         "description": "Who a failed local run's code belongs to.",
         "oneOf": [
           {
+            "description": "A newer run of the workspace replaced this one: nothing to fix and nothing to send (the newer run is judged in its turn).",
+            "enum": [
+              "replaced"
+            ],
+            "type": "string"
+          },
+          {
             "description": "The agent fixes it in the worktree.",
             "enum": [
               "agent"

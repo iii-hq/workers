@@ -2902,6 +2902,7 @@ fn a_run_codes_owner_is_the_one_the_skills_table_gives_it() {
         let owner = match cells[2] {
             "agent" => RunOwner::Agent,
             "person" => RunOwner::Person,
+            "none" if code == "RUN_REPLACED" => RunOwner::Replaced,
             "none" => RunOwner::Interrupted,
             other => panic!("{code}: owner {other}"),
         };
@@ -3783,4 +3784,18 @@ async fn the_pages_own_text_is_never_delivered_beside_an_open_ask_or_a_continue(
     let new: Vec<String> = sent(&h).into_iter().skip(before).collect();
     assert_eq!(new.len(), 1, "{new:?}");
     assert!(new[0].contains("RELEASE_FAILED") && !new[0].contains("PAGE TEXT"));
+}
+
+/// The hand-off's own run was replaced by a newer one (the person's): there is nothing to fix and
+/// nothing to send, and the page is told so by `owner`.
+#[tokio::test]
+async fn a_run_the_persons_newer_run_replaced_sends_the_agent_nothing_from_any_place() {
+    use iii_cloud::handoff::RunOwner;
+    let (h, _w, _created, _keep) = idle_with_run(run_with("RUN_REPLACED", |_| {})).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(continues(&h).is_empty(), "{:?}", continues(&h));
+    // The owner the page sees.
+    let c = iii_cloud::check::update_check(&h.ctx, "agent-check", |_| {}).unwrap();
+    let e = c.run.unwrap().error.unwrap();
+    assert_eq!((e.owner, e.withheld), (Some(RunOwner::Replaced), false));
 }

@@ -1763,10 +1763,12 @@ pub fn update_check(ctx: &Ctx, id: &str, f: impl FnOnce(&mut Check)) -> Option<C
             .problems
             .iter()
             .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
-        if let Some(e) = found.run.as_mut().and_then(|r| r.error.as_mut()) {
-            let owner = crate::handoff::run_code_owner(&e.code);
-            e.owner = Some(owner);
-            e.withheld = persons_open && owner != crate::handoff::RunOwner::Person;
+        if let Some(run) = found.run.as_mut()
+            && let Some(ask) = crate::handoff::run_ask(run, persons_open)
+            && let Some(e) = run.error.as_mut()
+        {
+            e.owner = Some(ask.owner);
+            e.withheld = ask.withheld;
         }
         found.ready = is_ready(
             &found.plan,

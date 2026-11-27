@@ -1611,22 +1611,13 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
             .filter(|p| p.owner == Owner::Agent && p.severity == Severity::Block)
             .map(|p| (p.code.clone(), p.title.clone()))
             .collect();
-        if let Some(run) = c
+        if let Some(line) = c
             .run
             .as_ref()
-            .filter(|r| r.status == RunStatus::Failed && !persons)
+            .and_then(|r| run_ask(r, persons))
+            .and_then(|a| a.line)
         {
-            let (code, line) = run_failure_of(run);
-            match run_code_owner(&code) {
-                // Replaced by a newer run: that check is judged in its turn.
-                _ if code == "RUN_REPLACED" => {}
-                RunOwner::Agent => lines.push((code, line)),
-                RunOwner::Interrupted => lines.push((
-                    code,
-                    "the local run was interrupted; run `check {run: true}` again".into(),
-                )),
-                RunOwner::Person => {}
-            }
+            lines.push(line);
         }
         Some(lines)
     })
@@ -1814,12 +1805,47 @@ fn passed_run_here(ctx: &Ctx, handoff: &Handoff) -> bool {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RunOwner {
+    /// A newer run of the workspace replaced this one: nothing to fix and nothing to send (the
+    /// newer run is judged in its turn).
+    Replaced,
     /// The agent fixes it in the worktree.
     Agent,
     /// The person's: Docker, a tool, the iii binary, or a decision about the routes.
     Person,
     /// Nobody's fault: the run was cut short; run it again.
     Interrupted,
+}
+
+/// What a failed run asks of the agent: the one rule used by `update_check` (the page's `owner` and
+/// `withheld`), `person_check_lines` and the Done branch. None for a run that did not fail.
+pub struct RunAsk {
+    pub owner: RunOwner,
+    /// The worker would not send it to the agent now: the person has a blocking problem open (a
+    /// missing value fails the run too), so it is theirs first.
+    pub withheld: bool,
+    /// The agent's line (`(code, text)`), if there is one to send.
+    pub line: Option<(String, String)>,
+}
+
+pub fn run_ask(run: &Run, persons_open: bool) -> Option<RunAsk> {
+    if run.status != RunStatus::Failed {
+        return None;
+    }
+    let (code, text) = run_failure_of(run);
+    let owner = run_code_owner(&code);
+    let sendable = matches!(owner, RunOwner::Agent | RunOwner::Interrupted);
+    let line = (sendable && !persons_open).then(|| match owner {
+        RunOwner::Interrupted => (
+            code,
+            "the local run was interrupted; run `check {run: true}` again".into(),
+        ),
+        _ => (code, text),
+    });
+    Some(RunAsk {
+        owner,
+        withheld: sendable && persons_open,
+        line,
+    })
 }
 
 /// The one place that sorts a run's error code (`src/run.rs`): the turn-end
@@ -1839,6 +1865,7 @@ pub fn run_code_owner(code: &str) -> RunOwner {
         | "ROUTE_OUTSIDE_PREFIX"
         | "HEALTHCHECK_FAILED"
         | "RUN_TIMEOUT" => RunOwner::Agent,
+        "RUN_REPLACED" => RunOwner::Replaced,
         "TOOL_MISSING" | "DOCKER_MISSING" | "ROUTE_OUTSIDE_HTTP_GROUP" | "LOCAL_ENGINE_VERSION" => {
             RunOwner::Person
         }
@@ -1903,15 +1930,14 @@ fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
                 _ => RunJudgment::Going,
             }),
             RunStatus::Failed => {
-                let (code, line) = run_failure_of(run);
-                Some(match run_code_owner(&code) {
-                    RunOwner::Agent => RunJudgment::Agent((code, line)),
-                    RunOwner::Person => RunJudgment::Person((code, line)),
-                    RunOwner::Interrupted => RunJudgment::Agent((
-                        code,
-                        "the local run was interrupted; run `check {run: true}` again".into(),
-                    )),
-                })
+                // The one rule (`run_ask`): the person's failure is theirs, a replaced run says
+                // nothing, any other is the agent's line.
+                let ask = run_ask(run, false)?;
+                match (ask.owner, ask.line) {
+                    (RunOwner::Person, _) => Some(RunJudgment::Person(run_failure_of(run))),
+                    (_, Some(line)) => Some(RunJudgment::Agent(line)),
+                    _ => None,
+                }
             }
         }
     })
