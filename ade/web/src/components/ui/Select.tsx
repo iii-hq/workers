@@ -4,6 +4,7 @@ import type * as React from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { SelectContent } from '@/components/shadcn/select'
+import { composerPillClass } from '@/components/ui/ComposerPill'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import {
@@ -174,8 +175,7 @@ export function Select<T extends string>({
   const triggerClassName = cn(
     appearance === 'inline' &&
       'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-input focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:border-input sm:text-sm',
-    appearance === 'pill' &&
-      'inline-flex h-10 max-w-full min-w-0 items-center gap-x-1.5 rounded-lg px-2 font-inter text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-surface-hover data-[state=open]:text-ink sm:h-8 sm:text-sm',
+    appearance === 'pill' && composerPillClass,
     appearance === 'default' &&
       'inline-flex h-12 max-w-full min-w-0 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-ring focus:outline-none data-[state=open]:border-ring data-[placeholder]:text-ink-ghost sm:h-9 sm:text-sm',
     disabled && 'pointer-events-none opacity-40',

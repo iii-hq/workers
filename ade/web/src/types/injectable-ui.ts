@@ -719,6 +719,12 @@ export interface ComposerControlRegistration {
    * control in the footer.
    */
   placement?: 'footer' | 'project'
+  /**
+   * The control's name when the composer folds its pickers into a list
+   * (a row too narrow for every pill): "Judge" beside the judge's own pill.
+   * A control without one fills its row alone.
+   */
+  label?: string
 }
 
 /**

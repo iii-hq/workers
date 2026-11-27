@@ -70,7 +70,10 @@ describe('composer controls placement', () => {
     const project = html.slice(context, toolbar)
     expect(project).toContain('data-control="ide-worktree" data-dir="/repo"')
     expect(project).not.toContain('judge-provider')
-    expect(html.slice(toolbar)).toContain('data-control="judge-provider"')
+    // A footer control sits in the Options popover (a portal, not in the
+    // static markup), behind the toolbar's Options pill; never in the strip.
+    expect(html.slice(toolbar)).not.toContain('data-control="judge-provider"')
+    expect(html.slice(toolbar)).toContain('>Options<')
     const folder = project.indexOf(
       'aria-label="select folder, current folder: repo"',
     )

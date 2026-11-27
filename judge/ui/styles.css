@@ -49,10 +49,12 @@
   flex: 0 0 auto;
 }
 
-/* A pane too narrow for three named pickers: the judge gives way first, to
-   its glyph (the choice stays in the title and the accessible name), so
-   the model's name keeps its room. The agent picker does the same at 480. */
-@container (max-width: 640px) {
+/* A composer too narrow for three named pickers (the composer is its own
+   container, so this is its width, not the pane's): the judge gives way
+   first, to its glyph (the choice stays in the title and the accessible
+   name), so the model's name keeps its room. The agent picker does the
+   same at 37.5rem. */
+@container (max-width: 45rem) {
   [data-iii-ui='judge'] .judge-ui-session-trigger-label,
   [data-iii-ui='judge'] .judge-ui-session-trigger > svg:last-child {
     display: none;
