@@ -1563,3 +1563,83 @@ async fn a_commit_on_another_branch_pushed_from_another_clone_is_pushed() {
     let local = git(&r.checkout, &["rev-parse", "HEAD"]);
     assert!(!pushed(&r.checkout, &local).await);
 }
+
+/// `use` is all or nothing for the worktree: a failure after the new source came in puts it back.
+#[tokio::test]
+async fn a_use_that_fails_after_taking_the_new_source_leaves_the_worktree_where_it_was() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    staging(&server).await;
+    feature(&r);
+    old_commit(&r.checkout, "one.txt", "mine");
+    let with = |source: &str, bring: bool| UseRequest {
+        source: Some(source.into()),
+        ..from_checkout(&r.checkout, ENV2, bring)
+    };
+    let w = use_project(&h.ctx, with("main", false))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    let ws = std::path::PathBuf::from(&w.path);
+    let (head, branch) = (
+        git(&ws, &["rev-parse", "HEAD"]),
+        git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]),
+    );
+    let stored = h.ctx.store.read(|s| s.project.clone());
+    // The commit of the brought files fails (a pre-commit hook, as a missing git identity would).
+    let hooks = std::path::PathBuf::from(git(&r.checkout, &["rev-parse", "--git-common-dir"]))
+        .join("hooks");
+    let hooks = if hooks.is_absolute() {
+        hooks
+    } else {
+        r.checkout.join(hooks)
+    };
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    origin_branch(&r, "feature-x", "x.txt");
+    move_main(&r, "m.txt", "m");
+    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
+    let err = use_project(&h.ctx, with("origin/feature-x", true))
+        .await
+        .unwrap_err();
+    assert!(
+        !err.message.contains("could not be put back"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        git(&ws, &["rev-parse", "HEAD"]),
+        head,
+        "the commit is the old source's"
+    );
+    assert_eq!(git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]), branch);
+    assert!(!ws.join("new.txt").exists() && !ws.join("x.txt").exists());
+    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+    let after = h.ctx.store.read(|s| s.project.clone());
+    assert_eq!(
+        after
+            .as_ref()
+            .and_then(|p| p.workspace.as_ref())
+            .map(|w| (&w.source, &w.from_head)),
+        stored
+            .as_ref()
+            .and_then(|p| p.workspace.as_ref())
+            .map(|w| (&w.source, &w.from_head))
+    );
+    // Without the hook the same use goes through.
+    std::fs::remove_file(&hook).unwrap();
+    let w = use_project(&h.ctx, with("origin/feature-x", true))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
+    assert!(ws.join("new.txt").exists());
+}
