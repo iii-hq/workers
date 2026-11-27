@@ -317,11 +317,64 @@ fn over_white(img: &DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgba8(bg)
 }
 
+/// Runs `resize` on colour premultiplied by alpha: Lanczos3 mixes channels as
+/// stored, so the hidden colour of transparent pixels would bleed into edges.
+fn premultiplied(
+    mut img: DynamicImage,
+    resize: impl FnOnce(&DynamicImage) -> DynamicImage,
+) -> DynamicImage {
+    let weighed = weigh_by_alpha(&mut img, false);
+    let mut out = resize(&img);
+    if weighed {
+        weigh_by_alpha(&mut out, true);
+    }
+    out
+}
+
+/// Multiplies colour by alpha in place, or divides it back out with `undo`.
+/// False, with the image untouched, when it has no alpha or, unless `undo`,
+/// every pixel is opaque.
+fn weigh_by_alpha(img: &mut DynamicImage, undo: bool) -> bool {
+    match img {
+        DynamicImage::ImageLumaA8(b) => weigh(b, 2, undo),
+        DynamicImage::ImageRgba8(b) => weigh(b, 4, undo),
+        DynamicImage::ImageLumaA16(b) => weigh(b, 2, undo),
+        DynamicImage::ImageRgba16(b) => weigh(b, 4, undo),
+        // No alpha, or a float image, which decode never makes.
+        _ => false,
+    }
+}
+
+fn weigh<S>(px: &mut [S], channels: usize, undo: bool) -> bool
+where
+    S: image::Primitive + Into<u64> + TryFrom<u64>,
+{
+    let max: u64 = S::DEFAULT_MAX_VALUE.into();
+    let alpha = |p: &[S]| -> u64 { p[channels - 1].into() };
+    if !undo && px.chunks_exact(channels).all(|p| alpha(p) == max) {
+        return false;
+    }
+    for p in px.chunks_exact_mut(channels) {
+        let a = alpha(p);
+        for c in &mut p[..channels - 1] {
+            let c64: u64 = (*c).into();
+            let v = match (undo, a) {
+                (false, _) => (c64 * a + max / 2) / max,
+                (true, 0) => 0,
+                (true, _) => (c64 * max + a / 2) / a,
+            };
+            // Saturates: the filter's negative lobes can leave colour above alpha.
+            *c = S::try_from(v).unwrap_or(S::DEFAULT_MAX_VALUE);
+        }
+    }
+    true
+}
+
 pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
     if img.width() <= max_w && img.height() <= max_h {
         return img;
     }
-    img.resize(max_w, max_h, FilterType::Lanczos3)
+    premultiplied(img, |img| img.resize(max_w, max_h, FilterType::Lanczos3))
 }
 
 pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicImage {
@@ -342,7 +395,9 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
         img.crop_imm((img.width() - cw) / 2, (img.height() - ch) / 2, cw, ch)
     };
     if cw > box_w || ch > box_h {
-        cropped.resize_exact(cw.min(box_w), ch.min(box_h), FilterType::Lanczos3)
+        premultiplied(cropped, |img| {
+            img.resize_exact(cw.min(box_w), ch.min(box_h), FilterType::Lanczos3)
+        })
     } else {
         cropped
     }
@@ -354,9 +409,8 @@ pub fn process_image(
 ) -> Result<(Vec<u8>, ThumbnailMetadata), Error> {
     let mut img = decode(bytes, params.input_format.image_format())?;
     let (source_width, source_height) = (img.width(), img.height());
-    // JPEG has no alpha. Flatten before the resize: the filter mixes straight
-    // alpha, so flattening afterwards would leave the hidden colour of
-    // transparent pixels in every edge.
+    // JPEG has no alpha. Flattening before the resize leaves it an opaque
+    // image, which skips the premultiplication.
     if params.output_format == Format::Jpeg && img.color().has_alpha() {
         img = over_white(&img);
     }
@@ -1210,6 +1264,65 @@ mod tests {
                 p.0
             );
         }
+    }
+
+    #[test]
+    fn transparent_pixels_do_not_bleed_their_hidden_colour() {
+        let rgba8 = DynamicImage::ImageRgba8(RgbaImage::from_fn(40, 20, |x, _| {
+            image::Rgba(if x < 20 {
+                [255, 0, 0, 0]
+            } else {
+                [0, 255, 0, 255]
+            })
+        }));
+        for img in [rgba8.clone(), DynamicImage::ImageRgba16(rgba8.to_rgba16())] {
+            let color = img.color();
+            for out in [
+                resize_scale_to_fit(img.clone(), 10, 10),
+                resize_crop_to_fit(img.clone(), 10, 10),
+            ] {
+                assert_eq!(out.color(), color);
+                for (x, y, p) in out.to_rgba8().enumerate_pixels() {
+                    assert!(p[3] == 0 || p[0] <= 2, "{color:?} ({x}, {y}) is {:?}", p.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_alpha_resizes_as_before() {
+        let mut seed: u32 = 1;
+        let noise = RgbaImage::from_fn(64, 48, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [_, r, g, b] = seed.to_le_bytes();
+            image::Rgba([r, g, b, 255])
+        });
+        let img = DynamicImage::ImageRgba8(noise);
+        assert_eq!(
+            resize_scale_to_fit(img.clone(), 20, 20),
+            img.resize(20, 20, FilterType::Lanczos3)
+        );
+    }
+
+    #[test]
+    fn alpha_weighting_rounds_and_zeroes_transparent_colour() {
+        let rgba = |px: Vec<u8>| DynamicImage::ImageRgba8(RgbaImage::from_raw(3, 1, px).unwrap());
+        let mut img = rgba(vec![255, 128, 1, 128, 200, 100, 50, 0, 10, 20, 30, 255]);
+        assert!(weigh_by_alpha(&mut img, false));
+        assert_eq!(
+            img.as_bytes(),
+            [128, 64, 1, 128, 0, 0, 0, 0, 10, 20, 30, 255]
+        );
+
+        let mut img = rgba(vec![128, 64, 1, 128, 5, 5, 5, 0, 200, 0, 0, 100]);
+        assert!(weigh_by_alpha(&mut img, true));
+        assert_eq!(
+            img.as_bytes(),
+            [255, 128, 2, 128, 0, 0, 0, 0, 255, 0, 0, 100]
+        );
+
+        let mut opaque = rgba(vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
+        assert!(!weigh_by_alpha(&mut opaque, false));
     }
 
     #[test]

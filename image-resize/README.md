@@ -111,6 +111,8 @@ page shows an error that tells you to update the ade worker.
 - EXIF orientation is applied; other metadata and colour profiles are dropped.
 - WebP output is lossy; use `png` for pixel-exact output such as line art.
 - JPEG output flattens transparency onto white.
+- Images with transparency are resized with premultiplied alpha, so the
+  colour hidden under fully transparent pixels does not bleed into the edges.
 - The output is always re-encoded, even when the image already fits, so it
   can be larger than the input.
 - An animated WebP is resized from its first frame; the output is a still
