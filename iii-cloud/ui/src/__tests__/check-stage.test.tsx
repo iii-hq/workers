@@ -1362,6 +1362,24 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect((t.match(/line \d/g) ?? []).length + 2).toBeLessThanOrEqual(6)
   })
 
+  it('a stalled agent is not "fixing", and one with a question is something that needs the person', async () => {
+    const st = { ...rcFixing, agent: { ...rcFixing.agent!, state: 'stalled' as const, question: null } }
+    await stage(st)
+    expect(title()).toMatch(/for your agent to fix · it stopped making progress$/)
+    expect(title()).not.toMatch(/is fixing/)
+    expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
+    expect(region('Your agent')?.textContent).toContain('No progress for')
+    const q = {
+      ...rcFixing,
+      agent: { ...rcFixing.agent!, state: 'waiting_for_you' as const, question: 'Keep path://?' },
+    }
+    await stage(q)
+    expect(title()).toMatch(/^\d+ things? needs? you · \d+ for your agent to fix$/)
+    expect(title()).not.toMatch(/is fixing/)
+    expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+    expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
+  })
+
   it('an agent that works still says it works', async () => {
     await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
     expect(title()).toMatch(/your agent is fixing/)

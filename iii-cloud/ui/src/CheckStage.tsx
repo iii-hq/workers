@@ -66,6 +66,7 @@ import {
   stageTime,
   typicalDeployMs,
   usablePr,
+  agentWorking,
   waitsFor,
   wayOf,
   workingOnIds,
@@ -1102,7 +1103,9 @@ export function CheckStage(props: CheckStageProps) {
   // A hand-off exists (`engaged`); the agent works only while `starting` or `working`, else it waits for something.
   const engaged = fixing(s) && !ready
   const waits = engaged && s.agent?.state === 'waiting'
-  const working = engaged && !waits
+  const stalled = engaged && s.agent?.state === 'stalled'
+  const asks = engaged && s.agent?.state === 'waiting_for_you'
+  const working = engaged && agentWorking(s)
   const a = s.agent
 
   const assisted = !!p?.environment && !p.environment.production
@@ -1338,22 +1341,27 @@ export function CheckStage(props: CheckStageProps) {
           ? `iii cloud's plan accepts ${sha7(c?.commit ?? '')}; the local run is left`
           : needN || lines.length || engaged
             ? [
-                needN
-                  ? secretsOnly
+                // The agent's question is something the person must answer: it counts as one more thing.
+                needN + (asks ? 1 : 0)
+                  ? secretsOnly && !asks
                     ? `${plural(missing.length, 'value')} to set`
-                    : `${plural(needN, 'thing')} ${needN === 1 ? 'needs' : 'need'} you`
+                    : `${plural(needN + (asks ? 1 : 0), 'thing')} ${needN + (asks ? 1 : 0) === 1 ? 'needs' : 'need'} you`
                   : null,
                 lines.length
                   ? working
                     ? `your agent is fixing ${lines.length}`
                     : waits && s.agent
                       ? `${lines.length} for your agent to fix · it waits${waitsFor(s.agent)}`
-                      : `${lines.length} for your agent to fix`
+                      : stalled
+                        ? `${lines.length} for your agent to fix · it stopped making progress`
+                        : `${lines.length} for your agent to fix`
                   : working
                     ? 'your agent is checking its fix'
                     : waits && s.agent
                       ? `your agent waits${waitsFor(s.agent)}`
-                      : null,
+                      : stalled
+                        ? 'your agent stopped making progress'
+                        : null,
               ]
                 .filter(Boolean)
                 .join(' · ')
@@ -1591,8 +1599,10 @@ export function CheckStage(props: CheckStageProps) {
             working && a
               ? `working ${minutesLabel(now - Date.parse(a.started_at))}, ${p?.workspace?.mode === 'checkout' ? 'in your folder' : 'in a separate copy'}`
               : waits && a
-                ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at ?? a.started_at))}${waitsFor(a)}`
-                : null
+                ? `${a.last_activity_at ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at))}` : 'waiting'}${waitsFor(a)}`
+                : asks
+                  ? 'waiting for your answer'
+                  : null
           }
           end={
             engaged && a ? (
