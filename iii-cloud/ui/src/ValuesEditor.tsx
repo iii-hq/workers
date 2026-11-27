@@ -304,7 +304,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
   const env = v?.environment ?? status.project?.environment?.name ?? 'this environment'
   const every = v?.items ?? []
   const some = props.only ? every.filter((i) => props.only?.includes(i.name)) : []
-  const items = some.length ? some : every
+  // With `only` given, names that left the read leave nothing to set: never the full list.
+  const items = props.only ? some : every
   const readOnly = !!v && v.save !== 'ok'
   const unset = items.filter(notSet).length
   const saved = (i: ValueItem) => rows[i.name]?.s === 'saved'

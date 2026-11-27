@@ -1311,16 +1311,16 @@ describe('an agent that ended its turn waiting on a wake', () => {
 
   it('is not "working": the title, the card and the footer say it waits', async () => {
     await stage(waiting())
-    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits for ${WAKE}$`))
+    expect(title()).toMatch(new RegExp(`for your agent to fix · it waits: "${WAKE}"$`))
     expect(title()).not.toMatch(/is fixing|checking its fix/)
     const note = region('Your agent')?.textContent ?? ''
-    expect(note).toMatch(new RegExp(`waiting \\d+ min for ${WAKE}`))
+    expect(note).toMatch(new RegExp(`waiting \\d+ min: "${WAKE}"`))
     expect(note).not.toMatch(/working \d+ min/)
   })
 
   it('with nothing for it to fix: "Your agent waits for …"', async () => {
     await stage(waiting(true))
-    expect(title()).toBe(`Your agent waits for ${WAKE}`)
+    expect(title()).toBe(`Your agent waits: "${WAKE}"`)
     expect(region('Your agent')?.textContent).toMatch(/waiting \d+ min/)
   })
 
@@ -1411,8 +1411,38 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(btn('Open chat')).toBeNull()
     // no activity time: no invented number
     await stage({ ...w, agent: { ...w.agent!, last_activity_at: null } })
-    expect(region('Your agent')?.textContent).toMatch(/waiting for test environment|waiting: /)
+    expect(region('Your agent')?.textContent).toMatch(/waiting: "test environment/)
     expect(region('Your agent')?.textContent).not.toMatch(/waiting \d+ min/)
+  })
+
+  it('the worker\'s own wake texts read "waits for …", a long label is cut at 80 characters', async () => {
+    const w = waiting(true)
+    await stage({ ...w, agent: { ...w.agent!, waiting_for: 'the check to end' } })
+    expect(title()).toBe('Your agent waits for the check to end')
+    await stage({ ...w, agent: { ...w.agent!, waiting_for: 'x'.repeat(200) } })
+    expect(title()?.length).toBeLessThan(130)
+    expect(title()).toContain('…')
+  })
+
+  it("the values card names the run's lines only where they are on screen", async () => {
+    const base = waiting(true)
+    const value = {
+      ...rcVariables[0],
+      id: 'p-v',
+      code: 'LOCAL_VARIABLE_UNSET',
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'JWT_SECRET has no value here',
+    }
+    const items = [valueItem('JWT_SECRET', { need: 'required', default: null, suggestions: [] })]
+    const answers = {
+      'iii-cloud::values': () => ({ ...rcValues, environment_id: base.project?.environment?.id, items }),
+    }
+    const s = { ...base, agent: null, check: { ...base.check!, problems: [value] } }
+    // the stop is suppressed while a check_here problem is open: the lines are behind the local run's row
+    await stage(s, answers)
+    expect(region('Secrets and variables')?.textContent).toContain("open the local run's row below.")
   })
 
   it('an agent that works still says it works', async () => {

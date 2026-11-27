@@ -527,8 +527,14 @@ export function runTail(log: string[], max = 6): string[] {
 /** The agent is actually working: `starting` or `working`. Not `waiting` (a wake), `stalled` (no progress) or `waiting_for_you` (its question). */
 export const agentWorking = (s: Status) => !!s.agent && ['starting', 'working'].includes(s.agent.state)
 
-/** " for <what it waits for>" when its wake says so. */
-export const waitsFor = (a: { waiting_for?: string | null }) => (a.waiting_for ? ` for ${a.waiting_for}` : '')
+const WORKER_WAKES = new Set(['the run here to end', 'the check to end', 'the deploy to end'])
+/** What the agent waits for, after "waits": " for the check to end" for the worker's own texts, else the agent's label quoted (cut at 80). */
+export const waitsFor = (a: { waiting_for?: string | null }) => {
+  const w = a.waiting_for?.trim()
+  if (!w) return ''
+  const cut = w.length > 80 ? `${w.slice(0, 79)}…` : w
+  return WORKER_WAKES.has(w) ? ` for ${w}` : `: "${cut}"`
+}
 
 /** The agent is mid-run on another kind of hand-off: a new request goes to it as a follow-up, not into a new chat. */
 export function followUp(s: Status, kind: HandoffKind): boolean {

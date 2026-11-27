@@ -1585,6 +1585,7 @@ export function CheckStage(props: CheckStageProps) {
       {!replaced ? (
         <ValuesCard
           runFailed={run?.status === 'failed'}
+          linesShown={stops.some((x) => x.key === 'run') && runTail(run?.log_tail ?? []).length > 0}
           read={values}
           onSet={(names) => setEditing(names)}
           onSkip={async (names, skip) => {

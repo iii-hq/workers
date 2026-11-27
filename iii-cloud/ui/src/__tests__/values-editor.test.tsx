@@ -17,7 +17,7 @@ vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
 
 usePage()
 
-type Opts = Partial<Pick<ValuesEditorProps, 'mode' | 'narrow' | 'after' | 'from' | 'manifest'>>
+type Opts = Partial<Pick<ValuesEditorProps, 'only' | 'mode' | 'narrow' | 'after' | 'from' | 'manifest'>>
 /** The status with the values' environment selected (the page drops another environment's answer). */
 const selecting = (v: { environment_id: string; environment: string }): Status => ({
   ...rcFixing,
@@ -41,6 +41,7 @@ async function editor(values: Values, answers: Parameters<typeof fakeHost>[1] = 
         after={opts.after}
         from={opts.from}
         manifest={opts.manifest}
+        only={opts.only}
         onSaved={onSaved}
         onSkip={onSkip}
       />,
@@ -457,6 +458,11 @@ describe('the step', () => {
     )
     expect(select('MAYBE_SET').value).toBe('typed')
     expect(h.calls.filter((c) => c.id === 'iii-cloud::values::save')).toEqual([])
+  })
+
+  it('an `only` list that matches none of the read names shows no names, never the full list', async () => {
+    await editor(rcValues, {}, { mode: 'dialog', only: ['LEFT_THE_READ'] })
+    expect(names()).toEqual([])
   })
 
   it("a name iii cloud can't store: no source, no field, the reason faint; never saved", async () => {
