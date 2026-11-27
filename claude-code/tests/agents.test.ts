@@ -758,9 +758,12 @@ describe('opening a listed session', () => {
     await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
   });
 
-  it('resumes a finished run in its own directory', async () => {
+  it('resumes a finished worker run in its own directory with external visibility closed', async () => {
     const records = [record('h', 'done', ID)];
-    expect(await open([], 'h', { records })).toEqual({ args: RESUME, cwd: '/work' });
+    expect(await open([], 'h', { records, external: false })).toEqual({
+      args: RESUME,
+      cwd: '/work',
+    });
   });
 
   it('opens a copy of a run that is live here', async () => {
@@ -845,12 +848,16 @@ describe('opening a listed session', () => {
     await expect(open(rows, id, options)).rejects.toThrow(reason);
   });
 
-  it('refuses while the CLI listing fails: the session may be open elsewhere', async () => {
-    const fake = host(() => ({ stdout: '', stderr: 'boom', exit_code: 2 }));
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    await expect(fake.resolveOpen('h')).rejects.toThrow(
-      'claude agents --json failed: exit 2: boom',
+  it.each([
+    [1, 'claude agents --json failed: exit 2: could not read /fixture/private-directory'],
+    [null, 'session inventory unavailable'],
+  ])('refuses to open when the listing fails, with diagnostics gated by epoch %s', async (epoch, reason) => {
+    const fake = host(
+      () => ({ stdout: '', stderr: 'could not read /fixture/private-directory', exit_code: 2 }),
+      { external: true, visibilityEpoch: () => epoch },
     );
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    await expect(fake.resolveOpen('h')).rejects.toThrow(new Error(reason));
   });
 
   describe('before the CLI lists the process', () => {

@@ -68,9 +68,9 @@ export function registerTerminal(
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
       const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
-      const epoch = request ? visibilityEpoch() : null;
+      const epoch = session ? visibilityEpoch() : null;
       const verifyVisibility = () => {
-        if (request && epoch !== visibilityEpoch()) {
+        if (session && epoch !== visibilityEpoch()) {
           throw new Error('session visibility changed; refresh the list');
         }
       };

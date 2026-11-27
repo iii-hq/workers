@@ -163,7 +163,35 @@ describe('claude::terminal::describe', () => {
   });
 
   const id = '12345678-1111-4000-8000-000000000001';
-  const fork = { session: id, mode: 'fork', claude_session_id: id };
+  const legacy = { session: id };
+  const fork = { ...legacy, mode: 'fork', claude_session_id: id };
+
+  it('requires live permission for a previously known external id even without a mode', async () => {
+    const cwd = '/fixture/private-legacy-directory';
+    let epoch: number | null = null;
+    const row: CliRow = { sessionId: id, kind: 'interactive', cwd, status: 'idle' };
+    const { claude, describeFn } = setup(
+      {},
+      () => [row],
+      () => epoch,
+    );
+    const run = vi.spyOn(claude, 'run');
+    const hidden = /^no session with that id is listed$/;
+
+    await expect(describeFn.handler(legacy)).rejects.toThrow(hidden);
+    expect(run).not.toHaveBeenCalled();
+
+    epoch = 1;
+    await expect(describeFn.handler(legacy)).resolves.toMatchObject({
+      cwd,
+      args: expect.arrayContaining(['--resume', id]),
+    });
+
+    epoch = null;
+    run.mockClear();
+    await expect(describeFn.handler(legacy)).rejects.toThrow(hidden);
+    expect(run).not.toHaveBeenCalled();
+  });
   it('rejects original mode without resolving or preparing a terminal', async () => {
     const { describeFn, resolveOpen, claude } = setup();
     resolveOpen.mockResolvedValueOnce({ args: ['--resume', id], cwd: '/fixture' });
@@ -201,9 +229,15 @@ describe('claude::terminal::describe', () => {
   });
 
   it.each([
-    null,
-    2,
-  ])('redacts a missing-directory failure after an in-flight permission change to %s', async (next) => {
+    { payload: fork, next: null, missing: true },
+    { payload: fork, next: 2, missing: true },
+    { payload: legacy, next: null, missing: true },
+    { payload: legacy, next: 2, missing: false },
+  ])('redacts terminal preparation after permission changes: %j', async ({
+    payload,
+    next,
+    missing,
+  }) => {
     const cwd = '/fixture/private-fork-directory';
     let epoch: number | null = 1;
     const row: CliRow = { sessionId: id, kind: 'interactive', cwd, state: 'idle' };
@@ -212,9 +246,13 @@ describe('claude::terminal::describe', () => {
       () => [row],
       () => epoch,
     );
-    claude.missing.add(cwd);
-    // A caller who still has access receives the actionable preparation error.
-    await expect(describeFn.handler(fork)).rejects.toThrow(`the folder ${cwd} is not reachable`);
+    if (missing) {
+      claude.missing.add(cwd);
+      // A caller who still has access receives the actionable preparation error.
+      await expect(describeFn.handler(payload)).rejects.toThrow(
+        `the folder ${cwd} is not reachable`,
+      );
+    }
 
     const run = claude.run;
     let release = () => {};
@@ -232,12 +270,12 @@ describe('claude::terminal::describe', () => {
       }
       return run(program, args, folder);
     });
-    const opening = describeFn.handler(fork);
+    const opening = describeFn.handler(payload);
     await checkingFolder;
     epoch = next;
     release();
     await expect(opening).rejects.toThrow(/^session visibility changed; refresh the list$/);
-    expect(claude.installs).toEqual([]);
+    if (missing) expect(claude.installs).toEqual([]);
   });
 
   it('refuses a fork if fresh inventory changes after preparation', async () => {

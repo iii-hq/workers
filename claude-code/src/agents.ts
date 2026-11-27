@@ -286,7 +286,7 @@ export function registerAgents(
     {
       host = current(),
       replies = false,
-      showAll = replies || external(),
+      showAll = replies,
       markExternal = false,
     }: {
       host?: Prepared;
@@ -298,7 +298,7 @@ export function registerAgents(
     const [records, snapshot, hooked, ptys] = await Promise.all([
       listSessions(iii),
       cliSnapshot(iii, host, all),
-      !showAll || markExternal ? hookSessions(iii) : new Set<string>(),
+      !showAll ? hookSessions(iii) : new Set<string>(),
       replies ? null : claudePtys(iii),
     ]);
     const merge = (externalVisibility = showAll) =>
@@ -449,11 +449,12 @@ export function registerAgents(
   const resolveOpen: ResolveOpen = async (id, request) => {
     const epoch = visibilityEpoch();
     const { merge, detail } = await inventory(true, {
-      showAll: request ? epoch !== null : external(),
+      showAll: epoch !== null,
     });
-    if (request && epoch !== visibilityEpoch())
+    if (epoch !== visibilityEpoch())
       throw new Error('session visibility changed; refresh the list');
-    if (detail) throw new Error(request ? 'session inventory unavailable' : detail);
+    if (detail)
+      throw new Error(request || epoch === null ? 'session inventory unavailable' : detail);
     const { agents } = merge();
     const row = agents.find((agent) => agent.id === id);
     if (!row) throw new Error('no session with that id is listed');
@@ -474,9 +475,9 @@ export function registerAgents(
         copy: true,
       };
     }
-    // Calls without a mode keep the legacy terminal behavior.
+    // Calls without a mode keep the legacy terminal behavior for visible sessions.
     if (row.kind === 'background') {
-      if (!external()) {
+      if (epoch === null) {
         throw new Error('external_sessions is off: this worker does not open host sessions');
       }
       if (!row.short_id || !SHORT_ID.test(row.short_id)) {
