@@ -1,6 +1,6 @@
 use iii_sdk::Error;
 use image::codecs::jpeg::JpegEncoder;
-use image::imageops::{self, FilterType};
+use image::imageops;
 use image::metadata::Orientation;
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbImage, Rgba, RgbaImage,
@@ -496,6 +496,43 @@ where
     }
 }
 
+/// `img` resized to exactly `w`x`h` with Lanczos3, in its own pixel type.
+fn lanczos3(img: &DynamicImage, w: u32, h: u32) -> DynamicImage {
+    use fast_image_resize::pixels::{U8x3, U8x4};
+    match img {
+        DynamicImage::ImageRgb8(src) => {
+            DynamicImage::ImageRgb8(simd_lanczos3::<U8x3, _>(src, w, h))
+        }
+        DynamicImage::ImageRgba8(src) => {
+            DynamicImage::ImageRgba8(simd_lanczos3::<U8x4, _>(src, w, h))
+        }
+        // shortcut: grey and 16-bit images keep image's slower Lanczos3, as each pixel type
+        // fast_image_resize handles grows the binary; move them over if they become common.
+        _ => img.resize_exact(w, h, imageops::FilterType::Lanczos3),
+    }
+}
+
+fn simd_lanczos3<P: fast_image_resize::PixelTrait, Px: image::Pixel<Subpixel = u8>>(
+    src: &image::ImageBuffer<Px, Vec<u8>>,
+    w: u32,
+    h: u32,
+) -> image::ImageBuffer<Px, Vec<u8>> {
+    use fast_image_resize::images::{TypedImage, TypedImageRef};
+    use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
+    let mut out = image::ImageBuffer::new(w, h);
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3))
+        // premultiplied() has already weighed colour by alpha.
+        .use_alpha(false);
+    let from = TypedImageRef::<P>::from_buffer(src.width(), src.height(), src.as_raw())
+        .expect("the source's own pixels");
+    let mut to = TypedImage::<P>::from_buffer(w, h, &mut out).expect("w*h pixels");
+    Resizer::new()
+        .resize_typed(&from, &mut to, &options)
+        .expect("one pixel type and no crop");
+    out
+}
+
 /// `w`x`h` shrunk to at most `max` pixels, keeping its aspect ratio; never
 /// enlarged, and no side below 1.
 fn within_pixels(w: u32, h: u32, max: Option<NonZeroU64>) -> (u32, u32) {
@@ -523,9 +560,14 @@ pub fn resize_scale_to_fit(
     if img.width() <= max_w && img.height() <= max_h {
         return img;
     }
-    premultiplied(Cow::Owned(img), |img| {
-        img.resize(max_w, max_h, FilterType::Lanczos3)
-    })
+    // As image's resize: one scale for both sides, rounded, so sizes stay as they were.
+    let scale = f64::min(
+        f64::from(max_w) / f64::from(img.width()),
+        f64::from(max_h) / f64::from(img.height()),
+    );
+    let fit = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
+    let (w, h) = (fit(img.width()), fit(img.height()));
+    premultiplied(Cow::Owned(img), |img| lanczos3(img, w, h))
 }
 
 pub fn resize_crop_to_fit(
@@ -554,9 +596,7 @@ pub fn resize_crop_to_fit(
     if (w, h) == (cw, ch) {
         cropped
     } else {
-        premultiplied(Cow::Owned(cropped), |img| {
-            img.resize_exact(w, h, FilterType::Lanczos3)
-        })
+        premultiplied(Cow::Owned(cropped), |img| lanczos3(img, w, h))
     }
 }
 
@@ -647,7 +687,7 @@ fn encode_within(
             }
             // From the first thumbnail each time, so resizes never stack more than two deep.
             shrunk = Some(premultiplied(Cow::Borrowed(&img), |img| {
-                img.resize_exact(w, h, FilterType::Lanczos3)
+                lanczos3(img, w, h)
             }));
         }
         buf = encode(shrunk.as_ref().unwrap_or(&img), format, quality)?;
@@ -1649,8 +1689,30 @@ mod tests {
         let img = DynamicImage::ImageRgba8(noise);
         assert_eq!(
             resize_scale_to_fit(img.clone(), 20, 20, None),
-            img.resize(20, 20, FilterType::Lanczos3)
+            lanczos3(&img, 20, 15)
         );
+    }
+
+    #[test]
+    fn lanczos3_is_within_a_level_or_two_of_image_s() {
+        let mut seed: u32 = 7;
+        let noise = DynamicImage::ImageRgba8(RgbaImage::from_fn(64, 48, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            image::Rgba(seed.to_le_bytes())
+        }));
+        // On this noise CatmullRom is 9 levels off and Triangle 21; the fixed-point Lanczos3 is 1.
+        for img in [DynamicImage::ImageRgb8(noise.to_rgb8()), noise] {
+            let theirs = img.resize_exact(20, 15, imageops::FilterType::Lanczos3);
+            let ours = lanczos3(&img, 20, 15);
+            assert_eq!(ours.color(), img.color());
+            let worst = ours
+                .as_bytes()
+                .iter()
+                .zip(theirs.as_bytes())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max();
+            assert!(worst <= Some(2), "{:?}: {worst:?}", img.color());
+        }
     }
 
     #[test]
