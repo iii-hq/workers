@@ -1,0 +1,73 @@
+{
+  "name": "list-anchor",
+  "description": "Catalogue 3, List.anchor bottom (prop 23, enum listAnchor) with startReached subscribed (event 16): two messages; startReached brings two older ones in at index 0 (one listSplice), and a second startReached the last one older ones (ids 1 and 2 are the first).",
+  "catalog": 3,
+  "encoding": "json-v0",
+  "app": "conformance/apps/list-anchor.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":3,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[2,2,16,[]]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":3,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,1,40],[2,1,16,\"Log\"],[1,2,30],[2,2,16,\"id\"],[2,2,18,4],[2,2,23,1],[2,2,2,65536],[2,2,3,\"log\"],[1,3,10],[2,3,16,{\"$item\":\"text\"}],[3,2,1,0,3],[8,2,0,0,[{\"id\":3,\"text\":\"Third\"},{\"id\":4,\"text\":\"Fourth\"}]],[3,1,0,0,2],[7,1,1]]",
+    "[[8,2,0,0,[{\"id\":1,\"text\":\"Message 1\"},{\"id\":2,\"text\":\"Message 2\"}]]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Log"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "List",
+            "id": 2,
+            "props": {
+              "events": ["startReached"],
+              "testTag": "log",
+              "keyField": "id",
+              "gap": 4,
+              "anchor": "bottom"
+            },
+            "slots": {
+              "template0": [
+                {
+                  "type": "Text",
+                  "id": 3,
+                  "props": {
+                    "text": {
+                      "$item": "text"
+                    }
+                  }
+                }
+              ]
+            },
+            "items": [
+              {
+                "id": 1,
+                "text": "Message 1"
+              },
+              {
+                "id": 2,
+                "text": "Message 2"
+              },
+              {
+                "id": 3,
+                "text": "Third"
+              },
+              {
+                "id": 4,
+                "text": "Fourth"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

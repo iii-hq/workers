@@ -8,6 +8,7 @@
 import { batch, createSignal, type Setter } from 'solid-js'
 import { declaredPages, type PageRef } from './app'
 import { ENUMS, IN, LIMITS, METHOD } from './generated/catalog'
+import { checkSince } from './runtime/tree'
 import { IiiError, notify, observe, onEntry, reportError, request, run } from './runtime/wire'
 import type { JsonObject, JsonValue, NodeRef, Unsubscribe } from './types'
 
@@ -55,8 +56,20 @@ export interface MenuAction {
 
 export type KeyboardType = 'text' | 'url' | 'search' | 'email' | 'number' | 'password'
 
+/** A toast with a button (catalogue 3). */
+export interface ToastOptions {
+  kind?: 'info' | 'success' | 'error'
+  /** The button's label (Undo, View). */
+  action: string
+}
+
 export interface Ui {
   toast(text: string, kind?: 'info' | 'success' | 'error'): void
+  /**
+   * A toast with a button (catalogue 3): resolves true when the person
+   * tapped it, false when the toast went away (an older host: at once).
+   */
+  toast(text: string, options: ToastOptions): Promise<boolean>
   /** A list of actions: an action sheet on the phone, a context menu (NSMenu) on the Mac. Resolves with the index, or -1. */
   actionMenu(
     anchor: NodeRef | null,
@@ -258,9 +271,16 @@ const nav: Nav = {
 }
 
 const ui: Ui = {
-  toast(text, kind) {
-    notify(METHOD.toast, args({ text: String(text), kind: enumIndex('toastKind', kind) }))
-  },
+  toast: ((text: string, opts?: 'info' | 'success' | 'error' | ToastOptions) => {
+    if (opts !== null && typeof opts === 'object') {
+      checkSince('iii.ui.toast with an action', 3)
+      const kind = enumIndex('toastKind', opts.kind)
+      return request(METHOD.toast, args({ text: String(text), kind, action: String(opts.action) })).then(
+        (v) => field<boolean>('action', false)(v) === true,
+      )
+    }
+    notify(METHOD.toast, args({ text: String(text), kind: enumIndex('toastKind', opts) }))
+  }) as Ui['toast'],
   actionMenu(anchor, menu) {
     const actions = (menu?.actions ?? []).map((a) =>
       args({ label: String(a.label), icon: a.icon, destructive: a.destructive, hint: a.hint, checked: a.checked }),

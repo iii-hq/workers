@@ -79,8 +79,10 @@ export interface TestHostOptions {
    * later answer is dropped. `tick()` moves the clock.
    */
   calls?: Record<string, Json | ((payload: Json, host: TestHost) => unknown)>
-  /** Answers of the dialogs; without one: actionMenu -1, confirm false, prompt null, openUrl true. */
+  /** Answers of the dialogs; without one: actionMenu -1, confirm false, prompt null, openUrl true, toast (with an action) false. */
   ui?: {
+    /** A toast with an action: true when the person taps it. */
+    toast?: (args: Json, host: TestHost) => boolean | Promise<boolean>
     actionMenu?: (args: Json, host: TestHost) => number | Promise<number>
     confirm?: (args: Json, host: TestHost) => boolean | Promise<boolean>
     prompt?: (args: Json, host: TestHost) => string | null | Promise<string | null>
@@ -126,7 +128,7 @@ export interface TestHost {
   readonly errors: { message: string; stack?: string; fatal?: boolean }[]
   readonly exceptions: { where: string; message: string; stack?: string }[]
   readonly violations: string[]
-  readonly toasts: { text: string; kind: string }[]
+  readonly toasts: { text: string; kind: string; action?: string }[]
   readonly clipboard: string[]
   readonly menus: Json[]
   readonly dialogs: Json[]
@@ -169,8 +171,14 @@ export interface TestHost {
   type(target: Target, texts: string | string[]): Promise<void>
   typeWhileBusy(target: Target, text: string): void
   submit(target: Target): Promise<void>
+  /** A Switch or a Checkbox flipped (an indeterminate Checkbox turns checked): shown at once, then `change [checked]`. */
   toggle(target: Target): Promise<void>
-  /** A Segmented's option, or a Lanes' lane (one per page): shown at once, then `select [index]`. */
+  /**
+   * A Segmented's option, or a Lanes' lane (one per page): shown at once,
+   * then `select [index]`. A Chart's or a Stat's point, a Steps' step, a
+   * CodeView's line (numbered from startLine) or a Waveform's fraction
+   * (0..1): `select [value]`.
+   */
   select(target: Target, index: number): Promise<void>
   /** A tap on a link of a Markdown: `link [href]` (`href` must be in its text, before limits.maxMarkdownChars). */
   link(target: Target, href: string): Promise<void>

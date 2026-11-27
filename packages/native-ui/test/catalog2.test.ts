@@ -40,10 +40,10 @@ describe('the version an app declares', () => {
       const entry = join(dir, 'app.tsx')
       writeFileSync(
         entry,
-        "import { defineApp, Text } from '@iii-dev/native-ui'\ndefineApp({ catalog: 3, pages: { root: () => <Text>hi</Text> } })\n",
+        "import { defineApp, Text } from '@iii-dev/native-ui'\ndefineApp({ catalog: 4, pages: { root: () => <Text>hi</Text> } })\n",
       )
       await expect(buildNativeUi({ entry, outfile: join(dir, 'app.js'), ns: 'demo' })).rejects.toThrow(
-        /catalog is a version from 1 to 2/,
+        /catalog is a version from 1 to 3/,
       )
     } finally {
       rmSync(dir, { recursive: true, force: true })

@@ -58,6 +58,28 @@ function budgetScale() {
 }
 const URL_SCHEMES = /^(https?|mailto):/i
 
+const pointCount = (series) => {
+  if (!Array.isArray(series)) return 0
+  return Array.isArray(series[0]) ? Math.max(...series.map((s) => (Array.isArray(s) ? s.length : 0))) : series.length
+}
+const lineCount = (text) => (typeof text === 'string' ? text.split('\n').length : 1)
+
+/**
+ * The `select` of the catalogue 3 data types (nothing shown optimistically):
+ * why `value` is not one the host would send, or null. `prop(name)` reads
+ * the node's prop.
+ */
+const DATA_SELECT = {
+  Chart: (i, prop) => (Number.isInteger(i) && i >= 0 && i < pointCount(prop('series')) ? null : 'is not a point'),
+  Stat: (i, prop) => (Number.isInteger(i) && i >= 0 && i < pointCount(prop('series')) ? null : 'is not a point'),
+  Steps: (i, prop) => (Number.isInteger(i) && i >= 0 && i < (prop('items') ?? []).length ? null : 'is not a step'),
+  CodeView: (line, prop) => {
+    const start = prop('startLine') ?? 1
+    return Number.isInteger(line) && line >= start && line < start + lineCount(prop('text')) ? null : 'is not a line'
+  },
+  Waveform: (f) => (typeof f === 'number' && f >= 0 && f <= 1 ? null : 'is not a fraction 0..1'),
+}
+
 /** Creates a host, evaluates `bundle` and waits for its `ready`; `init` goes with the first action. */
 export async function createTestHost(options) {
   const QuickJS = await getQuickJS()
@@ -490,9 +512,17 @@ class TestHost {
       case 'navPopToRoot':
         while (this.deck.at(-1)?.reqId != null) this._popTop(null)
         return this._respond(reqId, true, null)
-      case 'toast':
-        this.toasts.push({ text: args.text, kind: catalog.enums.toastKind[args.kind ?? 0] })
-        return this._respond(reqId, true, null)
+      case 'toast': {
+        const toast = { text: args.text, kind: catalog.enums.toastKind[args.kind ?? 0] }
+        if (typeof args.action !== 'string') {
+          this.toasts.push(toast)
+          return this._respond(reqId, true, null)
+        }
+        this.toasts.push({ ...toast, action: args.action })
+        return this._answer(reqId, ui.toast ? () => ui.toast(args, this) : false, (tapped) => ({
+          action: tapped === true,
+        }))
+      }
       case 'actionMenu':
         this.menus.push(args)
         return this._answer(reqId, ui.actionMenu ? () => ui.actionMenu(args, this) : -1, (index) => ({ index }))
@@ -789,11 +819,16 @@ class TestHost {
     await this.emit(node.id, 'submit', [node.props?.value ?? ''])
   }
 
-  /** The person flips a Switch: the host shows the new value at once, then sends `change`. */
+  /**
+   * The person flips a Switch or a Checkbox: the host shows the new value at
+   * once, then sends `change`. An indeterminate Checkbox turns checked.
+   */
   async toggle(target) {
-    const { id } = this.find(target)
+    const { id, type } = this.find(target)
+    if (type !== 'Switch' && type !== 'Checkbox') throw new Error(`toggle: node ${id} is a ${type}`)
     const n = this.model.nodes.get(id)
-    const checked = !(n.props.get(16) ?? false)
+    const indeterminate = type === 'Checkbox' && n.props.get(propByName(n.type, 'indeterminate').tag) === true
+    const checked = indeterminate || !(n.props.get(16) ?? false)
     this._subscribed(id, 'change')
     n.props.set(16, checked)
     this._enqueue([2, id, eventsByName.get('change').tag, [checked]])
@@ -807,6 +842,14 @@ class TestHost {
   async select(target, index) {
     const { id, type } = this.find(target)
     const n = this.model.nodes.get(id)
+    if (type in DATA_SELECT) {
+      const why = DATA_SELECT[type](index, (name) => n.props.get(propByName(n.type, name).tag) ?? null)
+      if (why) throw new Error(`select: ${index} ${why} of ${type} ${id}`)
+      this._subscribed(id, 'select')
+      this._enqueue([2, id, eventsByName.get('select').tag, [index]])
+      await this.settle()
+      return
+    }
     const selected = propByName(n.type, 'selected')
     if (type !== 'Segmented' && type !== 'Lanes') throw new Error(`select: node ${id} is a ${type}`)
     const count = (n.props.get(propByName(n.type, type === 'Lanes' ? 'titles' : 'options').tag) ?? []).length

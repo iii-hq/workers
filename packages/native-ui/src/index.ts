@@ -53,27 +53,34 @@ export { createStore, produce, reconcile, type SetStoreFunction, type Store, unw
 export { type AppDefinition, defineApp, type PageComponent, type PageOptions, type PageRef } from './app'
 export * from './components'
 export type {
+  AvatarShape,
   Axis,
   BadgeVariant,
   BoxAlign,
   ButtonKind,
+  ChartKind,
   ChipTone,
   CrossAlign,
   DotTone,
   ErrorCode,
+  GaugeKind,
   Hue,
   ImageFit,
   ImeAction,
+  KnownIcon,
+  ListAnchor,
   MainArrange,
   Overflow,
   RemoteMode,
   StatusVariant,
+  StepState,
   TextAlign,
   TextRole,
+  TimeStyle,
   ToastKind,
   Tone,
 } from './generated/catalog'
-export { CATALOG_VERSION, FEATURES, LIMITS } from './generated/catalog'
+export { CATALOG_VERSION, FEATURES, ICONS, LIMITS } from './generated/catalog'
 export type { EventName } from './generated/events'
 export type * from './generated/props'
 export { useCall, useEnv, useNav, useObserve, usePage } from './hooks'
@@ -90,10 +97,25 @@ export {
   type ObserveSource,
   type ShareFile,
   type ShareText,
+  type ToastOptions,
   type Ui,
 } from './iii'
 export { lastPerKey } from './keys'
 export { createList, itemHandler, List, type ListProps, type ListSource } from './list'
-export type { Binding, Bound, IconName, JsonObject, JsonValue, NodeRef, Padding, Prop, Unsubscribe } from './types'
+export type {
+  Binding,
+  Bound,
+  ChartSeries,
+  ChartThreshold,
+  IconName,
+  JsonObject,
+  JsonValue,
+  LineMarks,
+  NodeRef,
+  Padding,
+  Prop,
+  StepItem,
+  Unsubscribe,
+} from './types'
 export { parseUrl } from './url'
 export { SDK_VERSION } from './version'

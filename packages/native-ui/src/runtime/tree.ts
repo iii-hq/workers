@@ -122,8 +122,7 @@ export const appCatalog = { version: 1 }
  * than the declared catalogue: an iii app of that older catalogue would
  * still run the bundle, and draw a placeholder or ignore the prop.
  */
-export function checkSince(name: string): void {
-  const since = SINCE[name]
+export function checkSince(name: string, since: number | undefined = SINCE[name]): void {
   if (since !== undefined && since > appCatalog.version) {
     warnOnce(
       `${name} is catalogue ${since}, and this app declares ${appCatalog.version}: defineApp({ catalog: ${since}, … }), and NativeUi::catalog(${since}) in the worker`,
