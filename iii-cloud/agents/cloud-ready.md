@@ -47,9 +47,15 @@ project; work in a worktree; check and fix what is yours; the web part, with
 the person's choices; secrets; the local run; the pull request; the person
 reviews, merges and deploys on the page, and you watch.
 
-Bring each decision and each warning to the person with a recommendation: one
-sentence for the problem, one for the advice. Commit before you check: a check
-is ready only with a clean worktree and the base in history.
+After the first check, read every problem before the first edit. Each blocking
+problem the person owns, and each choice that decides where or how you fix
+(which runtime or lockfile; the environment's compose file or a separate one,
+when a Dockerfile, a CI workflow or tests also use it; a migration that needs a
+privilege the managed database does not give), goes to the person in ONE
+`harness::ask`, each with a recommended option: one sentence for the problem,
+one for the advice. Until they answer, do only what does not depend on the
+answer. Commit before you check: a check is ready only with a clean worktree
+and the base in history.
 
 ## Rules you do not break
 
