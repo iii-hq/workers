@@ -2,17 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { boards } from '../fixtures'
 import { base, ENV, signedOut } from '../fixtures/base'
-import {
-  defaultRoute,
-  envState,
-  legacyRoute,
-  pathOf,
-  type Route,
-  routeFromContext,
-  routeLink,
-  SETUP_STEPS,
-  setupStep,
-} from '../route'
+import { defaultRoute, envState, legacyRoute, pathOf, type Route, routeFromContext, SETUP_STEPS } from '../route'
 import type { RecentProject, Status } from '../types'
 
 const main = base
@@ -89,13 +79,6 @@ describe('routeFromContext', () => {
     expect(legacyRoute({ tab: 'secrets' }, 'e2')).toEqual({ at: 'secrets', env: 'e2' })
     expect(legacyRoute({ tab: 'overview' }, 'e2')).toBeNull()
   })
-
-  it('a deep link carries the route back', () => {
-    const r: Route = { at: 'deploy', env: ENV.id, deploy: 'dep-1' }
-    const link = routeLink(r)
-    expect(link.startsWith('#/worker/iii-cloud/iii-cloud?context=')).toBe(true)
-    expect(routeFromContext(JSON.parse(decodeURIComponent(link.split('context=')[1])))).toEqual(r)
-  })
 })
 
 const billing: RecentProject = {
@@ -154,20 +137,9 @@ describe('pathOf', () => {
   })
 })
 
-describe('setupStep', () => {
-  it('is signin until signed in, then confirm: it never goes past it', () => {
+describe('SETUP_STEPS', () => {
+  it('first time has two steps: sign in, then confirm', () => {
     expect(SETUP_STEPS).toEqual(['signin', 'confirm'])
-    expect(setupStep(signin)).toBe('signin')
-    expect(setupStep(target)).toBe('confirm')
-    expect(setupStep(main)).toBe('confirm')
-    const sir = { ...main.check!.problems[0], code: 'SIGN_IN_REQUIRED' }
-    expect(setupStep({ ...main, check: { ...main.check!, problems: [sir] } })).toBe('signin')
-  })
-
-  it('an explicit step goes back, never ahead', () => {
-    expect(setupStep(main, 'signin')).toBe('signin')
-    expect(setupStep(main, 'confirm')).toBe('confirm')
-    expect(setupStep(signin, 'confirm')).toBe('signin')
   })
 })
 

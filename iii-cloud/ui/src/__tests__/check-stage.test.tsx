@@ -683,6 +683,29 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(primary?.hasAttribute('disabled')).toBe(false)
   })
 
+  it("a held deployment that IS this machine's (its merge, its check_id, the worker's flag, or the shown check's commit) is not 'elsewhere'", async () => {
+    const s = B('deploy-passed')
+    const base = {
+      status: 'needs_action' as const,
+      type: 'push',
+      check_id: null,
+      approved_by_worker: false,
+      from_console: true,
+      created_at: new Date(Date.now() + 1000).toISOString(),
+    }
+    const ours: Record<string, object> = {
+      'its merge (pr and check_id)': { ...base, pr: 5, check_id: s.check!.id },
+      'the worker approved it': { ...base, approved_by_worker: true },
+      'the worker created it': { ...base, from_console: false },
+      "the shown check's commit (a push by hand)": { ...base, commit: { sha: s.check!.commit, message: 'm' } },
+    }
+    for (const [why, over] of Object.entries(ours)) {
+      await stage({ ...s, deploys: [runningOf(s, { id: 'dep-held', number: 11, ...over }), ...s.deploys] })
+      expect(text(), why).not.toContain('is waiting for confirmation in iii cloud')
+      expect(text(), why).not.toContain("can't be confirmed here")
+    }
+  })
+
   it('the production name dialog locks when the check it was opened for stops being the ready one (another pane changed the source)', async () => {
     const s = B('deploy-passed')
     const prod = { ...s.project!, environment: { ...s.project!.environment!, production: true } }
@@ -695,6 +718,28 @@ describe('the review: what a check that is not ready still offers', () => {
     await act(async () => hubOf(h.host).used(s.check!.environment_id, true))
     expect(go()?.hasAttribute('disabled')).toBe(true)
     expect(dialog()?.textContent).toContain('no longer the check that was ready')
+  })
+
+  it('the production name dialog locks when a newer READY check arrives while it is open, with no other lock, and says to close it', async () => {
+    const s = B('deploy-passed')
+    const prod = { ...s.project!, environment: { ...s.project!.environment!, production: true } }
+    const h = await stage({ ...s, project: prod }, { 'iii-cloud::deploy': {} })
+    await click(deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? '')))
+    const dialog = () => el.querySelector('[role=dialog]')
+    await type(dialog()?.querySelector('input') ?? null, 'dev')
+    const go = () => [...(dialog()?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Deploy')
+    expect(go()?.hasAttribute('disabled')).toBe(false)
+    await fire(h, {
+      kind: 'check',
+      id: 'chk-newer-ready',
+      terminal: true,
+      summary: '',
+      record: { ...s.check!, id: 'chk-newer-ready', checked_at: new Date(Date.now() + 60_000).toISOString() },
+    } as ChangeEvent)
+    expect(go()?.hasAttribute('disabled')).toBe(true)
+    expect(dialog()?.textContent).toContain(
+      'The ready check changed while this was open. Close it and deploy the new one.',
+    )
   })
 
   it('on a replaced source Details › Warnings offers no action of the old check', async () => {

@@ -152,16 +152,6 @@ export function useDeployments(host: Host, status: Status, envId: string): Cloud
 }
 
 /**
- * GET one route once, now (a re-read right before a write): `useCloud` keeps a route fresh, this asks once.
- * Rejects like `cloudWrite`, with the same plain messages as `useCloud`.
- */
-export function cloudRead<T>(host: Host, status: Status, envId: string | null, path: string): Promise<T> {
-  const full = cloudPath(status, envId, path)
-  if (!full) return Promise.reject(fail({ code: 'NO_TEAM', message: 'Choose a project first.' }))
-  return send<T>(host, 'iii-cloud::api', payload('GET', full))
-}
-
-/**
  * One change in iii cloud through `iii-cloud::api::write`, with a fresh `idempotency_key` per call:
  * call it once per click. Resolves the cloud's body; rejects with `code`, `status` and a plain
  * `message` (read them with `errorCode`/`errorMessage`). Secret values never go here: `iii-cloud::secret`.

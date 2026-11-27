@@ -12,6 +12,7 @@ import {
   configDir,
   deployOrigin,
   deployState,
+  liveOf,
   opensToPublic,
   plainMessage,
   servingId,
@@ -590,6 +591,22 @@ describe('the hub keeps what a page that is gone cannot', () => {
     answer()
   })
 
+  it('the hub takes its storage listener off when the last subscriber leaves, not before', () => {
+    const add = vi.spyOn(window, 'addEventListener')
+    const remove = vi.spyOn(window, 'removeEventListener')
+    const ours = (spy: typeof add) => spy.mock.calls.filter((c) => c[0] === 'storage').length
+    const hub = hubOf(fakeHost(base).host)
+    const first = hub.subscribe(() => undefined)
+    const second = hub.subscribe(() => undefined)
+    expect(ours(add)).toBe(1)
+    first()
+    expect(ours(remove)).toBe(0)
+    second()
+    expect(ours(remove)).toBe(1)
+    add.mockRestore()
+    remove.mockRestore()
+  })
+
   it("another tab's mark (a storage event) is read again by this one", () => {
     const hub = hubOf(fakeHost(base).host)
     const seen = vi.fn()
@@ -599,6 +616,16 @@ describe('the hub keeps what a page that is gone cannot', () => {
     seen.mockClear()
     window.dispatchEvent(new StorageEvent('storage', { key: 'someone-else' }))
     expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('liveOf: no current row but something was live (a rollback beyond the first page) is Live with no sha; only failed rows is nothing live', () => {
+    const row = (status: string) =>
+      ({ id: 'x', number: 1, status, current: false, commit: { sha: 'abc' } }) as unknown as CloudDeployment
+    expect(liveOf([row('replaced')])).toMatchObject({ label: 'Live', sha: null })
+    expect(liveOf([row('ready')])).toMatchObject({ label: 'Live', sha: null })
+    expect(liveOf([row('failed')])).toMatchObject({ label: 'Last deployment failed' })
+    expect(liveOf([row('canceled')])).toMatchObject({ label: 'Nothing live yet' })
+    expect(liveOf([{ ...row('ready'), current: true }])).toMatchObject({ label: 'Live', sha: 'abc' })
   })
 
   it('a newer check ends the move; the move and the stop survive a reload (only storage carries them)', async () => {

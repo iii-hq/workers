@@ -371,12 +371,6 @@ export type ChangeEvent = {
   record: Connection | Project | Check | Run | SecretRequest | Deploy | AgentRun
 }
 
-/** `connect {method: "api_key"}`: the worker resolves team and environment
-    from the key; the ids are an optional fallback. */
-export type ConnectInput =
-  | { method: 'browser' }
-  | { method: 'api_key'; secret: string; team_id?: string; environment_id?: string }
-
 // The agent's live hand-off (`status.agent`), from `iii-cloud::handoff`.
 export type AgentState = 'starting' | 'working' | 'waiting_for_you' | 'waiting' | 'stalled' | 'done' | 'stopped'
 
@@ -512,9 +506,7 @@ export type Suggestion =
   | { source: 'env_url'; url: string; preselect: boolean }
   | { source: 'copy'; environment_id: string; environment: string; preselect: false }
 
-/** `iii-cloud::values::save`: the page's own. */
-export type ValuesSave = { environment_id: string; manifest?: string; items: SaveItem[] }
-
+/** One name of `iii-cloud::values::save`'s `items`: where its value comes from. */
 export type SaveItem =
   | { name: string; from: 'typed'; type: 'secret' | 'variable'; value: string }
   | { name: string; from: 'env_file'; type: 'secret' | 'variable'; file: string }
@@ -524,16 +516,8 @@ export type SaveItem =
   | { name: string; from: 'leave_empty' }
   | { name: string; from: 'copy'; environment_id: string }
 
-/** `iii-cloud::values::skip`: the page's own. `skip: false` undoes it. */
-export type ValuesSkip = { environment_id: string; names: string[]; skip: boolean }
-/** The environment's skipped names after the call, sorted. */
+/** What `iii-cloud::values::skip` answers: the environment's skipped names after the call, sorted. */
 export type ValuesSkipped = { environment_id: string; names: string[] }
-
-/** `iii-cloud::problem::skip`: the page's own, for a cloud warning (only `LOCAL_CONFIG_NOT_SET`). `skip: false`
-    undoes it. The next check shows the problem with `skipped: true` and severity `info`. */
-export type ProblemSkip = { environment_id: string; code: string; skip: boolean }
-/** The environment's skipped warning codes after the call, sorted. */
-export type ProblemsSkipped = { environment_id: string; codes: string[] }
 
 export type ValuesSaved = {
   environment_id: string
@@ -543,9 +527,6 @@ export type ValuesSaved = {
 /** `iii-cloud::override::choose`: the page's own. `file`: the file's value wins at deploy (the deploy already does
     that); `console`: the person wants the console's kept, which takes a change to the file. */
 export type OverrideChoice = 'file' | 'console'
-export type OverrideChoose = { environment_id: string; setting: string; choice: OverrideChoice }
-/** The environment's choices after the call, as `Status.override_choices`. */
-export type OverrideChosen = { environment_id: string; override_choices: Record<string, OverrideChoice> }
 
 /** `iii-cloud::config::import`: the page's own. Copies the compose file's local config folder (the `configuration`
     worker's `fs` adapter `directory`, from the person's folder) into the environment's console config. A dry run

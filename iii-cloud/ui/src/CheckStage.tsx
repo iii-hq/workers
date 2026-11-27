@@ -36,7 +36,6 @@ import {
   configDir,
   conflictFiles,
   deployBusy,
-  deployOrigin,
   duration,
   envHead,
   envPageUrl,
@@ -172,10 +171,14 @@ export function deployLockReason(
 }
 
 /**
- * A deployment iii cloud holds for confirmation that this machine did not start (a push or a merge on GitHub): the
- * person can't confirm it here (there is no check of its commit), and deploying replaces it. It locks nothing.
+ * A deployment iii cloud holds for confirmation that is not this machine's: the worker's own markers on the record
+ * (a `check_id`, or the flag it sets when it approved or created it) say it started it, or its commit is the shown
+ * check's (the deployment's screen matches a push by commit). Only a held one with neither is "elsewhere": it locks
+ * nothing, and deploying replaces it. A held one that is ours is confirmed on its own screen.
  */
-export const heldElsewhere = (s: Status, d: Deploy) => needsAction(d) && deployOrigin(s, d).from !== 'machine'
+export const heldElsewhere = (s: Status, d: Deploy) =>
+  needsAction(d) &&
+  !(d.check_id || d.approved_by_worker || d.from_console === false || (!!s.check && d.commit.sha === s.check.commit))
 
 /** `check` for this screen: it runs the local run, pushes the fix branch, keeps to a picked compose file. */
 export function checkPayload(s: Status, manifest = appFile(s).path): Record<string, unknown> {
@@ -1265,7 +1268,7 @@ export function CheckStage(props: CheckStageProps) {
         key: 'held',
         variant: 'info',
         headline: `Deployment #${d.number} is waiting for confirmation in iii cloud`,
-        detail: `It was not started from this machine, so it can't be confirmed here. Deploying ${env} replaces it.`,
+        detail: `Deploying ${env} replaces it.`,
         acts: [],
       })
       // A deployment going locks Deploy whatever check it came from: its progress is the screen for that state.
@@ -1844,9 +1847,11 @@ export function CheckStage(props: CheckStageProps) {
           confirmLabel={pr ? 'Merge and deploy' : 'Deploy'}
           onConfirm={deploy}
           locked={
-            !ready || confirmFor !== c.id
-              ? 'This is no longer the check that was ready to deploy. Check again.'
-              : (lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false }))
+            ready && confirmFor !== c.id
+              ? 'The ready check changed while this was open. Close it and deploy the new one.'
+              : !ready
+                ? 'This is no longer the check that was ready to deploy. Check again.'
+                : (lock ?? prLock ?? deployLockReason(s, envId, { stale, sending: false }))
           }
         />
       ) : null}

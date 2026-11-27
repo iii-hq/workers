@@ -392,9 +392,11 @@ export function liveOf(list: CloudDeployment[] | null | undefined): Live | null 
       sha: newest.commit.sha,
     }
   }
-  return current
-    ? { label: 'Live', tone: 'ok', sha: current.commit.sha }
-    : { label: 'Nothing live yet', tone: 'ghost', sha: null }
+  if (current) return { label: 'Live', tone: 'ok', sha: current.commit.sha }
+  // No current row, but something was live (a rollback to a deployment beyond the list's first page): the same rule
+  // as `listMayHideServing`; it is live, and the list can't say which.
+  if (list.some((d) => d.status === 'ready' || d.status === 'replaced')) return { label: 'Live', tone: 'ok', sha: null }
+  return { label: 'Nothing live yet', tone: 'ghost', sha: null }
 }
 
 /** 3 Dec: a short date in English whatever the browser's language. */

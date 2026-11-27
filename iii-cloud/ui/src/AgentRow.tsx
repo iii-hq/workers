@@ -4,21 +4,10 @@ import { useState } from 'react'
 import { useLaunch } from './asked'
 import { canOpenChat, openChatFor } from './handoff'
 import { hubOf, useActions } from './hub'
-import { minutesLabel, type RowTone } from './model'
-import { Dot, ErrorPanel, Notice, Spinner, useNow } from './parts'
+import { ErrorPanel, Notice } from './parts'
 import type { AgentRun, AgentState } from './types'
 
 const ACTIVE: AgentState[] = ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled']
-const TONE: Record<AgentState, RowTone> = {
-  starting: 'live',
-  working: 'live',
-  waiting_for_you: 'warn',
-  // A wake it armed: it waits on an event, not on the person.
-  waiting: 'edge',
-  stalled: 'warn',
-  done: 'ok',
-  stopped: 'edge',
-}
 
 /** Stop, which asks first: the agent's commits so far stay where they are. */
 function StopButton({
@@ -77,126 +66,6 @@ export function AgentControls({ host, agent, branch }: { host: Host; agent: Agen
         <StopButton host={host} agent={agent} branch={branch} label="Stop" variant="secondary" />
       ) : null}
     </span>
-  )
-}
-
-/** The agent's hand-off, alive: state, elapsed, what it is doing now, when it last did something. */
-export function AgentRow({
-  host,
-  agent,
-  note,
-  branch,
-}: {
-  host: Host
-  agent: AgentRun
-  /** Something the person still has to do for the hand-off to work (for example confirm the folder). */
-  note?: string
-  /** The branch the agent commits on (its copy's), for what stopping keeps. */
-  branch?: string | null
-}) {
-  const now = useNow(1000)
-  const started = Date.parse(agent.started_at)
-  const last = agent.last_activity_at ? Date.parse(agent.last_activity_at) : null
-  const idle = last ? now - last : 0
-  const canOpen = !!agent.session_id && canOpenChat(host)
-  const openChat = canOpen ? () => openChatFor(host, agent.session_id as string) : null
-  const active = ACTIVE.includes(agent.state)
-  const label: Record<AgentState, string> = {
-    starting: 'Starting',
-    working: 'Working',
-    waiting_for_you: 'Waiting for you',
-    waiting: 'Waiting',
-    stalled: `No progress for ${minutesLabel(idle)}`,
-    done: 'Finished',
-    stopped: 'Stopped',
-  }
-  const ms = (active ? now : (last ?? now)) - started
-  const elapsed = minutesLabel(ms)
-  // "Starting · 1 min" only once it has really been a minute.
-  const showElapsed = !(agent.state === 'starting' && ms < 60_000)
-  // Two faint lines under the state: what it said it is doing; when it last did a step, how many.
-  const meta = [
-    last ? `last step ${idle < 60_000 ? 'just now' : `${minutesLabel(idle)} ago`}` : 'no step yet',
-    agent.steps ? `${agent.steps} ${agent.steps === 1 ? 'step' : 'steps'}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  // Quiet on purpose: the chat is secondary while it works, and stopping is a ghost that asks first.
-  const stop = active ? (
-    <StopButton host={host} agent={agent} branch={branch} label="Stop the agent" variant="ghost" />
-  ) : null
-  const chatButton = (name: string, primary: boolean) =>
-    openChat ? (
-      <Button size="sm" variant={primary ? 'primary' : 'secondary'} onClick={openChat}>
-        {name}
-      </Button>
-    ) : null
-
-  const acts = (
-    <span className="iii-cloud-agent-acts">
-      {agent.state === 'waiting_for_you'
-        ? chatButton("Answer in your agent's chat", true)
-        : agent.state === 'stalled'
-          ? null
-          : chatButton("Open your agent's chat", false)}
-      {stop}
-    </span>
-  )
-  const faint = (
-    <>
-      {agent.note ? <span className="iii-cloud-psmall">{agent.note}</span> : null}
-      <span className="iii-cloud-psmall">{meta}</span>
-      {note ? <span className="iii-cloud-psmall">{note}</span> : null}
-    </>
-  )
-
-  // A grey panel: its mark, what it does, and the chat and Stop on the right (under it on a phone).
-  return (
-    <div className="iii-cloud-agent" data-state={agent.state}>
-      {agent.state === 'stalled' ? (
-        <>
-          <Notice
-            variant="warn"
-            headline={label.stalled}
-            detail={
-              // The worker says why it stalled (a cloud error that failed the checks, the worktree on another branch).
-              agent.question ??
-              `Started ${elapsed} ago. The agent has not reported a step for a while; it may be stuck or waiting on something.`
-            }
-            action={chatButton("Open your agent's chat", true)}
-          />
-          {agent.current ? <span className="iii-cloud-agent-now">now: {agent.current}</span> : null}
-          {faint}
-          {acts}
-        </>
-      ) : (
-        <>
-          <span className="iii-cloud-agent-mark">
-            {agent.state === 'working' || agent.state === 'starting' ? <Spinner /> : <Dot tone={TONE[agent.state]} />}
-          </span>
-          <span className="iii-cloud-agent-text">
-            <span className="iii-cloud-agent-line">
-              <span className="iii-cloud-agent-head">
-                <strong aria-live="polite">{label[agent.state]}</strong>
-                {showElapsed ? <span>{active ? ` · ${elapsed}` : ` · took ${elapsed}`}</span> : null}
-              </span>
-              {agent.state === 'waiting' ? (
-                agent.waiting_for ? (
-                  <span className="iii-cloud-agent-now"> · for {agent.waiting_for}</span>
-                ) : null
-              ) : agent.current && active ? (
-                <span className="iii-cloud-agent-now"> · now: {agent.current}</span>
-              ) : null}
-            </span>
-            {agent.state === 'waiting_for_you' && agent.question ? (
-              <span className="iii-cloud-agent-q">{agent.question}</span>
-            ) : null}
-            {faint}
-          </span>
-          {acts}
-        </>
-      )}
-    </div>
   )
 }
 

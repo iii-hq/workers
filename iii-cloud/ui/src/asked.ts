@@ -23,16 +23,6 @@ export function markAsked(checkId: string, at = new Date().toISOString()) {
   for (const l of [...listeners]) l()
 }
 
-export function useAsked(checkId: string | undefined): string | null {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l)
-      return () => listeners.delete(l)
-    },
-    () => (checkId ? askedAt(checkId) : null),
-  )
-}
-
 /** 14:34 in the person's time zone; English (en-GB reads 24 h) whatever the browser's language. */
 export const clock = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })

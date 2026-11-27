@@ -4,7 +4,6 @@
 // `AreaProps` and calls `go` to move.
 
 import type { Host } from '@iii-dev/console-ui'
-import { needsConnect, PAGE_ID, signInRequired } from './model'
 import type { Status } from './types'
 
 export type SetupStep = 'signin' | 'confirm'
@@ -151,16 +150,6 @@ export function pathOf(r: Route, s: Status): PathItem[] {
 }
 
 /**
- * The setup step the status is at: `signin` until the person is signed in, then `confirm`. The status never puts
- * setup past `confirm`: once a project is confirmed the page is on `deploy`. An `asked` step is honored only
- * when it is that one or an earlier one.
- */
-export function setupStep(s: Status, asked?: SetupStep): SetupStep {
-  const at: SetupStep = needsConnect(s) || signInRequired(s) ? 'signin' : 'confirm'
-  return asked && SETUP_STEPS.indexOf(asked) <= SETUP_STEPS.indexOf(at) ? asked : at
-}
-
-/**
  * Where an env route stands: the selected environment, one of the project's that CloudPage is
  * selecting, or none of this project's (show an EmptyState).
  */
@@ -169,6 +158,3 @@ export function envState(s: Status, envId: string): 'selected' | 'switching' | '
   if (p?.environment?.id === envId) return 'selected'
   return p?.environments.some((e) => e.id === envId) ? 'switching' : 'unknown'
 }
-
-/** The console hash that opens the page at `r` (`#/worker/<scope>/<page>?context=<json>`). */
-export const routeLink = (r: Route) => `#/worker/iii-cloud/${PAGE_ID}?context=${encodeURIComponent(JSON.stringify(r))}`

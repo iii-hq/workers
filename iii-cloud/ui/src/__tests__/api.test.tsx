@@ -3,7 +3,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { errorCode } from '@iii-dev/console-ui/format'
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { type Cloud, cloudPath, cloudRead, cloudWrite, useCloud } from '../api'
+import { type Cloud, cloudPath, cloudWrite, useCloud } from '../api'
 import { apiPath, base, ENV, following, TEAM } from '../fixtures/base'
 import { plainMessage } from '../model'
 import type { Status } from '../types'
@@ -163,24 +163,6 @@ describe('cloudWrite', () => {
     expect(err).toMatchObject({ status: 409, message: 'That domain is taken.' })
     const none = { ...base, project: { ...base.project!, team: null } }
     await expect(cloudWrite(h.host, none, ENV.id, 'POST', '/domains')).rejects.toMatchObject({ code: 'NO_TEAM' })
-  })
-})
-
-describe('cloudRead', () => {
-  it('GETs once, the query as the query object; a refusal rejects like cloudWrite', async () => {
-    let answer: unknown = { status: 200, body: { deployments: [] } }
-    const h = fakeHost(base, { 'iii-cloud::api': () => answer })
-    await expect(cloudRead(h.host, base, ENV.id, '/deployments?limit=1')).resolves.toEqual({ deployments: [] })
-    expect(apiCalls(h).map((c) => c.payload)).toEqual([
-      { method: 'GET', path: apiPath('/deployments'), query: { limit: '1' } },
-    ])
-    answer = { status: 404, body: {} }
-    const err = await cloudRead(h.host, base, ENV.id, '/deployments').catch((e) => e)
-    expect(err).toMatchObject({
-      code: 'NOT_FOUND',
-      status: 404,
-      message: plainMessage({ code: 'NOT_FOUND', message: '' }),
-    })
   })
 })
 
