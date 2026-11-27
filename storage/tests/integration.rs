@@ -187,6 +187,46 @@ async fn put_then_get_round_trips_via_native_local_storage() {
     let got = B64.decode(got_b64).expect("response body is valid base64");
     assert_eq!(got, body, "round-tripped body must match");
 
+    // storage::copyObject: two local buckets copy server-side.
+    let copy: serde_json::Value = timeout(
+        Duration::from_secs(10),
+        client.call(CallRequest {
+            function_id: "storage::copyObject".into(),
+            payload: json!({
+                "source_bucket": "scratch",
+                "source_key": "integration/hello.txt",
+                "bucket": "scratch",
+                "key": "integration/copy/hello.txt",
+                "cache_control": "public, max-age=31536000, immutable"
+            }),
+            action: None,
+            timeout_ms: Some(8_000),
+        }),
+    )
+    .await
+    .expect("copyObject timed out")
+    .expect("copyObject failed");
+    assert_eq!(copy["size"], body.len() as u64);
+    assert_eq!(copy["server_side"], true);
+    let copied: serde_json::Value = timeout(
+        Duration::from_secs(10),
+        client.call(CallRequest {
+            function_id: "storage::getObject".into(),
+            payload: json!({ "bucket": "scratch", "key": "integration/copy/hello.txt" }),
+            action: None,
+            timeout_ms: Some(8_000),
+        }),
+    )
+    .await
+    .expect("getObject of the copy timed out")
+    .expect("getObject of the copy failed");
+    assert_eq!(copied["content_type"], "text/plain");
+    assert_eq!(
+        B64.decode(copied["body_base64"].as_str().unwrap()).unwrap(),
+        body,
+        "the copy has the source's bytes"
+    );
+
     // The local backend calls storage::on-object-created once per write; an
     // observer of the bucket receives the event, and its null result acks it.
     let (tx, mut created) = tokio::sync::mpsc::unbounded_channel::<Value>();

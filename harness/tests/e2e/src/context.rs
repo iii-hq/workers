@@ -475,6 +475,7 @@ mod tests {
             partial_result_available: Some(false),
             depth: Some(0),
             pending_function_calls: Some(Vec::new()),
+            account: None,
             children: Vec::new(),
             expects_wake,
             open_asks: 0,

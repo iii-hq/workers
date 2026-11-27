@@ -2,7 +2,7 @@
 
 [package]
 name = "image-resize"
-version = "0.2.4"
+version = "0.3.1"
 edition = "2024"
 publish = false
 
@@ -12,9 +12,13 @@ path = "src/main.rs"
 
 [dependencies]
 futures-util = "0.3"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
 iii-sdk = "=0.27.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-kamadak-exif = "0.6"
+libwebp-sys = "0.14"
+# Must stay on the same schemars major as iii-sdk so the derived JsonSchema is the trait the SDK takes.
+schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -22,7 +26,12 @@ serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "time", "net"] }
+# A scripted engine for tests/process.rs; already in the graph through iii-sdk.
+tokio-tungstenite = "0.28"
 
 # Release profile for published binaries: thin LTO with one codegen unit runs
 # faster than Cargo's default, and strip drops the symbol table for a smaller

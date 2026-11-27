@@ -36,18 +36,17 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<Outcome, Harness
         (None, Some(prev)) => (prev.options.model, req.provider.or(prev.options.provider)),
         (None, None) => return Err(HarnessError::InvalidRequest(NO_MODEL.into())),
     };
+    // The caller shows its own progress and needs the session idle after
+    // (`mark_working` stays false).
     let request = Request {
-        session_id: req.session_id,
-        model,
-        provider,
         instructions: req
             .instructions
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty()),
-        entry_id: None,
-        // The caller shows its own progress and needs the session idle after.
-        mark_working: false,
-    };
+        ..Request::command(req.session_id, model, provider)
+    }
+    .on_conversation_account(deps)
+    .await;
     Ok(crate::compaction::run(deps, request, ids::new_compaction_id()).await)
 }
 

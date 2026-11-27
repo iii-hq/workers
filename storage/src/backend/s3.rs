@@ -28,6 +28,10 @@ pub struct S3Backend {
     /// AWS's default `us-east-1` (which must be sent without one) and R2's
     /// `auto`.
     location_constraint: Option<String>,
+    /// Two buckets with the same scope (provider, endpoint, region,
+    /// addressing and access key) are reachable with one set of credentials,
+    /// so one can `CopyObject` from the other.
+    copy_scope: String,
 }
 
 pub struct S3BackendOpts<'a> {
@@ -53,6 +57,17 @@ pub struct S3StaticCreds {
 
 impl S3Backend {
     pub async fn build(opts: S3BackendOpts<'_>, bucket: String) -> Result<Self, BackendError> {
+        let copy_scope = format!(
+            "{}|{}|{}|{}|{}",
+            opts.provider_tag,
+            opts.endpoint_url.as_deref().unwrap_or(""),
+            opts.region.trim(),
+            opts.force_path_style,
+            opts.credentials
+                .as_ref()
+                .map(|creds| creds.access_key_id.as_str())
+                .unwrap_or("credential chain"),
+        );
         let mut loader = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new(opts.region.to_string()));
         if let Some(creds) = opts.credentials {
@@ -88,6 +103,7 @@ impl S3Backend {
             bucket,
             provider_tag: opts.provider_tag,
             location_constraint,
+            copy_scope,
         })
     }
 
@@ -760,6 +776,71 @@ impl Backend for S3Backend {
         Ok(PresignResp { url, expires_at })
     }
 
+    async fn copy_from(
+        &self,
+        source: &dyn Backend,
+        req: &CopyReq,
+    ) -> Result<Option<CopyResp>, BackendError> {
+        let Some(source) = source.as_any().downcast_ref::<S3Backend>() else {
+            return Ok(None);
+        };
+        if source.copy_scope != self.copy_scope {
+            return Ok(None);
+        }
+        // The CopyObject answer carries no size, and REPLACE needs the
+        // source's content type and metadata: read them, and pin the copy to
+        // the object they describe.
+        let head = source
+            .head(HeadReq {
+                key: req.source_key.clone(),
+                ..Default::default()
+            })
+            .await?;
+        let mut copy = self
+            .client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(&req.key)
+            .copy_source(copy_source(&source.bucket, &req.source_key));
+        if !head.etag.is_empty() {
+            copy = copy.copy_source_if_match(&head.etag);
+        }
+        if !req.keeps_headers() {
+            copy = copy
+                .metadata_directive(aws_sdk_s3::types::MetadataDirective::Replace)
+                .content_type(
+                    req.content_type
+                        .clone()
+                        .unwrap_or_else(|| head.content_type.clone()),
+                );
+            if let Some(cache_control) = &req.cache_control {
+                copy = copy.cache_control(cache_control);
+            }
+            let metadata = req
+                .metadata
+                .clone()
+                .or_else(|| head.metadata.clone())
+                .unwrap_or_default();
+            for (name, value) in metadata {
+                copy = copy.metadata(name, value);
+            }
+        }
+        let resp = copy.send().await.map_err(map_s3_error)?;
+        let etag = resp
+            .copy_object_result
+            .and_then(|result| result.e_tag)
+            .unwrap_or(head.etag);
+        Ok(Some(CopyResp {
+            etag,
+            size: head.size,
+            version_id: resp.version_id,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn provider(&self) -> &'static str {
         self.provider_tag
     }
@@ -874,6 +955,21 @@ fn multipart_invalid(message: &str) -> BackendError {
     }
 }
 
+/// `x-amz-copy-source`: the source bucket and its key, the key
+/// percent-encoded except for its slashes.
+fn copy_source(bucket: &str, key: &str) -> String {
+    const KEY: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'/')
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    format!(
+        "{bucket}/{}",
+        percent_encoding::utf8_percent_encode(key, KEY)
+    )
+}
+
 fn map_s3_error<E>(
     err: aws_sdk_s3::error::SdkError<E, aws_smithy_runtime_api::http::Response>,
 ) -> BackendError
@@ -911,6 +1007,52 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn r2(access_key_id: &str) -> S3Backend {
+        S3Backend::build(
+            S3BackendOpts {
+                region: "auto",
+                credentials: Some(S3StaticCreds {
+                    access_key_id: access_key_id.into(),
+                    secret_access_key: "s".into(),
+                    session_token: None,
+                }),
+                endpoint_url: Some(
+                    "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com".into(),
+                ),
+                force_path_style: false,
+                provider_tag: "r2",
+                fast_fail: true,
+            },
+            "bucket".into(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn the_copy_source_encodes_the_key_but_its_slashes() {
+        assert_eq!(
+            copy_source("workers-staging", "staging/1f/iii app+1 (1).dmg"),
+            "workers-staging/staging/1f/iii%20app%2B1%20%281%29.dmg"
+        );
+        assert_eq!(copy_source("b", "a/b_c-d.e~f"), "b/a/b_c-d.e~f");
+    }
+
+    #[tokio::test]
+    async fn buckets_on_other_credentials_or_providers_do_not_copy_server_side() {
+        let target = r2("key-a").await;
+        let req = CopyReq {
+            source_key: "a".into(),
+            key: "b".into(),
+            ..Default::default()
+        };
+        let other_key = r2("key-b").await;
+        assert!(target.copy_from(&other_key, &req).await.unwrap().is_none());
+        let mock = crate::backend::mock::MockBackend::default();
+        assert!(target.copy_from(&mock, &req).await.unwrap().is_none());
+        assert_eq!(target.copy_scope, r2("key-a").await.copy_scope);
+    }
 
     #[test]
     fn composite_checksum_requires_canonical_digest_and_consistent_type_and_count() {

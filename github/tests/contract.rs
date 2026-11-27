@@ -129,6 +129,6 @@ fn manifest_config_matches_config_yaml() {
         parsed.webhooks.notifications.profile,
         github::webhooks::notifications::NotificationProfile::AgentActionable
     );
-    // quick-tunnel is installed on demand, never as a hard dependency.
-    assert!(manifest["dependencies"].get("quick-tunnel").is_none());
+    // tunnel is installed on demand, never as a hard dependency.
+    assert!(manifest["dependencies"].get("tunnel").is_none());
 }

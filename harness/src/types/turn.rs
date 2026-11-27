@@ -379,6 +379,28 @@ pub struct TurnFailure {
     /// `max_transient_resumes` recovery generations, or a turn the harness could
     /// not schedule.
     pub retryable: bool,
+    /// What the code alone does not say: for `llm.usage_limit`, the limit's
+    /// window and reset and the account that hit it; for
+    /// `harness.unknown_account`, the account that is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<TurnFailureDetails>,
+}
+
+/// [`TurnFailure::details`] (chat-projects contract D).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnFailureDetails {
+    /// The Claude Code account reached its plan's usage limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_limit: bool,
+    /// The limit's window: `five_hour` or `week`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// When the limit's window resets, in unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
+    /// The tmux account id the turn ran on, or was pinned to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
@@ -496,6 +518,28 @@ pub struct TurnRecord {
     /// Why a `failed` turn failed, machine-readable; absent on any other turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<TurnFailure>,
+    /// The Claude Code account this turn runs on and why (chat-projects D139),
+    /// resolved once at its start and frozen: it is also written into
+    /// `options.provider_options["claude-code"].account`. Absent for any other
+    /// provider, and with no tmux worker to resolve it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::TurnAccount>,
+    /// The autocompact setting this turn follows (chat-projects phase 3),
+    /// resolved at its first step: the inline budget it sends and the
+    /// threshold its snapshot marks. Absent before the first step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact: Option<crate::autocompact::TurnAutocompact>,
+    /// The compaction the end of this turn runs (D158), while it runs: the
+    /// record stays `running`, so sends queue, and a side chat reads its
+    /// reply as final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compacting: Option<String>,
+    /// A Stop abandoned the compaction at the end of this turn. It stopped
+    /// the compaction only: the reply was already final, and a message
+    /// queued during it keeps its continuation, so `harness::stop` neither
+    /// takes that continuation back nor stops the turn it seeds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compaction_stopped: bool,
     /// Function ids the spawn granted at dispatch level only (the discovery
     /// pair, the skills fetch): callable by id, never surfaced as native
     /// tools, so a narrowed child's toolset stays exactly its work functions.
@@ -521,6 +565,12 @@ pub struct TurnRecord {
     /// step), also when the step is redelivered after a crash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_seen_step: Option<u64>,
+    /// The reply of the step that opened the turn with only
+    /// `harness::set-description` beside its text. Cleared when the turn makes
+    /// another call or reads a new user message; an empty end then completes
+    /// with it as the result (the go-on note asked for that empty end).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_reply: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -687,12 +737,17 @@ pub(crate) mod tests {
             result_error: None,
             stop_reason: None,
             failure: None,
+            account: None,
+            autocompact: None,
+            compacting: None,
+            compaction_stopped: false,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,
             ask_seen_step: None,
+            opening_reply: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -711,6 +766,7 @@ pub(crate) mod tests {
             failure: Some(TurnFailure {
                 code: "router/provider_transient".into(),
                 retryable: true,
+                details: None,
             }),
             ..record()
         };
@@ -756,6 +812,7 @@ pub(crate) mod tests {
 
         let seen = TurnRecord {
             ask_seen_step: Some(4),
+            opening_reply: None,
             ..record()
         };
         let wire = serde_json::to_value(&seen).unwrap();

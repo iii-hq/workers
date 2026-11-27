@@ -5,7 +5,15 @@
  */
 export type ProjectDialogRequest =
   | { mode: 'new'; folders?: readonly string[] }
-  | { mode: 'edit'; projectId: string }
+  | {
+      mode: 'edit'
+      projectId: string
+      /**
+       * Open on this section: the account (the Projects tab of Claude Code
+       * accounts) or auto-compact (its settings' overrides table).
+       */
+      section?: 'account' | 'autocompact'
+    }
 
 type Listener = (request: ProjectDialogRequest) => void
 

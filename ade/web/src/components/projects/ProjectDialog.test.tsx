@@ -4,7 +4,11 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { seedChatSettingsForTests } from '@/hooks/use-chat-settings'
+import { seedClaudeAccountsForTests } from '@/lib/backend/claude-accounts'
 import type { ChatProject } from '@/lib/backend/projects'
+import { setChatCapabilitiesForTests } from '@/lib/chat-capabilities'
+import { usageFixture } from '@/stories/fixtures/claude-accounts-fixtures'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -24,8 +28,19 @@ vi.mock('@/components/chat/DirectoryPicker', () => ({
   ),
 }))
 const pickNext = { path: '/home/u/work/acme/api' }
+// No engine here: every call fails, so the seeded stores stand. The calls
+// are kept, to read the request a save sends.
+const engine = vi.hoisted(() => ({ calls: [] as [string, unknown][] }))
+vi.mock('@/lib/iii-client', () => ({
+  getIiiClient: async () => ({
+    call: async (fn: string, payload?: unknown) => {
+      engine.calls.push([fn, payload])
+      throw new Error('no engine in tests')
+    },
+  }),
+}))
 
-import { ProjectDialog } from './ProjectDialog'
+import { ProjectDialog, saveProject } from './ProjectDialog'
 
 const billing: ChatProject = {
   id: 'prj_billing',
@@ -118,7 +133,7 @@ describe('New project / Edit project (§1.3.2)', () => {
     // Roots only: the subagent is not counted.
     expect(text).toContain('3 conversations')
     expect(text).toContain('Add folder…')
-    expect(button('Create project')).toBeDefined()
+    expect(button('Create project')).toBeInstanceOf(HTMLButtonElement)
     const swatches = [...dialog().querySelectorAll('[role="radio"]')].map((s) =>
       s.getAttribute('aria-label'),
     )
@@ -248,5 +263,354 @@ describe('New project / Edit project (§1.3.2)', () => {
     )
     act(() => button('Remove folder')?.click())
     expect(dialog().textContent).not.toContain('~/work/billing')
+  })
+})
+
+describe("the project's Claude Code account (§4.3.2)", () => {
+  const section = () =>
+    dialog().querySelector('[data-project-account]') as HTMLElement | null
+  const label = (name: string) =>
+    [...dialog().querySelectorAll('label')].find(
+      (l) => l.textContent === name,
+    ) as HTMLLabelElement | undefined
+
+  afterEach(() => seedClaudeAccountsForTests(null))
+
+  it('is absent short of the whole feature (§4.3.6)', () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0), gate: 'update' })
+    const { save } = render()
+    expect(section()).toBeNull()
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('follows the global account by default, and creates with it', async () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0) })
+    const { save } = render()
+    expect(section()?.textContent).toContain('Claude Code account')
+    expect(section()?.textContent).toContain('Follow the global account')
+    expect(section()?.textContent).toContain('Work now')
+    expect(section()?.textContent).toContain(
+      'Other providers (Codex, API keys) ignore this.',
+    )
+    // A pin starts on another account than the global: none has room
+    // (Personal is at its 5-hour limit), so the first signed-in one.
+    expect(
+      section()?.querySelector('[data-project-account-pin]')?.textContent,
+    ).toBe('Personal · 22% this week')
+    typeName('acme-web')
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ account: { mode: 'global' } }),
+    )
+  })
+
+  it("edits a pinned project's account as part of the patch", async () => {
+    seedClaudeAccountsForTests({ usage: usageFixture(0) })
+    const { save } = render({
+      project: {
+        ...billing,
+        account: { mode: 'pinned', account_id: 'personal' },
+      },
+      initialFolders: undefined,
+    })
+    expect(
+      section()?.querySelector('[data-project-account-pin]')?.textContent,
+    ).toBe('Personal · 22% this week')
+    act(() => label('Follow the global account')?.click())
+    await act(async () => {
+      button('Save')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: { mode: 'global' },
+        changed: { name: false, color: false, folders: false, account: true },
+      }),
+    )
+  })
+})
+
+describe("the project's Auto-compact (§3.3.2)", () => {
+  const section = () =>
+    dialog().querySelector('[data-project-autocompact]') as HTMLElement | null
+  const label = (name: string) =>
+    [...dialog().querySelectorAll('label')].find(
+      (l) => l.textContent === name,
+    ) as HTMLLabelElement | undefined
+  const field = () =>
+    dialog().querySelector(
+      'input[name="project-autocompact-tokens"]',
+    ) as HTMLInputElement
+  const preset = (tokens: number) =>
+    dialog().querySelector(
+      `[data-autocompact-preset="${tokens}"]`,
+    ) as HTMLButtonElement
+  const radios = () => [
+    ...(section()?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ??
+      []),
+  ]
+  const checked = () => radios().findIndex((r) => r.checked)
+
+  function typeTokens(value: string) {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    act(() => {
+      setter?.call(field(), value)
+      field().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  const withPhase3 = () => {
+    setChatCapabilitiesForTests({ autocompact: true, chatSettings: true })
+    seedChatSettingsForTests({
+      descriptions: { agent_writes: true },
+      autocompact: { mode: 'tokens', tokens: 400_000 },
+    })
+  }
+
+  afterEach(() => {
+    setChatCapabilitiesForTests(null)
+    seedChatSettingsForTests(null)
+  })
+
+  it('is absent on a harness without phase 3 (D168)', async () => {
+    const { save } = render()
+    expect(section()).toBeNull()
+    typeName('acme-web')
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save.mock.calls[0]?.[0]).not.toHaveProperty('autocompact')
+  })
+
+  it("has the spec's three choices, the presets and the hint", () => {
+    withPhase3()
+    render()
+    const text = section()?.textContent ?? ''
+    expect(text).toContain('Auto-compact')
+    expect(text).toContain('Use the global setting')
+    expect(text).toContain('at 400k')
+    expect(text).toContain('Compact at')
+    expect(text).toContain("Only at the model's limit")
+    expect(text).toContain(
+      "Whichever comes first: this size or the model's own limit. A 200k Claude model's limit is about 116k, so above that it still compacts at its own limit, as it does today.",
+    )
+    expect(
+      [...dialog().querySelectorAll('[data-autocompact-preset]')].map(
+        (b) => b.textContent,
+      ),
+    ).toEqual(['100k', '160k', '200k', '400k', '800k'])
+    // A new project follows the global.
+    expect(checked()).toBe(0)
+  })
+
+  it('is one clean group of three radios, the field and the sizes beside it', () => {
+    withPhase3()
+    render()
+    // A fieldset named by its legend; the radios share one name.
+    expect(section()?.tagName).toBe('FIELDSET')
+    expect(section()?.querySelector('legend')?.textContent).toBe('Auto-compact')
+    expect(radios().map((r) => r.value)).toEqual(['inherit', 'tokens', 'off'])
+    expect(new Set(radios().map((r) => r.name)).size).toBe(1)
+    expect(radios().map((r) => r.labels?.[0]?.textContent)).toEqual([
+      'Use the global setting',
+      'Compact at',
+      "Only at the model's limit",
+    ])
+    // No radio group owns anything but radios: the field and the presets
+    // sit beside the radios, not inside a group of them.
+    expect(section()?.querySelector('[role="radiogroup"]')).toBeNull()
+    expect(section()?.closest('[role="radiogroup"]')).toBeNull()
+    expect(field().closest('[role="radiogroup"]')).toBeNull()
+    expect(preset(160_000).closest('[role="radiogroup"]')).toBeNull()
+  })
+
+  it('creates with a preset size', async () => {
+    withPhase3()
+    const { save } = render()
+    typeName('acme-web')
+    act(() => preset(160_000).click())
+    expect(preset(160_000).getAttribute('aria-pressed')).toBe('true')
+    expect(field().value).toBe('160k')
+    expect(checked()).toBe(1)
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autocompact: { mode: 'tokens', tokens: 160_000 },
+      }),
+    )
+  })
+
+  it('typing a size picks "Compact at" and refuses one out of range', async () => {
+    withPhase3()
+    const { save } = render()
+    // The dialog focuses its name once it is open; the refusal's focus
+    // comes after that, as it does for a person.
+    await act(async () => {
+      for (let i = 0; i < 100 && document.activeElement !== nameInput(); i++)
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    expect(document.activeElement).toBe(nameInput())
+    typeName('acme-web')
+    typeTokens('3M')
+    expect(checked()).toBe(1)
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save).not.toHaveBeenCalled()
+    expect(section()?.querySelector('[role="alert"]')?.textContent).toBe(
+      'Between 20k and 2M tokens',
+    )
+    expect(document.activeElement).toBe(field())
+    typeTokens('1.2M')
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autocompact: { mode: 'tokens', tokens: 1_200_000 },
+      }),
+    )
+  })
+
+  it("edits a project's size into the patch", async () => {
+    withPhase3()
+    const { save } = render({
+      project: { ...billing, autocompact: { mode: 'tokens', tokens: 160_000 } },
+      initialFolders: undefined,
+    })
+    expect(field().value).toBe('160k')
+    expect(checked()).toBe(1)
+    act(() => label("Only at the model's limit")?.click())
+    await act(async () => {
+      button('Save')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autocompact: { mode: 'off' },
+        changed: {
+          name: false,
+          color: false,
+          folders: false,
+          autocompact: true,
+        },
+      }),
+    )
+  })
+
+  it('leaves an unchanged value out of the patch', async () => {
+    withPhase3()
+    const { save } = render({
+      project: { ...billing, autocompact: { mode: 'off' } },
+      initialFolders: undefined,
+    })
+    expect(checked()).toBe(2)
+    typeName('billing')
+    await act(async () => {
+      button('Save')?.click()
+    })
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        changed: expect.objectContaining({ autocompact: false }),
+      }),
+    )
+  })
+
+  describe.each([
+    [123_456, '123k'],
+    [400_500, '401k'],
+    [1_234_567, '1.2M'],
+  ])('an exact size it did not edit (%d, shown %s)', (exact, shown) => {
+    const project = {
+      ...billing,
+      autocompact: { mode: 'tokens', tokens: exact },
+    }
+
+    it('a rename leaves it out of the patch, exact', async () => {
+      withPhase3()
+      const { save } = render({ project, initialFolders: undefined })
+      expect(field().value).toBe(shown)
+      expect(checked()).toBe(1)
+      typeName('billing')
+      await act(async () => {
+        button('Save')?.click()
+      })
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autocompact: { mode: 'tokens', tokens: exact },
+          changed: expect.objectContaining({ name: true, autocompact: false }),
+        }),
+      )
+    })
+
+    it('the request a rename sends carries the name only', async () => {
+      withPhase3()
+      engine.calls.length = 0
+      render({ project, initialFolders: undefined, save: saveProject })
+      typeName('billing')
+      await act(async () => {
+        button('Save')?.click()
+      })
+      const updates = engine.calls.filter(
+        ([fn]) => fn === 'harness::projects::update',
+      )
+      expect(updates).toEqual([
+        ['harness::projects::update', { id: 'prj_billing', name: 'billing' }],
+      ])
+    })
+  })
+
+  it('names no global value before the settings are read', () => {
+    setChatCapabilitiesForTests({ autocompact: true, chatSettings: true })
+    seedChatSettingsForTests(null)
+    render({ project: billing, initialFolders: undefined })
+    // The first choice's row: the label, and no "at …" until it is known.
+    expect(section()?.querySelector('div')?.textContent).toBe(
+      'Use the global setting',
+    )
+  })
+
+  it("shows the harness's typed rejection under the section (D167)", async () => {
+    withPhase3()
+    const failing = vi.fn(() =>
+      Promise.reject({
+        code: 'invocation_failed',
+        message: `handler error: ${JSON.stringify({
+          code: 'bad_tokens',
+          message: 'Between 20k and 2M tokens',
+        })}`,
+      }),
+    )
+    render({ save: failing as never })
+    typeName('acme-web')
+    act(() => preset(800_000).click())
+    await act(async () => {
+      button('Create project')?.click()
+    })
+    expect(section()?.querySelector('[role="alert"]')?.textContent).toBe(
+      'Between 20k and 2M tokens',
+    )
+  })
+
+  it('opens on the section with its checked choice focused', async () => {
+    withPhase3()
+    render({
+      project: { ...billing, autocompact: { mode: 'off' } },
+      initialSection: 'autocompact',
+    })
+    await act(async () => {
+      for (
+        let i = 0;
+        i < 100 && !section()?.contains(document.activeElement);
+        i++
+      )
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    expect(document.activeElement).toBe(radios()[2])
   })
 })

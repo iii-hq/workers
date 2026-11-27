@@ -284,18 +284,18 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell) {
                 .map_err(iii_sdk::Error::from)
             }
         })
-        .description("Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within webhooks.max_watch_days (default 30, the quick-tunnel lease cap). Refuses with the fix list when a webhook prerequisite is missing (see github::setup::webhooks-status)."),
+        .description("Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within webhooks.max_watch_days (default 30, the tunnel lease cap). Refuses with the fix list when a webhook prerequisite is missing (see github::setup::webhooks-status)."),
     );
     function!(
         "github::setup::webhooks-status",
-        "Checklist of PR webhook prerequisites (quick-tunnel worker, cloudflared binary, http webhook listener), whether webhooks are enabled/active, and how to fix each missing item. Read-only; never installs anything.",
+        "Checklist of PR webhook prerequisites (tunnel worker, cloudflared binary, http webhook listener), whether webhooks are enabled/active, and how to fix each missing item. Read-only; never installs anything.",
         setup::SetupStatusRequest,
         setup::SetupStatus,
         setup_status
     );
     function!(
         "github::setup::enable-http-listener",
-        "Turn on the http worker's restricted webhook listener (127.0.0.1, default port 3112) that quick-tunnel forwards GitHub deliveries to. Returns the updated checklist.",
+        "Turn on the http worker's restricted webhook listener (127.0.0.1, default port 3112) that tunnel forwards GitHub deliveries to. Returns the updated checklist.",
         setup::EnableListenerRequest,
         setup::SetupStatus,
         enable_http_listener
@@ -498,7 +498,7 @@ pub(super) fn observed_sources(
             ObserverOptions::default().id(queue_observer),
         ),
         (
-            Source::function("quick-tunnel::on-changed")
+            Source::function("tunnel::on-changed")
                 .filters(json!({ "input.tunnel_id": { "$eq": config.tunnel_id } }))
                 .capture([Capture::Output]),
             "github::webhooks::tunnel-changed",
@@ -646,8 +646,8 @@ mod metadata_tests {
         };
         let tunnel_filters = serde_json::json!({ "input.tunnel_id": { "$eq": config.tunnel_id } });
         assert_eq!(
-            source("quick-tunnel::on-changed"),
-            Source::function("quick-tunnel::on-changed")
+            source("tunnel::on-changed"),
+            Source::function("tunnel::on-changed")
                 .filters(tunnel_filters)
                 .capture([Capture::Output])
         );

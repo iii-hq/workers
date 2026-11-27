@@ -1,3 +1,4 @@
+import { turnStartedAt } from '@/lib/turn-starts'
 import type { FunctionCallMessage, Message } from '@/types/chat'
 
 /**
@@ -148,23 +149,52 @@ export function changedFilesFromCalls(
 }
 
 /**
- * How long the turn took up to this reply: from the user message that
- * started it to the reply's own timestamp. Null when no user message
+ * The harness turn a transcript reply belongs to: its entry is
+ * `e_<turn_id>_<step>_assistant` (harness/src/ids.rs), a block of it
+ * `…:<index>`. Null for a reply streamed here (local ids).
+ */
+export function harnessTurnOf(messageId: string): string | null {
+  return /^e_(.+)_\d+_assistant(?::\d+)?$/.exec(messageId)?.[1] ?? null
+}
+
+/** A row that ends a turn other than `turn`: its failure, or one of its replies. */
+function otherTurnRow(m: Message, turn: string): boolean {
+  if (m.role === 'system' && m.kind === 'turn-failure') {
+    return !m.id.startsWith(`e_${turn}_`)
+  }
+  if (m.role !== 'assistant') return false
+  const own = harnessTurnOf(m.id)
+  return own !== null && own !== turn
+}
+
+/**
+ * How long the turn took up to this reply: from the turn's own start to the
+ * reply's timestamp. A turn a user message started runs from that message.
+ * A turn that started without one (`harness::retry` re-runs a failed turn:
+ * the failure sits between the message and this reply) runs from the start
+ * this tab noted when it asked for it, or has no duration: never one
+ * measured from the failed turn's message. Null too when no user message
  * precedes it (a seeded or imported transcript) or the clock ran backwards.
  */
 export function turnDurationMs(
   messages: readonly Message[],
   assistantId: string,
+  startedAt: (turnId: string) => number | undefined = turnStartedAt,
 ): number | null {
   const index = messages.findIndex((m) => m.id === assistantId)
   if (index < 0) return null
   const reply = messages[index]
+  const since = (start: number) => {
+    const delta = reply.createdAt - start
+    return delta >= 0 ? delta : null
+  }
+  const turn = harnessTurnOf(reply.id)
+  const noted = turn ? startedAt(turn) : undefined
+  if (noted !== undefined) return since(noted)
   for (let i = index - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role === 'user') {
-      const delta = reply.createdAt - m.createdAt
-      return delta >= 0 ? delta : null
-    }
+    if (m.role === 'user') return since(m.createdAt)
+    if (turn && otherTurnRow(m, turn)) return null
   }
   return null
 }

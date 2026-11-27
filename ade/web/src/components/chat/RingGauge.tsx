@@ -9,6 +9,12 @@ interface RingGaugeProps {
   stroke?: number
   /** The arc takes `currentColor`: tone it with a text colour utility. */
   className?: string
+  /**
+   * A threshold on the ring, 0–1 from twelve o'clock: a short amber
+   * (Warning) mark across the track, such as where auto-compact fires
+   * (chat-projects §3.3.3).
+   */
+  tick?: number | null
 }
 
 /**
@@ -23,12 +29,14 @@ export function RingGauge({
   size = 16,
   stroke = 2.5,
   className,
+  tick,
 }: RingGaugeProps) {
   const share = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0
   const centre = size / 2
   const radius = (size - stroke) / 2
   const circumference = 2 * Math.PI * radius
   const arc = share * circumference
+  const mark = tickLine(tick, centre, radius, stroke)
   return (
     <svg
       className={cn('block shrink-0', className)}
@@ -62,6 +70,35 @@ export function RingGauge({
           className="transition-[stroke-dasharray] duration-[var(--motion-duration-panel)] ease-[var(--motion-ease-standard)]"
         />
       ) : null}
+      {mark ? (
+        <line
+          data-ring-tick=""
+          {...mark}
+          stroke="var(--color-warn)"
+          strokeWidth={1.5}
+          strokeLinecap="round"
+        />
+      ) : null}
     </svg>
   )
+}
+
+/** The tick's two ends: across the track, from just inside it to the edge. */
+function tickLine(
+  tick: number | null | undefined,
+  centre: number,
+  radius: number,
+  stroke: number,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  if (tick == null || !Number.isFinite(tick)) return null
+  const angle = Math.min(1, Math.max(0, tick)) * 2 * Math.PI - Math.PI / 2
+  const inner = Math.max(0, radius - stroke / 2 - 0.75)
+  const outer = centre
+  const round = (n: number) => Math.round(n * 100) / 100
+  return {
+    x1: round(centre + inner * Math.cos(angle)),
+    y1: round(centre + inner * Math.sin(angle)),
+    x2: round(centre + outer * Math.cos(angle)),
+    y2: round(centre + outer * Math.sin(angle)),
+  }
 }

@@ -2,9 +2,14 @@
  * The harness's chat settings (`harness::chat-settings::*`, chat-projects
  * §1.2.5) for the whole tab: read once when the engine has them, kept current
  * by `harness::chat-settings::on-changed`, written as a server-side merge.
- * Phase 1 reads `descriptions.agent_writes` (Session descriptions).
+ * Phase 1 reads `descriptions.agent_writes` (Session descriptions); phase 3
+ * the global `autocompact` (Settings › Chat › Auto-compact, §3.3.1).
  */
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import {
+  type GlobalAutocompact,
+  parseGlobalAutocompact,
+} from '@/lib/autocompact'
 import {
   CHAT_SETTINGS_CHANGED_FUNCTION_ID,
   type ChatSettings,
@@ -87,9 +92,25 @@ export interface ChatSettingsApi {
   /** The engine has `harness::chat-settings::*`. */
   available: boolean
   settings: ChatSettings | null
+  /**
+   * The settings have been read: until then `autocompact` is a placeholder
+   * (off), never shown as what applies.
+   */
+  loaded: boolean
   /** Agents write descriptions (`descriptions.agent_writes`, default true). */
   agentWrites: boolean
   setAgentWrites: (on: boolean) => Promise<void>
+  /**
+   * The global auto-compact (phase 3); off until the settings are read, and
+   * on an engine without it.
+   */
+  autocompact: GlobalAutocompact
+  /**
+   * Write the whole global auto-compact. A typed rejection (`bad_tokens`,
+   * `bad_instructions`, `bad_setting`, D167) is thrown back with the
+   * shown value restored.
+   */
+  setAutocompact: (next: GlobalAutocompact) => Promise<void>
 }
 
 export function useChatSettings(enabled = true): ChatSettingsApi {
@@ -105,6 +126,7 @@ export function useChatSettings(enabled = true): ChatSettingsApi {
     () => ({
       available,
       settings: current.settings,
+      loaded: current.settings !== null,
       agentWrites: current.settings?.descriptions.agent_writes ?? true,
       setAgentWrites: async (on: boolean) => {
         const before = current.settings
@@ -116,6 +138,17 @@ export function useChatSettings(enabled = true): ChatSettingsApi {
         }
         try {
           set(await setChatSettings({ descriptions: { agent_writes: on } }))
+        } catch (err) {
+          set(before)
+          throw err
+        }
+      },
+      autocompact: parseGlobalAutocompact(current.settings?.autocompact),
+      setAutocompact: async (next: GlobalAutocompact) => {
+        const before = current.settings
+        if (before) set({ ...before, autocompact: next })
+        try {
+          set(await setChatSettings({ autocompact: next }))
         } catch (err) {
           set(before)
           throw err

@@ -28,6 +28,19 @@ Feature: context::assemble — the model-ready context pipeline
     And the response messages equal the request history
     And the summariser was never invoked
 
+  # Prevents: tool-image aging reaching models whose vision support is
+  # unknown (inline limits), even on a window too small to keep any.
+  Scenario: an inline model keeps a seen tool image
+    Given inline model "small-inline" with context window 30000 and max output 2000
+    And a user message "look"
+    And an assistant function call "shot" to "browser::screenshot"
+    And a function result for call "shot" from "browser::screenshot" containing an image of 400 chars
+    And an assistant message "seen"
+    And a user message "next"
+    When I assemble the history with model "small-inline"
+    Then the call succeeds
+    And the response messages equal the request history
+
   Scenario: a known text-only model receives an image placeholder
     Given the router knows model "text-only" with context window 200000 and max output 8000
     And the router model "text-only" declares vision support false

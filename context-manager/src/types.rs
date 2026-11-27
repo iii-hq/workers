@@ -359,6 +359,126 @@ impl From<EstimatorKind> for EstimatorName {
     }
 }
 
+/// `router::chat`'s `provider_options`, namespaced by provider id (e.g.
+/// `{"claude-code": {"account": "…"}}`). Forwarded verbatim; the router
+/// hands each provider its own slice.
+pub type ProviderOptions = BTreeMap<String, Value>;
+
+/// Why a summariser produced no summary, in words a caller can show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// The account's usage limit is reached (llm-router's
+    /// `error_details.usage_limit`): waiting a moment does not help.
+    UsageLimit,
+    /// The provider is busy right now (`rate_limited` without a usage limit).
+    RateLimited,
+    /// The input did not fit: the provider refused it as larger than the
+    /// model's window, or the history needs more summary calls, or more room
+    /// than the window leaves. The only kind a larger window would fix.
+    InputTooLarge,
+    /// The summary took longer than its time budget, or the router's stream
+    /// timed out.
+    Timeout,
+    /// No summariser: llm-router is absent, or no provider can serve it.
+    Unavailable,
+    /// Anything else: an authentication problem, a transient provider error,
+    /// an empty summary.
+    Other,
+}
+
+/// The usage window an account's limit belongs to (llm-router's
+/// `UsageWindow`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageWindow {
+    FiveHour,
+    Week,
+}
+
+/// llm-router's `error_details` (D147), passed through from the router's
+/// error: what an error's kind alone does not say.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ErrorDetails {
+    /// The account's usage limit is reached.
+    #[serde(default)]
+    pub usage_limit: bool,
+    /// Which limit was reached, when the provider said so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<UsageWindow>,
+    /// When that limit resets, in milliseconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
+}
+
+impl ErrorDetails {
+    /// Read `error_details` field by field, as llm-router does: an object,
+    /// else nothing; a `window` or `resets_at_ms` this version cannot read is
+    /// absent and never costs `usage_limit`.
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            usage_limit: object
+                .get("usage_limit")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            window: object
+                .get("window")
+                .and_then(|window| serde_json::from_value(window.clone()).ok()),
+            resets_at_ms: object.get("resets_at_ms").and_then(Value::as_u64),
+        })
+    }
+}
+
+/// The cause of a failed summary: `context::compact`'s `overflow`, the
+/// assemble's `compaction.failure`, and the tail of a `context/overflow`
+/// error that follows a failed inline compaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Failure {
+    pub kind: FailureKind,
+    /// What happened, in a sentence: the router's user-facing message when
+    /// the router said why, else this worker's own.
+    pub message: String,
+    /// The router's `error_details`, when it sent them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<ErrorDetails>,
+}
+
+impl Failure {
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            error_details: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: Option<ErrorDetails>) -> Self {
+        self.error_details = details;
+        self
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// A failure with no named cause (`other`).
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self::new(FailureKind::Other, message)
+    }
+}
+
+/// A failure with no named cause (`other`).
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        Self::new(FailureKind::Other, message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

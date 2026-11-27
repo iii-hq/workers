@@ -634,6 +634,41 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { crate::side_chat::summarize(&d, r).await },
     );
 
+    // Claude Code accounts in the Chat (chat-projects phase 4, D142, D133):
+    // control-plane like the rest (D37). Agents are denied `harness::retry`.
+    register_internal(
+        iii,
+        deps,
+        crate::accounts::RETRY_ID,
+        crate::accounts::RETRY_DESC,
+        |d, r| async move { crate::accounts::retry(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::accounts::ACCOUNT_SPLIT_ID,
+        crate::accounts::ACCOUNT_SPLIT_DESC,
+        |d, r| async move { crate::accounts::account_split(&d, r).await },
+    );
+
+    // Autocompact (chat-projects phase 3, D165, D166): control-plane for the
+    // settings page, denied to agents. `harness::autocompact::models` is how
+    // the surfaces detect phase 3 (D168).
+    register_internal(
+        iii,
+        deps,
+        crate::autocompact::MODELS_ID,
+        crate::autocompact::MODELS_DESC,
+        |d, r| async move { crate::autocompact::models(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        crate::autocompact::LOG_ID,
+        crate::autocompact::LOG_DESC,
+        |d, r| async move { crate::autocompact::log(&d, r).await },
+    );
+
     // Internal cron target — registered, but kept off the public catalog.
     register_internal(
         iii,
@@ -720,6 +755,7 @@ mod tests {
         // order, so the read waits for all of them, then for the stragglers.
         let awaited = [
             crate::side_chat::SUMMARIZE_ID,
+            crate::accounts::ACCOUNT_SPLIT_ID,
             "harness::projects::on-changed",
             "harness::chat-settings::on-changed",
         ];
@@ -754,7 +790,8 @@ mod tests {
     /// `harness::ask::list`, `harness::ask::withdraw` and
     /// `harness::link-card`) plus `harness::set-description`, which the
     /// model must find. The sidechat
-    /// functions of phase 2 are control-plane too (D37).
+    /// functions of phase 2 are control-plane too (D37), and so are phase
+    /// 4's `harness::retry` and `harness::metrics::account-split`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn only_the_model_facing_functions_are_on_the_default_catalog() {
         let seen = registered_visibility().await;
@@ -777,6 +814,8 @@ mod tests {
             "harness::side-chat::close",
             "harness::side-chat::keep",
             "harness::side-chat::summarize",
+            "harness::retry",
+            "harness::metrics::account-split",
         ] {
             assert_eq!(
                 seen.get(id),

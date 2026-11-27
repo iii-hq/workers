@@ -18,8 +18,69 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "AutocompactConfig": {
+        "additionalProperties": false,
+        "description": "[`WorkerConfig::autocompact`]. `tokens` and `instructions` are kept while the mode is `off`, so turning it back on restores them.",
+        "properties": {
+          "instructions": {
+            "description": "What the summary keeps, up to 1,000 characters: sent with every automatic compaction, as the text after `/compact` is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AutocompactMode"
+              }
+            ],
+            "default": "off"
+          },
+          "tokens": {
+            "description": "The threshold in tokens, 20,000 to 2,000,000.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "AutocompactMode": {
+        "description": "[`WorkerConfig::autocompact`]'s mode.",
+        "oneOf": [
+          {
+            "description": "Compact only at the model's own limit, as before autocompact.",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Compact at `tokens` (or the model's limit, when smaller).",
+            "enum": [
+              "tokens"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ChatSettings": {
         "properties": {
+          "autocompact": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AutocompactConfig"
+              }
+            ],
+            "default": {
+              "mode": "off"
+            },
+            "description": "The global autocompact setting (chat-projects phase 3): `off` (the default) or `tokens`; `tokens` and `instructions` stay while off."
+          },
           "descriptions": {
             "$ref": "#/definitions/DescriptionsSettings"
           }

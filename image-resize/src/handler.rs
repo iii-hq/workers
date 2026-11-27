@@ -1,285 +1,136 @@
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_util::StreamExt;
-use iii_sdk::errors::Error;
-use iii_sdk::protocol::{ChannelItem, StreamChannelRef, extract_channel_refs};
-use iii_sdk::{InputStream, OutputStream};
+use futures_util::{Stream, StreamExt};
+use iii_sdk::protocol::ChannelItem;
+use iii_sdk::{Error, InputStream, OutputStream};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
-use crate::config::ResizeConfig;
-use crate::processing::{ImageMetadata, ThumbnailMetadata, process_image, resolve_params};
+use crate::config::{ResizeConfig, check_quality};
+use crate::processing::{
+    ImageMetadata, ThumbnailMetadata, deprecated_keys, invalid, process_image, resolve_params,
+    sniff,
+};
 
-// ---------------------------------------------------------------------------
-// ResizeRequest
-// ---------------------------------------------------------------------------
+/// Largest input read from `input_channel`.
+pub const MAX_INPUT_BYTES: usize = 64 << 20;
 
-#[derive(Deserialize, Debug)]
-#[allow(dead_code)] // Used in tests; available for future typed deserialization
+#[derive(Deserialize, JsonSchema)]
 pub struct ResizeRequest {
-    pub input_channel: StreamChannelRef,
-    pub output_channel: StreamChannelRef,
-    pub metadata: Option<ImageMetadata>,
+    pub input_channel: InputStream,
+    pub output_channel: OutputStream,
+    // A Value so a bad one is reported after the handler holds output_channel
+    // and can abort it; a typed field would fail inside the SDK before that.
+    #[schemars(with = "Option<ImageMetadata>")]
+    pub metadata: Option<Value>,
+    // Rejected in `run` so output_channel is aborted; unskipped, the schema would allow any key.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub rest: serde_json::Map<String, Value>,
 }
 
-// ---------------------------------------------------------------------------
-// handle_resize
-// ---------------------------------------------------------------------------
-
-/// Opens a ref found in the payload as the stream it stands for (0.27: a read
-/// ref deserializes to an `InputStream`, a write ref to an `OutputStream`).
-fn open<T: serde::de::DeserializeOwned>(channel: &StreamChannelRef) -> Result<T, Error> {
-    serde_json::to_value(channel)
-        .and_then(serde_json::from_value)
-        .map_err(|e| Error::Serde(e.to_string()))
-}
-
-pub async fn handle_resize(
-    config: Arc<ResizeConfig>,
-    input_ref: &StreamChannelRef,
-    output_ref: &StreamChannelRef,
-    metadata_override: Option<ImageMetadata>,
-) -> Result<Value, Error> {
-    let reader: InputStream = open(input_ref)?;
-    let writer: OutputStream = open(output_ref)?;
-
-    let (metadata, image_bytes) = if let Some(meta) = metadata_override {
-        // metadata provided inline: read binary directly
-        let bytes = reader.read_all().await?;
-        (meta, bytes)
-    } else {
-        // a text frame (metadata JSON) first, then the binary image frame
-        let mut meta_json: Option<String> = None;
-        let mut image_bytes: Option<Vec<u8>> = None;
-        let mut frames = reader.frames();
-        while let Some(frame) = frames.next().await {
-            match frame? {
-                ChannelItem::Text(text) => {
-                    meta_json.get_or_insert(text);
+/// Every binary frame of the input, up to `cap` bytes in all.
+pub async fn read_image(
+    mut frames: impl Stream<Item = Result<ChannelItem, Error>> + Unpin,
+    cap: usize,
+) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    while let Some(frame) = frames.next().await {
+        match frame? {
+            ChannelItem::Binary(chunk) => {
+                if bytes.len() + chunk.len() > cap {
+                    return Err(invalid(format!("input_channel exceeds {cap} bytes")));
                 }
-                ChannelItem::Binary(data) => {
-                    image_bytes = Some(data);
-                    break;
-                }
+                bytes.extend_from_slice(&chunk);
+            }
+            ChannelItem::Text(_) => {
+                return Err(invalid(
+                    "input_channel carries only image bytes; pass options in `metadata`",
+                ));
             }
         }
-        let image_bytes = image_bytes
-            .ok_or_else(|| Error::Handler("stream closed before binary frame".to_string()))?;
-        let meta_json = meta_json
-            .ok_or_else(|| Error::Handler("no metadata text frame received".to_string()))?;
-
-        let meta: ImageMetadata = serde_json::from_str(&meta_json)
-            .map_err(|e| Error::Handler(format!("invalid metadata JSON: {e}")))?;
-
-        (meta, image_bytes)
-    };
-
-    process_and_write(config, metadata, image_bytes, &writer, &reader).await
+    }
+    if bytes.is_empty() {
+        return Err(invalid("input_channel carried no image bytes"));
+    }
+    Ok(bytes)
 }
 
-// ---------------------------------------------------------------------------
-// process_and_write
-// ---------------------------------------------------------------------------
-
-pub async fn process_and_write(
+/// The `image_resize::resize` handler: on success output_channel carries the
+/// result as one JSON text frame, then the image bytes.
+pub async fn resize(
     config: Arc<ResizeConfig>,
-    metadata: ImageMetadata,
-    image_bytes: Vec<u8>,
-    writer: &OutputStream,
-    reader: &InputStream,
-) -> Result<Value, Error> {
-    tracing::info!(
-        format = %metadata.format,
-        output_format = ?metadata.output_format,
-        "received metadata"
-    );
-
-    let params = resolve_params(&config, &metadata)
-        .map_err(|e| Error::Handler(format!("param resolution failed: {e}")))?;
-
-    tracing::info!(
-        input_format = ?params.input_format,
-        output_format = ?params.output_format,
-        "resolved params"
-    );
-
-    let strategy_str = match params.strategy {
-        crate::config::ResizeStrategy::ScaleToFit => "scale-to-fit",
-        crate::config::ResizeStrategy::CropToFit => "crop-to-fit",
+    permits: Arc<Semaphore>,
+    req: ResizeRequest,
+) -> Result<ThumbnailMetadata, Error> {
+    let result = run(&config, permits, &req).await;
+    if let Err(error) = &result {
+        // The SDK leaves an output the handler never used open on failure; a
+        // caller reading it first would wait for the engine's sweep.
+        let _ = req.output_channel.abort(error.to_string()).await;
     }
-    .to_string();
+    result
+}
 
-    let out_format = match params.output_format {
-        image::ImageFormat::Jpeg => "jpeg",
-        image::ImageFormat::Png => "png",
-        image::ImageFormat::WebP => "webp",
-        _ => "unknown",
+async fn run(
+    config: &ResizeConfig,
+    permits: Arc<Semaphore>,
+    req: &ResizeRequest,
+) -> Result<ThumbnailMetadata, Error> {
+    // The engine adds `_`-prefixed keys such as `_caller_worker_id`.
+    if let Some(key) = req.rest.keys().find(|k| !k.starts_with('_')) {
+        return Err(invalid(format!(
+            "unknown request key `{key}`; per-call options go in `metadata`"
+        )));
     }
-    .to_string();
+    let meta = match &req.metadata {
+        None | Some(Value::Null) => ImageMetadata::default(),
+        // Serde would also take the struct as a positional array.
+        Some(value @ Value::Object(fields)) => {
+            let meta = ImageMetadata::deserialize(value)
+                .map_err(|e| invalid(format!("invalid metadata: {e}")))?;
+            let deprecated = deprecated_keys(fields);
+            if !deprecated.is_empty() {
+                tracing::warn!(
+                    keys = ?deprecated,
+                    "metadata keys format, width and height are deprecated and ignored; they will be removed in the next version"
+                );
+            }
+            meta
+        }
+        Some(_) => return Err(invalid("invalid metadata: expected an object")),
+    };
+    // Fail a bad override before waiting on the input stream.
+    if let Some(quality) = meta.quality {
+        check_quality(quality).map_err(invalid)?;
+    }
+    let bytes = read_image(req.input_channel.frames(), MAX_INPUT_BYTES).await?;
+    let params = resolve_params(config, &meta, sniff(&bytes)?)?;
 
-    let thumbnail_bytes = tokio::task::spawn_blocking(move || process_image(&image_bytes, &params))
+    let permit = permits
+        .acquire_owned()
         .await
-        .map_err(|e| Error::Handler(format!("spawn_blocking join error: {e}")))?
-        .map_err(|e| Error::Handler(format!("image processing failed: {e}")))?;
+        .map_err(|e| Error::Handler(e.to_string()))?;
+    let (out, result) = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        process_image(&bytes, &params)
+    })
+    .await
+    .map_err(|e| Error::Handler(format!("image processing panicked: {e}")))??;
 
-    // Decode thumbnail to get output dimensions
-    let output_img = image::load_from_memory(&thumbnail_bytes)
-        .map_err(|e| Error::Handler(format!("failed to decode output image: {e}")))?;
-
-    let thumb_meta = ThumbnailMetadata {
-        format: out_format,
-        width: output_img.width(),
-        height: output_img.height(),
-        strategy: strategy_str,
-    };
-
-    // Send metadata text frame
-    let meta_json = serde_json::to_string(&thumb_meta)
-        .map_err(|e| Error::Handler(format!("failed to serialize thumbnail metadata: {e}")))?;
-    writer.send_text(&meta_json).await?;
-
-    // Send binary thumbnail frame
-    writer.write(&thumbnail_bytes).await?;
-
-    // Close the output; stop reading whatever is left of the input
-    writer.close().await?;
-    reader.cancel().await;
-
-    let result = serde_json::to_value(&thumb_meta)
-        .map_err(|e| Error::Handler(format!("failed to convert metadata to Value: {e}")))?;
-
+    req.output_channel.send(&result).await?;
+    req.output_channel.write(&out).await?;
+    req.output_channel.close().await?;
+    tracing::debug!(
+        width = result.width,
+        height = result.height,
+        source_width = result.source_width,
+        source_height = result.source_height,
+        format = ?result.format,
+        strategy = ?result.strategy,
+        "image resized"
+    );
     Ok(result)
-}
-
-// ---------------------------------------------------------------------------
-// build_handler
-// ---------------------------------------------------------------------------
-
-pub fn build_handler(
-    config: Arc<ResizeConfig>,
-) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> + Send + Sync + 'static
-{
-    move |payload: Value| {
-        let config = config.clone();
-
-        Box::pin(async move {
-            let refs = extract_channel_refs(&payload);
-
-            let input_ref = refs
-                .iter()
-                .find(|(name, _)| name == "input_channel")
-                .map(|(_, r)| r.clone())
-                .ok_or_else(|| Error::Handler("missing input_channel ref".to_string()))?;
-
-            let output_ref = refs
-                .iter()
-                .find(|(name, _)| name == "output_channel")
-                .map(|(_, r)| r.clone())
-                .ok_or_else(|| Error::Handler("missing output_channel ref".to_string()))?;
-
-            let metadata: Option<ImageMetadata> = payload
-                .get("metadata")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
-
-            handle_resize(config, &input_ref, &output_ref, metadata).await
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use iii_sdk::protocol::ChannelDirection;
-    use serde_json::json;
-
-    fn make_channel_ref(id: &str, dir: &str) -> Value {
-        json!({
-            "channel_id": id,
-            "access_key": "test-key",
-            "direction": dir,
-        })
-    }
-
-    #[test]
-    fn test_resize_request_deserializes() {
-        let payload = json!({
-            "input_channel": {
-                "channel_id": "ch-in-001",
-                "access_key": "key-abc",
-                "direction": "read"
-            },
-            "output_channel": {
-                "channel_id": "ch-out-001",
-                "access_key": "key-def",
-                "direction": "write"
-            }
-        });
-
-        let req: ResizeRequest = serde_json::from_value(payload).unwrap();
-        assert_eq!(req.input_channel.channel_id, "ch-in-001");
-        assert_eq!(req.output_channel.channel_id, "ch-out-001");
-        assert!(req.metadata.is_none());
-    }
-
-    #[test]
-    fn test_resize_request_with_metadata_override() {
-        let payload = json!({
-            "input_channel": {
-                "channel_id": "ch-in-002",
-                "access_key": "key-abc",
-                "direction": "read"
-            },
-            "output_channel": {
-                "channel_id": "ch-out-002",
-                "access_key": "key-def",
-                "direction": "write"
-            },
-            "metadata": {
-                "format": "jpeg",
-                "width": 1920,
-                "height": 1080
-            }
-        });
-
-        let req: ResizeRequest = serde_json::from_value(payload).unwrap();
-        assert_eq!(req.input_channel.channel_id, "ch-in-002");
-        assert_eq!(req.output_channel.channel_id, "ch-out-002");
-
-        let meta = req.metadata.unwrap();
-        assert_eq!(meta.format, "jpeg");
-        assert_eq!(meta.width, 1920);
-        assert_eq!(meta.height, 1080);
-    }
-
-    #[test]
-    fn test_channel_refs_extracted_from_payload() {
-        let payload = json!({
-            "input_channel": make_channel_ref("ch-in-003", "read"),
-            "output_channel": make_channel_ref("ch-out-003", "write"),
-            "some_other_field": "value"
-        });
-
-        let refs = extract_channel_refs(&payload);
-
-        let input = refs.iter().find(|(name, _)| name == "input_channel");
-        let output = refs.iter().find(|(name, _)| name == "output_channel");
-
-        assert!(input.is_some(), "should find input_channel ref");
-        assert!(output.is_some(), "should find output_channel ref");
-
-        let (_, input_ref) = input.unwrap();
-        let (_, output_ref) = output.unwrap();
-
-        assert_eq!(input_ref.channel_id, "ch-in-003");
-        assert_eq!(output_ref.channel_id, "ch-out-003");
-
-        assert!(matches!(input_ref.direction, ChannelDirection::Read));
-        assert!(matches!(output_ref.direction, ChannelDirection::Write));
-    }
 }

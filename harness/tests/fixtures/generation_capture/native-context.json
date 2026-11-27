@@ -79,6 +79,11 @@
         "system_prompt_tokens": 21,
         "tools_tokens": 0
       },
+      "compaction": {
+        "status": "compacted",
+        "trigger": "usable"
+      },
+      "compaction_budget": null,
       "effective_max_output_tokens": 128,
       "input_indices": [
         4

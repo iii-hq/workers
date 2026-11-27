@@ -11,8 +11,8 @@
 //! of the rule's `actors`, is claimed (moved to `in_progress` with the
 //! `starting` pill) and started with `harness::send`. A card beyond the
 //! project's `max_running` waits in To do with the `queued` pill and starts
-//! when a running one leaves In progress. A card carrying `dw:run` (an earlier
-//! deepwork run) is resumed instead of started anew.
+//! when a running one leaves In progress. A card carrying `dw:run` or `wf:run`
+//! (an earlier deepwork or workflow run) is resumed instead of started anew.
 //!
 //! The session id is `dispatch-<key>-<claim seq>`: the claim's activity
 //! sequence number makes a re-send after a crash land on the same session
@@ -41,7 +41,8 @@ const TURN_COMPLETED_SOURCE: &str = "harness::on-turn-completed";
 const TODO: &str = "todo";
 const IN_PROGRESS: &str = "in_progress";
 const BACKLOG: &str = "backlog";
-const RUN_LABEL: &str = "dw:run";
+/// Run-ticket labels of the deepwork and workflow kits: such a card resumes.
+const RUN_LABELS: [&str; 2] = ["dw:run", "wf:run"];
 const SEND_TIMEOUT_MS: u64 = 30_000;
 const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -254,6 +255,14 @@ pub fn claim_seq(ticket: &Ticket) -> Option<u64> {
     claimed.then_some(last_move.seq)
 }
 
+/// A card an earlier deepwork or workflow run left: dispatching it resumes that run.
+fn is_run(ticket: &Ticket) -> bool {
+    ticket
+        .labels
+        .iter()
+        .any(|l| RUN_LABELS.contains(&l.as_str()))
+}
+
 /// The session a deepwork run ticket names as its orchestrator, when it does.
 fn orchestrator_session(ticket: &Ticket) -> Option<&str> {
     ticket
@@ -361,7 +370,7 @@ pub fn plan(board: &Board, rules: &[DispatchRule]) -> Vec<Action> {
                     rule: index,
                     project_id: ticket.project_id.clone().unwrap_or_default(),
                     root: project.root.clone(),
-                    resume: ticket.labels.iter().any(|l| l == RUN_LABEL),
+                    resume: is_run(ticket),
                 });
             } else if !ticket.pills.contains(&queued_pill()) {
                 actions.push(Action::Queue {
@@ -895,7 +904,7 @@ async fn sweep(ctx: &Arc<Ctx>) {
                 if let Some((rule, project_id, root)) =
                     plan_for_claimed(&board, &config.dispatch, ticket)
                 {
-                    let resume = ticket.labels.iter().any(|l| l == RUN_LABEL);
+                    let resume = is_run(ticket);
                     send(
                         ctx,
                         &config.dispatch[rule],
@@ -1144,6 +1153,19 @@ mod tests {
         assert_eq!(
             keys(&plan(&b, &[rule(1)])),
             vec!["start KAN-1 resume", "unqueue KAN-2"]
+        );
+    }
+
+    #[test]
+    fn a_workflow_run_ticket_resumes_too() {
+        let mut r = rule(2);
+        r.assignee = "workflow".into();
+        let mut back = ticket("KAN-1", 1, "todo", "workflow", Some("p1"), "user");
+        back.labels.push("wf:run".into());
+        let fresh = ticket("KAN-2", 2, "todo", "workflow", Some("p1"), "user");
+        assert_eq!(
+            keys(&plan(&board(vec![back, fresh]), &[r])),
+            vec!["start KAN-1 resume", "start KAN-2"]
         );
     }
 

@@ -10,8 +10,8 @@ use super::{ScenarioDriver, VerifyFn};
 use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
-    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
-    RouterChatResponse, StopReason, Usage,
+    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorDetails,
+    ErrorKind, ErrorShape, RouterChatResponse, StopReason, Usage,
 };
 use crate::types::probe::ControlledTargetV1;
 use crate::types::scenario::{
@@ -44,6 +44,15 @@ impl Model {
             supports_structured_output: Some(true),
         }
     }
+
+    /// The scripted model served as the `claude-code` provider: the harness
+    /// resolves a Claude Code account for each of its turns (D139).
+    pub(super) fn claude_code(id: &str) -> ModelFixtureV1 {
+        ModelFixtureV1 {
+            provider: "claude-code".to_string(),
+            ..Self::scripted(id)
+        }
+    }
 }
 
 pub(super) struct Scenario {
@@ -69,6 +78,8 @@ pub(super) struct Scenario {
     intervention: Option<ScenarioIntervention>,
     agent_files: Vec<(String, String)>,
     skill_files: Vec<(String, String)>,
+    stand_in_functions: Vec<crate::fixtures::StandInFunction>,
+    setup_calls: Vec<crate::fixtures::SetupCall>,
     match_any: bool,
 }
 
@@ -103,6 +114,8 @@ impl Scenario {
             intervention: None,
             agent_files: Vec::new(),
             skill_files: Vec::new(),
+            stand_in_functions: Vec::new(),
+            setup_calls: Vec::new(),
             match_any: false,
         }
     }
@@ -432,6 +445,33 @@ impl Scenario {
         self
     }
 
+    /// Register `function_id` from the probe before the harness starts,
+    /// answering every call with `response`: a stand-in for a worker the
+    /// stack does not run (the tmux worker's `tmux::accounts::list`).
+    pub(super) fn stand_in_function(mut self, function_id: &str, response: Value) -> Self {
+        self.stand_in_functions
+            .push(crate::fixtures::StandInFunction {
+                function_id: function_id.to_string(),
+                response,
+            });
+        self
+    }
+
+    /// Call `function_id(payload)` once the harness is ready and before the
+    /// send, requiring its response to contain `expected`: state the send's
+    /// turn depends on (a project its conversation joins).
+    pub(super) fn setup_call(mut self, function_id: &str, payload: Value, expected: Value) -> Self {
+        self.setup_calls.push(crate::fixtures::SetupCall {
+            function_id: function_id.to_string(),
+            payload,
+            expected_output: Some(JsonMatcherV1::Subset {
+                expected,
+                normalize: None,
+            }),
+        });
+        self
+    }
+
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
         let system_prompt_template = system_prompt(&send.allowed_functions, &self.model.id);
@@ -483,6 +523,8 @@ impl Scenario {
             intervention: self.intervention,
             agent_files: self.agent_files,
             skill_files: self.skill_files,
+            stand_in_functions: self.stand_in_functions,
+            setup_calls: self.setup_calls,
         }
     }
 }
@@ -494,6 +536,7 @@ pub(super) struct Send {
     omit_functions: bool,
     agent: Option<String>,
     expose: CompiledFunctionExposureV1,
+    metadata: Option<Value>,
 }
 
 impl Send {
@@ -505,6 +548,7 @@ impl Send {
             omit_functions: false,
             agent: None,
             expose: CompiledFunctionExposureV1::Native,
+            metadata: None,
         }
     }
 
@@ -528,6 +572,14 @@ impl Send {
     /// regex in scenarios using this.
     pub(super) fn omit_functions(mut self) -> Self {
         self.omit_functions = true;
+        self
+    }
+
+    /// The send's `options.metadata` (e.g. `fs_scope`, whose root files the
+    /// conversation into the project that owns that folder, D8). A root
+    /// changes the runtime aid in the system prompt: match prompts by regex.
+    pub(super) fn metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
         self
     }
 
@@ -583,6 +635,7 @@ impl Send {
                     expose: self.expose,
                 }),
                 agent: self.agent,
+                metadata: self.metadata,
             },
         }
     }
@@ -659,26 +712,65 @@ impl ControlledFunction {
 
 pub(super) struct Request {
     turn_request: bool,
+    /// context-manager's summariser call (`router::chat` from
+    /// `context::compact`), not a turn step: it carries no request id.
+    summary: bool,
     turn_steps: Option<Vec<u64>>,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
     tools: Option<JsonMatcherV1>,
+    provider_options: Option<JsonMatcherV1>,
 }
 
 impl Request {
     pub(super) fn new() -> Self {
         Self {
             turn_request: false,
+            summary: false,
             turn_steps: None,
             system_prompt: None,
             messages: None,
             tools: None,
+            provider_options: None,
         }
+    }
+
+    /// Require the request's `provider_options` to contain `expected` (e.g.
+    /// the Claude Code account the harness resolved). Unset, the request must
+    /// carry none.
+    pub(super) fn provider_options_subset(mut self, expected: Value) -> Self {
+        self.provider_options = Some(JsonMatcherV1::Subset {
+            expected,
+            normalize: None,
+        });
+        self
     }
 
     pub(super) fn turn_request(mut self) -> Self {
         self.turn_request = true;
         self
+    }
+
+    /// context-manager's summariser request (`context::compact`): no request
+    /// id, a system prompt, one user message holding the transcript to
+    /// summarise, no tools and no provider options. The scenario's `verify`
+    /// reads what the transcript held from the router evidence.
+    pub(super) fn summary() -> Self {
+        Self {
+            summary: true,
+            system_prompt: Some(JsonMatcherV1::Regex {
+                pattern: "(?s).+".into(),
+            }),
+            messages: Some(JsonMatcherV1::Subset {
+                expected: json!([{ "role": "user", "content": [{ "type": "text" }] }]),
+                normalize: None,
+            }),
+            tools: Some(JsonMatcherV1::Exact {
+                expected: json!([]),
+                normalize: None,
+            }),
+            ..Self::new()
+        }
     }
 
     pub(super) fn turn_request_step(self, step: u64) -> Self {
@@ -789,34 +881,42 @@ impl Request {
     }
 
     fn compile(self, model: &ModelFixtureV1, ordinal: u64) -> GenerationMatchV1 {
-        assert!(self.turn_request, "request id matcher is required");
+        assert!(
+            self.turn_request || self.summary,
+            "request id matcher is required"
+        );
+        let summary = self.summary;
         GenerationMatchV1 {
             writer_ref: JsonMatcherV1::Subset {
                 expected: json!({ "direction": "write" }),
                 normalize: None,
             },
-            request_id: JsonMatcherV1::Regex {
-                pattern: self.turn_steps.map_or_else(
-                    || {
-                        if ordinal == 1 {
-                            "^t_[0-9a-f]{32}:[0-9]+$".to_string()
-                        } else {
-                            format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
-                        }
-                    },
-                    |steps| {
-                        let suffix = steps
-                            .iter()
-                            .map(u64::to_string)
-                            .collect::<Vec<_>>()
-                            .join("|");
-                        if steps.len() == 1 {
-                            format!("^t_[0-9a-f]{{32}}:{suffix}$")
-                        } else {
-                            format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
-                        }
-                    },
-                ),
+            request_id: if summary {
+                JsonMatcherV1::Absent
+            } else {
+                JsonMatcherV1::Regex {
+                    pattern: self.turn_steps.map_or_else(
+                        || {
+                            if ordinal == 1 {
+                                "^t_[0-9a-f]{32}:[0-9]+$".to_string()
+                            } else {
+                                format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
+                            }
+                        },
+                        |steps| {
+                            let suffix = steps
+                                .iter()
+                                .map(u64::to_string)
+                                .collect::<Vec<_>>()
+                                .join("|");
+                            if steps.len() == 1 {
+                                format!("^t_[0-9a-f]{{32}}:{suffix}$")
+                            } else {
+                                format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
+                            }
+                        },
+                    ),
+                }
             },
             model: exact(json!(model.id)),
             provider: exact(json!(model.provider)),
@@ -828,7 +928,7 @@ impl Request {
             response_format: JsonMatcherV1::Absent,
             thinking_level: JsonMatcherV1::Absent,
             max_output_tokens: JsonMatcherV1::Absent,
-            provider_options: JsonMatcherV1::Absent,
+            provider_options: self.provider_options.unwrap_or(JsonMatcherV1::Absent),
             metadata: JsonMatcherV1::Absent,
         }
     }
@@ -963,6 +1063,7 @@ enum ResponseKind {
     StartupError {
         message: String,
         kind: ErrorKind,
+        details: Option<ErrorDetails>,
     },
     StreamedText {
         text: String,
@@ -1006,6 +1107,25 @@ impl Response {
             kind: ResponseKind::StartupError {
                 message: message.to_string(),
                 kind,
+                details: None,
+            },
+            usage: usage(0, 0),
+        }
+    }
+
+    /// The account's usage limit before the first token: a `rate_limited`
+    /// whose `error_details` say it is the limit of `window` (D147), on both
+    /// the error frame and the RPC response.
+    pub(super) fn usage_limit(message: &str, window: &str, resets_at_ms: u64) -> Self {
+        Self {
+            kind: ResponseKind::StartupError {
+                message: message.to_string(),
+                kind: ErrorKind::RateLimited,
+                details: Some(ErrorDetails {
+                    usage_limit: true,
+                    window: Some(window.to_string()),
+                    resets_at_ms: Some(resets_at_ms),
+                }),
             },
             usage: usage(0, 0),
         }
@@ -1260,7 +1380,11 @@ impl Response {
                 true,
                 None,
             ),
-            ResponseKind::StartupError { message, kind } => {
+            ResponseKind::StartupError {
+                message,
+                kind,
+                details,
+            } => {
                 let mut error = assistant_message(
                     Vec::new(),
                     StopReason::Error,
@@ -1270,6 +1394,7 @@ impl Response {
                 );
                 error.error_message = Some(message.clone());
                 error.error_kind = Some(kind);
+                error.error_details = details.clone();
                 (
                     vec![
                         AssistantMessageEvent::Start {
@@ -1289,6 +1414,7 @@ impl Response {
                     Some(ErrorShape {
                         code: error_kind_code(kind).to_string(),
                         message,
+                        error_details: details,
                     }),
                 )
             }
@@ -1304,6 +1430,7 @@ impl Response {
                 Some(ErrorShape {
                     code: error_kind_code(kind).to_string(),
                     message,
+                    error_details: None,
                 }),
             ),
             ResponseKind::TruncatedFunctionCall {
@@ -1330,6 +1457,7 @@ impl Response {
                 Some(ErrorShape {
                     code: error_kind_code(ErrorKind::Transient).to_string(),
                     message,
+                    error_details: None,
                 }),
             ),
         };
@@ -1454,6 +1582,7 @@ fn failure_response(model: &ModelFixtureV1, message: &str) -> RouterChatResponse
         error: Some(ErrorShape {
             code: "scripted_failure".to_string(),
             message: message.to_string(),
+            error_details: None,
         }),
     }
 }
@@ -1487,6 +1616,7 @@ fn assistant_message(
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        error_details: None,
         warnings: None,
         usage,
         model: model.id.clone(),

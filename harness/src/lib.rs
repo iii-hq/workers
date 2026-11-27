@@ -7,10 +7,12 @@
 //! function calls, and repeat until the turn stops — as durable enqueued steps
 //! so a crash resumes mid-turn.
 
+pub mod accounts;
 pub mod agents;
 pub mod ask;
 pub mod ask_settlement;
 pub mod ask_store;
+pub mod autocompact;
 pub mod bindings;
 pub mod budget;
 pub mod call;

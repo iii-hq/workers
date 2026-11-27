@@ -105,7 +105,7 @@ func TestWorkerInterfaceObserveFrames(t *testing.T) {
 		{Source: observedSource{FunctionID: "http::on-request", Args: map[string]any{"method": "POST", "path": "/webhooks/whatsapp-flows/wa-boot", "public_webhook": true}}},
 		{Source: observedSource{FunctionID: "ade::ui::asset", Args: map[string]any{"kind": "script", "path": "whatsapp/page.js"}}},
 		{Source: observedSource{FunctionID: "ade::ui::asset", Args: map[string]any{"kind": "style", "path": "whatsapp/styles.css"}}},
-		{Source: observedSource{FunctionID: "quick-tunnel::on-changed", Filters: map[string]any{
+		{Source: observedSource{FunctionID: "tunnel::on-changed", Filters: map[string]any{
 			"input.tunnel_id": map[string]any{"$eq": "webhooks"},
 		}, Capture: json.RawMessage(`["output"]`)}},
 		{Source: observedSource{FunctionID: "secrets::on-changed", Capture: json.RawMessage(`["output"]`)}},

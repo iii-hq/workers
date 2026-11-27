@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ACCOUNT_DEFAULT,
   applyPatchToMetadata,
   buildDetailsPatch,
+  claudeAccountOf,
   cleanDescription,
   descriptionHistory,
   detailsDraftOf,
@@ -112,5 +114,113 @@ describe('Conversation details: the one patch-meta of a Save (§1.3.5)', () => {
     expect(
       applyPatchToMetadata({ a: 1, b: 2 }, { set: { c: 3 }, unset: ['b'] }),
     ).toEqual({ a: 1, c: 3 })
+  })
+})
+
+describe('Conversation details: the Claude Code account (§4.3.5)', () => {
+  it('leaves claude_account alone until the row is changed', () => {
+    const pinned = {
+      ...base,
+      sessionMetadata: { ...base.sessionMetadata, claude_account: 'personal' },
+    }
+    expect(claudeAccountOf(pinned.sessionMetadata)).toBe('personal')
+    expect(claudeAccountOf(base.sessionMetadata)).toBe(ACCOUNT_DEFAULT)
+    expect(detailsDraftOf(pinned).claudeAccount).toBeUndefined()
+    expect(buildDetailsPatch(pinned, detailsDraftOf(pinned), 999)).toBeNull()
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: 'personal' },
+        999,
+      ),
+    ).toBeNull()
+  })
+
+  it('pins an account, follows the global, or goes back to the project', () => {
+    const pinned = {
+      ...base,
+      sessionMetadata: { ...base.sessionMetadata, claude_account: 'personal' },
+    }
+    expect(
+      buildDetailsPatch(
+        base,
+        { ...detailsDraftOf(base), claudeAccount: 'work' },
+        999,
+      ),
+    ).toEqual({ set: { claude_account: 'work' }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: 'global' },
+        999,
+      ),
+    ).toEqual({ set: { claude_account: 'global' }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        pinned,
+        { ...detailsDraftOf(pinned), claudeAccount: ACCOUNT_DEFAULT },
+        999,
+      ),
+    ).toEqual({ set: {}, unset: ['claude_account'] })
+  })
+})
+
+describe('Conversation details: Auto-compact (§3.3.4)', () => {
+  const own = {
+    ...base,
+    sessionMetadata: {
+      ...base.sessionMetadata,
+      autocompact: { mode: 'tokens', tokens: 600_000 },
+    },
+  }
+
+  it('leaves autocompact alone when the row did not change', () => {
+    expect(
+      buildDetailsPatch(
+        base,
+        { ...detailsDraftOf(base), autocompact: { mode: 'inherit' } },
+        999,
+      ),
+    ).toBeNull()
+    expect(
+      buildDetailsPatch(
+        own,
+        {
+          ...detailsDraftOf(own),
+          autocompact: { mode: 'tokens', tokens: 600_000 },
+        },
+        999,
+      ),
+    ).toBeNull()
+  })
+
+  it('sets a size or off, and the inherited choice removes the key', () => {
+    expect(
+      buildDetailsPatch(
+        base,
+        {
+          ...detailsDraftOf(base),
+          autocompact: { mode: 'tokens', tokens: 160_000 },
+        },
+        999,
+      ),
+    ).toEqual({
+      set: { autocompact: { mode: 'tokens', tokens: 160_000 } },
+      unset: [],
+    })
+    expect(
+      buildDetailsPatch(
+        own,
+        { ...detailsDraftOf(own), autocompact: { mode: 'off' } },
+        999,
+      ),
+    ).toEqual({ set: { autocompact: { mode: 'off' } }, unset: [] })
+    expect(
+      buildDetailsPatch(
+        own,
+        { ...detailsDraftOf(own), autocompact: { mode: 'inherit' } },
+        999,
+      ),
+    ).toEqual({ set: {}, unset: ['autocompact'] })
   })
 })

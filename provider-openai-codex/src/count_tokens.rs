@@ -3,8 +3,9 @@
 //! Codex backend exposes no metering endpoint, so the count walks the
 //! Responses `input` items and `tools` the stream sends (the same
 //! `to_wire_messages` the body uses, so denied envelopes, orphan
-//! placeholders, hoisted result images and de-duplicated results count as
-//! sent) and adds the item framing and image cost the Responses bill charges.
+//! placeholders, images inside tool outputs, replayed reasoning items and
+//! de-duplicated results count as sent) and adds the item framing and image
+//! cost the Responses bill charges.
 //! It never runs the model, costs nothing, and needs no network. Model ids
 //! stay namespaced (`codex/gpt-5.2`) end to end — encoder selection strips
 //! the namespace internally, but the response echoes the id the caller sent.
@@ -51,6 +52,10 @@ const IMAGE_MAX_TILES: u64 = 8;
 // The most patches a model bills: gpt-5/5.1 mini and nano shrink an image to
 // 4096, gpt-5.2 to 5.5 to 10000, and gpt-5.6 and gpt-6 reject one over 30000.
 const IMAGE_PATCH_BUDGETS: [u64; 3] = [4096, 10000, 30000];
+// A replayed reasoning item bills about its reasoning tokens: measured 18-29
+// encrypted bytes a token on gpt-6.2-sol (Codex CLI's decoded/4 is ~4x high);
+// 16 keeps the count an overcount.
+const ENCRYPTED_BYTES_PER_TOKEN: u64 = 16;
 // Base64 that holds a png/webp/gif header and most jpeg ones (EXIF comes first);
 // a multiple of 4 so it decodes alone. The whole image is the fallback.
 const IMAGE_HEADER_B64: usize = 128 * 1024;
@@ -92,7 +97,11 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
     }
     let bpe = encoder_for(&req.model);
     let count = |text: &str| bpe.encode_ordinary(text).len() as u64;
-    let items = to_wire_messages(&req.messages, req.system_prompt.as_deref().unwrap_or(""));
+    let items = to_wire_messages(
+        &req.messages,
+        req.system_prompt.as_deref().unwrap_or(""),
+        &req.model,
+    );
     let tools = req.tools.as_deref().unwrap_or(&[]);
     let mut tokens = TOKENS_REPLY_PRIMING
         + items
@@ -116,11 +125,25 @@ pub fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Error> {
 /// One Responses `input` item: its framing plus its encoded text and images.
 fn item_tokens(model: &str, item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
     let text = |value: &Value| count(value.as_str().unwrap_or(""));
+    let part = |part: &Value| match part["type"].as_str() {
+        Some("input_image") => image_tokens(model, part["image_url"].as_str().unwrap_or("")),
+        _ => text(&part["text"]),
+    };
     match item["type"].as_str() {
         Some("function_call") => {
             TOKENS_PER_CALL_ITEM + text(&item["name"]) + text(&item["arguments"])
         }
-        Some("function_call_output") => TOKENS_PER_OUTPUT_ITEM + text(&item["output"]),
+        Some("function_call_output") => {
+            TOKENS_PER_OUTPUT_ITEM
+                + match item["output"].as_array() {
+                    Some(parts) => parts.iter().map(part).sum(),
+                    None => text(&item["output"]),
+                }
+        }
+        Some("reasoning") => {
+            let blob = item["encrypted_content"].as_str().unwrap_or("").len() as u64;
+            blob.div_ceil(ENCRYPTED_BYTES_PER_TOKEN)
+        }
         _ => {
             let frame = if item["role"] == "assistant" {
                 TOKENS_PER_ASSISTANT_ITEM
@@ -128,16 +151,7 @@ fn item_tokens(model: &str, item: &Value, count: &impl Fn(&str) -> u64) -> u64 {
                 TOKENS_PER_MESSAGE
             };
             let parts = item["content"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-            frame
-                + parts
-                    .iter()
-                    .map(|part| match part["type"].as_str() {
-                        Some("input_image") => {
-                            image_tokens(model, part["image_url"].as_str().unwrap_or(""))
-                        }
-                        _ => text(&part["text"]),
-                    })
-                    .sum::<u64>()
+            frame + parts.iter().map(part).sum::<u64>()
         }
     }
 }
@@ -229,6 +243,7 @@ mod tests {
             native_stop_reason: None,
             error_message: None,
             error_kind: None,
+            error_details: None,
             warnings: None,
             usage: None,
             model: "m".into(),
@@ -556,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn a_result_image_counts_its_hoisted_user_item() {
+    fn a_result_image_counts_inside_its_output() {
         let round = |content: Vec<ContentBlock>| {
             count(
                 "",
@@ -570,8 +585,40 @@ mod tests {
         let ok = || ContentBlock::Text { text: "ok".into() };
         let with_image = round(vec![ok(), png(600, 400)]);
         let without = round(vec![ok()]);
-        let hoisted_item = TOKENS_PER_MESSAGE + text_tokens("[image result of tool call t1]") + 297;
-        assert_eq!(with_image - without, hoisted_item);
+        assert_eq!(with_image - without, 297);
+    }
+
+    #[test]
+    fn a_replayed_reasoning_item_counts_its_measured_rate() {
+        let signed = |blob_len: usize, model: &str| {
+            let item = json!({
+                "type": "reasoning",
+                "summary": [{ "type": "summary_text", "text": "**Plan**" }],
+                "encrypted_content": "A".repeat(blob_len),
+            });
+            ContentBlock::Thinking {
+                text: "**Plan**".into(),
+                signature: crate::wire::messages::pack_reasoning(&item, model),
+            }
+        };
+        let with = |thought: ContentBlock| {
+            count(
+                "",
+                vec![],
+                vec![user("hi"), assistant(vec![thought, call("t1")])],
+            ) - count("", vec![], vec![user("hi"), assistant(vec![call("t1")])])
+        };
+        // 4000 / 16 and 600 / 16, rounded up.
+        assert_eq!(with(signed(4000, "codex/gpt-5.5")), 250);
+        assert_eq!(with(signed(600, "codex/gpt-5.5")), 38);
+        assert_eq!(with(signed(4000, "codex/gpt-5.4")), 0);
+        assert_eq!(
+            with(ContentBlock::Thinking {
+                text: "**Plan**".into(),
+                signature: None,
+            }),
+            0
+        );
     }
 
     #[test]

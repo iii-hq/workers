@@ -40,6 +40,8 @@ use crate::code::functions::create_file::content_revision;
 use crate::config::TurnsConfig;
 use crate::turn_snapshot::{Body, Side, SnapshotRepo, ref_name, rel_under};
 
+mod maintenance;
+
 const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-call";
 const POST_HOOK_FN_ID: &str = "shell::turns::on-post-call";
 const STARTED_FN_ID: &str = "shell::turns::on-turn-started";
@@ -951,6 +953,10 @@ struct Activity {
 
 pub struct TurnLog {
     store: TurnStore,
+    /// Reconciliation must not see a ref between its creation and record write.
+    snapshot_gate: tokio::sync::RwLock<()>,
+    /// Resume authority checks after a bounded batch of lookup failures.
+    maintenance_cursor: Mutex<Option<PathBuf>>,
     pending: Mutex<HashMap<PendingKey, ReadImage>>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Sub-agent session → the (session, turn) that spawned it, learned
@@ -998,6 +1004,8 @@ impl TurnLog {
     pub fn new(store: TurnStore) -> Self {
         Self {
             store,
+            snapshot_gate: tokio::sync::RwLock::new(()),
+            maintenance_cursor: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             parents: std::sync::Mutex::new(HashMap::new()),
@@ -1338,6 +1346,7 @@ impl TurnLog {
     where
         F: FnOnce(&mut SessionRecord),
     {
+        let _snapshot_guard = self.snapshot_gate.read().await;
         let lock = self.session_lock(session_id).await;
         let _guard = lock.lock().await;
         self.update_locked(session_id, apply).await
@@ -1349,39 +1358,14 @@ impl TurnLog {
         F: FnOnce(&mut SessionRecord),
     {
         let mut record = self.store.load(session_id).await?;
-        let pinned: Vec<(String, TurnSnapshot)> = record
-            .turns
-            .iter()
-            .filter_map(|turn| Some((turn.turn_id.clone(), turn.snapshot.clone()?)))
-            .collect();
         apply(&mut record);
         enforce_budgets(&mut record);
         self.store.store(&record).await?;
         if let Some(feed) = self.changes.get() {
             feed.notify(session_id);
         }
-        // A turn the cap dropped takes its trees with it.
-        let dropped: Vec<(String, TurnSnapshot)> = pinned
-            .into_iter()
-            .filter(|(turn_id, _)| !record.turns.iter().any(|turn| &turn.turn_id == turn_id))
-            .collect();
-        if !dropped.is_empty() {
-            let repos_dir = self.repos_dir();
-            let store_dir = self.store.dir.clone();
-            let stem = session_file_stem(session_id);
-            tokio::spawn(async move {
-                for (turn_id, snapshot) in dropped {
-                    let Some(repo) =
-                        SnapshotRepo::open(&repos_dir, Path::new(&snapshot.root), &store_dir).await
-                    else {
-                        continue;
-                    };
-                    for side in [Side::Before, Side::After] {
-                        repo.drop_ref(&ref_name(&stem, &turn_id, side)).await;
-                    }
-                }
-            });
-        }
+        // Maintenance releases obsolete refs from these durable records.
+        // Git cleanup must not extend the session lock or delay a turn hook.
         Ok(())
     }
 
@@ -1425,6 +1409,7 @@ impl TurnLog {
     }
 
     async fn snapshot_turn(&self, target: &RootTurn, root: &str, side: Side) {
+        let _snapshot_guard = self.snapshot_gate.read().await;
         let lock = self.session_lock(&target.session_id).await;
         let _guard = lock.lock().await;
         if side == Side::Before {
@@ -1839,6 +1824,7 @@ pub fn register(
     // Surfaces that list a session's turns hear each stored record instead
     // of asking again on a timer.
     log.notify_changes(crate::turn_events::register_turns_changed(iii));
+    maintenance::register(iii, log.clone());
     let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
     let follow = Arc::new(crate::worktree_follow::WorktreeFollow::default());
 
@@ -2748,6 +2734,76 @@ mod tests {
             turn_id: Some(turn.to_string()),
             result: None,
         }
+    }
+
+    #[tokio::test]
+    async fn retention_releases_refs_after_the_workspace_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("file.txt"), "kept in the snapshot").unwrap();
+        let log = log_in(dir.path());
+        log.on_pre_turn(turn_hook("session", "old", root.to_str().unwrap()))
+            .await;
+        let repo = std::fs::read_dir(log.repos_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(
+            git_in(&repo, &["for-each-ref", "refs/turns"])
+                .await
+                .unwrap()
+                .contains("/old/")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+        for i in 0..MAX_TURNS_PER_SESSION {
+            log.on_turn_started("session", &format!("new-{i}"))
+                .await
+                .unwrap();
+        }
+        // Updating a session commits the record without running Git cleanup.
+        assert!(
+            git_in(&repo, &["for-each-ref", "refs/turns"])
+                .await
+                .unwrap()
+                .contains("/old/")
+        );
+        log.reconcile_snapshots(|_| async { Ok(true) })
+            .await
+            .unwrap();
+        assert!(!repo.exists());
+    }
+
+    #[tokio::test]
+    async fn changing_a_turns_workspace_releases_the_previous_roots_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old");
+        let new = dir.path().join("new");
+        for root in [&old, &new] {
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(root.join("file.txt"), "snapshot").unwrap();
+        }
+        let log = log_in(dir.path());
+        log.on_pre_turn(turn_hook("session", "turn", old.to_str().unwrap()))
+            .await;
+        let old_repo = std::fs::read_dir(log.repos_dir())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        log.on_post_turn(turn_hook("session", "turn", new.to_str().unwrap()))
+            .await;
+        log.reconcile_snapshots(|_| async { Ok(true) })
+            .await
+            .unwrap();
+        assert!(!old_repo.exists());
+        let record = log.load("session").await.unwrap();
+        let snapshot = record.turns[0].snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.root, new.canonicalize().unwrap().to_string_lossy());
+        assert!(snapshot.after.is_some());
     }
 
     /// git in `root`, with the developer's own config out of the way.

@@ -162,6 +162,12 @@ pub struct ContextSnapshotV1 {
     /// most [`MAX_PREFIX_DIVERGENCES`]), carried from step to step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefix_divergences: Vec<PrefixDivergenceV1>,
+    /// The autocompact threshold the meters mark (chat-projects phase 3):
+    /// the setting this step followed, where the end of a turn compacts and
+    /// the inline budget context-manager applied. Absent from a harness that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact: Option<crate::autocompact::SnapshotAutocompactV1>,
     pub timestamp: i64,
 }
 
@@ -820,6 +826,32 @@ mod tests {
         assert_eq!(next.session_cost_usd, Some(12.5));
     }
 
+    /// Phase 3: the autocompact threshold the meters mark survives a
+    /// compaction (the next generate step recomputes it).
+    #[test]
+    fn a_compaction_keeps_the_autocompact_threshold() {
+        let mut last = step_snapshot(true);
+        let autocompact = crate::autocompact::SnapshotAutocompactV1 {
+            setting_tokens: Some(160_000),
+            effective_tokens: Some(160_000),
+            cap_tokens: Some(180_000),
+            rule: Some(crate::autocompact::Rule::global()),
+        };
+        last.autocompact = Some(autocompact.clone());
+        let next = after_compaction(&last, SnapshotMessagesV1::default(), 2_500, 3_000, 1, 2_000);
+        assert_eq!(next.autocompact, Some(autocompact));
+        let wire = serde_json::to_value(&next).unwrap();
+        assert_eq!(wire["autocompact"]["cap_tokens"], 180_000);
+        // A snapshot from before phase 3 reads with none, and writes none.
+        assert_eq!(step_snapshot(false).autocompact, None);
+        assert!(
+            serde_json::to_value(step_snapshot(false))
+                .unwrap()
+                .get("autocompact")
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_first_compaction_has_no_previous_summary_to_replace() {
         let next = after_compaction(
@@ -905,6 +937,7 @@ mod tests {
             prompt_surface_digest: None,
             prompt_sections_fallback: None,
             prefix_divergences: Vec::new(),
+            autocompact: None,
             timestamp: 1,
         };
 
@@ -985,6 +1018,7 @@ mod tests {
                 provider_note: None,
                 cache_read: Some(7_000),
             }],
+            autocompact: None,
             timestamp: 1_722_700_000_000,
         };
         let mut value = serde_json::to_value(&snapshot).unwrap();

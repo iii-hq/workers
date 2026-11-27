@@ -13,6 +13,16 @@
  * | `contextItems`   | `harness::context-items`    | the pane parses the loaded transcript         |
  * | `chatSettings`   | `harness::chat-settings::get` | no Session descriptions setting             |
  * | `sideChats`      | `harness::side-chat::open`  | the ADE's own client-side fork, one per chat  |
+ * | `harnessRetry`   | `harness::retry`            | today's Claude Code screens (phase 4)         |
+ * | `tmuxAccounts`   | `tmux::accounts::list`      | "Install tmux" (with `harnessRetry`)          |
+ * | `tmuxCredential` | `tmux::accounts::credential`| "Update tmux" (with the two above)            |
+ * | `autocompact`    | `harness::autocompact::models` | no Auto-compact setting, section, row, tick or chip (phase 3, D168) |
+ *
+ * `claudeAccounts` is phase 4's whole feature (spec §4.3.6, D144): the engine
+ * has `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`
+ * (a conversation's account is only ever written with a patch, never a
+ * `set-meta`). The partial cases read the flags through `claudeAccountsGate`
+ * (`lib/backend/claude-accounts.ts`).
  *
  * The control-plane functions are internal (chat-projects D37): only
  * `harness::projects::list`, `harness::set-description` and the two
@@ -38,7 +48,26 @@ export interface ChatCapabilities {
   contextItems: boolean
   chatSettings: boolean
   sideChats: boolean
+  /** `harness::retry`: phase 4's harness (the limit card's re-run). */
+  harnessRetry: boolean
+  /** `tmux::accounts::list`: a tmux worker with Claude Code accounts. */
+  tmuxAccounts: boolean
+  /** `tmux::accounts::credential`: a tmux worker new enough for the Chat. */
+  tmuxCredential: boolean
+  /** Accounts in the Chat: `harness::retry`, `tmux::accounts::credential` and `session::patch-meta`. */
+  claudeAccounts: boolean
+  /**
+   * `harness::autocompact::models`: phase 3's harness (D168). Without it,
+   * today's screens: no settings page, section, row, tick or chip.
+   */
+  autocompact: boolean
 }
+
+/** The flags that are one function each; `claudeAccounts` is three of them. */
+type FunctionCapability = Exclude<
+  keyof ChatCapabilities,
+  'loaded' | 'claudeAccounts'
+>
 
 export const CAPABILITY_FUNCTIONS = {
   patchMeta: 'session::patch-meta',
@@ -48,7 +77,11 @@ export const CAPABILITY_FUNCTIONS = {
   contextItems: 'harness::context-items',
   chatSettings: 'harness::chat-settings::get',
   sideChats: 'harness::side-chat::open',
-} as const satisfies Record<Exclude<keyof ChatCapabilities, 'loaded'>, string>
+  harnessRetry: 'harness::retry',
+  tmuxAccounts: 'tmux::accounts::list',
+  tmuxCredential: 'tmux::accounts::credential',
+  autocompact: 'harness::autocompact::models',
+} as const satisfies Record<FunctionCapability, string>
 
 export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
   loaded: false,
@@ -59,6 +92,11 @@ export const NO_CHAT_CAPABILITIES: ChatCapabilities = {
   contextItems: false,
   chatSettings: false,
   sideChats: false,
+  harnessRetry: false,
+  tmuxAccounts: false,
+  tmuxCredential: false,
+  claudeAccounts: false,
+  autocompact: false,
 }
 
 const WATCH_FN = 'ade::chat-capabilities-watch'
@@ -108,6 +146,14 @@ export function capabilitiesFromCatalog(response: unknown): ChatCapabilities {
     contextItems: ids.has(CAPABILITY_FUNCTIONS.contextItems),
     chatSettings: ids.has(CAPABILITY_FUNCTIONS.chatSettings),
     sideChats: ids.has(CAPABILITY_FUNCTIONS.sideChats),
+    harnessRetry: ids.has(CAPABILITY_FUNCTIONS.harnessRetry),
+    tmuxAccounts: ids.has(CAPABILITY_FUNCTIONS.tmuxAccounts),
+    tmuxCredential: ids.has(CAPABILITY_FUNCTIONS.tmuxCredential),
+    claudeAccounts:
+      ids.has(CAPABILITY_FUNCTIONS.harnessRetry) &&
+      ids.has(CAPABILITY_FUNCTIONS.tmuxCredential) &&
+      ids.has(CAPABILITY_FUNCTIONS.patchMeta),
+    autocompact: ids.has(CAPABILITY_FUNCTIONS.autocompact),
   }
 }
 
@@ -210,5 +256,11 @@ export function setChatCapabilitiesForTests(
     return
   }
   frozen = true
-  set({ ...NO_CHAT_CAPABILITIES, loaded: true, ...next })
+  const merged = { ...NO_CHAT_CAPABILITIES, loaded: true, ...next }
+  // `claudeAccounts` follows its three functions unless a test pins it.
+  if (next.claudeAccounts === undefined) {
+    merged.claudeAccounts =
+      merged.harnessRetry && merged.tmuxCredential && merged.patchMeta
+  }
+  set(merged)
 }

@@ -246,6 +246,33 @@ pub fn normalize_folders(raw: &[String], home: Option<&str>) -> Result<Vec<Strin
     Ok(folders)
 }
 
+/// The project's Claude Code account as stored (chat-projects phase 4):
+/// `{mode: "global"}`, or `{mode: "pinned", account_id}` with a tmux
+/// account id. Whether that account exists is the turn's to find out
+/// (`harness.unknown_account`): an account can go after the pin.
+pub fn validate_account(account: &Value) -> Result<Value, HarnessError> {
+    let invalid = || {
+        HarnessError::rejected(
+            "invalid_account",
+            "Choose the global account, or one account to pin the project to.",
+            json!({ "account": account }),
+        )
+    };
+    match account.get("mode").and_then(Value::as_str) {
+        Some("global") => Ok(default_account()),
+        Some("pinned") => {
+            let id = account
+                .get("account_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(invalid)?;
+            Ok(json!({ "mode": "pinned", "account_id": id }))
+        }
+        _ => Err(invalid()),
+    }
+}
+
 /// Refuse `name` when another project (not `own_id`) has it, whatever the case.
 pub fn check_name_free(
     name: &str,
@@ -375,6 +402,11 @@ pub struct NewProject {
     pub name: String,
     pub color: String,
     pub folders: Vec<String>,
+    /// `{mode: "global"}` (the default) or `{mode: "pinned", account_id}`.
+    pub account: Option<Value>,
+    /// `{mode: "inherit"}` (the default), `{mode: "off"}` or
+    /// `{mode: "tokens", tokens}` (chat-projects phase 3).
+    pub autocompact: Option<Value>,
 }
 
 /// The fields an update changes; `None` keeps the stored value.
@@ -419,6 +451,18 @@ impl ProjectsStore {
         let name = normalize_name(&input.name)?;
         let color = validate_color(&input.color)?;
         let folders = normalize_folders(&input.folders, home)?;
+        let account = input
+            .account
+            .as_ref()
+            .map(validate_account)
+            .transpose()?
+            .unwrap_or_else(default_account);
+        let autocompact = input
+            .autocompact
+            .as_ref()
+            .map(crate::autocompact::validate_override)
+            .transpose()?
+            .unwrap_or_else(default_autocompact);
         let path = storage_path(file_path)?;
         let _guard = self.gate.lock().await;
         let mut document = load(&path).await?;
@@ -430,8 +474,8 @@ impl ProjectsStore {
             name,
             color,
             folders: folders.clone(),
-            account: default_account(),
-            autocompact: default_autocompact(),
+            account,
+            autocompact,
             created_at_ms: now,
             updated_at_ms: now,
             extra: Map::new(),
@@ -463,18 +507,12 @@ impl ProjectsStore {
             .as_deref()
             .map(|folders| normalize_folders(folders, home))
             .transpose()?;
-        for (field, value) in [
-            ("account", &patch.account),
-            ("autocompact", &patch.autocompact),
-        ] {
-            if value.as_ref().is_some_and(|value| !value.is_object()) {
-                return Err(HarnessError::rejected(
-                    "bad_request",
-                    format!("{field} must be an object"),
-                    json!({ "field": field }),
-                ));
-            }
-        }
+        let account = patch.account.as_ref().map(validate_account).transpose()?;
+        let autocompact = patch
+            .autocompact
+            .as_ref()
+            .map(crate::autocompact::validate_override)
+            .transpose()?;
         let path = storage_path(file_path)?;
         let _guard = self.gate.lock().await;
         let mut document = load(&path).await?;
@@ -506,10 +544,10 @@ impl ProjectsStore {
                 .collect();
             project.folders = folders;
         }
-        if let Some(account) = patch.account {
+        if let Some(account) = account {
             project.account = account;
         }
-        if let Some(autocompact) = patch.autocompact {
+        if let Some(autocompact) = autocompact {
             project.autocompact = autocompact;
         }
         if *project == before {
@@ -720,6 +758,100 @@ mod tests {
     }
 
     #[test]
+    fn an_account_is_the_global_or_one_pinned_account() {
+        assert_eq!(
+            validate_account(&json!({ "mode": "global", "stray": 1 })).unwrap(),
+            json!({ "mode": "global" })
+        );
+        assert_eq!(
+            validate_account(&json!({ "mode": "pinned", "account_id": " work " })).unwrap(),
+            json!({ "mode": "pinned", "account_id": "work" })
+        );
+        for bad in [
+            json!({ "mode": "pinned" }),
+            json!({ "mode": "pinned", "account_id": "" }),
+            json!({ "mode": "pinned", "account_id": 7 }),
+            json!({ "mode": "follow" }),
+            json!({}),
+            json!("global"),
+        ] {
+            let error = validate_account(&bad).unwrap_err();
+            let wire: Value = serde_json::from_str(&error.to_string()).unwrap();
+            assert_eq!(wire["code"], "invalid_account", "{bad}");
+            assert_eq!(
+                wire["message"],
+                "Choose the global account, or one account to pin the project to."
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_and_update_store_a_valid_account_and_refuse_another() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("projects.json");
+        let file_str = file.to_str().unwrap();
+        let store = ProjectsStore::default();
+        let pinned = json!({ "mode": "pinned", "account_id": "personal" });
+        let created = store
+            .create(
+                file_str,
+                NewProject {
+                    name: "acme".into(),
+                    color: "teal".into(),
+                    folders: vec!["/w/acme".into()],
+                    account: Some(pinned.clone()),
+                    autocompact: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.project.account, pinned);
+        let refused = store
+            .create(
+                file_str,
+                NewProject {
+                    name: "other".into(),
+                    color: "teal".into(),
+                    folders: vec!["/w/other".into()],
+                    account: Some(json!({ "mode": "pinned" })),
+                    autocompact: None,
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.rejected_code().as_deref(), Some("invalid_account"));
+
+        let updated = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    account: Some(json!({ "mode": "global" })),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.project.account, json!({ "mode": "global" }));
+        let refused = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    account: Some(json!([])),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.rejected_code().as_deref(), Some("invalid_account"));
+    }
+
+    #[test]
     fn ulids_are_26_crockford_characters_in_time_order() {
         let early = ulid(1_000);
         let late = ulid(2_000);
@@ -743,6 +875,8 @@ mod tests {
                     name: " acme-web ".into(),
                     color: "teal".into(),
                     folders: vec!["/w/acme/web".into(), "/w/acme/api/".into()],
+                    account: None,
+                    autocompact: None,
                 },
                 None,
             )
@@ -804,6 +938,112 @@ mod tests {
         assert_eq!(deleted.revision, 3);
         assert!(deleted.projects.is_empty());
         assert_eq!(store.list(file_str).await.unwrap().revision, 3);
+    }
+
+    /// Phase 3 (D167): create takes `autocompact` (it used to write the
+    /// default whatever was sent) and both writes refuse a bad one with
+    /// typed codes.
+    #[tokio::test]
+    async fn create_and_update_check_the_autocompact_setting() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("harness-projects.json");
+        let file_str = file.to_str().unwrap();
+        let store = ProjectsStore::default();
+        let input = |name: &str, folder: &str, autocompact: Option<Value>| NewProject {
+            name: name.into(),
+            color: "teal".into(),
+            folders: vec![folder.into()],
+            account: None,
+            autocompact,
+        };
+        let created = store
+            .create(
+                file_str,
+                input(
+                    "acme-web",
+                    "/w/acme",
+                    Some(json!({ "mode": "tokens", "tokens": 160_000 })),
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.project.autocompact,
+            json!({ "mode": "tokens", "tokens": 160_000 })
+        );
+        for (value, code) in [
+            (json!({ "mode": "tokens" }), "bad_setting"),
+            (json!({ "mode": "sometimes" }), "bad_setting"),
+            (json!("off"), "bad_setting"),
+            (json!({ "mode": "tokens", "tokens": 10_000 }), "bad_tokens"),
+            (
+                json!({ "mode": "tokens", "tokens": 3_000_000 }),
+                "bad_tokens",
+            ),
+            (json!({ "mode": "off", "tokens": 10_000 }), "bad_tokens"),
+        ] {
+            let refused = store
+                .create(
+                    file_str,
+                    input("other", "/w/other", Some(value.clone())),
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.rejected_code().as_deref(), Some(code), "{value}");
+            let refused = store
+                .update(
+                    file_str,
+                    &created.project.id,
+                    ProjectPatch {
+                        autocompact: Some(value.clone()),
+                        ..ProjectPatch::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(refused.rejected_code().as_deref(), Some(code), "{value}");
+        }
+        // Nothing refused was written.
+        assert_eq!(store.list(file_str).await.unwrap().revision, 1);
+        // Off keeps its size, inert (the size the switch comes back to).
+        let off = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    autocompact: Some(json!({ "mode": "off", "tokens": 160_000 })),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            off.project.autocompact,
+            json!({ "mode": "off", "tokens": 160_000 })
+        );
+        // Clearing the project's value sends `{mode: "inherit"}`.
+        let cleared = store
+            .update(
+                file_str,
+                &created.project.id,
+                ProjectPatch {
+                    autocompact: Some(json!({ "mode": "inherit" })),
+                    ..ProjectPatch::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.project.autocompact, json!({ "mode": "inherit" }));
+        let inherit = store
+            .create(file_str, input("plain", "/w/plain", None), None)
+            .await
+            .unwrap();
+        assert_eq!(inherit.project.autocompact, json!({ "mode": "inherit" }));
     }
 
     #[tokio::test]

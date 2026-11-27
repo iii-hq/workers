@@ -786,37 +786,6 @@ workers:
         outputs:
         - dist
     publish: true
-  fixture-image-resize-demo:
-    source:
-      path: image-resize/example
-      package_manifest: package.json
-    artifact:
-      kind: javascript-bundle
-      workspace_root: image-resize/example
-      runtime:
-        name: node
-        version: 22.20.0
-      package_manager:
-        name: npm
-        version: 10.9.3
-      lockfile: package-lock.json
-      install_command:
-      - npm
-      - ci
-      - --ignore-scripts
-      build_command:
-      - npx
-      - --no-install
-      - tsc
-      - --noEmit
-      include:
-      - package.json
-      - src/hooks.ts
-      - src/iii.ts
-      - src/index.ts
-      - tsconfig.json
-      - iii.worker.yaml
-    publish: false
   image-resize:
     source:
       path: image-resize
@@ -828,6 +797,26 @@ workers:
         version: 1.97.1
       binary: image-resize
       targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: image-resize/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   ios-simulator:
     source:
@@ -1820,16 +1809,16 @@ workers:
       binary: queue
       targets: *id001
     publish: true
-  quick-tunnel:
+  tunnel:
     source:
-      path: quick-tunnel
+      path: tunnel
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: quick-tunnel
+      binary: tunnel
       targets:
       - aarch64-apple-darwin
       - x86_64-apple-darwin

@@ -1,6 +1,6 @@
 mod support;
 
-use tmux::functions::{FunctionSpec, catalog};
+use tmux::functions::{FunctionSpec, catalog, internal_catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))
@@ -45,6 +45,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::install",
             "tmux::install::status",
             "tmux::usage::read",
+            "tmux::usage::claude_outside",
             "tmux::accounts::list",
             "tmux::accounts::add",
             "tmux::accounts::login_start",
@@ -63,17 +64,19 @@ fn catalog_lists_all_functions_in_registration_order() {
 #[test]
 fn catalog_ids_are_unique_and_kebab_case() {
     let mut seen = std::collections::HashSet::new();
-    for spec in catalog() {
+    for spec in catalog().into_iter().chain(internal_catalog()) {
         let id = spec.function_id;
         assert!(seen.insert(id), "duplicate function id {id}");
         assert!(id.starts_with("tmux::"), "{id} is not namespaced");
-        // `move_idle` (agent-accounts §3.4) and the sign-in's three
-        // (claude-login-ui §2) are the ids the apps were given.
+        // `move_idle` (agent-accounts §3.4), the sign-in's three
+        // (claude-login-ui §2) and `claude_outside` (chat-projects
+        // contract B) are the ids the apps were given.
         let given = [
             "tmux::accounts::move_idle",
             "tmux::accounts::login_start",
             "tmux::accounts::login_code",
             "tmux::accounts::login_cancel",
+            "tmux::usage::claude_outside",
         ];
         if !given.contains(&id) {
             assert!(!id.contains('_'), "{id} uses snake_case");
@@ -84,7 +87,7 @@ fn catalog_ids_are_unique_and_kebab_case() {
 #[test]
 fn wire_schema_snapshots_match_goldens() {
     let mut failures = Vec::new();
-    for spec in catalog() {
+    for spec in catalog().into_iter().chain(internal_catalog()) {
         let rel = golden_file_name(spec.function_id);
         if let Err(msg) = support::check_golden(&rel, &spec_to_pretty_json(&spec)) {
             failures.push(msg);
@@ -100,7 +103,7 @@ fn wire_schema_snapshots_match_goldens() {
 
 #[test]
 fn every_function_has_typed_request_and_response_schemas() {
-    for spec in catalog() {
+    for spec in catalog().into_iter().chain(internal_catalog()) {
         support::assert_typed_schema(
             &format!("{} request_schema", spec.function_id),
             &spec.request_schema,
@@ -114,7 +117,7 @@ fn every_function_has_typed_request_and_response_schemas() {
 
 #[test]
 fn response_schemas_carry_field_descriptions() {
-    for spec in catalog() {
+    for spec in catalog().into_iter().chain(internal_catalog()) {
         let rendered = serde_json::to_string(&spec.response_schema).expect("schema serializes");
         assert!(
             rendered.contains("description"),
@@ -129,6 +132,21 @@ fn terminal_functions_stay_internal() {
     let public: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     for (id, _) in tmux::terminal::FUNCTIONS {
         assert!(id.starts_with("tmux::terminal::"));
+        assert!(
+            !public.contains(&id),
+            "{id} must not be in the public catalog"
+        );
+    }
+}
+
+#[test]
+fn the_credential_stays_internal() {
+    // Only provider-claude-code asks for a token: the function is
+    // registered `internal` and stays out of the catalog the apps read.
+    let public: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
+    let internal: Vec<&str> = internal_catalog().iter().map(|s| s.function_id).collect();
+    assert_eq!(internal, vec!["tmux::accounts::credential"]);
+    for id in internal {
         assert!(
             !public.contains(&id),
             "{id} must not be in the public catalog"

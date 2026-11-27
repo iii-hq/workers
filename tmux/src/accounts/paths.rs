@@ -15,12 +15,17 @@
 //! `III_CLAUDE_ACCOUNTS_DIR` replaces the accounts root;
 //! `III_CLAUDE_USAGE_URL` replaces `https://api.anthropic.com` for the usage
 //! endpoint (loopback addresses only, so a sign-in never leaves for another
-//! host); `CODEX_HOME` is Codex's own.
+//! host); `III_CLAUDE_OAUTH_URL` replaces `https://platform.claude.com` for
+//! the token endpoint a renewal asks (loopback addresses only too);
+//! `CODEX_HOME` is Codex's own.
 
 use std::path::{Path, PathBuf};
 
 /// The real usage endpoint's origin.
 pub const ANTHROPIC_API: &str = "https://api.anthropic.com";
+/// The real origin of Claude Code's token endpoint (its `TOKEN_URL`,
+/// `https://platform.claude.com/v1/oauth/token`, in 2.1.332).
+pub const CLAUDE_PLATFORM: &str = "https://platform.claude.com";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudePaths {
@@ -38,6 +43,8 @@ pub struct ClaudePaths {
     pub cache_file: Option<PathBuf>,
     /// Origin of the usage endpoint.
     pub usage_origin: String,
+    /// Origin of the token endpoint a renewal asks.
+    pub oauth_origin: String,
 }
 
 impl ClaudePaths {
@@ -77,6 +84,9 @@ impl ClaudePaths {
         let usage_origin = get("III_CLAUDE_USAGE_URL")
             .map(|url| url.trim_end_matches('/').to_string())
             .unwrap_or_else(|| ANTHROPIC_API.to_string());
+        let oauth_origin = get("III_CLAUDE_OAUTH_URL")
+            .map(|url| url.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| CLAUDE_PLATFORM.to_string());
         Some(Self {
             home,
             claude_home,
@@ -85,6 +95,7 @@ impl ClaudePaths {
             codex_home,
             cache_file: cache.map(|cache| cache.join("iii/tmux/usage.json")),
             usage_origin,
+            oauth_origin,
         })
     }
 
@@ -138,6 +149,17 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
 /// another host) is refused; no userinfo, query or fragment, nothing but
 /// `/` as its path.
 pub fn allowed_origin(origin: &str) -> Option<reqwest::Url> {
+    allowed_origin_of(origin, "api.anthropic.com")
+}
+
+/// The token endpoint's origin as a URL, when a refresh token may be sent
+/// there: `https://platform.claude.com`, or a loopback address for tests
+/// and demos, on the same terms as [`allowed_origin`].
+pub fn allowed_oauth_origin(origin: &str) -> Option<reqwest::Url> {
+    allowed_origin_of(origin, "platform.claude.com")
+}
+
+fn allowed_origin_of(origin: &str, real_host: &str) -> Option<reqwest::Url> {
     let url = reqwest::Url::parse(origin).ok()?;
     if !url.username().is_empty()
         || url.password().is_some()
@@ -147,9 +169,7 @@ pub fn allowed_origin(origin: &str) -> Option<reqwest::Url> {
     {
         return None;
     }
-    let real = url.scheme() == "https"
-        && url.host_str() == Some("api.anthropic.com")
-        && url.port().is_none();
+    let real = url.scheme() == "https" && url.host_str() == Some(real_host) && url.port().is_none();
     // The parser writes hosts in their canonical form (`127.1` is
     // `127.0.0.1`, IPv6 in brackets).
     let loopback = matches!(url.scheme(), "http" | "https")
@@ -190,6 +210,7 @@ mod tests {
             Some(Path::new("/home/dev/.cache/iii/tmux/usage.json"))
         );
         assert_eq!(p.usage_origin, ANTHROPIC_API);
+        assert_eq!(p.oauth_origin, CLAUDE_PLATFORM);
         assert_eq!(
             p.account_dir("default"),
             Path::new("/home/dev/.local/share/iii/claude-accounts/default")
@@ -211,6 +232,7 @@ mod tests {
                 ("III_CLAUDE_HOME", "/t/fake/.claude"),
                 ("CODEX_HOME", "/t/codex"),
                 ("III_CLAUDE_USAGE_URL", "http://127.0.0.1:8787/"),
+                ("III_CLAUDE_OAUTH_URL", "http://127.0.0.1:8788/"),
             ],
             false,
         )
@@ -224,6 +246,7 @@ mod tests {
             Some(Path::new("/cache/iii/tmux/usage.json"))
         );
         assert_eq!(p.usage_origin, "http://127.0.0.1:8787");
+        assert_eq!(p.oauth_origin, "http://127.0.0.1:8788");
         let p = paths(
             &[("HOME", "/Users/me"), ("III_CLAUDE_ACCOUNTS_DIR", "/t/acc")],
             true,
@@ -266,5 +289,12 @@ mod tests {
         assert!(!origin_allowed("http://127.0.0.1:8787/?x=1"));
         assert!(!origin_allowed("http://127.0.0.2:8787"));
         assert!(origin_allowed("https://api.anthropic.com/"));
+        // The token endpoint: Claude Code's own host, or loopback.
+        assert!(allowed_oauth_origin("https://platform.claude.com").is_some());
+        assert!(allowed_oauth_origin("http://127.0.0.1:8788").is_some());
+        assert!(allowed_oauth_origin("https://api.anthropic.com").is_none());
+        assert!(allowed_oauth_origin("http://platform.claude.com").is_none());
+        assert!(allowed_oauth_origin("https://platform.claude.com.evil.dev").is_none());
+        assert!(!origin_allowed("https://platform.claude.com"));
     }
 }

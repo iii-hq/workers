@@ -98,6 +98,10 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
+    /// What the error kind cannot say (D147): a `rate_limited` that is an
+    /// account's usage limit, not a transient throttle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<ErrorDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,6 +189,21 @@ impl AssistantMessageEvent {
 pub struct ErrorShape {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<ErrorDetails>,
+}
+
+/// Mirror of the router's `ErrorDetails` (D147): on the error message and
+/// on `ErrorShape`, present only when the kind needs it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ErrorDetails {
+    pub usage_limit: bool,
+    /// `"five_hour"` or `"week"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
 }
 
 /// Mirror of `ChatResponse` (`llm-router/src/types/router.rs:54`).

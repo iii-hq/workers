@@ -252,6 +252,11 @@ fn main_record() -> TurnRecord {
     record.options.budget_root_session_id = Some(MAIN.into());
     record.options.max_total_tokens = Some(100_000);
     record.skills_started = true;
+    record.account = Some(crate::accounts::TurnAccount {
+        id: "work".into(),
+        source: crate::accounts::AccountSource::Project,
+        project_id: Some("prj_1".into()),
+    });
     record.parent = Some(ParentLink {
         session_id: "s_root".into(),
         turn_id: "t_root".into(),
@@ -506,6 +511,10 @@ async fn open_forks_at_the_last_reply_and_locks_the_conversations_turn() {
     assert_eq!(seeded.options.functions, parent.options.functions);
     assert!(seeded.skills_started);
     assert!(seeded.parent.is_none(), "a side chat is a root of its own");
+    assert!(
+        parent.account.is_some() && seeded.account.is_none(),
+        "the account is the conversation turn's"
+    );
     assert!(seeded.options.budget_root_session_id.is_none());
     assert!(seeded.options.max_total_tokens.is_none());
     assert_eq!(
@@ -1237,6 +1246,45 @@ fn the_lock_refuses_each_field_that_differs_and_accepts_its_own_values() {
         &request(json!({ "options": { "provider_options": {}, "skills": [] } })),
     )
     .unwrap();
+}
+
+#[test]
+fn the_lock_ignores_the_claude_code_account_a_send_names() {
+    let mut lock = lock();
+    lock.provider = Some("claude-code".into());
+    lock.provider_options = Some(BTreeMap::from([(
+        "claude-code".to_string(),
+        json!({ "account": "work", "effort": "high" }),
+    )]));
+    for sent in [
+        json!({ "claude-code": { "account": "personal", "effort": "high" } }),
+        json!({ "claude-code": { "effort": "high" } }),
+    ] {
+        check_lock(
+            &lock,
+            &request(json!({ "options": { "provider_options": sent.clone() } })),
+        )
+        .unwrap_or_else(|e| panic!("{sent}: {e}"));
+    }
+    let error = check_lock(
+        &lock,
+        &request(json!({ "options": { "provider_options": {
+            "claude-code": { "account": "work", "effort": "low" } } } })),
+    )
+    .unwrap_err();
+    assert_eq!(code(&error).as_deref(), Some("side_chat_locked"));
+
+    // A last turn that differs only by its account is the lock's own options:
+    // nothing is written into the request.
+    let mut prev = main_record();
+    prev.options.provider_options = Some(BTreeMap::from([(
+        "claude-code".to_string(),
+        json!({ "account": "personal", "effort": "high" }),
+    )]));
+    prev.options.thinking_level = lock.thinking_level;
+    let mut req = request(json!({}));
+    fill_from_lock(&lock, Some(&prev), &mut req);
+    assert!(req.options.as_ref().unwrap().provider_options.is_none());
 }
 
 #[test]

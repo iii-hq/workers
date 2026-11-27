@@ -793,7 +793,7 @@ impl FunctionQueueRuntime {
     }
 }
 
-const RECONNECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RECONNECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn run_supervised_consumer(
     queue: String,

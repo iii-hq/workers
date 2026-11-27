@@ -21,6 +21,7 @@ impl ScenarioRunner<'_> {
         probe
             .register_target(&self.run_id, scenario.target.as_ref())
             .map_err(|error| RunError::setup(phase, "register controlled function", error))?;
+        probe.register_stand_ins(&self.fixture.stand_in_functions);
 
         // Observe before the harness exists. Observers of the harness's
         // functions stay pending until it registers them; the engine-hosted
@@ -53,6 +54,7 @@ impl ScenarioRunner<'_> {
                 .await
                 .map_err(|error| RunError::setup(phase, "bind child completion observer", error))?;
         }
+        self.setup_calls(services, deadline).await?;
         self.sink_mut(phase)?
             .write_scenario_text(
                 &scenario.id,
@@ -61,6 +63,51 @@ impl ScenarioRunner<'_> {
             )
             .map_err(|error| RunError::runner(phase, "write expected system prompt", error))?;
 
+        Ok(())
+    }
+
+    /// The fixture's calls before the send, each once its function is
+    /// registered; a failed call or an unexpected answer fails setup.
+    async fn setup_calls(
+        &self,
+        services: &RunServices,
+        deadline: crate::deadline::Deadline,
+    ) -> Result<(), RunError> {
+        let phase = RunPhase::Arm;
+        for call in &self.fixture.setup_calls {
+            discovery::wait_for_functions(
+                services.client(),
+                &[call.function_id.as_str()],
+                deadline,
+            )
+            .await
+            .map_err(|error| RunError::setup(phase, "wait for a setup function", error))?;
+            let mut payload = call.payload.clone();
+            crate::expand::Placeholders::new(&self.run_id, &self.session_id)
+                .expand_value(&mut payload)
+                .map_err(|error| RunError::runner(phase, "expand setup-call payload", error))?;
+            let output = services
+                .client()
+                .call_until_deadline(&call.function_id, payload, deadline)
+                .await
+                .map_err(|error| {
+                    RunError::setup(
+                        phase,
+                        format!("setup call {}", call.function_id),
+                        anyhow::anyhow!(error),
+                    )
+                })?;
+            if let Some(expected) = &call.expected_output {
+                let matched = crate::matcher::evaluate("setup output", expected, Some(&output));
+                if !matched.passed {
+                    return Err(RunError::new(
+                        phase,
+                        crate::runtime::RunErrorKind::Contract,
+                        matched.detail,
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }

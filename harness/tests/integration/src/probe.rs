@@ -211,6 +211,25 @@ impl ScenarioProbe {
         Ok(())
     }
 
+    /// Register stand-ins for workers the stack does not run: each answers
+    /// every call with its fixed response.
+    pub fn register_stand_ins(&self, functions: &[crate::fixtures::StandInFunction]) {
+        for function in functions {
+            let response = function.response.clone();
+            self.client.inner().register_function(
+                &function.function_id,
+                RegisterFunction::new_async(move |_payload: Value| {
+                    let response = response.clone();
+                    async move { Ok::<Value, Error>(response) }
+                })
+                .description(format!(
+                    "Integration stand-in for {}: a fixed answer.",
+                    function.function_id
+                )),
+            );
+        }
+    }
+
     /// Snapshot of every controlled-function invocation payload so far
     /// (engine fields stripped), in arrival order.
     pub fn target_calls(&self) -> Vec<Value> {
@@ -642,6 +661,24 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_parser_accepts_the_claude_code_account() {
+        let event = parse_lifecycle_payload(json!({
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "status": "failed",
+            "terminal": true,
+            "timestamp": 1,
+            "account": { "id": "work", "source": "session" }
+        }))
+        .unwrap();
+        let account = event.account.unwrap();
+        assert_eq!(
+            (account.id.as_str(), account.source.as_str()),
+            ("work", "session")
+        );
+    }
+
+    #[test]
     fn observer_payload_parsers_reject_malformed_events() {
         assert!(parse_ready_payload(&json!({ "status": "ready" })).is_ok());
         assert!(parse_ready_payload(&json!({ "status": "booting" })).is_err());
@@ -667,6 +704,7 @@ mod tests {
                 reactive_depth: None,
                 context: None,
                 open_asks: 0,
+                account: None,
             },
         };
         let observations = vec![

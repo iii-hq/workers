@@ -519,6 +519,11 @@ export interface SessionChipProps {
   modelId?: string
   /** Context window (tokens) of the resolved model, from the catalog. */
   contextWindow?: number
+  /**
+   * A turn is running in this session (the chat's working indicator).
+   * Absent from older consoles.
+   */
+  isStreaming?: boolean
 }
 
 /**

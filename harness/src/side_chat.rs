@@ -194,6 +194,12 @@ pub struct SideChatLock {
     /// Provider-native options, the account among them (phase 4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<BTreeMap<String, Value>>,
+    /// The Claude Code account the side chat runs on and why, as the
+    /// conversation resolved it (phase 4, D139): the side chat skips
+    /// resolution. Absent on a lock made before phase 4 until its next turn
+    /// stores the conversation's, and for a conversation on another provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::TurnAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
     /// The skills filter (`None`: every skill).
@@ -224,6 +230,7 @@ impl SideChatLock {
             provider: options.provider.clone(),
             thinking_level: options.thinking_level,
             provider_options: normalized_provider_options(options.provider_options.as_ref()),
+            account: None,
             functions: options.functions.clone(),
             skills: normalized_skills(
                 options
@@ -247,9 +254,12 @@ impl SideChatLock {
             .and_then(Value::as_str)
     }
 
-    /// The account the turn runs on, when its provider options name one
-    /// (`provider_options[<provider>].account`, phase 4).
-    fn account(&self) -> Option<&str> {
+    /// The account the turn runs on: the stored one, else the one its
+    /// provider options name (`provider_options[<provider>].account`).
+    pub(crate) fn account_id(&self) -> Option<&str> {
+        if let Some(account) = &self.account {
+            return Some(&account.id);
+        }
         let options = self.provider_options.as_ref()?;
         self.provider
             .as_deref()
@@ -268,7 +278,7 @@ impl SideChatLock {
         if let Some(level) = self.thinking_level {
             summary["thinking_level"] = json!(level);
         }
-        if let Some(account) = self.account() {
+        if let Some(account) = self.account_id() {
             summary["account"] = json!(account);
         }
         summary
@@ -395,6 +405,13 @@ pub fn seeded_record(parent: &TurnRecord, session_id: &str) -> TurnRecord {
     record.result_error = None;
     record.stop_reason = None;
     record.failure = None;
+    // A conversation compacting at its end (D158) can be forked: the
+    // compaction, and a Stop of it, stay the conversation's.
+    record.compacting = None;
+    record.compaction_stopped = false;
+    // The account was the conversation's turn's: the side chat's first turn
+    // takes its lock's (D80).
+    record.account = None;
     record.validation_retries = 0;
     record.transient_resumes = 0;
     record.ask_step = None;
@@ -434,6 +451,22 @@ async fn save_lock(deps: &Deps, lock: &SideChatLock) -> Result<(), HarnessError>
     let value = serde_json::to_value(lock)
         .map_err(|e| HarnessError::State(format!("side chat lock serialize: {e}")))?;
     crate::state::state_set(&deps.iii, LOCK_SCOPE, &lock.session_id, value, timeout).await
+}
+
+/// Store a lock that gained a value (a lock made before phase 4 that
+/// gained its account), and show it (best effort).
+pub(crate) async fn relock(deps: &Deps, lock: &SideChatLock) -> Result<(), HarnessError> {
+    save_lock(deps, lock).await?;
+    let display = MetaPatch::set(SIDE_CHAT_LOCK, lock.summary()).quiet();
+    if let Err(error) = deps
+        .session()
+        .await
+        .patch_meta(&lock.session_id, &display)
+        .await
+    {
+        tracing::warn!(session_id = %lock.session_id, %error, "could not show the side chat's lock");
+    }
+    Ok(())
 }
 
 /// Forget a side chat's lock (`keep`, and deletion).
@@ -572,7 +605,9 @@ pub async fn open(
     let Some(record) = crate::state::get_turn(&deps.iii, parent_id, timeout).await? else {
         return Err(nothing_to_fork(parent_id));
     };
-    let streaming = (!record.status.is_terminal())
+    // A turn compacting at its end (chat-projects D158) has replied: its
+    // reply is final, so the fork takes it.
+    let streaming = (!record.status.is_terminal() && record.compacting.is_none())
         .then(|| crate::ids::assistant_entry_id(&record.turn_id, record.step));
     let entry_id = match req
         .entry_id
@@ -653,13 +688,14 @@ async fn tag(
         .and_then(|messages| messages.last())
         .and_then(|item| item["entry_id"].as_str())
         .map(str::to_string);
-    let lock = SideChatLock::from_options(
+    let mut lock = SideChatLock::from_options(
         side_chat_id,
         &parent.session_id,
         Some(entry_id.to_string()),
         &parent.options,
         "open",
     );
+    lock.account = parent.account.clone();
     crate::state::put_turn(&deps.iii, &seeded_record(parent, side_chat_id), timeout).await?;
     save_lock(deps, &lock).await?;
     let mut patch = MetaPatch {
@@ -791,7 +827,8 @@ async fn lazy_lock(
         );
         return Ok(None);
     };
-    let lock = SideChatLock::from_options(session_id, parent, None, &record.options, "lazy");
+    let mut lock = SideChatLock::from_options(session_id, parent, None, &record.options, "lazy");
+    lock.account = record.account.clone();
     if crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout)
         .await?
         .is_none()
@@ -816,7 +853,9 @@ fn locked(field: &str, sent: Value, lock: Value) -> HarnessError {
 
 /// A send that names a different value than the lock's for the model, the
 /// provider, the effort (`thinking_level`, `provider_options`, `reasoning`),
-/// the functions, the skills or the working folder fails. So does one that
+/// the functions, the skills or the working folder fails. The account in
+/// `provider_options` is not compared: the harness drops a client's and runs
+/// the side chat on the lock's. So does one that
 /// names a prompt field or an agent: the side chat keeps the conversation's
 /// system prompt. Naming the lock's own value is accepted.
 pub fn check_lock(lock: &SideChatLock, req: &SendRequest) -> Result<(), HarnessError> {
@@ -843,7 +882,8 @@ pub fn check_lock(lock: &SideChatLock, req: &SendRequest) -> Result<(), HarnessE
         ));
     }
     if let Some(sent) = options.provider_options.as_ref()
-        && normalized_provider_options(Some(sent)) != lock.provider_options
+        && crate::accounts::without_account(Some(sent))
+            != crate::accounts::without_account(lock.provider_options.as_ref())
     {
         return Err(locked(
             "provider_options",
@@ -908,7 +948,8 @@ pub fn fill_from_lock(lock: &SideChatLock, prev: Option<&TurnRecord>, req: &mut 
         && options.reasoning.is_none()
         && prev.is_none_or(|(o, _)| {
             o.thinking_level != lock.thinking_level
-                || normalized_provider_options(o.provider_options.as_ref()) != lock.provider_options
+                || crate::accounts::without_account(o.provider_options.as_ref())
+                    != crate::accounts::without_account(lock.provider_options.as_ref())
         })
     {
         options.thinking_level = lock.thinking_level;
@@ -1040,6 +1081,9 @@ pub async fn keep(deps: &Deps, req: SideChatRequest) -> Result<SideChatKeepRespo
     Ok(SideChatKeepResponse { meta })
 }
 
+/// `side_chat_busy` while the side chat's turn compacts at its end (D158).
+pub const SIDE_CHAT_COMPACTING: &str = "Wait for the side chat to finish compacting.";
+
 pub async fn summarize(
     deps: &Deps,
     req: SideChatRequest,
@@ -1047,15 +1091,20 @@ pub async fn summarize(
     let session = deps.session().await;
     side_chat(&session, &req.session_id).await?;
     let timeout = deps.cfg().await.session_timeout_ms;
-    if crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, timeout)
+    if let Some(record) = crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, timeout)
         .await?
-        .is_some_and(|record| !record.status.is_terminal())
+        .filter(|record| !record.status.is_terminal())
     {
         // Merged into the running turn, the prompt would not be a turn of
         // its own and its reply would never be marked as the summary.
+        let message = if record.compacting.is_some() {
+            SIDE_CHAT_COMPACTING
+        } else {
+            "Wait for the side chat's reply, then ask for a summary."
+        };
         return Err(HarnessError::rejected(
             "side_chat_busy",
-            "Wait for the side chat's reply, then ask for a summary.",
+            message,
             json!({ "session_id": req.session_id }),
         ));
     }

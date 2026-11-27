@@ -31,7 +31,7 @@ type Config struct {
 	// and the schema sent to configuration::ensure gains no required field.
 	Mode   string         `json:"mode,omitempty" jsonschema:"enum=hub,enum=client"`
 	Client *client.Config `json:"client,omitempty"`
-	// Hub mode only. Without public_url the hub leases a quick-tunnel target and
+	// Hub mode only. Without public_url the hub leases a tunnel target and
 	// uses its URL as the public URL.
 	Tunnel *TunnelConfig `json:"tunnel,omitempty"`
 	// Hub mode only: hub workers every joined machine may call.

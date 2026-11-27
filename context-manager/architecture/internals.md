@@ -26,7 +26,7 @@ in tests.
 | [src/functions/mod.rs](../src/functions/mod.rs) | Function ids + descriptions, `resolve_model` (the spec's resolution order), the generic typed `register` helper, `register_all`, and the schema `catalog()` (golden-tested). |
 | [src/functions/&lt;verb&gt;.rs](../src/functions) | One file per function: request/response structs (serde + `JsonSchema`, doc comments become schema descriptions) and a `pub async fn handle(deps, req)`. BDD calls these `handle` fns directly, so engine-free tests exercise the exact production path. |
 | [src/core/budget.rs](../src/core/budget.rs) | `ResolvedModel`, the `usable` math, `default_reserved`, `preserve_recent_budget`, `fallback_model`. |
-| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image), `estimator_for_model`, per-role tallies. |
+| [src/core/estimate.rs](../src/core/estimate.rs) | `Estimator` trait + `HeuristicEstimator` (serialized non-image `chars/4` plus 4,096 tokens per image and one token per 16 bytes of an encrypted reasoning envelope), `estimator_for_model`, per-role tallies. |
 | [src/core/prune.rs](../src/core/prune.rs) | The prune algorithm (newest-first scan, protected window, `min_free_tokens` guard, in-place placeholder rewrite) and the unconditional per-result cap pass (`cap_results_with_sizes`: head + marker + tail rewrite). |
 | [src/core/selection.rs](../src/core/selection.rs) | Turn partitioning and token-aware verbatim-tail selection with the safe-cut invariant. |
 | [src/core/summary.rs](../src/core/summary.rs) | Summariser prompt construction (template, previous-summary anchoring), `strip_media`, and the `# Conversation summary` system-prompt rendering. |
@@ -102,17 +102,28 @@ Load-bearing details:
 1. **Order is fixed: media-normalize → cap → prune → compact.** Media
    normalization and cap are unconditional: they run on every call, so even a
    within-budget request can have images replaced or a single oversized result
-   capped. Prune runs only once the request is over `usable`: it rewrites
+   capped. Prune runs only once the request is over the compaction threshold
+   (`usable`, or `min(usable, options.compaction_budget)`): it rewrites
    results an earlier request already sent, which costs the provider's prompt
    cache from that result on. Before accounting, a known catalog model receives image placeholders
-   unless it explicitly declares vision support; a known vision model ages tool
-   images after the next assistant response and user images when a later user
-   turn follows a response. Inline limits and unresolved models keep images.
+   unless it explicitly declares vision support. A known vision model keeps the
+   tool images it has seen until 16 are live, then replaces the 8 oldest with a
+   marker in one request, and again every 8; the window shrinks below about
+   262k usable tokens and is 0 below about 33k, where every seen tool image is
+   replaced. From about 65k usable tokens (window 2 or more) media
+   normalization therefore rewrites a sent tool result once per window images
+   instead of on every image step; at window 1 (about 33k-65k) it still
+   rewrites one on every image step, one step later. User images age when a later user turn
+   follows a response. Inline limits and unresolved models keep images.
    Live images cost the fixed 4,096-token heuristic budget, never their base64
    payload length. Compaction and emergency
-   reduction are both gated on *still being over budget*; compaction is
-   additionally gated on `allow_compaction` and is the expensive one of the
-   two (an LLM call). Each step re-counts.
+   reduction are both gated on *still being over budget* — compaction over the
+   soft compaction threshold, emergency reduction over `usable` (D160), so a
+   failed summary at a low budget drops nothing the model could read;
+   compaction is additionally gated on `allow_compaction` and is the expensive
+   one of the two (an LLM call). Each step re-counts. When a compaction was
+   tried, the response's `compaction {trigger, status, failure?}` says which
+   threshold fired and how it ended.
    A request with no media-normalization replacements, nothing large enough to
    cap, nothing aged enough to prune, and nothing to compact passes through
    byte-identical —
@@ -190,7 +201,10 @@ tail is "the last little bit kept raw", not a second copy of the window.
 - **v1 ships one implementation: `HeuristicEstimator` = serialized non-image
   `chars / 4` plus 4,096 tokens per image.** It counts the serialized message's
   structure and metadata, but image payload bytes are replaced with a fixed
-  allowance, and it is deterministic and model-independent.
+  allowance and an encrypted reasoning envelope (a JSON thinking signature of
+  type `reasoning`) counts one token per 16 bytes (a replayed Codex reasoning
+  blob bills about one token per 18-29 bytes; other signatures stay chars/4), and it is
+  deterministic and model-independent.
   `estimator_for_model` ignores the model id today and always returns the
   heuristic; `count-tokens` reports `estimator: "heuristic"`.
 - The trait is the seam for a real per-model tokenizer later: slot it into
@@ -429,7 +443,7 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
 | Port | Production adapter | Backed by | Failure posture |
 |---|---|---|---|
 | `ModelResolver` | `RouterModelResolver` | `router::models::budget` (5s timeout; `models::get` compatibility fallback) | `Ok(None)` = router up but model unknown; `Err` = router absent/unreachable. Both → fallback when allowed. |
-| `Summarizer` | `RouterSummarizer` | `router::chat` over an SDK channel | `Unavailable` (router not routable) vs `Failed` (provider/stream error) vs `Empty`. |
+| `Summarizer` | `RouterSummarizer` | `router::chat` over an SDK channel, with the caller's `provider_options` | `Unavailable` (router not routable) vs `Failed(Failure)` (provider/stream error, timeout, or a history too large to split, with its kind and the router's `error_details`) vs `ContextOverflow` (retried with less history) vs `Empty`; `SummarizeError::failure()` is what callers see. |
 | `LeaseStore` | `FsLeaseStore` | one JSON file per key under `lease_dir` (atomic `tmp + rename`; process-local `Mutex` for `swap`) | Errors surface as busy via `core::lease`. |
 | `Clock` | `SystemClock` | wall clock (ms since epoch) | — |
 
@@ -445,10 +459,17 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
 - `summarizer_timeout_ms` (default 320000) is the **outer** budget for the
   whole call and must exceed the router's own stream budget; `READER_DRAIN_MS`
   is a 2s grace for the socket to drain after the call returns.
-- Unroutable detection is string-sniffing the error (`function_not_found` /
-  `not found` / `no function`) → `Unavailable`, which `compact` maps to
-  `status: "overflow"` with `error_kind: "permanent"` logged. This is the
-  defined degraded mode when `llm-router` is absent.
+- Unroutable detection is the engine's remote error code
+  `function_not_found` (as llm-router's `is_function_not_found`; the message
+  text is never consulted) → `Unavailable`, which `compact` maps to
+  `status: "overflow"` with `failure.kind: "unavailable"` and
+  `error_kind: "permanent"` logged. This is the defined degraded mode when
+  `llm-router` is absent. Any other bus error is read as the router's
+  ErrorShape (its `router/…` code, or a JSON ErrorShape in the message) and
+  classified like an `ok: false` reply.
+- `extract_summary` classifies an error `stop` frame by its `error_kind`, but
+  a terminal `error` frame after it wins: only that one carries
+  `error_details`.
 
 `FsLeaseStore::swap` holds the cache `Mutex` across the whole read-modify-write:
 it reads the current claim (replaying the key's file on a cold cache), writes the
@@ -488,7 +509,7 @@ the code before the colon is the stable contract. One mapping point:
 | `InvalidRequest` | `context/invalid_request` | `messages` absent/null (`messages is required`); serde-survivable shape problems. |
 | `ModelUnresolved` | `context/model_unresolved` | No inline limits, router can't resolve, fallback disabled (`could not resolve model limits`). |
 | `State` | `context/state` | A filesystem call backing the lease failed (reserved; lease failures normally degrade to busy rather than throw). |
-| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). |
+| `Overflow` | `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction (assemble only). After a failed inline compaction the message ends with `; compaction failed: ` and the `Failure` as JSON. |
 
 `messages is required` and `could not resolve model limits` are kept word-for-word
 because callers match on them (`errors.feature`). Adding a variant means: add

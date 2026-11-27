@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Shared with quick-tunnel's tests: what opentunnel 0.6.2 writes for the server
+// Shared with tunnel's tests: what opentunnel 0.6.2 writes for the server
 // name r0ute234abcd5678.abc234.opentunnel.xyz.
 const (
 	proxyV4    = "0d0a0d0a000d0a515549540a21110035cb007107000000000fa001bb020026723075746532333461626364353637382e6162633233342e6f70656e74756e6e656c2e78797a"

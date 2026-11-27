@@ -347,10 +347,6 @@ impl SnapshotRepo {
         }
     }
 
-    pub async fn drop_ref(&self, name: &str) {
-        let _ = self.git(None, &["update-ref", "-d", name]).await;
-    }
-
     /// Pack loose objects and drop what no turn pins any more, when the
     /// repository's own thresholds say so.
     pub async fn gc_auto(&self) {

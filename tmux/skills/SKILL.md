@@ -69,7 +69,9 @@ client that only the Console drives.
 - `subagents::transcript` returns a sub-agent's conversation, tool calls and
   their output; it needs approval for the same reason.
 - `usage::read` and `accounts::list` carry each account's email and
-  organization but never a token. Everything
+  organization but never a token. `accounts::credential` (an account's
+  token, for the Chat's provider) and `usage::claude_outside` (the Chat's
+  split of the week) are denied to agents. Everything
   else under `accounts::` and `panes::account` is approval-gated: a move ends
   Claude Code in that pane (SIGTERM) and starts it again on the other account,
   resuming its conversation, so name the panes that will restart; `global`
@@ -83,8 +85,10 @@ client that only the Console drives.
 - Starting Claude Code with `claude.skip_permissions: true` lets it run
   commands and change or delete files without asking. Only do it when the
   person asks for it, and say so before asking for approval.
-- The worker reads Claude Code's sign-in only to ask its usage; it never
-  refreshes, prints or returns a token.
+- The worker reads Claude Code's sign-in to ask its usage, and hands a token
+  only to the Chat's provider through `accounts::credential`, renewing it
+  first when it expires within five minutes, as Claude Code does. It never
+  prints or logs a token.
 - The worker never types into panes, except to move Claude Code started by
   hand in a shell: once that shell has the terminal back, it types the
   command that starts it on the other account into it (nothing otherwise).

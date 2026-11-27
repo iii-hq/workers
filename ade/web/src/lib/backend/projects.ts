@@ -8,10 +8,16 @@
  * (`ChatCapabilities.projects`); the saved-folder catalogue that used to
  * answer `harness::projects::*` is `./folders.ts`.
  *
- * A write never sends `account` or `autocompact` (phases 4 and 3): `update`
- * is a patch, so a phase-1 client cannot erase what a later one set.
+ * A write sends `account` (phase 4, §4.3.2) and `autocompact` (phase 3,
+ * §3.3.2) only when the caller sets them: `update` is a patch, so a client
+ * cannot erase what another one set.
  */
 import { errorCode } from '@iii-dev/console-ui/format'
+import {
+  AUTOCOMPACT_INSTRUCTIONS_MAX,
+  type AutocompactSetting,
+  TOKENS_RANGE_ERROR,
+} from '@/lib/autocompact'
 import { errText } from '@/lib/errors'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 
@@ -57,6 +63,29 @@ export function isProjectColor(value: unknown): value is ProjectColor {
 export const PROJECT_NAME_MAX = 40
 export const PROJECT_FOLDERS_MAX = 20
 
+/**
+ * A project's Claude Code account (§4.3.2): follow the global account, or pin
+ * to one. The harness stores `{mode: "global"}` by default.
+ */
+export type ProjectAccount =
+  | { mode: 'global' }
+  | { mode: 'pinned'; account_id: string }
+
+/** A project's `account` out of the wire; anything else follows the global. */
+export function parseProjectAccount(raw: unknown): ProjectAccount {
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>
+    if (
+      record.mode === 'pinned' &&
+      typeof record.account_id === 'string' &&
+      record.account_id.length > 0
+    ) {
+      return { mode: 'pinned', account_id: record.account_id }
+    }
+  }
+  return { mode: 'global' }
+}
+
 export interface ChatProject {
   id: string
   name: string
@@ -64,8 +93,12 @@ export interface ChatProject {
   folders: string[]
   created_at_ms: number
   updated_at_ms: number
-  /** Phase 4 and 3 fields, kept as the engine sent them and never written here. */
+  /** Phase 4: its Claude Code account, as the engine sent it (read it with `parseProjectAccount`). */
   account?: unknown
+  /**
+   * Phase 3: its auto-compact setting, as the engine sent it (read it with
+   * `parseAutocompactSetting`; absent or malformed is `inherit`).
+   */
   autocompact?: unknown
 }
 
@@ -192,18 +225,23 @@ export async function createProject(input: {
   color: ProjectColor
   folders: string[]
   bring_existing?: boolean
+  account?: ProjectAccount
+  /** Phase 3 (§3.3.2); the harness stores `inherit` without it. */
+  autocompact?: AutocompactSetting
 }): Promise<ProjectWrite> {
   const c = await client()
   return parseWrite(await c.call(PROJECTS_CREATE_FUNCTION_ID, { ...input }))
 }
 
-/** A patch: only the fields given change; `account`/`autocompact` are never sent. */
+/** A patch: only the fields given change. */
 export async function updateProject(input: {
   id: string
   name?: string
   color?: ProjectColor
   folders?: string[]
   bring_existing?: boolean
+  account?: ProjectAccount
+  autocompact?: AutocompactSetting
 }): Promise<ProjectWrite> {
   const c = await client()
   const payload: Record<string, unknown> = { id: input.id }
@@ -212,6 +250,8 @@ export async function updateProject(input: {
   if (input.folders !== undefined) payload.folders = input.folders
   if (input.bring_existing !== undefined)
     payload.bring_existing = input.bring_existing
+  if (input.account !== undefined) payload.account = input.account
+  if (input.autocompact !== undefined) payload.autocompact = input.autocompact
   return parseWrite(await c.call(PROJECTS_UPDATE_FUNCTION_ID, payload))
 }
 
@@ -251,6 +291,10 @@ export type ProjectErrorCode =
   | 'too_many_folders'
   | 'folder_not_absolute'
   | 'bad_color'
+  | 'invalid_account'
+  | 'bad_setting'
+  | 'bad_tokens'
+  | 'bad_instructions'
   | 'not_found'
   | 'bad_request'
 
@@ -332,7 +376,7 @@ export function parseProjectError(err: unknown): ProjectError | null {
 
 /** Where a project error belongs in the dialog, with its copy (§1.3.2). */
 export interface ProjectErrorDisplay {
-  field: 'name' | 'folders' | 'form'
+  field: 'name' | 'folders' | 'account' | 'autocompact' | 'form'
   message: string
 }
 
@@ -393,6 +437,19 @@ export function describeProjectError(
       }
     case 'bad_color':
       return { field: 'form', message: said ?? 'Pick one of the six colours' }
+    case 'invalid_account':
+      return {
+        field: 'account',
+        message:
+          said ?? 'Follow the global account, or pin to one of the accounts',
+      }
+    case 'bad_setting':
+    case 'bad_tokens':
+    case 'bad_instructions':
+      return {
+        field: 'autocompact',
+        message: said ?? autocompactRejection(parsed.code),
+      }
     case 'not_found':
       return {
         field: 'form',
@@ -403,11 +460,31 @@ export function describeProjectError(
   }
 }
 
+/**
+ * The words of the harness's typed auto-compact rejections (D167), for an
+ * engine that sent only the code: `harness::projects::create|update` and
+ * `harness::chat-settings::set` answer `bad_setting`, `bad_tokens` or
+ * `bad_instructions` with ready copy.
+ */
+export function autocompactRejection(code: string): string {
+  switch (code) {
+    case 'bad_tokens':
+      return TOKENS_RANGE_ERROR
+    case 'bad_instructions':
+      return `Up to ${AUTOCOMPACT_INSTRUCTIONS_MAX.toLocaleString('en-US')} characters`
+    default:
+      return "Use the global setting, a size, or only the model's limit"
+  }
+}
+
 /* ── chat settings ── */
 
 export interface ChatSettings {
   descriptions: { agent_writes: boolean }
-  /** Other keys (phase 3's `autocompact`) pass through untouched. */
+  /**
+   * Other keys pass through untouched: phase 3's `autocompact` (read it
+   * with `parseGlobalAutocompact`).
+   */
   [key: string]: unknown
 }
 

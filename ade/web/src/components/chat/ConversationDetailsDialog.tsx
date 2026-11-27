@@ -14,19 +14,64 @@ import {
   FormDialogTitle,
   FormSelectTrigger,
 } from '@/components/ui/FormDialog'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
+import { useSideChatParent } from '@/hooks/use-side-chat-parent'
+import {
+  type AutocompactSetting,
+  autocompactOf,
+  conversationAutocompact,
+  fieldTokens,
+  formatTokens,
+  inheritChoiceLabel,
+  sideChatLine,
+} from '@/lib/autocompact'
+import { getDefaultBackend } from '@/lib/backend'
+import {
+  CLAUDE_CODE_PROVIDER,
+  useClaudeAccounts,
+} from '@/lib/backend/claude-accounts'
 import { type ChatProject, NO_PROJECT } from '@/lib/backend/projects'
+import { isSideChat } from '@/lib/chat-aside'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
+import type { AccountResolution } from '@/lib/claude-accounts-words'
+import {
+  chatAccountResolution,
+  lockedAccountOf,
+} from '@/lib/conversation-account'
 import {
   type ConversationDetailsDraft,
+  claudeAccountOf,
   DESCRIPTION_COUNTER_FROM,
   DESCRIPTION_MAX,
   descriptionHistory,
   detailsDraftOf,
 } from '@/lib/conversation-details'
+import { effectiveProvider } from '@/lib/conversation-provider'
 import { errText } from '@/lib/errors'
 import { shortAge } from '@/lib/short-age'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ByAgentPill } from './ByAgentPill'
+import { ConversationAccountRow } from './ConversationAccountRow'
+import {
+  type AutocompactChoice,
+  ConversationAutocompactRow,
+} from './ConversationAutocompactRow'
+
+/**
+ * A section the dialog can open on: the account chip's, and the
+ * auto-compact chip's and the settings' overrides table's (phase 3).
+ */
+export type ConversationDetailsSection = 'account' | 'autocompact'
+
+/** The size "Compact at…" starts at when the conversation had none. */
+const AUTOCOMPACT_START = 160_000
+
+/** The size the row's field starts at: its own, else the start size. */
+function autocompactSeedOf(setting: AutocompactSetting): number {
+  return setting.mode === 'tokens' ? setting.tokens : AUTOCOMPACT_START
+}
 
 interface ConversationDetailsDialogProps {
   open: boolean
@@ -38,7 +83,8 @@ interface ConversationDetailsDialogProps {
     | 'descriptionAtMs'
     | 'projectId'
     | 'sessionMetadata'
-  >
+  > &
+    Partial<Pick<Conversation, 'model' | 'parentId' | 'messages' | 'id'>>
   onOpenChange: (open: boolean) => void
   /** Write the draft; a rejection keeps the dialog open with the error. */
   onSave: (draft: ConversationDetailsDraft) => Promise<void> | void
@@ -53,6 +99,23 @@ interface ConversationDetailsDialogProps {
   agentSwitch?: boolean
   /** Clock for the relative times (tests). */
   now?: number
+  /** Open on this section, its control focused (the account chip). */
+  initialSection?: ConversationDetailsSection
+  /** A side chat: the account row is text only (its account is locked, D2). */
+  sideChat?: boolean
+  /**
+   * The provider of the conversation's next turn as the chat reads it (the
+   * account chip's); read from the conversation when absent.
+   */
+  provider?: string | null
+  /**
+   * A side chat's or a sub-agent's account as the chat resolved it (the
+   * chip's and the limit card's); null for a conversation that chooses its
+   * own. Read from the loaded conversations when absent.
+   */
+  lockedResolution?: AccountResolution | null
+  /** The loaded conversations, where a sub-agent's parent is looked for. */
+  conversations?: readonly Conversation[]
 }
 
 const FIELD =
@@ -73,6 +136,11 @@ export function ConversationDetailsDialog({
   projects,
   agentSwitch = false,
   now,
+  initialSection,
+  sideChat = false,
+  provider,
+  lockedResolution,
+  conversations,
 }: ConversationDetailsDialogProps) {
   const [draft, setDraft] = useState<ConversationDetailsDraft>(() =>
     detailsDraftOf(conversation),
@@ -80,8 +148,65 @@ export function ConversationDetailsDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const nameRef = useRef<HTMLInputElement>(null)
+  const accountRef = useRef<HTMLButtonElement>(null)
+  const autocompactRef = useRef<HTMLButtonElement>(null)
+  const autocompactFieldRef = useRef<HTMLInputElement>(null)
   const ids = useId()
+  // §4.3.5: the account row, for claude-code conversations on an engine
+  // with the whole feature (§4.3.6).
+  const realBackend = getDefaultBackend().id === 'real'
+  const accounts = useClaudeAccounts(realBackend && open)
+  const chatProjects = useChatProjects(realBackend && open)
+  const showAccount =
+    accounts.gate === 'full' &&
+    (provider !== undefined ? provider : effectiveProvider(conversation)) ===
+      CLAUDE_CODE_PROVIDER
+  const locked = lockedAccountOf(conversation, sideChat)
+  const projectList = projects ?? chatProjects.projects
+  const resolution =
+    lockedResolution !== undefined
+      ? lockedResolution
+      : showAccount && locked
+        ? chatAccountResolution({
+            conversation,
+            sideChat,
+            projects: projectList,
+            global: accounts.claude?.global ?? null,
+            conversations,
+          })
+        : null
+  const openOnAccount = initialSection === 'account' && showAccount
+  // §3.3.4: the Auto-compact row, on an engine with phase 3 (D168).
+  const caps = useChatCapabilities(realBackend && open)
+  const chatSettings = useChatSettings(realBackend && open)
+  const showAutocompact = caps.autocompact
+  const autocompactLocked = sideChat || isSideChat(conversation)
+  // A side chat follows its conversation: read from the engine when it
+  // isn't loaded here, never from the side chat's frozen copy (D164).
+  const sideChatParent = useSideChatParent({
+    conversation,
+    conversations,
+    enabled: open && showAutocompact && autocompactLocked,
+  })
+  const [autocompactChoice, setAutocompactChoice] =
+    useState<AutocompactChoice>('inherit')
+  const [autocompactText, setAutocompactText] = useState('')
+  /** The size the field was seeded with, exact: untouched text keeps it. */
+  const [autocompactSeed, setAutocompactSeed] = useState(AUTOCOMPACT_START)
+  const [autocompactError, setAutocompactError] = useState<string | null>(null)
+  const openOnAutocompact =
+    initialSection === 'autocompact' && showAutocompact && !autocompactLocked
   const history = descriptionHistory(conversation.sessionMetadata)
+  // What the row inherits is shown only once it is read: the global before
+  // the settings answer, and a project before the list does, are unknown.
+  const globalRead = chatSettings.loaded
+  const projectsRead = chatProjects.loaded || !chatProjects.available
+  const inheritedGlobal = globalRead ? chatSettings.autocompact : undefined
+  const draftProject =
+    projectList.find((project) => project.id === draft.projectId) ??
+    (draft.projectId && draft.projectId !== NO_PROJECT && !projectsRead
+      ? undefined
+      : null)
 
   // Every open starts from the live values, with the name selected: most
   // edits replace it, so typing straight away is the fast path.
@@ -91,7 +216,23 @@ export function ConversationDetailsDialog({
     setDraft(detailsDraftOf(conversation))
     setError(null)
     setSaving(false)
+    const own = autocompactOf(conversation)
+    setAutocompactChoice(own.mode)
+    const seed = autocompactSeedOf(own)
+    setAutocompactSeed(seed)
+    setAutocompactText(formatTokens(seed))
+    setAutocompactError(null)
     const frame = requestAnimationFrame(() => {
+      if (openOnAutocompact && autocompactRef.current) {
+        autocompactRef.current.focus()
+        autocompactRef.current.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
+      if (openOnAccount && accountRef.current) {
+        accountRef.current.focus()
+        accountRef.current.scrollIntoView?.({ block: 'nearest' })
+        return
+      }
       nameRef.current?.focus()
       nameRef.current?.select()
     })
@@ -112,12 +253,32 @@ export function ConversationDetailsDialog({
       agentKeepsIt: false,
     }))
 
+  /** The row's setting, or null while its size is not a size. */
+  const autocompactDraft = (): AutocompactSetting | null => {
+    if (autocompactChoice !== 'tokens') return { mode: autocompactChoice }
+    // The field shows the size rounded: untouched, it is the exact one, so
+    // a save that didn't touch it leaves 123456 alone (the patch drops it).
+    const parsed = fieldTokens(autocompactText, autocompactSeed)
+    if (!parsed.ok) {
+      setAutocompactError(parsed.error)
+      autocompactFieldRef.current?.focus()
+      return null
+    }
+    return { mode: 'tokens', tokens: parsed.tokens }
+  }
+
   const submit = async () => {
     if (!canSave) return
+    let next = draft
+    if (showAutocompact && !autocompactLocked) {
+      const autocompact = autocompactDraft()
+      if (!autocompact) return
+      next = { ...draft, autocompact }
+    }
     setSaving(true)
     setError(null)
     try {
-      await onSave(draft)
+      await onSave(next)
       onOpenChange(false)
     } catch (err) {
       setError(errText(err))
@@ -145,7 +306,13 @@ export function ConversationDetailsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <FormDialogContent
         className="w-[min(30rem,calc(100vw-2rem))] [--dialog-max-width:30rem]"
-        initialFocus={nameRef}
+        initialFocus={
+          openOnAutocompact
+            ? autocompactRef
+            : openOnAccount
+              ? accountRef
+              : nameRef
+        }
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React
         // tree, so pointer and key events would bubble to the row.
@@ -325,6 +492,63 @@ export function ConversationDetailsDialog({
                 </SelectContent>
               </Select>
             </div>
+          ) : null}
+
+          {showAccount ? (
+            <ConversationAccountRow
+              value={
+                draft.claudeAccount ??
+                claudeAccountOf(conversation.sessionMetadata)
+              }
+              onChange={(claudeAccount) =>
+                setDraft((current) => ({ ...current, claudeAccount }))
+              }
+              project={
+                projectList.find((project) => project.id === draft.projectId) ??
+                null
+              }
+              data={accounts}
+              readOnly={locked !== null}
+              resolution={resolution}
+              triggerRef={accountRef}
+            />
+          ) : null}
+
+          {showAutocompact ? (
+            <ConversationAutocompactRow
+              choice={autocompactChoice}
+              text={autocompactText}
+              onChoiceChange={(next) => {
+                setAutocompactChoice(next)
+                setAutocompactError(null)
+              }}
+              onTextChange={(next) => {
+                setAutocompactText(next)
+                setAutocompactError(null)
+              }}
+              inheritLabel={inheritChoiceLabel({
+                project: draftProject,
+                global: inheritedGlobal,
+              })}
+              error={autocompactError}
+              lockedText={
+                autocompactLocked
+                  ? sideChatLine(
+                      conversationAutocompact({
+                        conversation,
+                        projects: projectList,
+                        global: chatSettings.autocompact,
+                        conversations,
+                        parent: sideChatParent,
+                        globalRead,
+                        projectsRead,
+                      })?.tokens,
+                    )
+                  : null
+              }
+              triggerRef={autocompactRef}
+              fieldRef={autocompactFieldRef}
+            />
           ) : null}
 
           {error ? (

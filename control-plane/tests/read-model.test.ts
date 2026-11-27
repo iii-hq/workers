@@ -488,6 +488,54 @@ describe('context accounting', () => {
   })
 })
 
+it('counts workflow node sessions under their orchestrator, not as runs', async () => {
+  const node = (session_id: string, status: SessionMeta['status']): SessionMeta => ({
+    ...session,
+    session_id,
+    status,
+    metadata: { parent_session_id: 'root', workflow_run_id: 'wf_1' },
+  })
+  const { call, iii } = fake({
+    sessions: [session, node('live', 'working'), node('ended', 'done')],
+    working: true,
+  })
+  const { rows } = await fetchControlPlaneRuns(iii)
+  expect(rows.map((row) => row.session.session_id)).toEqual(['root'])
+  expect(rows[0].descendantSessionIds).toEqual(['live', 'ended'])
+  expect(rows[0].runningChildren).toBe(1)
+  const read = call.mock.calls.filter(([id]) => id === 'harness::status').map(([, input]) => input)
+  expect(read).toEqual([
+    { session_id: 'root', verbose: true },
+    { session_id: 'live', verbose: true },
+  ])
+})
+
+it('counts the nodes of a spawned orchestrator under its root', async () => {
+  const { call, iii } = fake({
+    sessions: [
+      session,
+      {
+        ...session,
+        session_id: 'node',
+        status: 'working',
+        metadata: { parent_session_id: 'sub', workflow_run_id: 'wf_1' },
+      },
+    ],
+    working: true,
+  })
+  const base = call.getMockImplementation()
+  call.mockImplementation(async (id, input) => {
+    const result = await base?.(id, input)
+    return id === 'harness::status' && input?.session_id === 'root'
+      ? { ...(result as object), children: [{ session_id: 'sub' }] }
+      : result
+  })
+  const { rows } = await fetchControlPlaneRuns(iii)
+  expect(rows.map((row) => row.session.session_id)).toEqual(['root'])
+  expect(rows[0].descendantSessionIds).toEqual(['sub', 'node'])
+  expect(rows[0].runningChildren).toBe(2)
+})
+
 it('projects only run facts from a parked root and classifies it as working', async () => {
   vi.useFakeTimers()
   vi.setSystemTime(at)

@@ -1,5 +1,6 @@
 //! Token estimation. v1 ships the serialized non-image chars/4 heuristic plus
-//! a fixed image allowance behind a trait so a real tokenizer can slot in per
+//! a fixed image allowance (and a measured rate for encrypted reasoning
+//! envelopes) behind a trait so a real tokenizer can slot in per
 //! model later; responses report which estimator ran.
 
 use crate::types::{AgentFunction, AgentMessage, ContentBlock, Role};
@@ -17,6 +18,27 @@ fn clear_image_payloads(blocks: &mut [ContentBlock]) -> u64 {
             _ => 0,
         };
         count.saturating_add(found)
+    })
+}
+
+// A replayed encrypted reasoning envelope (a JSON signature of type
+// "reasoning") bills about its reasoning tokens: measured 18-29 bytes a token
+// on gpt-6.2-sol; 16 stays an overcount. Other signatures are unmeasured and
+// keep chars/4.
+const REASONING_ENVELOPE_BYTES_PER_TOKEN: u64 = 16;
+
+fn take_reasoning_envelopes(blocks: &mut [ContentBlock]) -> u64 {
+    blocks.iter_mut().fold(0u64, |bytes, block| match block {
+        ContentBlock::Thinking {
+            signature: signature @ Some(_),
+            ..
+        } if signature.as_deref().is_some_and(|s| {
+            serde_json::from_str::<serde_json::Value>(s).is_ok_and(|v| v["type"] == "reasoning")
+        }) =>
+        {
+            bytes.saturating_add(signature.take().map_or(0, |s| s.len() as u64))
+        }
+        _ => bytes,
     })
 }
 
@@ -41,7 +63,8 @@ pub trait Estimator: Send + Sync {
     fn function(&self, function: &AgentFunction) -> u64;
 }
 
-/// `serialized non-image JSON chars / 4` plus 4,096 tokens per image —
+/// `serialized non-image JSON chars / 4` plus 4,096 tokens per image and one
+/// token per 16 bytes of an encrypted reasoning envelope —
 /// deterministic and model-independent.
 pub struct HeuristicEstimator;
 
@@ -60,13 +83,16 @@ impl Estimator for HeuristicEstimator {
         }
 
         let image_count = clear_image_payloads(wire_view.content_mut());
+        let envelope_bytes = take_reasoning_envelopes(wire_view.content_mut());
         let chars = serde_json::to_string(&wire_view)
             .map(|serialized| serialized.len())
             .unwrap_or(0);
 
         // ponytail: fixed media allowance; use model-aware accounting only if measured
         // provider usage exceeds the existing reserved-token cushion.
-        ((chars / 4) as u64).saturating_add(image_count.saturating_mul(IMAGE_TOKEN_BUDGET))
+        ((chars / 4) as u64)
+            .saturating_add(image_count.saturating_mul(IMAGE_TOKEN_BUDGET))
+            .saturating_add(envelope_bytes.div_ceil(REASONING_ENVELOPE_BYTES_PER_TOKEN))
     }
 
     fn text(&self, text: &str) -> u64 {
@@ -149,6 +175,28 @@ mod tests {
         let est = HeuristicEstimator;
         assert_eq!(est.message(&m), (chars / 4) as u64);
         assert_eq!(est.kind(), EstimatorKind::Heuristic);
+    }
+
+    #[test]
+    fn a_reasoning_envelope_counts_sixteen_bytes_a_token() {
+        let reply = |signature: Option<String>| {
+            msg(json!({
+                "role": "assistant",
+                "content": [{ "type": "thinking", "text": "plan", "signature": signature }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 1
+            }))
+        };
+        let est = HeuristicEstimator;
+        let unsigned = est.message(&reply(None));
+        let envelope =
+            json!({ "type": "reasoning", "encrypted_content": "A".repeat(16_000) }).to_string();
+        let len = envelope.len() as u64;
+        assert_eq!(
+            est.message(&reply(Some(envelope))),
+            unsigned + len.div_ceil(16)
+        );
+        // An opaque signature of another provider is unmeasured: still chars/4.
+        assert!(est.message(&reply(Some("A".repeat(16_000)))) >= unsigned + 4_000);
     }
 
     #[test]

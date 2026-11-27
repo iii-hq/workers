@@ -2,12 +2,16 @@
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
 use crate::PROVIDER_ID;
-use crate::errors::{REQUEST_REFUSED, SIGN_IN_REJECTED, classify};
+use crate::accounts::AccountError;
+use crate::errors::{REQUEST_REFUSED, SIGN_IN_REJECTED, USAGE_LIMIT_REACHED, classify};
+use crate::limits::usage_limit_details;
+use crate::request::auth_header;
 use crate::sse::{
     PartialState, build_partial, handle_sse_event, synthetic_error_event,
     synthetic_error_event_from_state,
 };
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use llm_router::provider_scaffold::sse_transport::{
     CloseFraming, StreamEnd, TailFlush, append_utf8_chunk, classify_stream_end, drain_sse_blocks,
     error_chain, tail_frame_is_partial, truncated_stream_error,
@@ -23,6 +27,43 @@ pub struct UpstreamArgs {
     pub headers: Vec<(&'static str, String)>,
     /// Report-and-continue notices for the final message (spec § stream contract).
     pub warnings: Vec<String>,
+    /// A token from an account source: one more request after a 401 (D140).
+    /// None keeps a single attempt (the vault / `~/.claude` path).
+    pub reauth: Option<Reauth>,
+}
+
+/// What a 401 does to a token from an account source.
+pub struct Reauth {
+    /// Drops the refused token and asks the source once more (only after a
+    /// 401): `Ok(Some(token))` when it has a different one, `Ok(None)` for the
+    /// same one (the 401 stands), `Err` when it gives none, whose kind and
+    /// message become the error frame (`busy` stays transient).
+    pub ask_again: BoxFuture<'static, Result<Option<String>, AccountError>>,
+    /// What a 401 that survives says (it names the account).
+    pub rejected: String,
+}
+
+/// Swap the bearer for `token`.
+fn set_bearer(headers: &mut [(&'static str, String)], token: &str) {
+    let (name, value) = auth_header(token);
+    for header in headers.iter_mut().filter(|(n, _)| *n == name) {
+        header.1 = value.clone();
+    }
+}
+
+/// POST the request. It takes the parts, not `UpstreamArgs`: the `Reauth`
+/// future in there is `Send` but not `Sync`.
+async fn send(
+    client: &reqwest::Client,
+    api_url: &str,
+    headers: &[(&'static str, String)],
+    body: &Value,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut req = client.post(api_url);
+    for (name, value) in headers {
+        req = req.header(*name, value);
+    }
+    req.json(body).send().await
 }
 
 pub fn spawn_upstream(
@@ -75,35 +116,67 @@ async fn drain_blocks(
 
 async fn run_upstream(
     client: reqwest::Client,
-    args: UpstreamArgs,
+    mut args: UpstreamArgs,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) {
-    let mut req = client.post(&args.api_url);
-    for (name, value) in &args.headers {
-        req = req.header(*name, value);
-    }
-    let resp = match req.json(&args.body).send().await {
+    let fetch_failed = |e: reqwest::Error, model: &str| {
+        synthetic_error_event(
+            &format!("claude-code fetch failed: {}", error_chain(&e)),
+            model,
+            ErrorKind::Transient,
+        )
+    };
+    let mut resp = match send(&client, &args.api_url, &args.headers, &args.body).await {
         Ok(r) => r,
         Err(e) => {
-            let _ = tx
-                .send(synthetic_error_event(
-                    &format!("claude-code fetch failed: {}", error_chain(&e)),
-                    &args.model,
-                    ErrorKind::Transient,
-                ))
-                .await;
+            let _ = tx.send(fetch_failed(e, &args.model)).await;
             return;
         }
     };
+    let mut rejected = SIGN_IN_REJECTED.to_string();
+    if let Some(reauth) = args.reauth.take() {
+        rejected = reauth.rejected;
+        // A 401 drops the token and asks its source once more (D140).
+        if resp.status().as_u16() == 401 {
+            match reauth.ask_again.await {
+                Ok(Some(token)) => {
+                    set_bearer(&mut args.headers, &token);
+                    resp = match send(&client, &args.api_url, &args.headers, &args.body).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let _ = tx.send(fetch_failed(e, &args.model)).await;
+                            return;
+                        }
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let event = synthetic_error_event(&error.message(), &args.model, error.kind());
+                    let _ = tx.send(event).await;
+                    return;
+                }
+            }
+        }
+    }
 
     let status = resp.status();
     if !status.is_success() {
+        // Headers first: reading the body consumes the response.
+        let details = usage_limit_details(status.as_u16(), resp.headers());
         let text = resp.text().await.unwrap_or_default();
-        let kind = classify(Some(status.as_u16()), &text);
+        // A usage limit stays `rate_limited` on the wire (D147), whatever
+        // the body's error type says.
+        let kind = if details.is_some() {
+            ErrorKind::RateLimited
+        } else {
+            classify(Some(status.as_u16()), &text)
+        };
         // Only a 401 means the token itself was turned down; a new sign-in
         // does not fix a 403.
         let msg = if status.as_u16() == 401 {
-            refused(SIGN_IN_REJECTED, &text)
+            refused(&rejected, &text)
+        } else if details.is_some() {
+            refused(USAGE_LIMIT_REACHED, &text)
         } else if kind == ErrorKind::AuthExpired {
             refused(REQUEST_REFUSED, &text)
         } else if text.is_empty() {
@@ -111,9 +184,11 @@ async fn run_upstream(
         } else {
             text
         };
-        let _ = tx
-            .send(synthetic_error_event(&msg, &args.model, kind))
-            .await;
+        let mut event = synthetic_error_event(&msg, &args.model, kind);
+        if let AssistantMessageEvent::Error { error } = &mut event {
+            error.error_details = details;
+        }
+        let _ = tx.send(event).await;
         return;
     }
 
@@ -211,7 +286,171 @@ mod tests {
             body: serde_json::json!({ "stream": true }),
             headers: vec![("x-api-key", "sk-test".into())],
             warnings: vec![],
+            reauth: None,
         }
+    }
+
+    const UNAUTHORIZED: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"token revoked\"}}";
+
+    /// HTTP stub for many requests: `HAPPY` for `authorization: Bearer
+    /// <good>`, 401 otherwise; records each request's bearer.
+    async fn bearer_stub(
+        good: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 65536];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let bearer = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("authorization: bearer "))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let response = if bearer == good { HAPPY } else { UNAUTHORIZED };
+                record.lock().unwrap().push(bearer);
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1/messages"), seen)
+    }
+
+    fn bearer_args(url: String, token: &str, reauth: Option<Reauth>) -> UpstreamArgs {
+        UpstreamArgs {
+            headers: vec![
+                auth_header(token),
+                ("anthropic-version", "2023-06-01".into()),
+            ],
+            reauth,
+            ..args(url)
+        }
+    }
+
+    fn reauth_to(token: Option<&'static str>) -> Reauth {
+        Reauth {
+            ask_again: Box::pin(async move { Ok(token.map(str::to_string)) }),
+            rejected: "Claude Code rejected the sign-in of the account \"personal\".".into(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_401_asks_the_account_source_once_more_and_streams_with_the_new_token() {
+        let (url, seen) = bearer_stub("fresh").await;
+        let a = bearer_args(url, "stale", Some(reauth_to(Some("fresh"))));
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert!(
+            matches!(events.last(), Some(AssistantMessageEvent::Done { .. })),
+            "{events:?}"
+        );
+        assert_eq!(*seen.lock().unwrap(), ["stale", "fresh"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_401_that_survives_the_second_ask_is_auth_expired_for_the_account() {
+        let (url, seen) = bearer_stub("never").await;
+        let a = bearer_args(url, "stale", Some(reauth_to(Some("also-refused"))));
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let AssistantMessageEvent::Error { error } = &events[0] else {
+            panic!("want error, got {events:?}")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("Claude Code rejected the sign-in of the account \"personal\". (token revoked)")
+        );
+        assert_eq!(*seen.lock().unwrap(), ["stale", "also-refused"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_new_token_means_no_second_request() {
+        let (url, seen) = bearer_stub("never").await;
+        let a = bearer_args(url, "stale", Some(reauth_to(None)));
+        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        assert!(matches!(
+            &events[..],
+            [AssistantMessageEvent::Error { error }] if error.error_kind == Some(ErrorKind::AuthExpired)
+        ));
+        assert_eq!(*seen.lock().unwrap(), ["stale"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_source_on_the_second_ask_is_transient_not_a_sign_in() {
+        let (url, seen) = bearer_stub("never").await;
+        let busy = Reauth {
+            ask_again: Box::pin(async { Err(AccountError::Busy("personal".into())) }),
+            rejected: "Claude Code rejected the sign-in of the account \"personal\".".into(),
+        };
+        let events = drain(spawn_upstream(
+            reqwest::Client::new(),
+            bearer_args(url, "stale", Some(busy)),
+        ))
+        .await;
+        let [AssistantMessageEvent::Error { error }] = &events[..] else {
+            panic!("want one error frame, got {events:?}")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("busy"), "{message}");
+        assert_eq!(*seen.lock().unwrap(), ["stale"], "no second request");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_vault_path_keeps_one_attempt_on_a_401() {
+        let (url, seen) = bearer_stub("never").await;
+        let events = drain(spawn_upstream(
+            reqwest::Client::new(),
+            bearer_args(url, "stale", None),
+        ))
+        .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(*seen.lock().unwrap(), ["stale"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_usage_limit_429_is_rate_limited_with_its_details() {
+        let url = stub(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nanthropic-ratelimit-unified-status: rejected\r\nanthropic-ratelimit-unified-representative-claim: seven_day\r\nanthropic-ratelimit-unified-reset: 1800000000\r\nconnection: close\r\n\r\n{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"usage limit\"}}",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let [AssistantMessageEvent::Error { error }] = &events[..] else {
+            panic!("want one error, got {events:?}")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::RateLimited));
+        assert_eq!(
+            error.error_details,
+            Some(llm_router::types::events::ErrorDetails::usage_limit(
+                Some(llm_router::types::events::UsageWindow::Week),
+                Some(1_800_000_000_000)
+            ))
+        );
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("This Claude Code account has reached its usage limit. (usage limit)")
+        );
+        assert!(!error.error_is_retryable());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_429_stays_a_plain_retried_rate_limit() {
+        let url = stub(
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nanthropic-ratelimit-unified-status: allowed_warning\r\nretry-after: 3\r\nconnection: close\r\n\r\n{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}",
+        )
+        .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let [AssistantMessageEvent::Error { error }] = &events[..] else {
+            panic!("want one error, got {events:?}")
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::RateLimited));
+        assert_eq!(error.error_details, None);
+        assert!(error.error_is_retryable());
     }
 
     async fn drain(mut rx: mpsc::Receiver<AssistantMessageEvent>) -> Vec<AssistantMessageEvent> {

@@ -92,9 +92,11 @@ Whatever capping, pruning, or compaction does, the returned context must still b
   [README § Messages](README.md#messages-the-many-message-types)).
 - **Image normalization is model-facing only.** Before token accounting,
   `context::assemble` normalizes images in its cloned model-facing view. A known
-  text-only model receives placeholders. For a known vision model, tool images
-  age after the next assistant response and user images age when a later user
-  turn begins after a response. Unknown capability keeps images. Live images
+  text-only model receives placeholders. For a known vision model, seen tool
+  images stay until 16 are live, then the 8 oldest become a marker in one
+  request, and again every 8 (a smaller window below about 262k usable tokens;
+  below about 33k every seen tool image is replaced). User images age when a
+  later user turn begins after a response. Unknown capability keeps images. Live images
   cost a fixed 4,096-token heuristic budget; base64 bytes are never counted as
   text. The caller's transcript is unchanged.
 

@@ -238,6 +238,15 @@
               "null"
             ]
           },
+          "provider_options": {
+            "additionalProperties": true,
+            "default": null,
+            "description": "`router::chat` `provider_options`, namespaced by provider id (e.g. the conversation's account under `claude-code`), forwarded verbatim to every summariser call. Absent: the router's defaults.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "tail_turns": {
             "default": null,
             "description": "user+assistant pairs kept verbatim (default 2).",
@@ -592,6 +601,122 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ErrorDetails": {
+        "description": "llm-router's `error_details` (D147), passed through from the router's error: what an error's kind alone does not say.",
+        "properties": {
+          "resets_at_ms": {
+            "description": "When that limit resets, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "default": false,
+            "description": "The account's usage limit is reached.",
+            "type": "boolean"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/UsageWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which limit was reached, when the provider said so."
+          }
+        },
+        "type": "object"
+      },
+      "Failure": {
+        "description": "The cause of a failed summary: `context::compact`'s `overflow`, the assemble's `compaction.failure`, and the tail of a `context/overflow` error that follows a failed inline compaction.",
+        "properties": {
+          "error_details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The router's `error_details`, when it sent them."
+          },
+          "kind": {
+            "$ref": "#/definitions/FailureKind"
+          },
+          "message": {
+            "description": "What happened, in a sentence: the router's user-facing message when the router said why, else this worker's own.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "type": "object"
+      },
+      "FailureKind": {
+        "description": "Why a summariser produced no summary, in words a caller can show.",
+        "oneOf": [
+          {
+            "description": "The account's usage limit is reached (llm-router's `error_details.usage_limit`): waiting a moment does not help.",
+            "enum": [
+              "usage_limit"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The provider is busy right now (`rate_limited` without a usage limit).",
+            "enum": [
+              "rate_limited"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The input did not fit: the provider refused it as larger than the model's window, or the history needs more summary calls, or more room than the window leaves. The only kind a larger window would fix.",
+            "enum": [
+              "input_too_large"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The summary took longer than its time budget, or the router's stream timed out.",
+            "enum": [
+              "timeout"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No summariser: llm-router is absent, or no provider can serve it.",
+            "enum": [
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Anything else: an authentication problem, a transient provider error, an empty summary.",
+            "enum": [
+              "other"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "UsageWindow": {
+        "description": "The usage window an account's limit belongs to (llm-router's `UsageWindow`).",
+        "enum": [
+          "five_hour",
+          "week"
+        ],
+        "type": "string"
+      }
+    },
     "description": "Discriminated on `status`.",
     "oneOf": [
       {
@@ -673,6 +798,17 @@
       {
         "description": "The summariser is unavailable, overflowed, or returned no summary.",
         "properties": {
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Failure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why: present on every `overflow` from 1.3.0; older versions sent none."
+          },
           "status": {
             "enum": [
               "overflow"

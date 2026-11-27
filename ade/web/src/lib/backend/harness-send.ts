@@ -227,12 +227,19 @@ export interface HarnessStatusReport {
   queued?: HarnessQueuedMessage[]
   result?: unknown
   result_error?: string | null
+  /**
+   * The Claude Code account the turn runs on and why (verbose only, an
+   * engine with chat-projects phase 4).
+   */
+  account?: { id: string; source?: string } | null
   /** The last generate step's context accounting (verbose only). */
   context?: {
     total: number
     usable: number
     free: number
     categories?: { tools?: number; overhead?: number }
+    /** Phase 3 (contract C): read it with `parseSnapshotAutocompact`. */
+    autocompact?: unknown
   }
 }
 

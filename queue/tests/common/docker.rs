@@ -151,6 +151,28 @@ impl RabbitMqContainer {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    /// Caps the default vhost at `max` client connections; the broker
+    /// refuses any connection past it.
+    pub fn limit_connections(&self, max: u32) {
+        let output = Command::new("docker")
+            .args([
+                "exec",
+                &self.container_id,
+                "rabbitmqctl",
+                "set_vhost_limits",
+                "-p",
+                "/",
+                &format!("{{\"max-connections\": {max}}}"),
+            ])
+            .output()
+            .expect("run rabbitmqctl in the broker container");
+        assert!(
+            output.status.success(),
+            "rabbitmqctl set_vhost_limits failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[cfg(feature = "rabbitmq")]

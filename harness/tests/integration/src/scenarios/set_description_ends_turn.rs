@@ -3,10 +3,13 @@
 //! chat-projects §1.2.3: the model's only generation answers in text and, in
 //! the same message, calls `harness::set-description`. The turn loop answers
 //! the call itself for the turn's own session (one `session::patch-meta`),
-//! and — its step's only call being the description, beside reply text —
-//! completes the turn WITHOUT another model request. The script has exactly
-//! one generation, so a second `router::chat` is an `unexpected_call` that
-//! fails the turn. `session::on-meta-updated` carries the new description.
+//! and — its step's only call being the description, beside reply text, at
+//! the turn's start — asks the model once more with `next` on the result (the
+//! text could have been an announcement). The second generation ends the turn
+//! with no text; a third `router::chat` is an `unexpected_call` that fails the
+//! turn. After other work the same step ends the turn at once (stack test
+//! `a_description_beside_the_reply_ends_the_turn_after_other_work`).
+//! `session::on-meta-updated` carries the new description.
 
 use serde_json::json;
 
@@ -54,10 +57,23 @@ pub(super) fn scenario() -> ScenarioFixture {
                 6,
             )),
     )
+    .generation(
+        // The description opened the turn, so the model is asked once more and
+        // ends the turn with no further text (the result's `next` note).
+        Generation::new(2)
+            .expect(
+                Request::new()
+                    .turn_request_step(1)
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
+                    .messages_subset([Message::user(MESSAGE)])
+                    .tools_subset([]),
+            )
+            .respond(Response::text("", 4, 1)),
+    )
     .verify(|run| {
         anyhow::ensure!(
-            run.generations_consumed == 1,
-            "expected exactly one router call, got {}",
+            run.generations_consumed == 2,
+            "expected two router calls (the description opened the turn), got {}",
             run.generations_consumed
         );
         let results = run.function_results(SET_DESCRIPTION);
@@ -98,11 +114,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scripts_one_generation_with_text_and_a_description() {
+    fn scripts_a_reply_with_a_description_then_an_empty_end() {
         let fixture = scenario();
         fixture.validate().unwrap();
         assert_eq!(fixture.expected_terminal_turns, 1);
-        assert_eq!(fixture.script.generations.len(), 1);
+        assert_eq!(fixture.script.generations.len(), 2);
         let script = serde_json::to_string(&fixture.script.generations[0]).unwrap();
         assert!(script.contains(SET_DESCRIPTION), "{script}");
         assert!(script.contains(DESCRIPTION), "{script}");

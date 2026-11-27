@@ -6,7 +6,7 @@
       "account": {
         "additionalProperties": true,
         "default": null,
-        "description": "Phase 4: `{mode: \"global\"}` or a pinned account.",
+        "description": "The project's Claude Code account: `{mode: \"global\"}` or `{mode: \"pinned\", account_id}`. Anything else is `invalid_account`.",
         "type": [
           "object",
           "null"
@@ -15,7 +15,7 @@
       "autocompact": {
         "additionalProperties": true,
         "default": null,
-        "description": "Phase 3: `{mode: \"inherit\" | \"tokens\" | \"off\", tokens?}`.",
+        "description": "The project's autocompact setting (chat-projects phase 3), checked as on create: `{mode: \"inherit\" | \"off\"}` or `{mode: \"tokens\", tokens}`.",
         "type": [
           "object",
           "null"

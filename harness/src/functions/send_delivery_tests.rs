@@ -884,6 +884,7 @@ async fn a_send_into_a_failed_session_continues_it_with_the_same_identity() {
     failed.failure = Some(crate::types::turn::TurnFailure {
         code: "router/provider_transient".into(),
         retryable: true,
+        details: None,
     });
     failed.transient_resumes = 3;
     failed.options.provider = Some("anthropic".into());

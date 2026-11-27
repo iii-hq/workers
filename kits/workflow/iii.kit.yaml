@@ -1,6 +1,6 @@
 iii: v1
 name: iii/workflow
-version: 0.1.13
+version: 0.1.15
 iii_engine_version: ">=0.26.0"
 description: "Sizes a goal first: a small one is done directly, with no ticket and no run, one or two tickets as one workflow run each, and a broad one as multi-agent work on the kanban board, one workflow run per wave: the ticket strategy of iii/deepwork (a run ticket, subtask cards, bounded rounds, independent verification) with every phase as a workflow node, each one with its own profile and model, retried by the run's check loop. Code goals get a run branch, one run per ticket that runs alone, one worktree per ticket of a parallel wave and a kept branch. Installs beside iii/deepwork."
 license: Apache-2.0
@@ -18,7 +18,9 @@ workers:
   # 1.9.9: a parked node keeps waiting while its wake is delivered, and every exchange ends
   # with its terminal completion (a reseeded turn, a failed reseed, a crashed finalize).
   # 1.9.13: `failure.retryable` on harness::status, which the transient-failure continue reads.
-  harness: ^1.9.13
+  # 1.10.0: durable asks (about, recommended, expiry), harness::ask::list and
+  # harness::ask::withdraw, and harness::link-card.
+  harness: ^1.10.0
   # iii-directory, state, kanban and ide: their first releases on iii-sdk 0.26 (observe v2),
   # the same floors as iii/deepwork, so the two kits install side by side.
   # No caret: harness pulls iii-directory@latest.
@@ -28,7 +30,10 @@ workers:
   # 0.1.21: subtasks + parent_id, compact writes, add_labels / remove_labels.
   # 0.2.0 is its observe v2 port: on a 0.26 engine, 0.1.x registers its board page and config
   # watch as triggers, which the engine drops, so the Kanban page never appears.
-  kanban: ^0.2.0
+  # 0.2.6: board dispatch. 0.2.7: questions mirrored on the card, derived open_questions, the
+  # dispatcher's open_asks test (a card waiting on an answer is not parked) and
+  # kanban::question::record. One patch above iii/deepwork's ^0.2.6; the two ranges overlap.
+  kanban: ^0.2.7
   # shell::exec, shell::on-job-finished and coder::* for the nodes. No caret: projects pin ide@latest.
   ide: ">=0.13.0"
   # fp::pipe + fp::get read node_errors when a workflow::status reply is too large to return.

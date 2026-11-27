@@ -52,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
         timeout_ms: Some(30_000),
     }).await?;
 
-    // -> { system_prompt, messages, token_count, usable, model_resolved,
+    // -> { system_prompt, messages, token_count, usable, compaction_budget,
+    //      compaction?, model_resolved,
     //      applied: { pruned, pruned_tokens, capped_parts, capped_tokens,
     //                 compacted, summary?, tail_start_index? } }
     println!("{result:#?}");
@@ -71,11 +72,14 @@ over-budget request.
 
 Before token accounting, `context::assemble` normalizes images in its cloned
 model-facing view. A known catalog model receives placeholders unless it
-explicitly declares vision support. For a known vision model, tool images age
-after the next assistant response and user images age when a later user turn
-begins after a response. Inline limits and unresolved models keep images. Live
-images cost a fixed 4,096-token heuristic budget; base64 bytes are never counted
-as text. The caller's transcript is unchanged.
+explicitly declares vision support. For a known vision model, tool images the
+model has seen stay; once 16 are live the 8 oldest are replaced by a marker in
+one request, and again every 8. The window is smaller when the usable budget is
+under about 262k tokens; under about 33k it is 0 and every tool image is
+replaced once the model has seen it, as before. User images still age when a
+later user turn begins after a response. Inline limits and unresolved models
+keep images. Live images cost a fixed 4,096-token heuristic budget; base64 bytes
+are never counted as text. The caller's transcript is unchanged.
 
 Before pruning or compaction runs, assemble unconditionally caps any message-level
 or inline function result over `max_result_tokens` (default 20000; 0 disables the
@@ -96,7 +100,8 @@ The other three functions: `context::count-tokens` (estimate messages + tools +
 system prompt vs a model), `context::prune` (replace eligible old function outputs
 with `[output of {function_id} pruned: was ~N tokens; re-call it if still
 needed]` placeholders, no LLM involved), and `context::compact` (summarise the
-head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`).
+head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`, the
+last with the summariser's `failure`).
 
 Model budgets resolved through `router::models::budget` are cached for a
 minute. The worker observes `router::models::on-changed` with the internal
@@ -168,6 +173,56 @@ fragments, so each request still measures the anchor it actually sends. Every
 attempt, retries included, counts against the 32-call limit. Other summariser
 failures are not retried.
 
+
+### Compacting before the model's limit
+
+`context::assemble` compacts at `usable`, the model's limit, unless the caller
+asks for less:
+
+```jsonc
+"options": {
+  "compaction_budget": 176000,          // soft threshold, in tokens
+  "compaction_instructions": "Keep the deploy steps.",
+  "provider_options": { "claude-code": { "account": "acct-work" } }
+}
+```
+
+- **`compaction_budget` is soft.** Prune and compaction start once the request
+  passes `min(usable, compaction_budget)`, and the provider's own count is
+  asked from `min(usable / 3, 0.8 × compaction_budget)`. Emergency reduction
+  and the `context/overflow` error still hold to `usable` alone: when the
+  summariser is busy or fails at the budget, the call returns the whole
+  request as long as it fits the model.
+- **`compaction_instructions`** steer an inline summary as
+  `context::compact`'s `instructions` do: trimmed, ignored when blank, cut past
+  2000 characters.
+- **`provider_options`** ride every `router::chat` call the summary makes,
+  such as the conversation's account. `context::compact` takes them too.
+
+The response says what happened:
+
+- **`compaction_budget`** is the threshold the call applied,
+  `min(usable, compaction_budget)`, or `null` without the option. It is always
+  present from 1.3.0: when it is missing, the context-manager is older and
+  dropped the option.
+- **`compaction`** is present only when the call tried an inline compaction:
+  `{ trigger: "budget" | "usable", status: "compacted" | "failed" | "busy" |
+  "skipped", failure? }`. `trigger` names the threshold the request passed:
+  the budget while still within `usable`, or `usable` itself.
+
+When the summariser fails, `context::compact`'s `overflow` and the assemble's
+`compaction.failure` say why:
+
+```jsonc
+{ "kind": "usage_limit",   // | rate_limited | input_too_large | timeout | unavailable | other
+  "message": "Provider \"claude-code\" reached the usage limit of its account. Try again after the limit resets.",
+  "error_details": { "usage_limit": true, "window": "five_hour", "resets_at_ms": 1764000000000 } }
+```
+
+`error_details` is llm-router's, passed through; `input_too_large` is the only
+kind a larger context window would fix. A `context/overflow` error that follows
+a failed inline compaction ends with `; compaction failed: ` and this object as
+JSON; the message before it is unchanged.
 
 ### Read-only model-switch preview
 

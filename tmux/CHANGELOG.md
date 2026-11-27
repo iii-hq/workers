@@ -1,6 +1,65 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+### Added
+
+- **An account's token for the Chat.** `tmux::accounts::credential` `{ account }` answers
+  `{ account, access_token, expires_at_ms, email?, plan? }` for `provider-claude-code`, from
+  where the account's sign-in lives now: `~/.claude` for the global account, its folder for
+  any other, the login Keychain on macOS. It is registered internal (listed only with
+  `include_internal: true`), denied to agents in both permission files, and the only
+  function that returns a token. `account` is a concrete id, never `global`; while
+  `~/.claude` holds a sign-in by hand to another account the worker has not taken in yet,
+  the global account answers `busy`. Errors are one JSON object `{code, message}`:
+  `unknown_account`, `not_signed_in`, `token_expired`, `busy` (anything held for more than
+  10 seconds) or `failed` (a 400, 401 or 403 without an OAuth error in it among them).
+- **Spend outside the Chat.** `tmux::usage::claude_outside` `{ account, since_ms }` counts
+  the tokens Claude Code spent on an account outside the Chat (tmux windows and any other
+  Claude Code on the computer) by model, from Claude Code's own transcripts: a session the
+  worker saw in a pane counts for that pane's account at each reply's time, any other for
+  the account global then (`attributed` counts those), each reply once by its message id
+  (else its request id). Read only when asked, and only what Claude Code added since the
+  last read (how far each transcript was read and the replies summed by session, model and
+  minute are kept; a line over 1 MiB is parsed without being held, one over 256 MiB
+  skipped), and kept five minutes. Devices may call it; agents are denied. The sessions
+  seen in panes are kept in `claude-sessions.json` in the accounts folder; an unreadable
+  one is moved aside (`.corrupt-<ms>`) before a new one is written.
+- **Who was global when.** `accounts.json` and `tmux::accounts::list` keep
+  `global_history` as `{account, at_ms}`: the account global before the oldest change kept
+  (at `at_ms` 0), then the last 49 changes of the global account.
+- `III_CLAUDE_OAUTH_URL` points the token renewal at a loopback endpoint, for tests.
+
+### Changed
+
+- **The worker renews a token, for the Chat alone.** It never refreshed one before. Now
+  `tmux::accounts::credential` renews a token that expires within five minutes, as Claude
+  Code 2.1.332 does, and only then: under the swap gate and `swap.lock` (it decides between
+  `~/.claude` and the account's folder only once it holds them, so no switch moves the
+  sign-in meanwhile), then Claude Code's three locks in that store (`.oauth_refresh.lock`,
+  the legacy `realpath(dir).lock`, `.storage-write.lock`); it reads the sign-in again (a
+  Claude Code may have renewed it first, and is then taken as it is), makes sure the store
+  takes a write (no refresh token is sent when its answer could not be kept), asks
+  `platform.claude.com`'s token endpoint, and writes the new tokens back into the same
+  store, atomically and every other key kept, before it lets go. One renewal per account at
+  a time. A renewal whose write fails is never dropped: it is kept in memory, answered while
+  it works, and written again later. When the token still works, the caller waits 10
+  seconds at most and gets it while the renewal goes on. As in Claude Code, a refresh token
+  Anthropic refused is never sent again, a token without an expiry or a sign-in that is not
+  a Claude.ai one is never renewed, and after any other failure the renewal is held back a
+  minute. Another sign-in found in the store after the renewal is answered only when it is
+  the same account's. On macOS the write goes to the Keychain, which needs the worker in the
+  person's GUI session, as a switch does. Usage readings still never renew, log or return a
+  token.
+
+### Fixed
+
+- **A switch right after another is not `busy` for nothing.** A program the worker started
+  at that moment held a copy of `swap.lock` until it began running, so a switch, or the
+  settling of one left half-way, could find the lock taken; it is now tried again for up to
+  200 ms first.
+
+## 0.3.0
 
 ### Fixed
 
@@ -74,7 +133,7 @@
 - **Claude Code and Codex usage.** `tmux::usage::read` and the live feed's new `usage`
   field give each Claude Code account's 5-hour window, week and per-model weeks with their
   reset times (from the endpoint Claude Code reads its own usage from, with the account's
-  sign-in, read-only: no token is ever refreshed, logged or returned) and Codex's plan,
+  sign-in, read-only: a reading never refreshes, logs or returns a token) and Codex's plan,
   windows and credits (from its newest session record). Readings stay at most 5 minutes old
   while someone watches; `refresh: true` reads again, at most once a minute per account.
   With nobody watching, it reads only when another signed-in account could take over.

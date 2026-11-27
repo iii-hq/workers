@@ -8,6 +8,12 @@
 
 use iii_sdk::errors::Error;
 
+use crate::types::Failure;
+
+/// What precedes the JSON `Failure` at the end of a `context/overflow`
+/// message whose inline compaction failed.
+pub const OVERFLOW_FAILURE_MARKER: &str = "; compaction failed: ";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ContextError {
     /// The request shape is invalid beyond what serde can reject
@@ -26,10 +32,26 @@ pub enum ContextError {
 
     /// No safe model-facing context can fit within the usable input
     /// budget after normal pruning, compaction, and emergency reduction.
+    /// When the inline compaction failed, the message ends with
+    /// [`OVERFLOW_FAILURE_MARKER`] and the failure as one JSON object, so a
+    /// caller can tell a usage limit from a window too small; the message
+    /// before it is unchanged.
     #[error(
-        "context/overflow: assembled context requires {token_count} tokens but usable budget is {usable}"
+        "context/overflow: assembled context requires {token_count} tokens but usable budget is {usable}{}",
+        overflow_failure_suffix(.failure.as_ref())
     )]
-    Overflow { token_count: u64, usable: u64 },
+    Overflow {
+        token_count: u64,
+        usable: u64,
+        failure: Option<Failure>,
+    },
+}
+
+fn overflow_failure_suffix(failure: Option<&Failure>) -> String {
+    failure
+        .and_then(|failure| serde_json::to_string(failure).ok())
+        .map(|json| format!("{OVERFLOW_FAILURE_MARKER}{json}"))
+        .unwrap_or_default()
 }
 
 impl ContextError {
@@ -79,6 +101,7 @@ mod tests {
             ContextError::Overflow {
                 token_count: 101,
                 usable: 100,
+                failure: None,
             },
         ];
         for v in variants {
@@ -95,6 +118,7 @@ mod tests {
         let error = ContextError::Overflow {
             token_count: 12_345,
             usable: 10_000,
+            failure: None,
         };
 
         assert_eq!(error.code(), "context/overflow");
@@ -106,8 +130,34 @@ mod tests {
             error,
             ContextError::Overflow {
                 token_count: 12_345,
-                usable: 10_000
+                usable: 10_000,
+                failure: None,
             }
         ));
+    }
+
+    #[test]
+    fn overflow_after_a_failed_compaction_ends_with_the_failure() {
+        use crate::types::{ErrorDetails, FailureKind, UsageWindow};
+
+        let failure = Failure::new(FailureKind::UsageLimit, "limit reached").with_details(Some(
+            ErrorDetails {
+                usage_limit: true,
+                window: Some(UsageWindow::FiveHour),
+                resets_at_ms: Some(1_700_000_000_000),
+            },
+        ));
+        let error = ContextError::Overflow {
+            token_count: 101,
+            usable: 100,
+            failure: Some(failure.clone()),
+        };
+        let message = error.to_string();
+
+        assert!(message.starts_with(
+            "context/overflow: assembled context requires 101 tokens but usable budget is 100; compaction failed: {"
+        ));
+        let (_, json) = message.split_once(OVERFLOW_FAILURE_MARKER).unwrap();
+        assert_eq!(serde_json::from_str::<Failure>(json).unwrap(), failure);
     }
 }

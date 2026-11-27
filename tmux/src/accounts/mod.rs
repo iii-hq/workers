@@ -22,9 +22,12 @@ pub mod lockdir;
 pub mod login;
 pub mod manage;
 pub mod moves;
+pub mod oauth;
+pub mod outside;
 pub mod panes;
 pub mod paths;
 pub mod registry;
+pub mod renew;
 pub mod rules;
 pub mod shared;
 pub mod slot;
@@ -164,6 +167,14 @@ pub struct Accounts {
     secrets: Box<dyn SecretStore>,
     keychain: bool,
     client: Option<UsageClient>,
+    /// Claude Code's token endpoint, for a renewal (`renew`); `None` in a
+    /// sandbox, which never renews.
+    oauth: Option<oauth::OAuthClient>,
+    /// One renewal per account at a time.
+    pub renewals: renew::Renewals,
+    /// The Claude Code sessions seen in panes and the spend outside the
+    /// Chat (`outside`).
+    pub outside: outside::Outside,
     /// `accounts.json`, under a lock of its own (small file work only).
     store: Mutex<Option<Store>>,
     state: Mutex<State>,
@@ -265,6 +276,7 @@ impl Accounts {
         let paths = ClaudePaths::from_vars(|key| vars.get(key).cloned(), false);
         let mut accounts = Self::new(paths, Box::new(credentials::FileStore), false);
         accounts.client = None;
+        accounts.oauth = None;
         Arc::new(accounts)
     }
 
@@ -274,6 +286,10 @@ impl Accounts {
         let client = paths
             .as_ref()
             .and_then(|paths| UsageClient::new(&paths.usage_origin));
+        let oauth = paths
+            .as_ref()
+            .and_then(|paths| oauth::OAuthClient::new(&paths.oauth_origin));
+        let outside = outside::Outside::new(paths.as_ref());
         let store = paths
             .as_ref()
             .map(|paths| Store::new(paths.registry_file()));
@@ -282,6 +298,9 @@ impl Accounts {
             secrets,
             keychain,
             client,
+            oauth,
+            renewals: renew::Renewals::default(),
+            outside,
             store: Mutex::new(store),
             state: Mutex::new(State::default()),
             load_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -1077,6 +1096,7 @@ impl Accounts {
                 rules,
                 suggestion,
                 last_switch: registry.last_switch.clone(),
+                global_history: registry.global_history.clone(),
                 pending_global,
                 switch_delay_s: self.switch_delay_s(),
                 logins: self.logins.entries(now),
@@ -1196,6 +1216,12 @@ pub(crate) mod test_support {
 
         /// A home whose usage endpoint is `url` (a test's own server).
         pub fn with_usage_url(name: &str, url: &str) -> Self {
+            Self::with_urls(name, url, "http://127.0.0.1:9")
+        }
+
+        /// A home whose usage and token endpoints are a test's own servers
+        /// (port 9 on loopback: nothing listens).
+        pub fn with_urls(name: &str, url: &str, oauth_url: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "tmux-acct-{name}-{}",
                 uuid::Uuid::new_v4().simple()
@@ -1213,6 +1239,7 @@ pub(crate) mod test_support {
                     dir.join("accounts").to_string_lossy().into_owned(),
                 ),
                 ("III_CLAUDE_USAGE_URL", url.to_string()),
+                ("III_CLAUDE_OAUTH_URL", oauth_url.to_string()),
             ]);
             let paths = ClaudePaths::from_vars(|key| vars.get(key).cloned(), false).unwrap();
             Self { dir, paths }

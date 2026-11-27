@@ -32,6 +32,11 @@
  * read-backs as the source of truth.
  */
 
+import {
+  compactionMarkerText,
+  markedCompaction,
+  parseCompactionFacts,
+} from '@/lib/autocompact'
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
 import { parseMemoryNote } from '@/lib/memory-note'
 import { isProvidersNote, parseMentionsNote } from '@/lib/mentions/notes'
@@ -59,6 +64,58 @@ import type { AgentMessage, ContentBlock, TranscriptItem } from './types'
 
 export const COMPACTION_CUSTOM_TYPE = 'compaction'
 export { OBSERVER_FIRED_CUSTOM_TYPE }
+
+/** The turn failure codes of Claude Code accounts (chat-projects §4.2, D147). */
+const USAGE_LIMIT_CODE = 'llm.usage_limit'
+const UNKNOWN_ACCOUNT_CODE = 'harness.unknown_account'
+
+/**
+ * A failure's account facts: `llm.usage_limit` with `details {usage_limit,
+ * window?, resets_at_ms?, account}`, or `harness.unknown_account` naming the
+ * removed account. The details are read from `details`, else
+ * `error_details` (the router's name for them).
+ */
+function accountFailureFields(
+  code: string | undefined,
+  errorClass: string | undefined,
+  d: Record<string, unknown>,
+): Pick<SystemNoticeFailure, 'usageLimit' | 'unknownAccount'> {
+  const raw =
+    d.details && typeof d.details === 'object'
+      ? (d.details as Record<string, unknown>)
+      : d.error_details && typeof d.error_details === 'object'
+        ? (d.error_details as Record<string, unknown>)
+        : {}
+  const account =
+    typeof raw.account === 'string' && raw.account
+      ? raw.account
+      : typeof d.account === 'string' && d.account
+        ? d.account
+        : null
+  if (code === UNKNOWN_ACCOUNT_CODE) {
+    return account ? { unknownAccount: account } : {}
+  }
+  if (
+    code !== USAGE_LIMIT_CODE &&
+    errorClass !== USAGE_LIMIT_CODE &&
+    raw.usage_limit !== true
+  ) {
+    return {}
+  }
+  return {
+    usageLimit: {
+      window:
+        raw.window === 'five_hour' || raw.window === 'week' ? raw.window : null,
+      resetsAtMs:
+        typeof raw.resets_at_ms === 'number' &&
+        Number.isFinite(raw.resets_at_ms)
+          ? raw.resets_at_ms
+          : null,
+      account,
+    },
+  }
+}
+
 /** Harness turn-failure record (`{ reason }`) — `finalize_failed`. */
 export const ERROR_CUSTOM_TYPE = 'error'
 /** Harness informational record (`{ reason, message }`) — e.g. max_turns. */
@@ -373,6 +430,7 @@ function lifecycleNotice(
           }
         : {}),
       ...(typeof d.phase === 'string' ? { phase: d.phase } : {}),
+      ...accountFailureFields(code, errorClass, d),
     }
     return {
       id: entryId,
@@ -703,17 +761,23 @@ function compactionMarker(
     timestamp?: unknown
   }
   const tokensBefore = typeof d.tokens_before === 'number' ? d.tokens_before : 0
+  // Phase 3 (contract C): the record says what fired it, at what size, by
+  // which rule, and the whole context before and after. `/compact` and an
+  // older record (no `trigger`) read as before (§3.3.5).
+  const facts = markedCompaction(parseCompactionFacts(data))
   return {
     id: entryId,
     role: 'system',
     kind: 'compaction',
-    content:
-      tokensBefore > 0
+    content: facts
+      ? compactionMarkerText(facts)
+      : tokensBefore > 0
         ? `compacted ${tokensBefore.toLocaleString()} tokens`
         : 'conversation compacted',
     tone: 'info',
     summaryText: typeof d.summary === 'string' ? d.summary : undefined,
     tokensBefore,
+    ...(facts ? { compaction: facts } : {}),
     createdAt: typeof d.timestamp === 'number' ? d.timestamp : timestamp,
   }
 }
@@ -1026,6 +1090,7 @@ function assistantSegments(
     }
     switch (block.type) {
       case 'thinking':
+        if (block.text.length === 0) break
         out.push({
           id,
           role: 'thought',
@@ -1042,6 +1107,7 @@ function assistantSegments(
           content: block.text,
           agent: message.agent,
           model: message.model,
+          ...(message.provider ? { provider: message.provider } : {}),
           stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })

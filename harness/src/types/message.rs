@@ -47,6 +47,11 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<ErrorKind>,
+    /// What a `rate_limited` error says beyond its kind (D147): a Claude Code
+    /// account's usage limit, its window and its reset. Absent on any other
+    /// message; a reader that predates it ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<ErrorDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +59,31 @@ pub struct AssistantMessage {
     pub model: String,
     pub provider: String,
     pub timestamp: i64,
+}
+
+/// The details of a provider error that its kind does not carry
+/// (chat-projects contract C). The kind stays `rate_limited`: a usage limit is
+/// that kind with `usage_limit: true`, and neither the router nor the
+/// harness's transient resume retries it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ErrorDetails {
+    /// The account reached its plan's usage limit: retrying before the reset
+    /// cannot succeed.
+    #[serde(default)]
+    pub usage_limit: bool,
+    /// The limit's window: `five_hour` or `week`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// When the window resets, in unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
+}
+
+impl ErrorDetails {
+    /// The details of a usage limit, when these are one.
+    pub fn usage_limit(details: Option<&Self>) -> Option<&Self> {
+        details.filter(|details| details.usage_limit)
+    }
 }
 
 impl AssistantMessage {
@@ -183,6 +213,7 @@ pub fn empty_assistant(provider: &str, model: &str) -> AssistantMessage {
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        error_details: None,
         warnings: None,
         usage: None,
         model: model.to_string(),
