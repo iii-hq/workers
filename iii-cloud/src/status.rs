@@ -44,6 +44,9 @@ fn settle_database_requests(ctx: &Ctx) {
 
 pub async fn status(ctx: &Arc<Ctx>, request: StatusRequest) -> Res<Status> {
     settle_database_requests(ctx);
+    // Requests stored before `secret` refused them: a name that is not a variable name is no secret.
+    ctx.store
+        .update(|s| s.secrets.retain(|r| crate::secret::valid_name(&r.name)));
     if request.refresh.unwrap_or(false) {
         refresh(ctx).await;
     }

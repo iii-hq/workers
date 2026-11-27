@@ -121,6 +121,27 @@ async fn setup(plan_value: Value) -> Setup {
     let ws = PathBuf::from(p.workspace.unwrap().path);
     let base = git(&repo.origin, &["rev-parse", "main"]);
     std::fs::write(ws.join("feature.txt"), "f\n").unwrap();
+    // The names the tests ask for: `secret` only asks for what the compose file reads.
+    let reads = [
+        "DATABASE_URL",
+        "ONLY_CLOUD",
+        "SESSION_SECRET",
+        "TOKEN",
+        "TWO",
+    ];
+    let env: String = reads
+        .iter()
+        .map(|n| {
+            // A default: the run here does not need it, so it never lands in a `.env`.
+            let dflt = if *n == "ONLY_CLOUD" { ":-" } else { "" };
+            format!("      {n}: ${{{n}{dflt}}}\n")
+        })
+        .collect();
+    std::fs::write(
+        ws.join("worker-compose.yaml"),
+        format!("containers:\n  api:\n    worker: path://./workers/api\n    environment:\n{env}"),
+    )
+    .unwrap();
     git(&ws, &["add", "."]);
     git(&ws, &["commit", "-m", "feature"]);
     let head = git(&ws, &["rev-parse", "HEAD"]);
@@ -1190,7 +1211,7 @@ async fn a_secret_value_reaches_the_env_file_and_nothing_else() {
         .await
         .unwrap_err()
         .code,
-        "INVALID_REQUEST"
+        "NOT_A_SECRET"
     );
     let note = ask(
         &s.h.ctx,

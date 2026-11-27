@@ -344,7 +344,7 @@ async fn an_unreadable_cloud_is_unknown_and_an_ask_is_a_row() {
         .with_priority(1)
         .mount(&w.server)
         .await;
-    for name in ["GH_TOKEN", "AGENT_ONLY"] {
+    for name in ["GH_TOKEN"] {
         iii_cloud::secret::ask(
             &w.h.ctx,
             SecretAsk {
@@ -363,15 +363,6 @@ async fn an_unreadable_cloud_is_unknown_and_an_ask_is_a_row() {
     assert!(v.items.iter().all(|i| i.in_cloud == InCloud::Unknown));
     let asked = item(&v, "GH_TOKEN").asked.clone().unwrap();
     assert_eq!(asked.description, "why GH_TOKEN");
-    let extra = item(&v, "AGENT_ONLY");
-    assert_eq!(
-        (
-            extra.containers.is_empty(),
-            extra.line,
-            extra.asked.is_some()
-        ),
-        (true, None, true)
-    );
 }
 
 #[tokio::test]
@@ -928,4 +919,63 @@ async fn the_runs_env_is_written_only_where_git_says_it_is_untracked() {
     sel.workspace = plain.clone();
     assert_eq!(write(sel).await, LocalOutcome::Skipped);
     assert!(!plain.join("api/.env").exists());
+}
+
+fn ask_of(name: &str, mode: Option<SecretMode>) -> SecretAsk {
+    SecretAsk {
+        handoff_id: None,
+        name: name.into(),
+        description: "why".into(),
+        mode,
+        external: None,
+    }
+}
+
+#[tokio::test]
+async fn a_secret_request_is_for_a_secret_the_compose_file_reads() {
+    use iii_cloud::secret::ask;
+    let w = world(false, "developer").await;
+    let stored = || w.h.ctx.store.read(|s| s.secrets.len());
+    // A worker's name is no variable name: refused, nothing stored.
+    let e = ask(&w.h.ctx, ask_of("video-editor", None))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "NOT_A_SECRET");
+    assert_eq!(
+        e.message,
+        "`iii-cloud::secret` asks the person for the value of one secret the compose file reads. `video-editor` is not a variable name. A decision goes to the person with `harness::ask`."
+    );
+    // A variable name the file does not read: refused too.
+    let e = ask(&w.h.ctx, ask_of("NOT_IN_THE_FILE", None))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, "NOT_READ_BY_FILE");
+    assert_eq!(
+        e.message,
+        format!(
+            "`NOT_IN_THE_FILE` is not read by {MANIFEST}. Add `${{NOT_IN_THE_FILE}}` where it is used first, or ask the person with `harness::ask`."
+        )
+    );
+    assert_eq!(stored(), 0);
+    // A note may name what the file no longer reads; a name the file reads is stored.
+    ask(&w.h.ctx, ask_of("GONE_NOW", Some(SecretMode::NotNeeded)))
+        .await
+        .unwrap();
+    let r = ask(&w.h.ctx, ask_of("GH_TOKEN", None)).await.unwrap();
+    assert_eq!(r.state, SecretState::Waiting);
+    // Requests stored before the refusal vanish from the status; the others stay.
+    let env = r.environment_id.clone();
+    w.h.ctx.store.update(|s| {
+        let mut old = s.secrets[0].clone();
+        old.id = "old".into();
+        old.name = "rbac-auth".into();
+        old.environment_id = env;
+        s.secrets.push(old);
+    });
+    let st = iii_cloud::status::status(&w.h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    let mut names: Vec<_> = st.secrets.iter().map(|r| r.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, vec!["GH_TOKEN", "GONE_NOW"]);
 }
