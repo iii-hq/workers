@@ -1398,7 +1398,7 @@ export function CheckStage(props: CheckStageProps) {
               ]
                 .filter(Boolean)
                 .join(' · ')
-                .replace(/^./, (ch) => ch.toUpperCase())
+                .replace(/^./, (ch) => ch.toUpperCase()) || `Not ready for ${env} yet`
             : `Not ready for ${env} yet`
   const chip = running ? (
     <StatusChip live>Checking</StatusChip>
@@ -1831,12 +1831,19 @@ export function CheckStage(props: CheckStageProps) {
         </p>
       ) : null}
 
-      {quiet.map((i) => (
-        <details key={i.key} className="iii-cloud-cs-foot iii-cloud-cs-quiet">
-          <summary>{i.title}</summary>
-          <p>{i.problem?.detail ?? i.detail}</p>
-        </details>
-      ))}
+      {quiet.map((i) =>
+        // Without a detail there is nothing to open: a plain line.
+        (i.problem?.detail ?? i.detail) ? (
+          <details key={i.key} className="iii-cloud-cs-foot iii-cloud-cs-quiet">
+            <summary>{i.title}</summary>
+            <p>{i.problem?.detail ?? i.detail}</p>
+          </details>
+        ) : (
+          <p key={i.key} className="iii-cloud-cs-foot iii-cloud-cs-quiet">
+            {i.title}
+          </p>
+        ),
+      )}
 
       <ActionBar narrow={narrow} action={action} note={barNote} />
       {importing ? (

@@ -1431,6 +1431,34 @@ describe('small things the review found', () => {
     expect(region('Your agent')?.textContent).toContain('Run it with node, or use a runtime image that has bun.')
   })
 
+  it('the title is never empty, and a quiet note without a detail is a plain line', async () => {
+    const note = {
+      ...rcFixing.agent!,
+      state: 'waiting_for_you' as const,
+      question: "Your agent's part is done for now.",
+      question_source: 'check' as const,
+    }
+    const w = { ...rcFixing, agent: note }
+    await stage({ ...w, check: { ...w.check!, problems: [] } })
+    expect((title() ?? '').length).toBeGreaterThan(0)
+    const r = B('deploy-passed')
+    const bare = {
+      ...rcVariables[0],
+      id: 'p-bare',
+      code: 'RUN_LEFT_FILES',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'info' as const,
+      owner: 'none' as const,
+      title: 'The local run left files changed in the worktree',
+      detail: null,
+    }
+    await stage({ ...r, check: { ...r.check!, problems: [...r.check!.problems, bare] } })
+    expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
+    expect(el.querySelector('p.iii-cloud-cs-quiet')?.textContent).toBe(bare.title)
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }

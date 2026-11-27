@@ -276,6 +276,36 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(youOf(dev({ check: needsYou, agent: ask })).count).toBe(before + 1)
   })
 
+  it('a question is matched against whole value names, not pieces of words', () => {
+    const read = {
+      environment_id: DEV.id,
+      environment: 'dev',
+      manifest: 'api/worker-compose-prod.yaml',
+      read_from: 'workspace' as const,
+      cloud: 'read' as const,
+      save: 'ok' as const,
+      items: [
+        {
+          name: 'KEY',
+          need: 'required' as const,
+          default: null,
+          type: 'secret' as const,
+          database: false,
+          containers: [],
+          line: 1,
+          in_cloud: 'unset' as const,
+          value: null,
+          updated_at: null,
+          asked: null,
+          suggestions: [],
+        },
+      ],
+    }
+    const ask = (q: string) => ({ ...agent('waiting_for_you'), question: q, question_source: 'agent' as const })
+    expect(youOf(dev({ check: needsYou, agent: ask('What is KEY?') }), read).asks).toBe(false)
+    expect(youOf(dev({ check: needsYou, agent: ask('Is MONKEY fine?') }), read).asks).toBe(true)
+  })
+
   it('"Your agent is fixing N problems meanwhile" only while it works, not while it waits, stalls or asks', () => {
     const needs = { ...needsYou }
     for (const state of ['waiting', 'stalled', 'waiting_for_you'] as const) {
