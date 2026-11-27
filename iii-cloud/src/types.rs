@@ -1139,6 +1139,9 @@ pub struct Run {
     /// when it ended (at most 500).
     #[serde(default)]
     pub moved: Vec<String>,
+    /// The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).
+    #[serde(default)]
+    pub log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

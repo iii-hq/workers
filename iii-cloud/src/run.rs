@@ -1263,6 +1263,9 @@ async fn prepare(
         waiting_on: None,
         restored: vec![],
         moved: vec![],
+        // The whole redacted log (`note` and the output pumps redact with this run's secrets, as
+        // `log_tail`, its last lines, does).
+        log_path: Some(dir.join("run.log").to_string_lossy().into_owned()),
     };
     set_run_live(&dir, true);
     Ok(Exec {

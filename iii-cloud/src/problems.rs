@@ -99,6 +99,7 @@ pub fn title_for(code: &str) -> String {
         "HTTP_WORKER_NOT_PACKAGE" => "The http worker is not package://http",
         "OLD_ATTEMPT_COMMITS" => "These commits come from an earlier try",
         "RUN_COMMAND_NOT_IN_IMAGE" => "A command uses a tool the runtime's image does not have",
+        "COMMAND_PRINTS_ENVIRONMENT" => "A command prints the whole environment",
         "RUN_LEFT_FILES" => "The local run left files changed in the worktree",
         "BROUGHT_FILES" => "The worktree holds copies of files from your folder",
         "BROUGHT_FILES_COMMIT" => "A commit holds files copied from your folder",

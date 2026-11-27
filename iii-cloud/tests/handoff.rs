@@ -249,6 +249,7 @@ fn seed_passed_run(h: &Harness, ws: &std::path::Path) {
         waiting_on: None,
         restored: vec![],
         moved: vec![],
+        log_path: None,
     };
     h.ctx.store.update(|s| {
         // The agent's own check carries its hand-off's id.
@@ -1263,6 +1264,7 @@ async fn run_failure_is_null_for_a_run_another_hand_off_made() {
             waiting_on: None,
             restored: vec![],
             moved: vec![],
+            log_path: None,
         });
         s.put_check(c);
     });
@@ -1364,6 +1366,7 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
             waiting_on: None,
             restored: vec![],
             moved: vec![],
+            log_path: None,
         });
         s.put_check(c);
     });
@@ -2643,6 +2646,7 @@ fn failed_run(check_id: &str, commit: &str) -> Run {
         waiting_on: None,
         restored: vec![],
         moved: vec![],
+        log_path: None,
     }
 }
 

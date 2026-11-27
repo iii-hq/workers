@@ -1242,3 +1242,14 @@ async fn a_passed_run_that_made_data_leaves_a_clean_copy_and_stays_the_runs_proo
     assert_eq!(git(&ws, &["status", "--porcelain"]), "");
     assert_eq!(run.commit, git(&ws, &["rev-parse", "HEAD"]));
 }
+
+#[tokio::test]
+async fn a_run_says_where_its_whole_log_is() {
+    let server = MockServer::start().await;
+    let (h, _ws) = with_check(&server, "containers: {}\nengine: nope\n").await;
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    let expected = h.dir.path().join("data/runs").join(&run.id).join("run.log");
+    assert_eq!(run.log_path.as_deref(), Some(expected.to_str().unwrap()));
+    assert!(expected.exists(), "the file the path names is there");
+}

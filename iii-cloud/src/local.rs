@@ -564,25 +564,53 @@ pub fn runtime_base(runtime: &str) -> &str {
 /// confirmed goes here (a false block is worse than a miss); a row is one line.
 const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
 
-/// The tools of `command` that the image of `runtime` is known not to have. The command is split on
-/// `&&`, `||`, `;` and `|`; of each part the first word after leading `NAME=value` words and `exec`.
+/// The parts of a shell command, split on `&&`, `||`, `;` and `|`: each part's words from its command
+/// word on (leading `NAME=value` words and `exec` skipped).
+fn command_parts(command: &str) -> Vec<Vec<&str>> {
+    command
+        .split(['&', '|', ';'])
+        .map(|part| {
+            part.split_whitespace()
+                .skip_while(|w| {
+                    *w == "exec"
+                        || w.split_once('=').is_some_and(|(k, _)| {
+                            !k.is_empty()
+                                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        })
+                })
+                .collect()
+        })
+        .filter(|words: &Vec<&str>| !words.is_empty())
+        .collect()
+}
+
+/// The tools of `command` that the image of `runtime` is known not to have: the command word of
+/// each part (see `command_parts`).
 pub fn tools_missing_in_image(runtime: &str, command: &str) -> Vec<String> {
     let mut found: Vec<String> = vec![];
-    for part in command.split(['&', '|', ';']) {
-        let tool = part.split_whitespace().find(|w| {
-            *w != "exec"
-                && !w.split_once('=').is_some_and(|(k, _)| {
-                    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                })
-        });
-        if let Some(t) = tool
-            && NOT_IN_IMAGE.iter().any(|(r, x)| *r == runtime && x == &t)
+    for words in command_parts(command) {
+        let t = words[0];
+        if NOT_IN_IMAGE.iter().any(|(r, x)| *r == runtime && x == &t)
             && !found.iter().any(|f| f == t)
         {
             found.push(t.to_string());
         }
     }
     found
+}
+
+/// The part of `command` that prints every variable of the environment: `env` alone, `printenv`
+/// (with or without a name), `set` alone, `export -p`. (`env FOO=1 cmd` runs `cmd`: not this.)
+pub fn prints_environment(command: &str) -> Option<String> {
+    command_parts(command)
+        .into_iter()
+        .find(|w| {
+            matches!(
+                w.as_slice(),
+                ["env"] | ["set"] | ["export", "-p"] | ["printenv", ..]
+            )
+        })
+        .map(|w| w.join(" "))
 }
 
 fn accepted_locks(runtime: &str) -> &'static [Lock] {
@@ -956,10 +984,6 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                     Some(rel(i.workspace, &dir)),
                 ));
             }
-            let Some(runtime) = worker_runtime(m, &name, &dir, i.plan_workers) else {
-                continue;
-            };
-            let base = runtime_base(&runtime).to_string();
             // The commands that run in this worker's image: its run script, and the release
             // command when the manifest ties it to this worker. (`cloud.build` is one command
             // for the whole project, not tied to a worker's image: not read here.)
@@ -971,6 +995,24 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                     .map(|c| ("run", c)),
                 release.as_ref().map(|r| ("release", r.command.as_str())),
             ];
+            // A command that prints every variable puts the secrets in the log.
+            for (what, command) in commands.into_iter().flatten() {
+                if let Some(part) = prints_environment(command) {
+                    out.push(here(
+                        "COMMAND_PRINTS_ENVIRONMENT",
+                        format!("{name}'s {what} command runs `{part}`"),
+                        Some(format!(
+                            "This command prints every variable, secrets included, into the log. Its {what} command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                        )),
+                        Owner::Agent,
+                        Some(rel(i.workspace, &dir)),
+                    ));
+                }
+            }
+            let Some(runtime) = worker_runtime(m, &name, &dir, i.plan_workers) else {
+                continue;
+            };
+            let base = runtime_base(&runtime).to_string();
             // Only a runtime the cloud itself declares: not the folder's language guess.
             let declared =
                 declared_runtime(m, &name, i.plan_workers).map(|r| runtime_base(&r).to_string());
@@ -1019,6 +1061,19 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                     None,
                 ));
             }
+        }
+        if let Some(command) = m.cloud_build()
+            && let Some(part) = prints_environment(&command)
+        {
+            out.push(here(
+                "COMMAND_PRINTS_ENVIRONMENT",
+                format!("The build command runs `{part}`"),
+                Some(format!(
+                    "This command prints every variable, secrets included, into the log. The build command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                )),
+                Owner::Agent,
+                None,
+            ));
         }
         let has_release =
             m.cloud_release().is_some() || !i.settings.get("release").is_none_or(Value::is_null);

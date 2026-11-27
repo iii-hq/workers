@@ -459,6 +459,14 @@
           "id": {
             "type": "string"
           },
+          "log_path": {
+            "default": null,
+            "description": "The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "log_tail": {
             "items": {
               "type": "string"
