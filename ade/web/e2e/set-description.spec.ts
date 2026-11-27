@@ -7,7 +7,7 @@ import { expect, expectPassingResult, openSession, test } from './harness-stack'
  * running. The scripted provider of the `console-set-description` scenario
  * (harness-integration, Playground driver) answers the one generation with
  * reply text and a `harness::set-description` call in the same step, with
- * no `title`, so the turn ends without another request. The Console then
+ * no `title`; the model is asked once more and ends with no text. The Console then
  * shows the description in the chat header (Muted, with "by agent · …") and
  * on the conversation's row in the sidebar, and the transcript shows the
  * reply but no call card for the write.

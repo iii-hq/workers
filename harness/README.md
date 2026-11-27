@@ -948,8 +948,10 @@ named the conversation (`title_by: "agent"`), else the result carries
 `title_ignored: true`. A description the user wrote (`description_manual`)
 is refused with `The user wrote this description; leave it.`, an empty one
 with `empty`, and the same text is a no-op. A step whose only calls are
-`harness::set-description`, in a reply that already has text, ends the turn
-without another model request.
+`harness::set-description`, in a reply that already has text, never ends the
+turn: the result adds a `next` note and the model is asked again; when that
+step ends with no text, the reply beside the description is the turn's
+answer.
 
 **Chat settings.** `harness::chat-settings::get {}` answers `{ descriptions:
 { agent_writes }, autocompact: { mode, tokens?, instructions? } }`;

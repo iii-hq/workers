@@ -1,14 +1,13 @@
-//! INT-045 — `harness::set-description` beside the reply ends the turn.
+//! INT-045 — `harness::set-description` beside the reply asks the model once more.
 //!
-//! chat-projects §1.2.3: the model's only generation answers in text and, in
+//! chat-projects §1.2.3: the model's first generation answers in text and, in
 //! the same message, calls `harness::set-description`. The turn loop answers
 //! the call itself for the turn's own session (one `session::patch-meta`),
-//! and — its step's only call being the description, beside reply text, at
-//! the turn's start — asks the model once more with `next` on the result (the
-//! text could have been an announcement). The second generation ends the turn
-//! with no text; a third `router::chat` is an `unexpected_call` that fails the
-//! turn. After other work the same step ends the turn at once (stack test
-//! `a_description_beside_the_reply_ends_the_turn_after_other_work`).
+//! and — its step's only call being the description, beside reply text —
+//! asks the model once more with `next` on the result (the text could have
+//! been an announcement), wherever the step falls in the turn. The second
+//! generation ends the turn with no text; a third `router::chat` is an
+//! `unexpected_call` that fails the turn.
 //! `session::on-meta-updated` carries the new description.
 
 use serde_json::json;
@@ -30,7 +29,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         ID,
         "set-description-ends-turn",
         "harness::set-description beside reply text is answered by the turn loop, writes the \
-         description through session::patch-meta, and ends the turn without another model call.",
+         description through session::patch-meta, and asks the model once more.",
         ScenarioDriver::Direct,
         model,
     )
@@ -58,8 +57,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             )),
     )
     .generation(
-        // The description opened the turn, so the model is asked once more and
-        // ends the turn with no further text (the result's `next` note).
+        // A description beside the reply never ends the turn, so the model is
+        // asked once more and ends it with no further text (the `next` note).
         Generation::new(2)
             .expect(
                 Request::new()
@@ -73,7 +72,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     .verify(|run| {
         anyhow::ensure!(
             run.generations_consumed == 2,
-            "expected two router calls (the description opened the turn), got {}",
+            "expected two router calls (a description beside the reply asks again), got {}",
             run.generations_consumed
         );
         let results = run.function_results(SET_DESCRIPTION);

@@ -223,35 +223,34 @@ pub fn write_failed(error: &HarnessError) -> ResultData {
     }
 }
 
-/// The terminal-step rule: a step whose only calls are
-/// `harness::set-description`, in an assistant message that already has reply
-/// text, ends the turn after its results are written; the model is not called
-/// again. `call_ids` are the step's dispatched calls' function ids.
-pub fn ends_turn<'a>(
+/// Whether a step's only calls are `harness::set-description`, in an
+/// assistant message that already has reply text: the turn loop then keeps
+/// that text as the turn's answer and answers the description with
+/// [`GO_ON_NOTE`]. `call_ids` are the step's dispatched calls' function ids.
+pub fn describes_beside_reply<'a>(
     mut call_ids: impl Iterator<Item = &'a str>,
     has_reply_text: bool,
     has_submit: bool,
-    steering: bool,
 ) -> bool {
     let mut any = false;
     let only_descriptions = call_ids.all(|id| {
         any = true;
         id == SET_DESCRIPTION_ID
     });
-    any && only_descriptions && has_reply_text && !has_submit && !steering
+    any && only_descriptions && has_reply_text && !has_submit
 }
 
-/// What the description answers when its step, beside reply text, opens the
-/// turn. That text can be an announcement ("I'll check the tests first"): a
-/// model that makes one call per step sends it with this call alone, and
-/// ending the turn there stopped every such turn before its work. So the
-/// turn goes on, and the model ends it itself when the text was its answer.
-pub const GO_ON_NOTE: &str = "Description set. If your reply above already answers the user, end your turn now and write nothing more; if work remains, make your next call.";
+/// What the description answers when its step has reply text beside it, at
+/// any point of the turn. That text can be an announcement ("I'll check the
+/// tests first"): a model that makes one call per step sends it with this
+/// call alone, and ending the turn there stopped such turns before their
+/// work, at the turn's start and after other work alike. So the turn goes
+/// on, and the model ends it itself when the text was its answer.
+pub const GO_ON_NOTE: &str = "If your reply above already answers the user, end your turn now and write nothing more; if work remains, make your next call.";
 
-/// Whether the turn made a call other than `harness::set-description` (its
-/// checkpoints before the current step).
-pub fn did_other_work<'a>(mut function_ids: impl Iterator<Item = Option<&'a str>>) -> bool {
-    function_ids.any(|id| id != Some(SET_DESCRIPTION_ID))
+/// Whether any of these calls is not `harness::set-description`.
+pub fn did_other_work<'a>(mut function_ids: impl Iterator<Item = &'a str>) -> bool {
+    function_ids.any(|id| id != SET_DESCRIPTION_ID)
 }
 
 /// The description's result with [`GO_ON_NOTE`] as `next`, its content kept
@@ -443,35 +442,29 @@ mod tests {
         assert_eq!(patch.title.as_deref(), Some("Login fix"));
     }
 
-    /// The terminal-step rule.
     #[test]
-    fn only_descriptions_with_reply_text_end_the_turn() {
+    fn only_descriptions_with_reply_text_keep_the_reply() {
         let only = [SET_DESCRIPTION_ID];
         let mixed = [SET_DESCRIPTION_ID, "shell::exec"];
-        assert!(ends_turn(only.iter().copied(), true, false, false));
-        assert!(ends_turn(
+        assert!(describes_beside_reply(only.iter().copied(), true, false));
+        assert!(describes_beside_reply(
             [SET_DESCRIPTION_ID, SET_DESCRIPTION_ID].iter().copied(),
             true,
-            false,
             false
         ));
         assert!(
-            !ends_turn(only.iter().copied(), false, false, false),
+            !describes_beside_reply(only.iter().copied(), false, false),
             "no reply text"
         );
         assert!(
-            !ends_turn(mixed.iter().copied(), true, false, false),
-            "another call needs the model"
+            !describes_beside_reply(mixed.iter().copied(), true, false),
+            "another call drops the kept reply"
         );
         assert!(
-            !ends_turn(only.iter().copied(), true, true, false),
+            !describes_beside_reply(only.iter().copied(), true, true),
             "submit_result closes the turn its way"
         );
-        assert!(
-            !ends_turn(only.iter().copied(), true, false, true),
-            "a waiting user message needs the model"
-        );
-        assert!(!ends_turn(std::iter::empty(), true, false, false));
+        assert!(!describes_beside_reply(std::iter::empty(), true, false));
         assert!(has_reply_text(&[ContentBlock::text("Done.")]));
         assert!(!has_reply_text(&[ContentBlock::text("  ")]));
     }
@@ -479,14 +472,10 @@ mod tests {
     #[test]
     fn other_work_is_any_call_but_the_description() {
         assert!(!did_other_work(std::iter::empty()));
-        assert!(!did_other_work([Some(SET_DESCRIPTION_ID)].into_iter()));
+        assert!(!did_other_work([SET_DESCRIPTION_ID].into_iter()));
         assert!(did_other_work(
-            [Some(SET_DESCRIPTION_ID), Some("shell::exec")].into_iter()
+            [SET_DESCRIPTION_ID, "shell::exec"].into_iter()
         ));
-        assert!(
-            did_other_work([None].into_iter()),
-            "a checkpoint with no id is still a call"
-        );
     }
 
     #[test]
