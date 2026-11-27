@@ -542,6 +542,8 @@ export function runTail(log: string[], max = 6, names: string[] = []): string[] 
 export function agentAsks(s: Status): boolean {
   const a = s.agent
   if (!a || a.state !== 'waiting_for_you') return false
+  // The check screen's card shows only a hand-off for the check: no card, no count.
+  if ((a.kind ?? s.handoff_brief?.kind ?? 'ready') === 'pull_request') return false
   if (a.question_source) return a.question_source === 'agent'
   return !/^[A-Z][A-Z0-9_]{2,}:/.test(a.question ?? '')
 }
