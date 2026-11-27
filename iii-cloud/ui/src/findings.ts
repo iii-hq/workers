@@ -1,7 +1,16 @@
 // What the check found, as CheckStage's sections show it: one deduplicated list (every count comes from it),
 // split by owner, then grouped by code and file ("21 variables have no value in iii cloud").
 
-import { checklist, hiddenPerson, isDatabaseVar, problemDetail, problemTitle, VALUE_CODES, variableName } from './model'
+import {
+  agentAsks,
+  checklist,
+  hiddenPerson,
+  isDatabaseVar,
+  problemDetail,
+  problemTitle,
+  VALUE_CODES,
+  variableName,
+} from './model'
 import type { Problem, SecretRequest, Status, Suggestion, ValueItem, Values } from './types'
 
 export type Item = {
@@ -324,7 +333,7 @@ export function needsYou(s: Status, read: Values | null = null) {
   const decide = (s.check?.plan.confirmations.overrides ?? []).filter((o) => !chosen[o.setting])
   // The agent's question is one more thing for the person, counted here for every screen. Not twice: a question that
   // names a value already counted (the same name asked through `iii-cloud::secret` and in the chat) is that value.
-  const q = s.agent?.state === 'waiting_for_you' ? (s.agent.question ?? '') : null
+  const q = agentAsks(s) ? (s.agent?.question ?? '') : null
   const asks = q !== null && ![...names].some((n) => q.includes(n))
   return {
     items,

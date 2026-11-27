@@ -528,6 +528,18 @@ export function runTail(log: string[], max = 6): string[] {
   return kept.slice(f, f + max).map((l) => l.raw)
 }
 
+/**
+ * The agent really asks the person something: `waiting_for_you` with `question_source: "agent"`. A text the worker makes
+ * from the check's open problems (`"check"`) is a note, not a question. Without the field: a text that does not start with
+ * a problem code and a colon.
+ */
+export function agentAsks(s: Status): boolean {
+  const a = s.agent
+  if (!a || a.state !== 'waiting_for_you') return false
+  if (a.question_source) return a.question_source === 'agent'
+  return !/^[A-Z][A-Z0-9_]{2,}:/.test(a.question ?? '')
+}
+
 /** The agent is actually working: `starting` or `working`. Not `waiting` (a wake), `stalled` (no progress) or `waiting_for_you` (its question). */
 export const agentWorking = (s: Status) => !!s.agent && ['starting', 'working'].includes(s.agent.state)
 

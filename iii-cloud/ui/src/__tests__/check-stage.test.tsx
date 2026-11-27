@@ -13,7 +13,7 @@ import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
-import { checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
+import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
@@ -1212,6 +1212,28 @@ describe('the check follows the canvas', () => {
       )
       await flush()
       expect(h.calls.filter((c) => c.id === 'iii-cloud::check').at(-1)?.payload).toMatchObject({ from_page: true })
+    })
+
+    it('the worker\'s own text about the check is a note, not a question: 8 values stay "8 values to set"', async () => {
+      const text8 = "Your agent's part is done for now. It waits for 8 values: set them in Secrets and variables."
+      const agentNote = {
+        ...rcFixing.agent!,
+        state: 'waiting_for_you' as const,
+        question: text8,
+        question_source: 'check' as const,
+      }
+      const items = names('REQ', 8, { need: 'required', default: null })
+      await stage({ ...quiet, agent: agentNote }, { 'iii-cloud::values': answer(items) })
+      expect(title()).toBe('8 values to set')
+      const t = region('Your agent')?.textContent ?? ''
+      expect(t.split(text8).length - 1).toBe(1)
+      expect(t).toContain('done for now')
+      expect(t).not.toContain('waiting for your answer')
+      // a real ask still counts as one more thing; no source: a problem-code prefix is the worker's text
+      expect(agentAsks({ ...quiet, agent: { ...agentNote, question_source: 'agent' } })).toBe(true)
+      const bare = { ...agentNote, question_source: undefined }
+      expect(agentAsks({ ...quiet, agent: { ...bare, question: 'SECRET_MISSING: 8 values' } })).toBe(false)
+      expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

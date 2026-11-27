@@ -30,6 +30,7 @@ import { hubOf, useActions, useCheckError, useChecking, useLocked, useMovedFrom 
 import {
   ASSISTED,
   activeSameKind,
+  agentAsks,
   agentWorking,
   appFile,
   CHECK_AGAIN,
@@ -1122,7 +1123,7 @@ export function CheckStage(props: CheckStageProps) {
   const waits = engaged && s.agent?.state === 'waiting'
   const stalled = engaged && s.agent?.state === 'stalled'
   // Its question stays on screen on a ready check too.
-  const asks = fixing(s) && s.agent?.state === 'waiting_for_you'
+  const asks = fixing(s) && agentAsks(s)
   const working = engaged && agentWorking(s)
   const a = s.agent
 
@@ -1635,7 +1636,9 @@ export function CheckStage(props: CheckStageProps) {
                 ? `${a.last_activity_at ? `waiting ${minutesLabel(now - Date.parse(a.last_activity_at))}` : 'waiting'}${waitsFor(a)}`
                 : asks
                   ? 'waiting for your answer'
-                  : null
+                  : a?.state === 'waiting_for_you'
+                    ? 'done for now'
+                    : null
           }
           end={
             (engaged || asks) && a ? (

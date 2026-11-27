@@ -6,6 +6,7 @@ import { failedLine } from './FailureCard'
 import { needsYou } from './findings'
 import { useActions, useLocked } from './hub'
 import {
+  agentAsks,
   agentWorking,
   deployOrigin,
   deployRows,
@@ -195,7 +196,7 @@ export function nextAction(
     }
   }
   // The agent waits for an answer or is stuck: the check needs the person, and a new check would start in its copy.
-  if (s.agent && ['waiting_for_you', 'stalled'].includes(s.agent.state)) {
+  if (s.agent && (agentAsks(s) || s.agent.state === 'stalled')) {
     return {
       state: 'you',
       wait: true,

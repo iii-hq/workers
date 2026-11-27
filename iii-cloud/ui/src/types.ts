@@ -384,6 +384,8 @@ export type AgentRun = {
   steps: number
   current: string | null
   question: string | null
+  /** Where `question` comes from: a real ask of the agent's session, or a text the worker makes from the check's open problems that are the person's. */
+  question_source?: 'agent' | 'check'
   /** Problem ids the agent is on right now (empty: unknown, never guess). */
   working_on?: string[]
   /** What the hand-off was for: where the row belongs on the page. */
