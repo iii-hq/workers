@@ -1237,13 +1237,29 @@ export function CheckStage(props: CheckStageProps) {
         lock: 'Sign in again first.',
       })
     }
-    if (c.plan.status === 'unavailable' && !running && !replaced) {
+    // The sign-in stop is the only one when the person is signed out: the plan could not be read because of it.
+    if (
+      c.plan.status === 'unavailable' &&
+      !running &&
+      !replaced &&
+      s.connection.status !== 'expired' &&
+      !signInRequired(s)
+    ) {
+      const why = c.plan.error
+      // A cause that will not pass by itself (403, 404) says the worker's sentence and what helps; else "in a moment".
+      const lasting = why?.status === 403 || why?.status === 404
+      const consoleUrl = envPageUrl(s, '')
       stops.push({
         key: 'plan',
         variant: 'warn',
         headline: "iii cloud's plan could not be read",
-        detail: c.plan.message ?? "iii cloud couldn't check this commit just now. Check again in a moment.",
-        acts: [{ label: 'Check again', onClick: checkAgain }],
+        detail: why
+          ? `${why.message}${why.fix ? ` ${why.fix}` : ''}${lasting ? '' : ' Check again in a moment.'}`
+          : "iii cloud couldn't check this commit just now. Check again in a moment.",
+        acts: [
+          { label: 'Check again', onClick: checkAgain },
+          ...(lasting && consoleUrl ? [{ label: 'Open in iii cloud', href: consoleUrl }] : []),
+        ],
       })
     }
     if (staleSource && !running) {

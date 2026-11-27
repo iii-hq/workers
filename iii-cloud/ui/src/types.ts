@@ -220,8 +220,6 @@ export type Check = {
   duration_ms: number
   plan: {
     status: 'clean' | 'blocked' | 'not_pushed' | 'commit_not_planned' | 'unavailable'
-    /** Why the plan could not be read (`unavailable`), in the worker's words. */
-    message?: string | null
     fingerprint: string | null
     digest: string | null
     blocking: number

@@ -16,7 +16,7 @@ import { hubOf, useStatus } from '../hub'
 import { agentAsks, checklist, handoffMessage, openProblems, runTail, wayOf } from '../model'
 import { secretLike, waitingElsewhere } from '../parts'
 import type { Route } from '../route'
-import type { ChangeEvent, Status } from '../types'
+import type { ChangeEvent, Status, WorkerError } from '../types'
 import { copyFlash } from './hooks-mock'
 import { fakeHost } from './host'
 import { btn, click, cloudAnswers, el, flush, lastCall, root, text, type, usePage } from './util'
@@ -1585,14 +1585,18 @@ describe('small things the review found', () => {
       handoff_brief: null,
       check: {
         ...r.check!,
-        plan: { ...r.check!.plan, status: 'unavailable' as const, message: 'The cloud answered 503.' },
+        plan: {
+          ...r.check!.plan,
+          status: 'unavailable' as const,
+          error: { code: 'CLOUD_ERROR', message: 'iii cloud answered 503.', status: 503 },
+        },
       },
     }
     const h = await stage(partial)
     const stopBlock = [...el.querySelectorAll('[role=status]')].find((p) =>
       p.textContent?.includes("iii cloud's plan could not be read"),
     )
-    expect(stopBlock?.textContent).toContain('The cloud answered 503.')
+    expect(stopBlock?.textContent).toContain('iii cloud answered 503. Check again in a moment.')
     expect([...(stopBlock?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Check again'])
     expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Check again')).toHaveLength(1)
     // the first-time flow: a check that ends with agent problems but no plan does not start the agent
@@ -1602,6 +1606,28 @@ describe('small things the review found', () => {
     await fire(h, { kind: 'check', id: 'chk-partial', terminal: true, summary: '', record: ended } as ChangeEvent)
     await flush()
     expect(handoffs(h)).toHaveLength(0)
+  })
+
+  it('a plan that fails for a lasting reason says the worker\'s sentence and what helps, never "in a moment"; signed out, only the sign-in stop', async () => {
+    const r = B('deploy-problems')
+    const plan = (error: WorkerError) => ({
+      ...r,
+      agent: null,
+      handoff_brief: null,
+      check: { ...r.check!, plan: { ...r.check!.plan, status: 'unavailable' as const, error } },
+    })
+    const planStop = () =>
+      [...el.querySelectorAll('[role=status]')].find((p) =>
+        p.textContent?.includes("iii cloud's plan could not be read"),
+      )
+    await stage(plan({ code: 'NOT_FOUND', message: 'No such environment in iii cloud.', status: 404 }))
+    expect(planStop()?.textContent).toContain('No such environment in iii cloud.')
+    expect(planStop()?.textContent).not.toContain('in a moment')
+    // signed out: the sign-in stop is the only one
+    const out = plan({ code: 'SIGN_IN_REQUIRED', message: 'You need to sign in to iii cloud again.', status: 401 })
+    await stage({ ...out, connection: { ...out.connection, status: 'expired' as const } })
+    expect(planStop()).toBeUndefined()
+    expect(text()).toContain('Your iii cloud sign-in expired')
   })
 
   it('the held dot is not shown on the record of that same deployment', () => {
