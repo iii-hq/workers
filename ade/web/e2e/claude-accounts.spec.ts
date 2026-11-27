@@ -259,7 +259,7 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       await page.setViewportSize({ width: 1280, height: 860 })
       await openSession(page, stack)
 
-      /* The limit card in place of "Turn ended · Continue" (§4.3.4). */
+      /* The limit card above the composer (§4.3.4). */
       const card = page.locator('[data-limit-card]')
       await expect(card).toHaveAttribute('data-limit-card', 'failed')
       await expect(card.getByRole('heading')).toHaveText(
@@ -333,14 +333,11 @@ test.describe('Claude Code accounts in the Chat (§4.3)', () => {
       })
       await card.screenshot({ path: shot('limit-card-waiting') })
 
-      // The X puts the card away, and "Turn ended · Continue" doesn't come in
-      // its place: it would run the same turn into the same limit.
+      // The X puts the card away, and "Turn ended." doesn't come in its
+      // place: the turn failed.
       await card.locator('[data-limit-dismiss]').click()
       await expect(card).toHaveCount(0)
       await expect(page.getByText('Turn ended.')).toHaveCount(0)
-      await expect(
-        page.getByRole('button', { name: 'Continue', exact: true }),
-      ).toHaveCount(0)
       // Put away in this tab only: opened again, the conversation shows it.
       await openSession(page, stack)
       await expect(card).toHaveAttribute('data-limit-card', 'failed')

@@ -3,9 +3,7 @@ import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import { DESKTOP_POINTER_QUERY } from '@/hooks/use-media-query'
 import type { ChatBackend } from '@/lib/backend'
-import { onComposerFocusRequest } from '@/lib/composer-insert'
 import type { Conversation } from '@/types/chat'
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   setDraftAttachments: vi.fn(),
   draftText: undefined as string | undefined,
   ensureSession: undefined as undefined | (() => Promise<void>),
+  askAgent: undefined as undefined | ((text: string, send: boolean) => void),
   composerSubmit: undefined as
     | undefined
     | ((payload: { text: string; attachments: [] }) => Promise<void>),
@@ -21,8 +20,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({ call: async () => null }),
 }))
-// Shell present, so a send checks the folder first: that await is the gap
-// between the click and the chat turning working.
+// Shell present, so the chat checks its folder before it sends.
 vi.mock('@/lib/conversations-context', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useConversationsCtxOptional: () => ({
@@ -57,7 +55,11 @@ vi.mock('./Composer', () => ({
 }))
 vi.mock('./ChatAside', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  ChatAside: () => null,
+  // The side panel is what still hands this chat's agent a message.
+  ChatAside: (props: { onAskAgent: typeof mocks.askAgent }) => {
+    mocks.askAgent = props.onAskAgent
+    return null
+  },
 }))
 vi.mock('./MessageList', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -85,7 +87,6 @@ let root: Root
 let host: HTMLDivElement
 const turnRest = vi.fn<NonNullable<ChatBackend['turnRest']>>()
 const stream = vi.fn<ChatBackend['stream']>(async function* () {})
-const onAppendMessage = vi.fn()
 
 async function open(
   conversation: Conversation,
@@ -104,7 +105,7 @@ async function open(
           onUpdateModel={noop}
           onUpdateThinkingLevel={noop}
           onUpdateWorkingDir={noop}
-          onAppendMessage={onAppendMessage}
+          onAppendMessage={noop}
           onPatchMessage={noop}
           onCompactConversation={noop}
           {...props}
@@ -118,11 +119,6 @@ async function open(
   })
 }
 
-const continueButton = () =>
-  [...host.querySelectorAll('button')].find(
-    (button) => button.textContent === 'Continue',
-  )
-
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   mocks.activateWorkingDir.mockReset().mockResolvedValue(valid)
@@ -132,7 +128,6 @@ beforeEach(() => {
   mocks.ensureSession = undefined
   turnRest.mockReset().mockResolvedValue('ended')
   stream.mockClear()
-  onAppendMessage.mockReset()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -144,77 +139,12 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
-it('offers Continue on an ended turn and sends it once', async () => {
+it('says an ended turn ended, just above the composer', async () => {
   await open(done)
   expect(turnRest).toHaveBeenCalledWith('root')
-  expect(host.textContent).toContain('Turn ended.')
-  expect(continueButton()?.parentElement?.nextElementSibling).toBe(
-    host.querySelector('textarea'),
-  )
-
-  // The send waits for the folder check; the row is already gone, so a
-  // second click reaches neither a second send nor the draft.
-  let folderChecked!: (result: typeof valid) => void
-  mocks.activateWorkingDir.mockReturnValue(
-    new Promise((resolve) => {
-      folderChecked = resolve
-    }),
-  )
-  const clicked = continueButton()
-  await act(async () => clicked?.click())
-  expect(continueButton()).toBeUndefined()
-  expect(host.textContent).not.toContain('Turn ended.')
-  expect(stream).not.toHaveBeenCalled()
-  await act(async () => clicked?.click())
-  await act(async () => folderChecked(valid))
-
-  expect(stream).toHaveBeenCalledTimes(1)
-  expect(stream.mock.calls[0]?.[0]).toBe('Continue')
-  expect(onAppendMessage).toHaveBeenCalledWith(
-    'root',
-    expect.objectContaining({ role: 'user', content: 'Continue' }),
-  )
-  expect(mocks.setDraftText).not.toHaveBeenCalled()
-})
-
-it('leaves Continue in the draft while the chat cannot send', async () => {
-  mocks.activateWorkingDir.mockReturnValue(new Promise(() => {}))
-  await open(done)
-  await act(async () => continueButton()?.click())
-  expect(stream).not.toHaveBeenCalled()
-  expect(mocks.setDraftText).toHaveBeenCalledWith('root', 'Continue')
-})
-
-it('keeps the draft when Continue fails before it is sent', async () => {
-  mocks.draftText = 'Half a thought'
-  mocks.ensureSession = () => Promise.reject(new Error('down'))
-  await open(done)
-  await act(async () => continueButton()?.click())
-  expect(stream).not.toHaveBeenCalled()
-  expect(mocks.setDraftText).toHaveBeenCalledExactlyOnceWith(
-    'root',
-    'Continue\n\nHalf a thought',
-  )
-  expect(mocks.setDraftAttachments).not.toHaveBeenCalled()
-})
-
-it.each([
-  ['gives the caret to the composer', true, 1],
-  ['raises no keyboard on a touch screen', false, 0],
-])('%s when the clicked button goes', async (_, finePointer, times) => {
-  vi.stubGlobal('matchMedia', (query: string) => ({
-    matches: finePointer && query === DESKTOP_POINTER_QUERY,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }))
-  const focused = vi.fn()
-  const off = onComposerFocusRequest(focused)
-  await open(done)
-  expect(focused).not.toHaveBeenCalled()
-  await act(async () => continueButton()?.click())
-  expect(stream).toHaveBeenCalledTimes(1)
-  expect(focused).toHaveBeenCalledTimes(times)
-  off()
+  expect(
+    host.querySelector('textarea')?.previousElementSibling?.textContent,
+  ).toBe('Turn ended.')
 })
 
 it('reads again when the transcript is back after a reconnect', async () => {
@@ -227,7 +157,7 @@ it('reads again when the transcript is back after a reconnect', async () => {
   expect(turnRest).toHaveBeenCalledTimes(1)
   await open(done)
   expect(turnRest).toHaveBeenCalledTimes(2)
-  expect(continueButton()).toBeDefined()
+  expect(host.textContent).toContain('Turn ended.')
 })
 
 it('reads nothing for a session that works, failed or never ran', async () => {
@@ -235,12 +165,12 @@ it('reads nothing for a session that works, failed or never ran', async () => {
   await open({ ...done, id: 'failed', status: 'error' })
   await open({ ...done, id: 'draft', status: undefined, draft: true })
   expect(turnRest).not.toHaveBeenCalled()
-  expect(continueButton()).toBeUndefined()
+  expect(host.textContent).not.toContain('Turn ended.')
 })
 
 it('hides while a reply streams here, before the session reads working', async () => {
   await open(done)
-  expect(continueButton()).toBeDefined()
+  expect(host.textContent).toContain('Turn ended.')
   stream.mockImplementationOnce(async function* () {
     yield { kind: 'assistant-token', token: 'On it' }
     await new Promise(() => {})
@@ -249,7 +179,7 @@ it('hides while a reply streams here, before the session reads working', async (
     void mocks.composerSubmit?.({ text: 'Go on', attachments: [] })
   })
   expect(stream).toHaveBeenCalledTimes(1)
-  expect(continueButton()).toBeUndefined()
+  expect(host.textContent).not.toContain('Turn ended.')
 })
 
 it('shows no row for a sub-agent, a side chat or a read-only session', async () => {
@@ -257,7 +187,7 @@ it('shows no row for a sub-agent, a side chat or a read-only session', async () 
   await open({ ...done, id: 'side' }, { side: { since: 1, empty: null } })
   await open({ ...done, id: 'imported', sessionMetadata: { read_only: true } })
   expect(turnRest).not.toHaveBeenCalled()
-  expect(continueButton()).toBeUndefined()
+  expect(host.textContent).not.toContain('Turn ended.')
 })
 
 it('shows no row on a backend that cannot tell', async () => {
@@ -265,41 +195,26 @@ it('shows no row on a backend that cannot tell', async () => {
     backend: { id: 'real', stream } as unknown as ChatBackend,
   })
   expect(host.querySelector('textarea')).not.toBeNull()
-  expect(continueButton()).toBeUndefined()
+  expect(host.textContent).not.toContain('Turn ended.')
 })
 
-// "Continue" would run the same account into the same limit: the limit card
-// answers that turn, and closing it doesn't bring the row back.
-it.each([
-  [
-    'a usage limit',
-    { usageLimit: { window: 'five_hour', resetsAtMs: 9, account: 'personal' } },
-  ],
-  ['a removed account', { unknownAccount: 'old-team' }],
-] as const)(
-  'shows no row after a turn that failed on %s',
-  async (_, failure) => {
-    await open({
-      ...done,
-      messages: [
-        {
-          id: 'u1',
-          role: 'user',
-          content: 'Go on',
-          createdAt: 1,
-        },
-        {
-          id: 'f1',
-          role: 'system',
-          kind: 'turn-failure',
-          content: 'This Claude Code account reached its usage limit',
-          createdAt: 2,
-          failure,
-        },
-      ],
-    } as Conversation)
-    expect(turnRest).not.toHaveBeenCalled()
-    expect(continueButton()).toBeUndefined()
-    expect(host.textContent).not.toContain('Turn ended.')
-  },
-)
+it('leaves what the side panel asks in the draft while the chat cannot send', async () => {
+  mocks.activateWorkingDir.mockReturnValue(new Promise(() => {}))
+  await open(done)
+  await act(async () => mocks.askAgent?.('Summarize', true))
+  expect(stream).not.toHaveBeenCalled()
+  expect(mocks.setDraftText).toHaveBeenCalledWith('root', 'Summarize')
+})
+
+it('keeps the draft when a send fails before it goes out', async () => {
+  mocks.draftText = 'Half a thought'
+  mocks.ensureSession = () => Promise.reject(new Error('down'))
+  await open(done)
+  await act(async () => mocks.askAgent?.('Summarize', true))
+  expect(stream).not.toHaveBeenCalled()
+  expect(mocks.setDraftText).toHaveBeenCalledExactlyOnceWith(
+    'root',
+    'Summarize\n\nHalf a thought',
+  )
+  expect(mocks.setDraftAttachments).not.toHaveBeenCalled()
+})
