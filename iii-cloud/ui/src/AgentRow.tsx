@@ -82,8 +82,13 @@ export function AgentControls({
 }
 
 /** How the last hand-off reached a chat: delivered to the agent's chat, or an error that is never silent. */
-export function LaunchNote() {
-  const launch = useLaunch()
+export function LaunchNote({ check }: { check?: string | null }) {
+  const raw = useLaunch()
+  // What it says is about the check it was pressed for: a newer check (or another environment's) shows nothing.
+  const launch =
+    raw && (raw.kind === 'sent' || raw.kind === 'told' || raw.kind === 'asks') && raw.check !== (check ?? undefined)
+      ? null
+      : raw
   if (launch?.kind === 'sent') {
     return (
       <div className="iii-cloud-body">

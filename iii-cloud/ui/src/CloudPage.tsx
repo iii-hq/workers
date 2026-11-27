@@ -157,7 +157,7 @@ export function CloudPage({
         description={status ? whoLine(status) : undefined}
         onClose={onRequestClose}
       />
-      {status ? <LaunchNote /> : null}
+      {status ? <LaunchNote check={status.check?.id} /> : null}
       {actionError ? (
         <div className="iii-cloud-body">
           <ErrorPanel error={actionError} />

@@ -31,7 +31,7 @@ function Live({ narrow = false, ...props }: { host: Host; go: (r: Route) => void
   const { status } = useStatus(props.host, { poll: false })
   return status ? (
     <>
-      <LaunchNote />
+      <LaunchNote check={status.check?.id} />
       <CheckStage {...props} status={status} narrow={narrow} />
     </>
   ) : null
@@ -2179,6 +2179,8 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await stage({ ...next, check: { ...next.check!, id: 'chk-newer' } })
     expect(stop()?.textContent).toContain('stopped at Release')
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
+    // ...nor in the page header
+    expect(text()).not.toContain("Sent to your agent's chat")
   })
 
   it('an agent already on it: "Your agent is on it." and no button for it', async () => {
