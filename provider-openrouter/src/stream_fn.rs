@@ -1,6 +1,7 @@
 //! The `provider::openrouter::stream` iii function (spec § Provider stream
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
+use crate::budget::{estimate_prompt_tokens, fit_to_context};
 use crate::catalog::upstream_id;
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
@@ -186,7 +187,7 @@ async fn run_stream_call(
         ));
     }
 
-    let body = build_body(&BodyArgs {
+    let mut body = build_body(&BodyArgs {
         // the wire wants OpenRouter's own id, not the prefixed catalog id
         model: upstream_id(&cfg.model).to_string(),
         max_tokens: cfg.max_tokens,
@@ -201,6 +202,17 @@ async fn run_stream_call(
             input.session_id.as_deref(),
         ),
     });
+
+    // OpenRouter rejects `prompt + max_tokens` beyond the window, and some
+    // listings advertise an output ceiling near the whole window (which the
+    // uncapped router forwards verbatim). Fit the budget to the room the
+    // prompt leaves so the request is not rejected before generating.
+    if let Some(window) = meta.map(|m| m.context_window).filter(|w| *w > 0) {
+        let fitted = fit_to_context(cfg.max_tokens, window, estimate_prompt_tokens(&body));
+        if fitted < cfg.max_tokens {
+            body["max_tokens"] = serde_json::json!(fitted);
+        }
+    }
     let headers = build_headers(&cfg);
 
     // Aborted while we were setting up — never start the upstream request.
