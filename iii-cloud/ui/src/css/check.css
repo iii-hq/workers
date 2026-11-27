@@ -54,6 +54,18 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-label {
   font-weight: 400;
 }
+/* The check's card: a row is 24 px (the canvas's 16 px line and 8 px between), the part's name 13/500. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-rows {
+  padding: 8px 0 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-row {
+  min-height: 24px;
+  padding: 4px 14px;
+  row-gap: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-mark[data-mark='bad'] {
+  color: var(--color-alert);
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-state {
   font-size: 12px;
   font-weight: 400;
@@ -140,7 +152,7 @@
   margin: 0;
   padding: 12px 14px 0;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 /* You: one item each, the action in the item. */
@@ -214,7 +226,8 @@
   min-width: 0;
   padding: 10px 12px;
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
   text-align: left;
   cursor: pointer;
 }
@@ -255,6 +268,19 @@
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-item > .iii-cloud-mark {
   margin-top: 2px;
 }
+/* The agent's items: a ring for the one it works on now, a dashed one for those next (no spinner). */
+[data-iii-ui='iii-cloud'] .iii-cloud-ring {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  margin: 4px 2px 0;
+  border: 2px solid var(--color-ink);
+  border-radius: 50%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ring[data-mark='wait'] {
+  border-style: dashed;
+  border-color: var(--color-ink-ghost);
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-item[data-mark='wait'] .iii-cloud-cs-label {
   font-weight: 400;
 }
@@ -263,6 +289,25 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+}
+/* A warning panel's actions: they wrap in the panel's width, never run off its edge. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts) {
+  max-width: 100%;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts) {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-acts > * {
+  flex: 0 1 auto;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-acts-row {
   display: flex;
@@ -287,6 +332,9 @@
   font-size: 13px;
   font-weight: 600;
   text-align: left;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-head .iii-cloud-cs-title {
+  font-weight: 500;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-chev {
   width: 16px;
@@ -326,17 +374,129 @@
   display: block;
 }
 
+/* What this deploy does: the value is 13/500 (14 on a phone), its note under it 12/400. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs .iii-cloud-detail-value {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs .iii-cloud-detail-note {
+  font-weight: 400;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-detail-value {
+  font-size: 14px;
+}
+
 /* The deployment that failed: the cause in a sentence, the explanation, the log lines. */
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-cause {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  padding: 14px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-cause h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
+  line-height: 1.3;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause > .iii-cloud-cs-sub {
+  font-size: 12px;
+}
+/* The foot of that card: what the agent gets, and the log link. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot .iii-cloud-cs-sub {
+  flex: 1 1 240px;
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot a {
+  white-space: nowrap;
+}
+
+/* The deployment's stages: a dot, what it did, its time. The one that failed is tinted; one not run has a dashed ring. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stages {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] .iii-cloud-cs-slabel {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='edge'] {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stagedot {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--color-ok);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] .iii-cloud-stagedot {
+  background: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='live'] .iii-cloud-stagedot {
+  border: 2px solid var(--color-ink);
+  background: transparent;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='warn'] .iii-cloud-stagedot {
+  background: var(--color-warn);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='edge'] .iii-cloud-stagedot {
+  border: 2px dashed var(--color-ink-ghost);
+  background: transparent;
+}
+
+/* After the deploy: the address in mono with Open and Copy, then what was proven. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-url {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-addr {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-facts {
+  margin: 0;
+  padding: 0 14px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-facts li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 10px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-cause p {
   margin: 0;
@@ -344,12 +504,29 @@
   line-height: 1.5;
 }
 
-/* Change: the branch, the files, the compose file, then the buttons. */
+/* Change: a label column and the choices, one row each (Code, Compose file, Environment), then the buttons. */
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-change {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: start;
   padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow + .iii-cloud-cs-crow {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-clabel {
+  padding-top: 10px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow > .iii-cloud-cs-sub {
+  align-self: center;
+  color: var(--color-ink);
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-fieldset {
   display: flex;
@@ -360,17 +537,41 @@
   padding: 0;
   border: 0;
 }
-[data-iii-ui='iii-cloud'] .iii-cloud-cs-fieldset legend {
-  margin-bottom: 6px;
-  padding: 0;
-  font-size: 13px;
-  font-weight: 600;
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+/* The choices are framed; the one chosen has the ink frame. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices [role='radio'] {
+  min-height: 40px;
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices [role='radio'][data-selected] {
+  box-shadow: inset 0 0 0 1px var(--color-ink);
+  font-weight: 500;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-changefoot {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-changefoot .iii-cloud-cs-sub {
+  flex: 1 1 220px;
+  font-size: 12px;
+  text-align: right;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-typed {
   display: flex;
@@ -395,8 +596,20 @@
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
-  padding: 12px 0 4px;
+  /* Across the pane (the body's 12 px gutters too) with a hairline on top, and past its bottom edge: nothing of the
+     page shows beside it or under its note. */
+  margin: 8px -12px 0;
+  padding: 12px 12px 4px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
   background: var(--color-panel);
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > button,

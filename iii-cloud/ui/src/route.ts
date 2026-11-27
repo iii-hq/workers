@@ -118,10 +118,10 @@ export type PathItem = { label: string; to?: Route }
 
 /**
  * The path bar of a route: its ancestors, each with where it goes, then the place itself (`Projects`,
- * `Projects / registry · dev`, `… / Deploy`, `… / Deployment #6`, `… / Secrets and variables`,
+ * `Projects / registry · dev`, `… / Deploy` (on a phone `Deploy to dev`), `… / Deployment #6`, `… / Secrets and variables`,
  * `Projects / Add a project`). Back goes to the last ancestor with a `to`: always the parent, never the history.
  */
-export function pathOf(r: Route, s: Status): PathItem[] {
+export function pathOf(r: Route, s: Status, narrow = false): PathItem[] {
   const p = s.project
   const projects: PathItem = { label: 'Projects', to: { at: 'start' } }
   const label = (id: string) => {
@@ -138,8 +138,11 @@ export function pathOf(r: Route, s: Status): PathItem[] {
       const n = s.deploys.find((d) => d.id === r.deploy)?.number
       return [projects, env(r.env), { label: n ? `Deployment #${n}` : 'Deployment' }]
     }
-    case 'deploy':
-      return [projects, env(r.env), { label: 'Deploy' }]
+    case 'deploy': {
+      // A phone's bar names only the place, so it carries the environment: "Deploy to dev".
+      const name = p?.environments.find((e) => e.id === r.env)?.name
+      return [projects, env(r.env), { label: narrow && name ? `Deploy to ${name}` : 'Deploy' }]
+    }
     case 'secrets':
       return [projects, env(r.env), { label: 'Secrets and variables' }]
     case 'setup':

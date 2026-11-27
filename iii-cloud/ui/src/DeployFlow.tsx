@@ -10,6 +10,7 @@ import {
   List,
   ListItem,
   PageMain,
+  Panel,
   Skeleton,
   TerminalStream,
 } from '@iii-dev/console-ui'
@@ -42,21 +43,22 @@ import {
   cloudStageLabel,
   composeFile,
   deployOrigin,
-  deployRows,
   deployState,
   deployWord,
+  envPageUrl,
   failureWords,
   isFailedDeploy,
   listMayHideServing,
   minutesLabel,
   needsAction,
   plural,
-  envPageUrl,
   RESOURCE_KIND,
+  type StageRow,
   sendLabel,
   servingId,
   servingNamed,
   sha7,
+  stageRows,
 } from './model'
 import { Dot, Fresh, LinkButton, Mono, Notice, PageAction, PathBar, SectionCard, StatePill, useNow } from './parts'
 import { type AreaProps, envState, pathOf, type RouteAt } from './route'
@@ -76,6 +78,30 @@ const WHILE: Record<string, string> = {
   release: 'running the release command',
   workers: 'starting the workers',
   routes_tls: 'setting up the address',
+}
+
+const DONE: Record<string, string> = {
+  build: 'Built the image',
+  data: 'Database, secrets and settings',
+  workers: 'Started the workers',
+  routes: 'Address and certificate',
+}
+const DOING: Record<string, string> = { ...DONE, build: 'Building the image', workers: 'Starting the workers' }
+/** A stage row's words, as the canvas has them: done in the past tense, the one going or stopped in the present. */
+function stageSays(r: StageRow, d: Deploy, env: string): ReactNode {
+  const sha = sha7(d.commit.sha)
+  if (r.key === 'plan') {
+    return r.tone === 'ok' ? (
+      <>
+        Pushed <Mono>{sha}</Mono> {`to ${env}'s branch and started #${d.number}`}
+      </>
+    ) : (
+      <>
+        Pushing <Mono>{sha}</Mono> {`to ${env}'s branch`}
+      </>
+    )
+  }
+  return (r.tone === 'ok' ? DONE : DOING)[r.key] ?? r.short
 }
 
 /** Deploying from this machine: one header, then the body the state asks for. */
@@ -161,7 +187,7 @@ export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteA
   return (
     <PageMain className="iii-cloud-main">
       <PathBar
-        path={pathOf(route, status)}
+        path={pathOf(route, status, narrow)}
         host={host}
         status={status}
         route={route}
@@ -290,97 +316,118 @@ function ChangePanel({
     go({ at: 'deploy', env: envId })
   }
 
+  const one = changed === 1
   return (
-    <SectionCard
-      title={`What goes to ${env.name}`}
-      note={
-        serving
-          ? `${env.name} serves ${sha7(serving.sha)} · deployment #${serving.number}`
-          : feed.data
-            ? listMayHideServing(feed.data)
-              ? `${env.name} serves a deployment iii cloud's list does not show`
-              : `Nothing is live on ${env.name} yet`
-            : null
-      }
-      flush
-    >
-      <div className="iii-cloud-cs-change" ref={top} tabIndex={-1}>
-        <fieldset className="iii-cloud-cs-fieldset">
-          <legend>Code</legend>
-          {sources && chosen ? (
-            <List role="radiogroup" aria-label="Code">
-              {sources.map((o) => (
-                <ListItem
-                  key={o.value}
-                  role="radio"
-                  aria-checked={o === chosen}
-                  leading={o === chosen ? <CircleDot /> : <Circle />}
-                  label={o.label}
-                  description={[o.folder ? 'your folder' : null, o.ahead].filter(Boolean).join(' · ')}
-                  onClick={() => setSource(o.value)}
-                />
-              ))}
-            </List>
-          ) : (
+    <>
+      <SectionCard
+        title={`What goes to ${env.name}`}
+        note={
+          serving
+            ? `${env.name} serves ${sha7(serving.sha)} · deployment #${serving.number}`
+            : feed.data
+              ? listMayHideServing(feed.data)
+                ? `${env.name} serves a deployment iii cloud's list does not show`
+                : `Nothing is live on ${env.name} yet`
+              : null
+        }
+        flush
+      >
+        <div className="iii-cloud-cs-change" ref={top} tabIndex={-1}>
+          <div className="iii-cloud-cs-crow">
+            <span className="iii-cloud-cs-clabel" aria-hidden>
+              Code
+            </span>
+            <fieldset className="iii-cloud-cs-fieldset">
+              <legend className="iii-cloud-cs-sr">Code</legend>
+              {sources && chosen ? (
+                <List role="radiogroup" aria-label="Code" className="iii-cloud-cs-choices">
+                  {sources.map((o) => (
+                    <ListItem
+                      key={o.value}
+                      role="radio"
+                      aria-checked={o === chosen}
+                      // `data-selected`, not `selected`: a radio has no pressed state.
+                      data-selected={o === chosen ? '' : undefined}
+                      leading={o === chosen ? <CircleDot /> : <Circle />}
+                      label={o.label}
+                      trailing={[o.folder ? 'your folder' : null, o.ahead].filter(Boolean).join(' · ')}
+                      onClick={() => setSource(o.value)}
+                    />
+                  ))}
+                </List>
+              ) : (
+                <p className="iii-cloud-cs-sub">
+                  {env.production
+                    ? `${env.name}'s check starts from ${env.branch}. Your changes reach it through a pull request.`
+                    : `The check starts from ${p.checkout.branch ?? sha7(p.checkout.head)}.`}
+                </p>
+              )}
+              {!env.production && (chosen?.folder ?? true) && changed ? (
+                <p className="iii-cloud-cs-sub">
+                  {`The ${plural(changed, 'uncommitted change')} in your folder ${one ? 'stays' : 'stay'} there: commit ${one ? 'it to include it' : 'them to include them'}.`}
+                </p>
+              ) : null}
+            </fieldset>
+          </div>
+          <div className="iii-cloud-cs-crow">
+            <span className="iii-cloud-cs-clabel" aria-hidden>
+              Compose file
+            </span>
+            <fieldset className="iii-cloud-cs-fieldset">
+              <legend className="iii-cloud-cs-sr">Compose file</legend>
+              <List role="radiogroup" aria-label="Compose files in this folder" className="iii-cloud-cs-choices">
+                {(files.length ? files : [{ path: current, choosable: true, workers: null, issue: null }]).map((f) => {
+                  const on = f.path === pick
+                  const note = [
+                    f.workers != null ? plural(f.workers, 'worker') : null,
+                    f.path === current ? `what ${env.name} runs now` : `${env.name} switches to it with this deploy`,
+                    f.choosable ? null : (COMPOSE_ISSUE[f.issue ?? ''] ?? f.issue),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
+                  return (
+                    <ListItem
+                      key={f.path}
+                      role="radio"
+                      aria-checked={on}
+                      data-selected={on ? '' : undefined}
+                      disabled={!f.choosable}
+                      leading={on ? <CircleDot /> : <Circle />}
+                      label={<Mono>{f.path}</Mono>}
+                      trailing={note}
+                      onClick={() => setPick(f.path)}
+                    />
+                  )
+                })}
+              </List>
+            </fieldset>
+          </div>
+          <div className="iii-cloud-cs-crow">
+            <span className="iii-cloud-cs-clabel">Environment</span>
             <p className="iii-cloud-cs-sub">
-              {env.production
-                ? `${env.name}'s check starts from ${env.branch}. Your changes reach it through a pull request.`
-                : `The check starts from ${p.checkout.branch ?? sha7(p.checkout.head)}.`}
+              {env.name} · to deploy somewhere else, open that environment from the sidebar or{' '}
+              <button type="button" className="iii-cloud-linkbtn" onClick={() => go({ at: 'start' })}>
+                Projects
+              </button>
             </p>
-          )}
-          {!env.production && (chosen?.folder ?? true) && changed ? (
-            <p className="iii-cloud-cs-sub">
-              {`The ${plural(changed, 'uncommitted change')} in your folder stay there: commit them to include them.`}
-            </p>
-          ) : null}
-        </fieldset>
-        <fieldset className="iii-cloud-cs-fieldset">
-          <legend>Compose file</legend>
-          <List role="radiogroup" aria-label="Compose files in this folder">
-            {(files.length ? files : [{ path: current, choosable: true, workers: null, issue: null }]).map((f) => {
-              const on = f.path === pick
-              const note = [
-                f.workers != null ? plural(f.workers, 'worker') : null,
-                f.path === current ? `what ${env.name} runs now` : `${env.name} switches to it with this deploy`,
-                f.choosable ? null : (COMPOSE_ISSUE[f.issue ?? ''] ?? f.issue),
-              ]
-                .filter(Boolean)
-                .join(' · ')
-              return (
-                <ListItem
-                  key={f.path}
-                  role="radio"
-                  aria-checked={on}
-                  disabled={!f.choosable}
-                  leading={on ? <CircleDot /> : <Circle />}
-                  label={<Mono>{f.path}</Mono>}
-                  description={note}
-                  onClick={() => setPick(f.path)}
-                />
-              )
-            })}
-          </List>
-        </fieldset>
-        <p className="iii-cloud-cs-sub">
-          {env.name} · to deploy somewhere else, open that environment from{' '}
-          <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={() => go({ at: 'start' })}>
-            Projects
-          </button>
-          .
-        </p>
-        <div className="iii-cloud-cs-changefoot">
-          <Button variant="primary" disabled={act.busy === 'use' || !env} onClick={() => void start()}>
-            Check this instead
-          </Button>
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
-          <span className="iii-cloud-cs-sub">
-            A change stops the running check and your agent, and starts a new check.
-          </span>
+          </div>
+          <div className="iii-cloud-cs-changefoot">
+            <Button variant="primary" disabled={act.busy === 'use' || !env} onClick={() => void start()}>
+              Check this instead
+            </Button>
+            <button type="button" className="iii-cloud-linkbtn" onClick={onClose}>
+              Cancel
+            </button>
+            <span className="iii-cloud-cs-sub">
+              A change stops the running check and your agent, and starts a new check.
+            </span>
+          </div>
         </div>
-      </div>
-    </SectionCard>
+      </SectionCard>
+      <p className="iii-cloud-cs-foot">
+        Until you confirm a change, the check that is running goes on. The lists below this panel stay where they are.
+      </p>
+    </>
   )
 }
 
@@ -518,11 +565,10 @@ function Follow({
         sub={
           <>
             <p className="iii-cloud-cs-sub">{sub}</p>
-            {ours ? <GoesSub s={status} c={c} env={env.name} /> : null}
+            {ours && !live && !failed ? <GoesSub s={status} c={c} env={env.name} /> : null}
           </>
         }
         action={action}
-        note={note}
         narrow={narrow}
       />
       {running && status.connection.status === 'expired' ? (
@@ -579,53 +625,50 @@ function Follow({
       ) : null}
 
       {failed ? (
-        <SectionCard
-          title="What happened"
-          note={
-            d.checked_ready
-              ? `the check passed on ${checkedSha ? sha7(checkedSha) : 'this commit'}, and only the cloud could see this`
-              : null
-          }
-          end={cloudLog ? <LinkButton href={cloudLog}>Full log in iii cloud</LinkButton> : null}
-        >
+        <Panel className="iii-cloud-panel" role="region" aria-label="What happened">
           <div className="iii-cloud-cs-cause">
+            <span className="iii-cloud-cs-sub">
+              {`What happened${d.checked_ready ? ` · the check passed on ${checkedSha ? sha7(checkedSha) : 'this commit'}, and only the cloud could see this` : ''}`}
+            </span>
             <h3>
               {d.failure?.title ??
                 `The deployment stopped${stageWords ? ` ${stageWords}` : ''}${d.error ? `: ${failureWords(d.error)}` : ''}`}
             </h3>
             {(d.failure?.hint ?? d.error?.hint) ? <p>{d.failure?.hint ?? d.error?.hint}</p> : null}
             <TerminalStream label="log" text={(d.failure?.log_tail ?? d.log_tail).join('\n')} />
-            <p className="iii-cloud-cs-sub">
-              Your agent gets these log lines. Its fix goes through the check again, on this screen.
-            </p>
           </div>
-        </SectionCard>
+          <div className="iii-cloud-cs-causefoot">
+            <span className="iii-cloud-cs-sub">
+              Your agent gets these log lines. Its fix goes through the check again, on this screen.
+            </span>
+            {cloudLog ? (
+              <a className="iii-cloud-link iii-cloud-small" href={cloudLog} target="_blank" rel="noreferrer">
+                Full log in iii cloud
+              </a>
+            ) : null}
+          </div>
+        </Panel>
       ) : null}
 
-      <SectionCard title="Stages" flush>
-        <List aria-label="Deployment stages">
-          {deployRows(d).map((r) => (
-            <ListItem
-              as="div"
-              key={r.key}
-              leading={<Dot tone={r.tone} />}
-              label={
-                <span className={r.tone === 'edge' ? 'iii-cloud-faint' : undefined}>
-                  {r.label}
-                  {r.detail ? `: ${r.detail}` : null}
-                </span>
-              }
-              trailing={<span className="iii-cloud-mono iii-cloud-faint">{r.time}</span>}
-            />
+      <Panel className="iii-cloud-panel" role="region" aria-label="Deployment stages">
+        <ol className="iii-cloud-cs-stages">
+          {stageRows(d).map((r) => (
+            <li key={r.key} className="iii-cloud-cs-stage" data-tone={r.tone}>
+              <span className="iii-cloud-stagedot" aria-hidden />
+              <span className="iii-cloud-cs-slabel">{stageSays(r, d, env.name)}</span>
+              <span className="iii-cloud-cs-state">
+                {r.key === 'plan' && r.tone === 'ok' ? clock(d.created_at) : r.time}
+              </span>
+            </li>
           ))}
-        </List>
-      </SectionCard>
+        </ol>
+      </Panel>
 
       {live ? (
-        <SectionCard
-          title={address ?? 'After the deploy'}
-          end={
-            address ? (
+        <Panel className="iii-cloud-panel" role="region" aria-label="After the deploy">
+          {address ? (
+            <div className="iii-cloud-cs-url">
+              <span className="iii-cloud-cs-addr">{address}</span>
               <span className="iii-cloud-row">
                 <LinkButton href={address}>Open</LinkButton>
                 <Button size="sm" variant="secondary" onClick={copy.copy}>
@@ -642,29 +685,33 @@ function Follow({
                   )}
                 </Button>
               </span>
-            ) : null
-          }
-          flush
-        >
-          <List aria-label="Health">
+            </div>
+          ) : null}
+          <ul className="iii-cloud-cs-facts" aria-label="Health">
             {health.data ? (
-              <ListItem
-                as="div"
-                leading={<Dot tone={health.data.status === 'healthy' ? 'ok' : 'warn'} />}
-                label={`iii cloud says it's ${health.data.status}`}
-                trailing={
-                  <span className="iii-cloud-cs-sub">
-                    {workers.filter((w) => w.ready).length} of {plural(workers.length, 'worker')} up
-                  </span>
-                }
-              />
+              <li>
+                {health.data.status === 'healthy' ? (
+                  <Check className="iii-cloud-mark" data-mark="ok" aria-hidden />
+                ) : (
+                  <Dot tone="warn" />
+                )}
+                <span>{`iii cloud says it's ${health.data.status}`}</span>
+                <span className="iii-cloud-cs-state">
+                  {workers.filter((w) => w.ready).length} of {plural(workers.length, 'worker')} up
+                </span>
+              </li>
             ) : health.error ? (
-              <ListItem as="div" leading={<Dot tone="ghost" />} label={health.error.message} />
+              <li>
+                <Dot tone="ghost" />
+                <span>{health.error.message}</span>
+              </li>
             ) : (
-              <Skeleton className="iii-cloud-cs-skel" />
+              <li>
+                <Skeleton className="iii-cloud-cs-skel" />
+              </li>
             )}
-          </List>
-        </SectionCard>
+          </ul>
+        </Panel>
       ) : null}
 
       {running ? (
@@ -696,13 +743,22 @@ function Follow({
           ) : null}
         </>
       ) : null}
-      {live && prev && envPageUrl(status, `deployments/${prev.number}`, env.name) ? (
+      {live ? (
         <p className="iii-cloud-cs-foot">
-          If something's off,{' '}
-          <a href={envPageUrl(status, `deployments/${prev.number}`, env.name) as string} target="_blank" rel="noreferrer">
-            roll back to #{prev.number} in iii cloud
-          </a>
-          .
+          {`While a deploy runs, this screen shows the same stages with the running one marked, and ${env.name} keeps serving the previous deployment. You can leave; the console tells you when it's done.`}
+          {prev && envPageUrl(status, `deployments/${prev.number}`, env.name) ? (
+            <>
+              {" If something's off, "}
+              <a
+                href={envPageUrl(status, `deployments/${prev.number}`, env.name) as string}
+                target="_blank"
+                rel="noreferrer"
+              >
+                roll back to #{prev.number} in iii cloud
+              </a>
+              .
+            </>
+          ) : null}
         </p>
       ) : null}
       <ActionBar narrow={narrow} action={action} note={note} />

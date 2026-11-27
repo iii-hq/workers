@@ -486,7 +486,7 @@ describe('the hand-over between places, end to end', () => {
 
   it('one count and one source label: the environment card and the Deploy screen say the same', async () => {
     const b = boards['deploy-problems']
-    const count = (s: string | null | undefined) => /^(\d+) things? /.exec(s ?? '')?.[1]
+    const count = (s: string | null | undefined) => /^(\d+) (?:things?|values?) /.exec(s ?? '')?.[1]
     const ws = b.status.project!.workspace!
     const status = {
       ...b.status,
