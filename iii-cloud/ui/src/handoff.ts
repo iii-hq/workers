@@ -70,6 +70,13 @@ export async function handOff(
   }
   // "Fix with your agent" is the person asking again.
   hubOf(host).markStopped(status.project?.environment?.id ?? '', false)
+  // The agent has a real question open (also for a new hand-off, when the previous chat has one): nothing was
+  // delivered, the person answers it first, and the page's own text goes into no chat.
+  if (made?.asks) {
+    if (made.session_id) openChatFor(host, made.session_id)
+    setLaunch({ kind: 'asks', check: status.check?.id })
+    return true
+  }
   // A hand-off the worker already had open delivers its own text: never start a second chat.
   if (made?.reused) {
     if (made.session_id) openChatFor(host, made.session_id)
@@ -87,7 +94,7 @@ export async function handOff(
             ? { kind: 'told', check }
             : made.session_id
               ? { kind: 'sent', check }
-              : { kind: 'waiting' },
+              : { kind: 'waiting', check },
     )
     return true
   }
@@ -98,7 +105,7 @@ export async function handOff(
   }
   // The agent is mid-run on something else: the worker turns this into a follow-up in its session.
   if (followUp(status, kind)) {
-    setLaunch({ kind: 'waiting' })
+    setLaunch({ kind: 'waiting', check: status.check?.id })
     return true
   }
   const marked = [made?.marker, plain].filter(Boolean).join('\n')

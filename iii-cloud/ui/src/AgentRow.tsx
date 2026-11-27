@@ -86,7 +86,9 @@ export function LaunchNote({ check }: { check?: string | null }) {
   const raw = useLaunch()
   // What it says is about the check it was pressed for: a newer check (or another environment's) shows nothing.
   const launch =
-    raw && (raw.kind === 'sent' || raw.kind === 'told' || raw.kind === 'asks') && raw.check !== (check ?? undefined)
+    raw &&
+    (raw.kind === 'sent' || raw.kind === 'told' || raw.kind === 'asks' || raw.kind === 'waiting') &&
+    raw.check !== (check ?? undefined)
       ? null
       : raw
   if (launch?.kind === 'sent') {

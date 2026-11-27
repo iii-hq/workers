@@ -143,6 +143,8 @@ const AT_LEAST =
 const UNLOCKS = 'Unlocks when a check passes'
 /** Worker notes about what the local run did to files: a quiet line under Details, never a warning. */
 const QUIET = new Set(['RUN_LEFT_FILES', 'RUN_FILES_RESTORED'])
+/** A sentence with its end mark: the worker's own messages may have none ("iii cloud answered 503"). */
+const sentence = (t: string) => (/[.!?]$/.test(t.trim()) ? t.trim() : `${t.trim()}.`)
 const ACTIVE: AgentState[] = ['starting', 'working', 'waiting_for_you', 'waiting', 'stalled']
 const MARKS = {
   ok: [Done, 'done'],
@@ -1018,6 +1020,8 @@ export function CheckStage(props: CheckStageProps) {
   const { error, busy, call, setError } = useActions(host)
   const folder = useFolderNote(s.check?.id) ? FOLDER_NOTE : undefined
   const launch = useLaunch()
+  // When this page saw the run end (a run that outlives the check call has no call end to count from).
+  const seenRun = useRef<{ id: string; running: boolean; endedAt: number } | null>(null)
   const launching = launch?.kind === 'launching'
   const [confirming, setConfirming] = useState(false)
   // The check the production name dialog was opened for: it deploys that one, only while it is still the ready one.
@@ -1156,13 +1160,17 @@ export function CheckStage(props: CheckStageProps) {
         !openProblems(s, true).some((x) => x.source === 'check_here') &&
         !missing.length)
   // What the person owes first, said for a withheld failure.
+  // (a blocking problem of the person's that the page hides, such as a database variable, is named by its own title)
+  const hiddenOwn = s.check?.problems.find((p) => p.owner === 'person' && p.severity === 'block')
   const yours =
     needItems[0]?.title ??
     (missing.length
       ? `${plural(missing.length, 'value')} to set`
       : decide[0]
         ? `${decide[0].setting} to decide`
-        : 'what waits for you above')
+        : hiddenOwn
+          ? problemTitle(hiddenOwn)
+          : 'what waits for you above')
   if (agentRun && runError)
     lines.push({
       key: 'run-failed',
@@ -1230,10 +1238,23 @@ export function CheckStage(props: CheckStageProps) {
   const past = historyOf(s, c, envId)
 
   // The seconds after a page check ends, while the worker may still be sending the agent on.
-  // Only where an idle hand-off exists on this environment can the worker continue an agent; and the wait counts from
-  // the run's own end (it may outlive the call), else from the call's.
-  const idleAgent = !!s.agent && !['starting', 'working'].includes(s.agent.state)
-  const endedMs = run?.finished_at ? Date.parse(run.finished_at) : hubOf(host).checkEndedAt(envId)
+  // Only an agent the worker continues can take it: waiting, a check-noted one, or a done hand-off that is still the
+  // environment's current one. A stopped one is never continued, nor a retired done one. The wait counts from when this
+  // page saw the run end (its own clock, not the worker's).
+  const ag = s.agent
+  const idleAgent =
+    !!ag &&
+    (ag.state === 'waiting' ||
+      (ag.state === 'waiting_for_you' && ag.question_source === 'check') ||
+      (ag.state === 'done' && s.handoff_brief?.handoff_id === ag.handoff_id))
+  if (run) {
+    if (seenRun.current?.id !== run.id) seenRun.current = { id: run.id, running: run.status === 'running', endedAt: 0 }
+    else if (seenRun.current.running && run.status !== 'running') {
+      seenRun.current.running = false
+      seenRun.current.endedAt = Date.now()
+    }
+  }
+  const endedMs = Math.max(hubOf(host).checkEndedAt(envId), seenRun.current?.endedAt ?? 0)
   const settling = idleAgent && endedMs > 0 && now - endedMs < 6000
   const stops: Stop[] = []
   if (c) {
@@ -1259,14 +1280,14 @@ export function CheckStage(props: CheckStageProps) {
     ) {
       const why = c.plan.error
       // A cause that will not pass by itself (403, 404) says the worker's sentence and what helps; else "in a moment".
-      const lasting = why?.status === 403 || why?.status === 404
+      const lasting = !!why?.status && why.status >= 400 && why.status < 500 && why.status !== 408 && why.status !== 429
       const consoleUrl = envPageUrl(s, '')
       stops.push({
         key: 'plan',
         variant: 'warn',
         headline: "iii cloud's plan could not be read",
         detail: why
-          ? `${why.message}${why.fix ? ` ${why.fix}` : ''}${lasting ? '' : ' Check again in a moment.'}`
+          ? `${sentence(why.message)}${why.fix ? ` ${sentence(why.fix)}` : ''}${lasting ? '' : ' Check again in a moment.'}`
           : "iii cloud couldn't check this commit just now. Check again in a moment.",
         acts: [
           { label: 'Check again', onClick: checkAgain },
@@ -1337,11 +1358,16 @@ export function CheckStage(props: CheckStageProps) {
         ],
       })
     } else if (err?.owner === 'replaced') {
+      // When the newer run is another environment's on the same folder, say whose.
+      const newer = (s.checks ?? []).find(
+        (x) => x.environment_id !== c.environment_id && Date.parse(x.checked_at) > Date.parse(c.checked_at),
+      )
+      const newerEnv = newer && p?.environments.find((e) => e.id === newer.environment_id)?.name
       // A newer run took its place: nothing to fix and nothing to offer; the newer run speaks for itself.
       stops.push({
         key: 'run',
         variant: 'info',
-        headline: 'A newer run replaced this one.',
+        headline: `A newer run replaced this one${newerEnv ? ` in ${newerEnv}` : ''}.`,
         detail: '',
         acts: [],
       })
@@ -1361,6 +1387,9 @@ export function CheckStage(props: CheckStageProps) {
           <>
             {plainMessage(err)}
             {err.owner === 'person' ? " This one is yours to fix here, not your agent's." : ''}
+            {err.owner === 'person' && err.code === 'ROUTE_OUTSIDE_HTTP_GROUP' && !(s.project?.repository && c)
+              ? ' Tell your agent in the chat.'
+              : ''}
             {err.owner === 'interrupted' ? ' The run was interrupted: run it again.' : ''}
             {err.owner === 'agent' && err.withheld ? ` Your part comes first: ${yours}.` : ''}
             {agentRun && settling && !agentWorking(s) && !agentAsks(s) ? ' Checking whether your agent took it…' : ''}
@@ -1395,7 +1424,13 @@ export function CheckStage(props: CheckStageProps) {
             ]
           : planStop
             ? []
-            : [{ label: 'Run again', onClick: checkAgain, disabled: running }],
+            : [
+                // A route outside the http group is the person's to move in their compose file: say where it is.
+                ...(err.owner === 'person' && err.code === 'ROUTE_OUTSIDE_HTTP_GROUP' && s.project?.repository && c
+                  ? [{ label: 'Open the compose file', href: github(s, `blob/${c.commit}/${appFile(s).path}`) }]
+                  : []),
+                { label: 'Run again', onClick: checkAgain, disabled: running },
+              ],
       })
     }
     const d = s.deploys.find((x) => x.environment_id === envId)
@@ -1699,10 +1734,20 @@ export function CheckStage(props: CheckStageProps) {
   // The values you set since the hand-off began: names its brief listed as the person's to set that the values read
   // now reports as set. Without a brief or a read there is nothing to count, so "You did" is left out, never 0.
   const setNow = new Set(valuesPlan(read).set.map((i) => i.name))
-  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it.
+  // Only the hand-off of the check shown, and of the ready kind: an old one stays until a new one replaces it. A check
+  // the page itself started carries no hand-off id: it counts when it is of the same environment, made after the
+  // check the hand-off began with, while that hand-off is still the environment's current one.
+  const brief = s.handoff_brief
+  const briefCheck = brief ? (s.checks ?? []).find((x) => x.id === brief.check_id) : undefined
   const briefNow =
-    s.handoff_brief?.kind === 'ready' && !!c?.handoff_id && c.handoff_id === s.handoff_brief.handoff_id
-      ? s.handoff_brief
+    brief?.kind === 'ready' &&
+    c &&
+    (c.handoff_id === brief.handoff_id ||
+      (!c.handoff_id &&
+        s.agent?.handoff_id === brief.handoff_id &&
+        briefCheck?.environment_id === c.environment_id &&
+        Date.parse(c.checked_at) > Date.parse(briefCheck.checked_at)))
+      ? brief
       : null
   const valuesYouSet = (briefNow?.person_problems ?? [])
     .filter((b) => b.code && VALUE_CODES.has(b.code))
