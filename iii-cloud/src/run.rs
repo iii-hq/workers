@@ -950,6 +950,9 @@ pub async fn set_aside_run(
     });
     if note.is_some() {
         files.clear();
+        // Nothing is recorded as the run's: what is dirty may be partly its, so the check must not
+        // call these the agent's own.
+        mark_unrecorded(ctx, ws);
     }
     ctx.store.update(|s| {
         // A record of a worktree that is gone goes with it.

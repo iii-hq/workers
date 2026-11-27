@@ -639,6 +639,16 @@ async fn more_than_five_hundred_files_from_a_run_are_not_set_aside() {
     );
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    let d = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .and_then(|p| p.detail.clone())
+        .unwrap();
+    assert!(
+        d.contains("Some of these may be what the interrupted local run wrote"),
+        "{d}"
+    );
 }
 
 #[tokio::test]
