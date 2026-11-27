@@ -1143,3 +1143,34 @@ async fn one_runs_kept_copies_stop_at_64_mib_and_the_rest_stay_set_aside() {
         .unwrap();
     assert_eq!(left.files.len(), 2, "the rest stay set aside");
 }
+
+#[tokio::test]
+async fn a_file_where_a_tracked_directory_was_is_left_alone_and_a_deleted_directory_is_back() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::create_dir_all(ws.join("p")).unwrap();
+    std::fs::write(ws.join("p/a"), "tracked\n").unwrap();
+    std::fs::create_dir_all(ws.join("gone")).unwrap();
+    std::fs::write(ws.join("gone/b"), "tracked\n").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-q", "-m", "dirs"]);
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    // The directory `p` becomes a file (the run's data), and `gone/` is removed whole.
+    std::fs::remove_dir_all(ws.join("p")).unwrap();
+    std::fs::write(ws.join("p"), "run data\n").unwrap();
+    std::fs::remove_dir_all(ws.join("gone")).unwrap();
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert_eq!(done.restored, vec!["gone/b"]);
+    assert_eq!(
+        std::fs::read_to_string(ws.join("p")).unwrap(),
+        "run data\n",
+        "never deleted"
+    );
+    assert!(ws.join("gone/b").exists());
+    assert!(
+        h.ctx
+            .store
+            .read(|s| s.run_wrote.values().any(|w| w.files.contains_key("p")))
+    );
+}

@@ -968,6 +968,23 @@ async fn put_back(ws: &Path, paths: &[String]) -> Vec<String> {
     back
 }
 
+/// Every parent of `rel` that exists in `ws` is a real directory (not a file, not a symlink).
+fn parents_are_directories(ws: &Path, rel: &str) -> bool {
+    let mut at = ws.to_path_buf();
+    let parts: Vec<&str> = rel.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => return false,
+            // A parent that is gone too: the whole directory was deleted.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
 /// Keep what the run left of one tracked file under `dir` (0600, folders 0700): the hash of what was
 /// kept (`-` for a deletion: nothing to keep) and its size. None when it can't be kept: the file
 /// then stays as the run left it.
@@ -976,8 +993,14 @@ fn save_left(ws: &Path, dir: &Path, rel: &str) -> Option<(String, u64)> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let from = ws.join(rel);
-    let Ok(meta) = std::fs::symlink_metadata(&from) else {
-        return Some(("-".to_string(), 0)); // deleted
+    let meta = match std::fs::symlink_metadata(&from) {
+        Ok(m) => m,
+        // Deleted: only when it is NotFound and no parent that exists is a file or a link (a file
+        // where a directory was is the run's own data: it is not for a checkout to remove).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && parents_are_directories(ws, rel) => {
+            return Some(("-".to_string(), 0));
+        }
+        Err(_) => return None,
     };
     if !meta.is_file() || meta.len() > HASH_LIMIT {
         return None;
