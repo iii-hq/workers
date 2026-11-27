@@ -3447,3 +3447,33 @@ async fn a_refused_continue_to_a_waiting_agent_is_not_retried_inside_the_grace_a
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert_eq!(sent(&h).len() - before, 1, "one try inside the grace");
 }
+
+#[tokio::test]
+async fn a_person_run_that_a_newer_run_replaced_sends_the_agent_nothing() {
+    let mut run = failed_run("person-check", "abc");
+    run.error = Some(RunError {
+        stage: StageName::Workers,
+        code: "RUN_REPLACED".into(),
+        message: "A newer commit of this workspace started a run, so this one stopped.".into(),
+    });
+    let (_h, told) = person_check_while_waiting(vec![], Some(run), false, 1).await;
+    assert!(told.is_empty(), "{told:?}");
+}
+
+#[tokio::test]
+async fn a_page_check_while_the_waiting_agent_is_stalled_by_a_refusal_is_still_recorded() {
+    let (h, ws, _w) = waiting_agent().await;
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Stalled);
+    let check = person_check(&h, vec![], Some(failed_run("person-check", "abc")), false);
+    iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+    // (The wake is armed: `waiting_for` is still set on the stored state.)
+    assert_eq!(
+        h.ctx
+            .store
+            .read(|s| s.handoffs[0].person_check.clone())
+            .as_deref(),
+        Some("person-check")
+    );
+}

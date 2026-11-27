@@ -925,7 +925,10 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     if obs.status == "working" {
         local.idle_checked = false;
         // The agent is up by itself (its wake fired, or it was never idle): a check the person
-        // started earlier is old news, and would arrive stale at its next wait.
+        // started earlier is old news, and would arrive stale at its next wait. This also drops
+        // one the worker's own continue woke the agent for: if that person's run then fails, nobody
+        // tells the agent (the Done branch judges only the hand-off's own checks). Accepted: the
+        // person sees it on the page, and the agent's next idle check judges the problems.
         if handoff.person_check != handoff.person_check_told {
             ctx.store.update(|s| {
                 if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
@@ -1400,7 +1403,9 @@ pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path)
         if let Some(h) = s.handoffs.iter_mut().find(|h| {
             h.environment_id == check.environment_id
                 && h.workspace_path == path
-                && h.agent.state == AgentPhase::Waiting
+                // Waiting on a wake; or stalled inside a refused continue's grace with one armed.
+                && (h.agent.state == AgentPhase::Waiting
+                    || (h.agent.state == AgentPhase::Stalled && h.agent.waiting_for.is_some()))
         }) {
             h.person_check = Some(check.id.clone());
         }
@@ -1439,6 +1444,8 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
         {
             let (code, line) = run_failure_of(run);
             match run_code_owner(&code) {
+                // Replaced by a newer run: that check is judged in its turn.
+                _ if code == "RUN_REPLACED" => {}
                 RunOwner::Agent => lines.push((code, line)),
                 RunOwner::Interrupted => lines.push((
                     code,

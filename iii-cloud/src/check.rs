@@ -1149,6 +1149,17 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         plan_workers: plan_workers.as_deref(),
     });
     let mut here_problems = here_problems;
+    // A rebase, merge or checkout stops on the files a local run left in tracked paths.
+    let restore_first = ctx.store.read(|s| {
+        s.run_wrote
+            .get(&sel.workspace.to_string_lossy().into_owned())
+            .is_some_and(|w| !w.files.is_empty())
+    });
+    let restore_note = if restore_first {
+        " Restore the local run's files first."
+    } else {
+        ""
+    };
     // Ready pins what gets merged: the base is in the commit's history, and
     // the worktree has nothing uncommitted (the run's own files are excluded).
     match &base_head {
@@ -1158,7 +1169,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                     "BASE_NOT_IN_HISTORY",
                     format!("{} has commits this branch does not have", sel.env.branch),
                     Some(format!(
-                        "Merge or rebase origin/{} into the branch, then check again.",
+                        "Merge or rebase origin/{} into the branch, then check again.{restore_note}",
                         sel.env.branch
                     )),
                     Owner::Agent,
@@ -1221,7 +1232,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "BROUGHT_FILES_COMMIT",
             "A commit holds files copied from your folder".into(),
             Some(format!(
-                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Drop only that commit and keep the rest: `git rebase --onto {sha}^ {sha}`, then check again."
+                "\"{subject}\" was made by an older version of this worker: it holds copies of uncommitted files, and a deploy would send them. Drop only that commit and keep the rest: `git rebase --onto {sha}^ {sha}`, then check again.{restore_note}"
             )),
             Owner::Agent,
             None,
@@ -1234,14 +1245,8 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let own_changes = split.as_ref().map(|(agent, _)| agent.clone());
     let set_aside = split.map(|(_, aside)| aside).unwrap_or_default();
     let dirty = own_changes.as_ref().is_none_or(|p| !p.is_empty());
-    let interrupted = ctx.store.read(|s| {
-        s.checks
-            .iter()
-            .find(|c| c.environment_id == sel.env.id && c.run.is_some())
-            .and_then(|c| c.run.as_ref())
-            .and_then(|r| r.error.as_ref())
-            .is_some_and(|e| e.code == "WORKER_RESTARTED")
-    });
+    // After the split (which clears the mark once the worktree is clean).
+    let interrupted = crate::run::unrecorded(ctx, &sel.workspace);
     let folder = ctx.store.read(|s| {
         s.project
             .as_ref()
@@ -1283,7 +1288,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 },
                 // A run cut off by a restart never set its files aside: some of these may be its.
                 if interrupted {
-                    "The local run was interrupted by a restart, so some of these may be what it wrote: restore those (`git checkout -- <file>`, or delete an untracked one) and commit yours (`git add <paths>`), then check and run again."
+                    "Some of these may be what the interrupted local run wrote. Restore only the files you did not edit, one by one; commit yours (`git add <paths>`), then check and run again."
                 } else {
                     "Commit your own changes (`git add <paths>`; the files the local run wrote are not yours: do not commit them), then check and run again."
                 }
@@ -1298,7 +1303,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "RUN_LEFT_FILES",
             "The local run left files changed in the worktree".into(),
             Some(format!(
-                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it. Before a rebase, merge or checkout, restore them (`git checkout -- <file>`; delete an untracked one); never commit them.",
                 set_aside.len(),
                 if set_aside.len() == 1 {
                     "file"
@@ -1320,7 +1325,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         here_problems.push(info);
     }
     let here = HerePart {
-        problems: here_problems.len() as u32,
+        // Blocking ones: a note (an info line) is not a problem to count.
+        problems: here_problems
+            .iter()
+            .filter(|p| p.severity == Severity::Block)
+            .count() as u32,
         accepts_cloud_block: accepts_cloud_block(iii_version.as_deref()),
         iii_version: iii_version.clone(),
     };

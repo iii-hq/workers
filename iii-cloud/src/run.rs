@@ -565,6 +565,9 @@ pub async fn start_with(
     let commit = workspace_commit(ctx, &sel.workspace).await?;
     // What was dirty before the run: what it changes or adds is the run's, not the agent's.
     let before = dirty_snapshot(&sel.workspace).await;
+    if before.is_none() {
+        mark_unrecorded(ctx, &sel.workspace);
+    }
     let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
     exec.cancel = cancel_rx;
     exec.wrote_before = before.clone();
@@ -645,10 +648,11 @@ const HASH_LIMIT: u64 = 4 * 1024 * 1024;
 /// Every changed path of the worktree (`status --porcelain -z --untracked-files=all`, so an
 /// untracked directory is its files) with a fingerprint of its content now: a hash (`-` when
 /// it is gone; a symlink by its target; a file over `HASH_LIMIT` by size and mtime). With
-/// `hash` false the fingerprints are empty (nothing is read). None when git can't say.
+/// `Fingerprints::None` they are empty (nothing is read); `Only(record)` only the paths the record
+/// holds are read (no other path can match it). None when git can't say.
 async fn dirty_entries(
     ws: &Path,
-    hash: bool,
+    which: Fingerprints<'_>,
 ) -> Option<std::collections::BTreeMap<String, String>> {
     let out = tool::git(
         ws,
@@ -668,21 +672,34 @@ async fn dirty_entries(
         }
         paths.push(e[3..].to_string());
     }
-    if !hash {
-        return Some(paths.into_iter().map(|p| (p, String::new())).collect());
-    }
+    let wanted: Option<std::collections::BTreeSet<String>> = match which {
+        Fingerprints::All => None,
+        Fingerprints::None => Some(Default::default()),
+        Fingerprints::Only(record) => Some(record.keys().cloned().collect()),
+    };
     let ws = ws.to_path_buf();
     tokio::task::spawn_blocking(move || {
         paths
             .into_iter()
             .map(|p| {
-                let h = fingerprint(&ws.join(&p));
+                let h = if wanted.as_ref().is_none_or(|w| w.contains(&p)) {
+                    fingerprint(&ws.join(&p))
+                } else {
+                    String::new()
+                };
                 (p, h)
             })
             .collect()
     })
     .await
     .ok()
+}
+
+/// Which changed paths `dirty_entries` reads.
+enum Fingerprints<'a> {
+    All,
+    None,
+    Only(&'a std::collections::BTreeMap<String, String>),
 }
 
 fn fingerprint(path: &Path) -> String {
@@ -713,7 +730,7 @@ fn fingerprint(path: &Path) -> String {
 /// What the worktree has changed now, to compare with when a run ends (`set_aside`).
 /// None when git can't say: without a snapshot the run's end records nothing new.
 pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<String, String>> {
-    dirty_entries(ws, true).await
+    dirty_entries(ws, Fingerprints::All).await
 }
 
 /// A run ended: what it changed or added since `before` is its own, not the agent's, as long as the
@@ -729,7 +746,14 @@ pub async fn set_aside(
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
 ) -> Option<String> {
-    let after = dirty_entries(ws, true).await?;
+    // The person's own folder: every change in it is theirs to judge, none is the run's.
+    if is_persons_folder(ctx, ws) {
+        return None;
+    }
+    let Some(after) = dirty_entries(ws, Fingerprints::All).await else {
+        mark_unrecorded(ctx, ws);
+        return None;
+    };
     let previous = ctx
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
@@ -768,13 +792,44 @@ pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
     dirty_split(ctx, ws).await.map(|(agent, _)| agent)
 }
 
+/// A run ended in `ws` without its leftovers recorded: until the worktree is clean, what is
+/// dirty there may be partly the run's.
+fn mark_unrecorded(ctx: &Ctx, ws: &Path) {
+    ctx.store
+        .update(|s| s.run_unrecorded.insert(ws.to_string_lossy().into_owned()));
+}
+
+/// The worktree has a run's unrecorded leftovers (see `mark_unrecorded`).
+pub fn unrecorded(ctx: &Ctx, ws: &Path) -> bool {
+    ctx.store.read(|s| {
+        s.run_unrecorded
+            .contains(&ws.to_string_lossy().into_owned())
+    })
+}
+
+/// The workspace is the person's own folder (checkout mode), not a worktree of the worker's.
+fn is_persons_folder(ctx: &Ctx, ws: &Path) -> bool {
+    ctx.store
+        .read(|s| s.project.as_ref().is_some_and(|p| Path::new(&p.path) == ws))
+}
+
 /// `(the agent's changed paths, the paths set aside as the last run's)`; None when git can't say.
 pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let left = ctx
         .store
-        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned());
-    // A worktree no run has left anything in: every changed path is the agent's, and nothing is read.
-    let now = dirty_entries(ws, left.is_some()).await?;
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
+        .filter(|_| !is_persons_folder(ctx, ws));
+    // A worktree no run has left anything in (an empty record is none): every changed path is the
+    // agent's, and nothing is read. With a record, only its paths are.
+    let left = left.filter(|l| !l.files.is_empty());
+    let now = match &left {
+        Some(l) => dirty_entries(ws, Fingerprints::Only(&l.files)).await?,
+        None => dirty_entries(ws, Fingerprints::None).await?,
+    };
+    if now.is_empty() && unrecorded(ctx, ws) {
+        ctx.store
+            .update(|s| s.run_unrecorded.remove(&ws.to_string_lossy().into_owned()));
+    }
     let left = left.unwrap_or_default();
     let (aside, agent): (Vec<_>, Vec<_>) = now
         .into_iter()
@@ -1062,7 +1117,8 @@ impl Exec {
         if let Some(before) = self.wrote_before.take()
             && let Some(note) = set_aside(&self.ctx, &self.workspace, &before).await
         {
-            self.run.log_tail.push(note);
+            // Into the run's own log, so the last publish carries it (it rebuilds `log_tail` from there).
+            self.note(&note);
         }
         self.run.finished_at = Some(now());
         self.publish();
@@ -2246,6 +2302,26 @@ pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
                 }
             }
         });
+        // Its leftovers were never recorded: the worktrees of that environment may hold some.
+        if let Some(env) = updated.as_ref().map(|c| c.environment_id.clone()) {
+            let paths: Vec<String> = ctx.store.read(|s| {
+                s.handoffs
+                    .iter()
+                    .filter(|h| h.environment_id == env)
+                    .map(|h| h.workspace_path.clone())
+                    .chain(
+                        s.project
+                            .as_ref()
+                            .filter(|p| p.environment.as_ref().is_some_and(|e| e.id == env))
+                            .and_then(|p| p.workspace.as_ref().map(|w| w.path.clone())),
+                    )
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            });
+            for p in paths {
+                mark_unrecorded(ctx, Path::new(&p));
+            }
+        }
         // Whoever waits for this run's end hears it.
         if let Some(run) = updated.and_then(|c| c.run) {
             emit_run(ctx, &run);

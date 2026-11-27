@@ -698,10 +698,19 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
         .expect("the set-aside files are named");
     assert_eq!((p.owner, p.severity), (Owner::None, Severity::Info));
     let d = p.detail.as_deref().unwrap();
+    let blocking_here = c
+        .problems
+        .iter()
+        .filter(|p| p.source == Source::CheckHere && p.severity == Severity::Block)
+        .count() as u32;
+    assert_eq!(
+        c.here.problems, blocking_here,
+        "a note is not a problem to count"
+    );
     assert!(
         d.contains("3 files")
             && d.contains("README.md")
-            && d.ends_with("If one of them is your own edit, commit it."),
+            && d.contains("If one of them is your own edit, commit it."),
         "{d}"
     );
     // None set aside, none named.
@@ -717,7 +726,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     std::fs::write(ws.join("README.md"), "left by the interrupted run\n").unwrap();
-    // The newest run of the environment ended when the worker restarted.
+    // A run was going when the worker died: it is failed on the next start.
     h.ctx.store.update(|s| {
         let mut c = s.check.clone().unwrap();
         let run = Run {
@@ -725,7 +734,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             check_id: c.id.clone(),
             commit: c.commit.clone(),
             engine: "0.27.0".into(),
-            status: RunStatus::Failed,
+            status: RunStatus::Running,
             started_at: "t".into(),
             finished_at: None,
             stages: vec![],
@@ -737,28 +746,36 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             healthcheck: None,
             not_covered: vec![],
             log_tail: vec![],
-            error: Some(RunError {
-                stage: StageName::Workers,
-                code: "WORKER_RESTARTED".into(),
-                message: "restarted".into(),
-            }),
+            error: None,
             reused: false,
             waiting_on: None,
         };
         c.run = Some(run);
         s.put_check(c);
     });
+    iii_cloud::run::recover(&h.ctx).await;
+    let detail = |c: &Check| {
+        c.problems
+            .iter()
+            .find(|p| p.code == "UNCOMMITTED_CHANGES")
+            .and_then(|p| p.detail.clone())
+    };
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    let p = c
-        .problems
-        .iter()
-        .find(|p| p.code == "UNCOMMITTED_CHANGES")
-        .unwrap();
-    let d = p.detail.as_deref().unwrap();
+    let d = detail(&c).unwrap();
     assert!(
-        d.contains("interrupted by a restart") && d.contains("restore those"),
+        d.contains("Some of these may be what the interrupted local run wrote. Restore only the files you did not edit, one by one;")
+            && !d.contains("checkout -- ."),
         "{d}"
     );
+    // The mark holds while the worktree stays dirty, and a later check still says it.
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(detail(&c).unwrap().contains("interrupted local run"));
+    // Clean again: the mark is gone, and the next dirt is the agent's own.
+    git(&ws, &["checkout", "--", "README.md"]);
+    check(&h.ctx, CheckRequest::default()).await.unwrap();
+    std::fs::write(ws.join("README.md"), "mine\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!detail(&c).unwrap().contains("interrupted"));
 }
 
 #[tokio::test]
@@ -802,5 +819,58 @@ async fn the_record_of_a_worktree_that_is_gone_is_dropped() {
         h.ctx
             .store
             .read(|s| !s.run_wrote.contains_key("/no/such/worktree"))
+    );
+}
+
+#[tokio::test]
+async fn in_the_persons_own_folder_nothing_a_run_overlaps_is_set_aside() {
+    let (h, _s, repo, _ws) = setup().await;
+    // Checkout mode: the workspace is the person's folder.
+    let folder = repo.checkout.clone();
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = folder.to_string_lossy().into_owned();
+    });
+    let before = iii_cloud::run::dirty_snapshot(&folder).await.unwrap();
+    // The person edits a file while the run goes.
+    std::fs::write(folder.join("README.md"), "typed during the run\n").unwrap();
+    assert!(
+        iii_cloud::run::set_aside(&h.ctx, &folder, &before)
+            .await
+            .is_none()
+    );
+    assert!(h.ctx.store.read(|s| s.run_wrote.is_empty()));
+    let dirty = iii_cloud::run::dirty_split(&h.ctx, &folder).await.unwrap();
+    assert_eq!(dirty.0, vec!["README.md".to_string()]);
+    assert!(dirty.1.is_empty());
+}
+
+#[tokio::test]
+async fn the_rebase_advice_says_to_restore_the_runs_files_first_when_a_run_left_some() {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    let before = a_run_left_files(&ws).await;
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    // The base moves on.
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", repo.origin.to_str().unwrap(), "c"],
+    );
+    let c = t.path().join("c");
+    std::fs::write(c.join("other.txt"), "o").unwrap();
+    git(&c, &["add", "."]);
+    git(&c, &["commit", "-m", "other"]);
+    git(&c, &["push", "-q", "origin", "HEAD:main"]);
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "BASE_NOT_IN_HISTORY")
+        .expect("the base moved");
+    assert!(
+        p.detail
+            .as_deref()
+            .unwrap()
+            .ends_with("Restore the local run's files first.")
     );
 }
