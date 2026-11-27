@@ -874,6 +874,9 @@ async fn only_a_name_with_no_source_here_is_local_variable_unset() {
 async fn a_skipped_name_is_no_local_problem_and_the_check_can_be_ready_until_undone() {
     let server = MockServer::start().await;
     let (h, repo, ws) = ready(&server, 200).await;
+    // The test's own `iii`, not the machine's: a runner without iii 0.27 has `LOCAL_ENGINE_VERSION`,
+    // which is no part of what this test is about and keeps the check from being ready.
+    with_fast_runs(&h).await;
     // The compose file reads a name nothing gives, pushed to main.
     std::fs::write(
         repo.checkout.join("worker-compose.yaml"),
