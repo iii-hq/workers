@@ -93,6 +93,8 @@ type Row = {
   name: string
   /** `managed`: iii cloud fills it in (a database URL, a built-in). */
   kind: Kind | 'managed'
+  /** A managed name that is a database binding (the item's `database` flag), not another name iii cloud sets. */
+  database?: boolean
   set: boolean
   /** The file defaults it, so the environment deploys without it. */
   optional: boolean
@@ -128,6 +130,7 @@ function secretRows(s: Status, envId: string, values: Values | null, cloud: Clou
       name: i.name,
       // A name typed from here starts as a secret; the row's menu makes it a variable.
       kind: i.database || c?.type === 'builtin' ? 'managed' : set ? (c?.type ?? i.type) : 'secret',
+      database: i.database,
       set,
       optional: !set && i.need !== 'required',
       value: set ? (c?.value ?? i.value) : null,
@@ -178,7 +181,10 @@ const kindText = (r: Row) => (r.kind === 'managed' ? 'set by iii cloud' : !r.set
 
 /** What the Value column says: the value or where it came from, or why there is none. */
 function valueText(r: Row, env: string): ReactNode {
-  if (r.kind === 'managed') return 'iii cloud makes the database and fills this in. Nothing to do.'
+  if (r.kind === 'managed')
+    return r.database
+      ? 'iii cloud makes the database and fills this in. Nothing to do.'
+      : 'iii cloud fills this in at each deploy. Nothing to do.'
   if (r.set) {
     if (r.kind === 'secret') return `Set${r.updated ? ` · ${when(r.updated)}` : ''}`
     return r.value === '' ? 'Left empty' : r.value === null ? 'Set' : <Mono>{r.value}</Mono>
@@ -191,7 +197,8 @@ function valueText(r: Row, env: string): ReactNode {
 
 /** When a saved value reaches the running machines. */
 function takesText(r: Row): string {
-  if (r.applies === undefined || !r.set || r.kind === 'managed') return '—'
+  if (!r.set || r.kind === 'managed') return ''
+  if (r.applies === undefined) return '—'
   if (r.applies === 'live') return 'live'
   const g = groupsOf(r.applies)
   return g.length ? `after ${and(g)} restart${g.length > 1 ? '' : 's'}` : 'next deploy'
@@ -359,10 +366,10 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
           </p>
         </div>
         <span className="iii-cloud-row">
-          <Button variant="secondary" disabled={!v || readOnly} onClick={() => setPasting(true)}>
+          <Button size="sm" variant="secondary" disabled={!v || readOnly} onClick={() => setPasting(true)}>
             Paste a .env
           </Button>
-          <Button variant="primary" disabled={readOnly} aria-expanded={adding} onClick={() => setAdding(!adding)}>
+          <Button size="sm" variant="primary" disabled={readOnly} aria-expanded={adding} onClick={() => setAdding(!adding)}>
             Add
           </Button>
         </span>
@@ -438,7 +445,7 @@ export function EnvSettings({ host, status, narrow, paneKey, envId }: EnvTabProp
                   description={
                     <>
                       {kindText(r)} · {valueText(r, c.envName)}
-                      {r.set ? ` · ${takesText(r)}` : ''}
+                      {takesText(r) ? ` · ${takesText(r)}` : ''}
                     </>
                   }
                   trailing={action(r)}

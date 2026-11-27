@@ -3,7 +3,24 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  max-width: 900px;
   min-width: 0;
+  margin: 0 auto;
+}
+/* The kind menu shows on row hover, keyboard focus or an open menu; always on a touch screen. */
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button {
+  opacity: 0;
+}
+[data-iii-ui='iii-cloud'] tr:hover .iii-cloud-kind button,
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button:focus-visible,
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button[aria-expanded='true'] {
+  opacity: 1;
+}
+@media (hover: none) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-kind button {
+    opacity: 1;
+  }
 }
 /* The title and what the file reads on the left, Paste a .env and Add on the right. */
 [data-iii-ui='iii-cloud'] .iii-cloud-set-head {
