@@ -36,6 +36,10 @@ pub struct StoredChoice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckedFor {
     pub source: Option<String>,
+    /// The commit the source pointed at when the workspace took it (a branch
+    /// switched in the person's checkout changes it with no name given).
+    #[serde(default)]
+    pub source_sha: Option<String>,
     pub compose: Option<String>,
 }
 
@@ -149,18 +153,8 @@ impl State {
         self.checks.retain(|c| c.id != check.id);
         self.checks.insert(0, check.clone());
         // Recorded once, when the check is first kept: a later update of its run is not a new source.
-        if let Some(p) = self.project.as_ref()
-            && let Some(e) = p
-                .environment
-                .as_ref()
-                .filter(|e| e.id == check.environment_id)
-        {
-            self.check_sources
-                .entry(check.id.clone())
-                .or_insert_with(|| CheckedFor {
-                    source: p.workspace.as_ref().and_then(|w| w.source.clone()),
-                    compose: e.manifest.clone(),
-                });
+        if let Some(now) = self.checked_for_now(&check.environment_id) {
+            self.check_sources.entry(check.id.clone()).or_insert(now);
         }
         let referenced = |s: &State, c: &Check| {
             s.merges.iter().any(|m| m.check_id == c.id)
@@ -192,6 +186,19 @@ impl State {
         }
     }
 
+    /// What the selected workspace is on now, when it is of environment `env_id`:
+    /// `check` reads it when it starts, so a `use` that lands while it runs is not its source.
+    pub fn checked_for_now(&self, env_id: &str) -> Option<CheckedFor> {
+        let p = self.project.as_ref()?;
+        let e = p.environment.as_ref().filter(|e| e.id == env_id)?;
+        let w = p.workspace.as_ref();
+        Some(CheckedFor {
+            source: w.and_then(|w| w.source.clone()),
+            source_sha: w.and_then(|w| w.source_sha.clone()),
+            compose: e.manifest.clone(),
+        })
+    }
+
     /// Whether the workspace is on what `check_id` was made for. A check with
     /// no record (or of another environment than the selected one) passes.
     pub fn source_unchanged(&self, check_id: &str) -> bool {
@@ -204,10 +211,14 @@ impl State {
         if env.id != check.environment_id {
             return true;
         }
-        let source = p.workspace.as_ref().and_then(|w| w.source.clone());
-        // A check of another compose file switches the environment to it at deploy: its file is its own.
-        let compose_same = check.manifest.is_some() || env.manifest == rec.compose;
-        source == rec.source && compose_same
+        let now = self.checked_for_now(&env.id);
+        let Some(now) = now else {
+            return true;
+        };
+        // A check that asked for another file than the environment had switches
+        // the environment to it on purpose; else the environment's file must be the same.
+        let compose_same = check.manifest != rec.compose || now.compose == rec.compose;
+        now.source == rec.source && now.source_sha == rec.source_sha && compose_same
     }
 
     /// Put a used project first; one entry per folder and cloud project.
@@ -216,6 +227,11 @@ impl State {
             .retain(|r| !(r.path == recent.path && r.cloud_project_id == recent.cloud_project_id));
         self.recent_projects.insert(0, recent);
         self.recent_projects.truncate(MAX_RECENT_PROJECTS);
+    }
+
+    /// A deployment this worker did not make or adopt: another person's, or the console's.
+    pub fn from_console(&self, deploy_id: &str) -> bool {
+        !self.worker_deploys.iter().any(|id| id == deploy_id)
     }
 
     pub fn put_deploy(&mut self, deploy: Deploy) {

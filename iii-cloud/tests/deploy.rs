@@ -3498,12 +3498,17 @@ async fn reuse(s: &Setup) -> Result<Project, iii_cloud::error::CloudError> {
 #[tokio::test]
 async fn deploy_refuses_a_check_whose_source_or_compose_file_was_replaced() {
     let s = setup(plan(false)).await;
+    // A check as `check` makes it: it names the compose file it was made for.
+    s.h.ctx.store.update(|st| {
+        for c in st.check.iter_mut().chain(st.checks.iter_mut()) {
+            c.manifest = Some("worker-compose.yaml".into());
+        }
+    });
     // Selecting the environment again changes nothing: the check is still deployable.
     reuse(&s).await.unwrap();
-    assert_ne!(
-        deploy_chk(&s).await.err().map(|e| e.code),
-        Some("SOURCE_CHANGED".to_string())
-    );
+    // It goes past the guard (this cloud has no deployments route, so the call ends there).
+    let before = deploy_chk(&s).await.unwrap_err();
+    assert_eq!(before.message, "iii cloud answered 404");
     // The environment's compose file is another one now (a refused check leaves C1 the latest).
     Mock::given(method("GET"))
         .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
@@ -3518,6 +3523,16 @@ async fn deploy_refuses_a_check_whose_source_or_compose_file_was_replaced() {
     assert!(
         err.message
             .contains("production's source or compose file changed")
+    );
+    // A check that asked for another file on purpose is not refused for the environment's.
+    s.h.ctx.store.update(|st| {
+        for c in st.check.iter_mut().chain(st.checks.iter_mut()) {
+            c.manifest = Some("other/asked.yaml".into());
+        }
+    });
+    assert_ne!(
+        deploy_chk(&s).await.err().map(|e| e.code),
+        Some("SOURCE_CHANGED".to_string())
     );
 }
 
@@ -3546,4 +3561,50 @@ async fn deploy_refuses_a_check_made_for_another_source() {
     .await
     .unwrap_err();
     assert_eq!(err.code, "SOURCE_CHANGED");
+    // Another branch of the checkout with no name given: only its commit differs.
+    s.h.ctx.store.update(|st| {
+        let w = st.project.as_mut().unwrap().workspace.as_mut().unwrap();
+        w.source = None;
+        w.source_sha = Some("0123456789012345678901234567890123456789".into());
+    });
+    assert_eq!(deploy_chk(&s).await.unwrap_err().code, "SOURCE_CHANGED");
+}
+
+/// The event carries what the status read says about where a deployment came from.
+#[tokio::test]
+async fn a_deploy_event_says_whether_it_came_from_the_console_like_the_status_does() {
+    let s = setup(plan(false)).await;
+    let mine = "11111111-aaaa-4aaa-8aaa-111111111111";
+    let theirs = "22222222-bbbb-4bbb-8bbb-222222222222";
+    s.h.ctx
+        .store
+        .update(|st| st.worker_deploys.push(mine.into()));
+    for id in [mine, theirs] {
+        let mut d = iii_cloud::watch::to_deploy(
+            "http://x",
+            (None, None, "production"),
+            &deployment(id, "abc1234", "needs_action", "manual"),
+            None,
+            false,
+        )
+        .unwrap();
+        d.from_console = !d.from_console; // whatever the record said, the event follows the rule
+        iii_cloud::watch::record(&s.h.ctx, &d);
+    }
+    let events = s.h.fake.events.lock().unwrap().clone();
+    let of = |id: &str| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == EventKind::Deploy && e.id == id)
+            .map(|e| e.record["from_console"].clone())
+    };
+    assert_eq!(of(mine), Some(json!(false)));
+    assert_eq!(of(theirs), Some(json!(true)));
+    let st = iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    for d in st.deploys {
+        assert_eq!(d.from_console, d.id != mine, "{}", d.id);
+    }
 }

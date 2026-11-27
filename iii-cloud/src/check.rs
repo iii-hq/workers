@@ -869,6 +869,8 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         ));
     }
     let sel = selected_for(ctx, request.handoff_id.as_deref()).await?;
+    // What this check is made for, read before anything slow: a `use` that lands meanwhile is not its source.
+    let made_for = ctx.store.read(|s| s.checked_for_now(&sel.env.id));
     // Without a credential the checks on this machine still run; the plan is
     // unavailable and one sign-in problem says why.
     let signed_out = match ctx.credential().await {
@@ -1178,6 +1180,9 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         // The latest of the environment only when it is the selected one.
         let latest = s.environment_id() == Some(check.environment_id.as_str());
         s.put_check_for(check.clone(), latest);
+        if let Some(made_for) = made_for {
+            s.check_sources.insert(check.id.clone(), made_for);
+        }
     });
     if let Some(plan) = &plan_value {
         crate::deploy::save_plan(ctx, &check.id, plan);

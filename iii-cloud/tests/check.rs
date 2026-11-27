@@ -1400,3 +1400,40 @@ async fn a_replaced_run_still_stopping_at_the_deadline_gets_no_reuse_key() {
         "the new key was saved for the old run"
     );
 }
+
+/// A `use` that lands while a check is in flight does not make the check of the new source.
+#[tokio::test]
+async fn a_check_is_recorded_for_the_source_it_started_on() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/plan$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(600))
+                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp", "plan": {"settings": {}, "resources": [], "issues": [], "deploy_issues": []}})),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    let ctx = h.ctx.clone();
+    let running = tokio::spawn(async move { check(&ctx, CheckRequest::default()).await });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // The `use` of another source lands now.
+    h.ctx.store.update(|s| {
+        s.project
+            .as_mut()
+            .unwrap()
+            .workspace
+            .as_mut()
+            .unwrap()
+            .source = Some("feat-b".into())
+    });
+    let c = running.await.unwrap().unwrap();
+    let made_for = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .unwrap();
+    assert_eq!(made_for.source, None);
+}

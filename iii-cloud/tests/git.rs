@@ -1643,3 +1643,51 @@ async fn a_use_that_fails_after_taking_the_new_source_leaves_the_worktree_where_
     assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
     assert!(ws.join("new.txt").exists());
 }
+
+/// The workspace's source commit is part of what a check was made for, so a branch
+/// switched in the checkout is seen with no name given; the ordinary flows are not refused.
+#[tokio::test]
+async fn a_check_is_for_the_source_commit_and_ordinary_flows_keep_it() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    staging(&server).await;
+    feature(&r);
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    let ws = std::path::PathBuf::from(&w.path);
+    let mut c = a_check(ENV2, &git(&ws, &["rev-parse", "HEAD"]));
+    c.id = "c1".into();
+    h.ctx.store.update(|s| s.put_check(c));
+    let fine = |h: &support::Harness| h.ctx.store.read(|s| s.source_unchanged("c1"));
+    assert!(fine(&h));
+    // The agent commits on the fix branch: the source's commit does not move.
+    old_commit(&ws, "agent.txt", "agent work");
+    assert!(fine(&h));
+    // A plain `use` again keeps what the worktree took.
+    use_project(
+        &h.ctx,
+        UseRequest {
+            environment_id: Some(ENV2.into()),
+            ..use_req(&r.checkout, false)
+        },
+    )
+    .await
+    .unwrap();
+    assert!(fine(&h));
+    // The same branch taken again with the same tip: unchanged.
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap();
+    assert!(fine(&h));
+    // The person switches the checkout to another branch and `use`s it: refused.
+    git(&r.checkout, &["checkout", "-q", "-b", "feat-b"]);
+    old_commit(&r.checkout, "b.txt", "b");
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+        .await
+        .unwrap();
+    assert!(!fine(&h));
+}

@@ -716,6 +716,7 @@ async fn prepare(
         reused: false,
         waiting_on: None,
     };
+    set_run_live(&dir, true);
     Ok(Exec {
         ctx: ctx.clone(),
         check_id: check.id.clone(),
@@ -751,6 +752,7 @@ async fn prepare(
 impl Drop for Exec {
     /// A panic skips `teardown`: remove what is left, without awaiting.
     fn drop(&mut self) {
+        set_run_live(&self.dir, false);
         self.give_back_ports();
         // A graceful stop drops the task: the stage's group was killed with it, so
         // `run.json` must not keep an id that may name another process by the next start.
@@ -1881,8 +1883,10 @@ impl Exec {
             // The next `recover` tries again; `Drop` tries once more too.
             self.persist_run();
         }
-        if let Some(runs) = self.dir.parent() {
-            prune(runs, MAX_RUNS_KEPT).await;
+        // Not awaited: a hung docker daemon adds its timeout per old container,
+        // and the workspace's slot must not wait for it.
+        if let Some(runs) = self.dir.parent().map(Path::to_path_buf) {
+            tokio::spawn(async move { prune(&runs, MAX_RUNS_KEPT).await });
         }
     }
 }
@@ -2247,6 +2251,18 @@ fn tail_of(file: &Path) -> Vec<String> {
     lines[lines.len().saturating_sub(TAIL)..].to_vec()
 }
 
+/// The folders of the runs that are going now: `prune` never touches them
+/// (a live run's `run.json` already names its Postgres).
+static LIVE_RUNS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_run_live(dir: &Path, live: bool) {
+    let mut runs = LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    runs.retain(|d| d != dir);
+    if live {
+        runs.push(dir.to_path_buf());
+    }
+}
+
 /// Keep the newest `keep` run folders.
 pub async fn prune(runs: &Path, keep: usize) {
     let Ok(read) = std::fs::read_dir(runs) else {
@@ -2259,6 +2275,13 @@ pub async fn prune(runs: &Path, keep: usize) {
     dirs.sort();
     let extra = dirs.len().saturating_sub(keep);
     for (_, path) in dirs.into_iter().take(extra) {
+        if LIVE_RUNS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&path)
+        {
+            continue;
+        }
         // A folder whose record still names containers is the only trace of them:
         // it goes once they are removed, and stays while one is not.
         let file = path.join("run.json");

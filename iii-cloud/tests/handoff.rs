@@ -3051,3 +3051,47 @@ async fn the_waiting_continue_goes_once_per_run_and_does_not_use_the_cap() {
     assert!(sent(&h)[1].contains("WORKERS_NOT_READY"), "{:?}", sent(&h));
     assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
 }
+
+/// Every fix commit starts a run that waits again: only the first notice is free.
+#[tokio::test]
+async fn only_the_first_waiting_notice_is_outside_the_cap() {
+    let waiting = |r: &mut Run| {
+        r.status = RunStatus::Running;
+        r.error = None;
+        r.waiting_on = Some(WaitingOn {
+            containers: vec!["api".into()],
+            since: "t".into(),
+        });
+    };
+    let (h, w, _c, _keep) = idle_with_run(waiting).await;
+    first_sent(&h).await.expect("the first notice");
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 0);
+    // A new run (the agent committed a fix) waits again, three times over.
+    for round in 1..=3usize {
+        h.ctx.store.update(|s| {
+            let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
+            c.run.as_mut().unwrap().id = format!("run-{round}");
+        });
+        *w.status.lock().unwrap() = "working".into();
+        until(&h, "working", |a| a.state == AgentPhase::Working).await;
+        idle_for(&w, 0).await;
+        for _ in 0..200 {
+            if sent(&h).len() > round {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(sent(&h).len(), round + 1, "round {round}");
+    }
+    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 3);
+    // The fourth is over the cap: it stalls instead of going on for ever.
+    h.ctx.store.update(|s| {
+        let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
+        c.run.as_mut().unwrap().id = "run-4".into();
+    });
+    *w.status.lock().unwrap() = "working".into();
+    until(&h, "working", |a| a.state == AgentPhase::Working).await;
+    idle_for(&w, 0).await;
+    until(&h, "stalled", |a| a.state == AgentPhase::Stalled).await;
+    assert_eq!(sent(&h).len(), 4);
+}

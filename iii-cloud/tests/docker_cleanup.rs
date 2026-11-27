@@ -176,11 +176,35 @@ fn a_hung_docker_neither_holds_the_slot_nor_makes_a_container_forgotten() {
 
         // 3. Docker answers again: the next prune removes the containers, then the folders.
         std::fs::remove_file(&hang).unwrap();
+        // A run that is going has its Postgres on record from the start: the prune never touches its folder.
+        let live = data.join("runs/live-1");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(
+            live.join("run.json"),
+            json!({"containers": ["iii-cloud-run-pg-live-0"], "copy": null, "iii_bin": "iii"}).to_string(),
+        )
+        .unwrap();
+        std::fs::File::open(&live)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+        iii_cloud::run::set_run_live(&live, true);
         one_run(&h).await;
+        // The prune runs after the slot is given back: wait for it.
+        let gone = |id: &String| !data.join("runs").join(id).exists();
+        for _ in 0..500 {
+            if gone(&a) && gone(&b) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         for id in [&a, &b] {
-            assert!(!data.join("runs").join(id).exists(), "the folder stayed after its container went");
+            assert!(gone(id), "the folder stayed after its container went");
         }
         assert!(docker_calls().contains(&format!("rm -f {name_a}")));
+        assert!(live.join("run.json").exists(), "the prune took a live run's folder");
+        assert!(!docker_calls().contains("iii-cloud-run-pg-live-0"), "the prune removed a live run's database");
+        iii_cloud::run::set_run_live(&live, false);
 
         // 4. A restart: what is keyed by the workspace is over when `recover_runs` returns
         //    (before the functions are registered); only the containers wait for `clean_stale`.

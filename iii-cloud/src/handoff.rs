@@ -1337,13 +1337,21 @@ async fn send_continue(
     // The run a waiting notice is for: sent outside the cap and not counted.
     waiting_run: Option<&str>,
 ) -> Continue {
+    // Only the first waiting notice of a hand-off is information; a later one
+    // (every fix commit starts a new run that waits again) is a counted continue.
+    let free = ctx.store.read(|s| {
+        waiting_run.is_some()
+            && s.handoffs
+                .iter()
+                .find(|h| h.id == handoff.id)
+                .is_some_and(|h| h.waited_run.is_none())
+    });
     let n = ctx.store.read(|s| {
         s.handoffs
             .iter()
             .find(|h| h.id == handoff.id)
             .filter(|h| {
-                h.agent.state != AgentPhase::Stopped
-                    && (waiting_run.is_some() || h.continues < MAX_CONTINUES)
+                h.agent.state != AgentPhase::Stopped && (free || h.continues < MAX_CONTINUES)
             })
             .map(|h| h.continues + 1)
     });
@@ -1366,9 +1374,11 @@ async fn send_continue(
             h.continue_at_ms = Some(now_ms());
             h.continue_refused = !sent;
             if sent {
-                match waiting_run {
-                    Some(run) => h.waited_run = Some(run.to_string()),
-                    None => h.continues += 1,
+                if let Some(run) = waiting_run {
+                    h.waited_run = Some(run.to_string());
+                }
+                if !free {
+                    h.continues += 1;
                 }
             }
         }
