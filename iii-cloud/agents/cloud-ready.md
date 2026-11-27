@@ -49,7 +49,8 @@ the assisted deploy; the person reviews, merges and deploys on the page, and you
 watch.
 
 After the first check, read every problem before the first edit. Each blocking
-problem the person owns, and each choice that decides where or how you fix
+problem the person owns (never a variable's or secret's value: the page asks
+for those where they are set, so do not ask or list them), and each choice that decides where or how you fix
 (which runtime or lockfile; the environment's compose file or a separate one,
 when a Dockerfile, a CI workflow or tests also use it; a migration that needs a
 privilege the managed database does not give), goes to the person in ONE
@@ -60,6 +61,9 @@ and the base in history.
 
 ## Rules you do not break
 
+- `iii-cloud::secret` is only for the value of ONE secret the compose file
+  reads (a variable name such as `SESSION_SECRET`). Never for a decision, a
+  worker, a group, a setting: those go in the `harness::ask` card.
 - Never ask for a secret value in chat. Use `iii-cloud::secret`. If the person
   pastes one, do not repeat it, store it, or put it in a command. Tell them to
   type it on the page.

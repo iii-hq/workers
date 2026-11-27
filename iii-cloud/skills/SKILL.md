@@ -59,7 +59,7 @@ Load `iii://iii-cloud/onboarding` only when the work starts from nothing
 - `iii-cloud::api` — read any iii cloud route as the person (GET only). Any other method is `PERSON_ONLY`: the person makes the change on the page.
 - `iii-cloud::check` — iii cloud's plan for a commit plus the checks on this machine. `run: true` also does the local run and waits for it (up to 240 s). `manifest` checks another `worker-compose*.yaml` instead of the environment's; on a hand-off its file is the default. `push: true` pushes your fix branch first. `force: true` runs again when a passed run of the same commit exists.
 - `iii-cloud::check::get` — `{id}`: one kept check as recorded; nothing runs again.
-- `iii-cloud::secret` — ask the person for a secret value on the page, or mark a name as not needed or their decision.
+- `iii-cloud::secret` — ask the person on the page for the value of ONE secret the compose file reads (a variable name such as `SESSION_SECRET`), or mark that name as not needed. Never for a decision, a worker, a group or a setting: those go in the `harness::ask` card.
 - `iii-cloud::values` — `{manifest?, from?}`: every name the compose file reads, whether iii cloud has it, secret or variable, and where a value can come from. Names and flags only. The person sets them in Secrets and variables on the page.
 - `iii-cloud::watch` — follow a deployment to Ready and bring back the evidence when it fails.
 - `iii-cloud::handoff::brief` — `{handoff_id}`: what you need for a hand-off (below).
@@ -148,8 +148,7 @@ body. Never change a file of another app.
 10. Done when `check.ready` is true and `check {run: true}` passed for the current commit. Then, from the worktree, `gh pr create --head <fix branch> --base <env branch>` with a plain body (problems fixed, other compose files touched, no secrets), `iii-cloud::status {refresh: true}` so the page shows it, and tell the person the link and the "Merge and deploy…" button. With `pushes_directly` (every environment that is not production) there is no pull request: it gets an assisted deploy. Tell the person to deploy on the page; the page sends the checked commit to the environment's own branch. Its first assisted deploy creates `iii-cloud/<env>` and never pushes the default branch.
 11. A follow-up with the hand-off marker while you work: finish the current group, then do it.
 
-Ask the person only for `person` items. A secret goes through
-`iii-cloud::secret`, never chat. Give each tool call a `description`: a plain
+Ask the person only for `person` items that are not values. A secret never goes through chat. Give each tool call a `description`: a plain
 sentence of what you do now. The page shows it live.
 
 ### How a turn ends
@@ -157,11 +156,13 @@ sentence of what you do now. The page shows it live.
 Only three ways:
 
 - Ready: `check.ready` and a passed run on the current commit.
-- ONE `harness::ask` that lists every person-owned item (`SECRET_MISSING`, a
-  `WEB_*` choice, a decision), the recommended option first. Read the code
+- ONE `harness::ask` that lists every blocking person-owned item (a `WEB_*`
+  choice, a decision; never a variable or secret), the recommended option first. Read the code
   first and say what each default does. A decision that picks where or how
   you fix goes in the first card, before any edit. When the person answers, continue in the same turn.
 - An armed wake (`harness::observe`) on a run, a child agent or a deployment.
+- Only values are missing: say in one sentence that the page waits for values
+  on its values row. Never list them.
 
 Never a plain text that says what is left. With agent-owned problems left,
 keep working.

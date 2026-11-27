@@ -15,7 +15,8 @@ the fast checks on this machine.
   warning to the person anyway, with a recommendation.
 - `kind`: `fix_in_repo` is a change in the files. `resolve_here` is a choice.
 - `owner`: `agent` means you fix it. `person` means you explain it in one
-  sentence, recommend, and let them decide. `none` means nothing to do.
+  sentence, recommend, and let them decide, in the ask card, in your own
+  words (the Fix column is for you, not for them). `none` means nothing to do.
 - A problem's `code` is the cloud's `context.iii_code` when there is one, else
   the cloud's `code`. The plan issue's own `message` and `fix` are the detail.
 - The cloud plan stops at its first blocking step. Check again after each round.
@@ -74,7 +75,7 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `QUEUE_TOPOLOGY_IMMUTABLE` | block | fix_in_repo | agent | Edit: restore the queue names and settings the environment already has. A new topology needs a new environment: ask the person. Verify: `check` again. |
 | `STATE_ADAPTER_UNSUPPORTED` | block | fix_in_repo | agent | Edit the state worker's config: use an adapter the cloud supports (the message names them). Verify: `check` again. |
 | `LITERAL_CREDENTIAL` | block | fix_in_repo | person | Edit the file at the issue's line: replace the value with `${NAME}`, and ask for it with `iii-cloud::secret`. Tell the person to rotate the value if it was real. Verify: `check` again. |
-| `SECRET_MISSING` | block | resolve_here | person | Call `iii-cloud::values` to see them; tell the person to open Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. Verify: `status` shows the secret as `set`. |
+| `SECRET_MISSING` | block | resolve_here | person | The page asks for it where it is set: do not ask or list it. Verify: `status` shows the secret as `set`. |
 | `LIMIT_EXCEEDED` | block | resolve_here | person | Person decides: a plan limit is reached. Reduce what the file asks for, or the person changes the plan in the console. Verify: `check` again. |
 | `LOCAL_CONFIG_NOT_SET` | warn | resolve_here | person | Tell the person: a worker setting has no value in the cloud. Set it in the compose file's `config`, or in the console. Verify: `check` again. |
 | `MCP_GLOBAL_MIDDLEWARE` | block | fix_in_repo | agent | Edit the `http` worker's config: remove its global middleware, which would read every MCP client's key. Use route-level middleware. Verify: `check` again. |
@@ -88,7 +89,7 @@ directory and fixes the path, and asks the person only when no such directory ex
 | `QUEUE_WORKER_OUTDATED` | warn | fix_in_repo | agent | Edit the compose file: raise the queue worker to the version the message names, then run `iii compose build -f <manifest>` to refresh the lock. |
 | `WORKER_OUTDATED` | block | fix_in_repo | agent | Edit the compose file: raise the worker to the version the message names, then run `iii compose build -f <manifest>` to refresh the lock. |
 | `WORKER_VERSION_REFUSED` | block | fix_in_repo | agent | Edit the compose file: pick another version of the worker, then run `iii compose build -f <manifest>`. Verify: `check` again. |
-| `EMPTY_DEFAULT_VARIABLE` | warn | none | person | `${NAME:-}` defaults to empty. A value the app needs to start (a URL, a number, an id) becomes `${NAME}` with no default: iii cloud then asks the person and the local run reads their env files. A non-secret with a sensible value gets it as the default. Keep `${NAME:-}` only for what the app treats as optional; the local run's log names the ones it refuses, and never copy a row of them from another file unchecked. Then `iii-cloud::values`; the person sets the rest in Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. |
+| `EMPTY_DEFAULT_VARIABLE` | warn | none | person | `${NAME:-}` defaults to empty. A value the app needs to start (a URL, a number, an id) becomes `${NAME}` with no default: iii cloud then asks the person and the local run reads their env files. A non-secret with a sensible value gets it as the default. Keep `${NAME:-}` only for what the app treats as optional; the local run's log names the ones it refuses, and never copy a row of them from another file unchecked. Do it without asking; the person's values are set on the page. |
 | `COMMAND_VARIABLE_EMPTY` | warn | none | person | A `${NAME}` in a `cloud:` command is empty when it runs. Set the variable with `iii-cloud::secret`, or remove it from the command. |
 | `ENGINE_SECTION_IGNORED` | info | none | none | Info only: the cloud ignores the `engine:` section. No fix needed. |
 | `NAMESPACE_IGNORED` | info | none | none | Info only: the cloud ignores the namespace. No fix needed. |
@@ -110,7 +111,7 @@ These come from the checks on this machine. All block, except where noted. Ready
 | `RUNTIME_LOCK_MISSING` | person | Person decides: add the lockfile for the worker's runtime at the root directory (`pnpm-lock.yaml`, `bun.lock`, `package-lock.json`, `uv.lock`, `Cargo.lock`), or change the runtime. Verify: `check` again. |
 | `RELEASE_IN_CI` | agent | Edit the compose file: add `cloud.release` with the migration command the workflow runs, naming the worker and a timeout. Verify: `check {run: true}` passes the release stage. Remove the command from the workflow only if the person agrees. |
 | `HEALTHCHECK_MISSING` | agent | Edit the compose file: add `cloud.healthcheck` with a path that answers 200 (for example `/health`) and a timeout. Verify: `check {run: true}` passes the healthcheck stage. |
-| `LOCAL_VARIABLE_UNSET` | person | Not in the run's `.env` nor in the folder's `.env.<env>`, `.env.local`, `.env` or `.env.production` (the local run takes it from those). Call `iii-cloud::values` to see them; tell the person to open Secrets and variables on the page. Add the why with `iii-cloud::secret {name, description}`. Or give it a default in the compose file (`${NAME:-default}`). Verify: `check` again. |
+| `LOCAL_VARIABLE_UNSET` | person | Not in the run's `.env` nor in the folder's `.env.<env>`, `.env.local`, `.env` or `.env.production` (the local run takes it from those). The page asks for it, and the local run takes it from the person's env files: do not ask or list it. A non-secret gets a default in the compose file (`${NAME:-default}`). Verify: `check` again. |
 | `VARIABLE_SYNTAX_UNSUPPORTED` | agent | iii cloud reads only `${NAME}`, `${NAME:-default}` and, in `config_override`, `${NAME:default}`; `${NAME:?}`, `${NAME?}` and `${NAME-x}` reach the container as literal text. Edit the compose file: write `${NAME}` for a required value or `${NAME:-default}`. Verify: `check` again. |
 | `DATABASE_NOT_MANAGED` | agent | Add the `database` worker (package://database, `version: latest`) to the manifest and set `DATABASE_URL: ${DATABASE_PRIMARY_URL}` on the container that reads it. iii cloud creates a managed Postgres (pgvector included) when the deploy is confirmed; the local run starts one. Never ask the person for a database URL. |
 | `BASE_NOT_IN_HISTORY` | agent | Run `git fetch origin` and rebase on `origin/<branch>` (or merge it) in the worktree, then run the checks again. Verify: `git merge-base --is-ancestor origin/<branch> HEAD`. |
