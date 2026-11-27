@@ -10,10 +10,10 @@
 /* "#6", its word, then the title and its line; Open at the end of a failed one. */
 [data-iii-ui='iii-cloud'] .iii-cloud-dep {
   display: grid;
-  grid-template-columns: 36px 88px minmax(0, 1fr) auto;
+  grid-template-columns: 28px 96px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 10px;
+  padding: 10px 14px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-dep + .iii-cloud-dep {
   border-top: 1px solid var(--color-edge);
@@ -25,11 +25,22 @@
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-dep-title {
   font-size: 13px;
+  line-height: 16px;
   overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-text {
+  gap: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-text > .iii-cloud-desc {
+  line-height: 16px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-dnum {
   font-size: 12px;
-  color: var(--color-ink-faint);
+  color: var(--color-ink);
+}
+/* The number leads the title only on a phone, where its own column is gone. */
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-num {
+  display: none;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-dep .iii-cloud-state {
   justify-self: start;
@@ -41,8 +52,20 @@
       'text pill'
       'text open';
   }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep {
+    min-height: 64px;
+    box-sizing: border-box;
+    padding: 8px 14px;
+  }
   [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-dnum {
     display: none;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep-num {
+    display: inline;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep-title {
+    font-size: 14px;
+    font-weight: 500;
   }
   [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-dep-text {
     grid-area: text;
@@ -66,8 +89,10 @@
 }
 
 /* A deployment's record: the cause as the title with the action beside it, the three cells, where it stopped. */
+/* Centred in the pane, as the board (the body's own rule only caps the width). */
 [data-iii-ui='iii-cloud'] .iii-cloud-failure {
   gap: 14px;
+  margin-inline: auto;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-failure .iii-cloud-h {
   line-height: 1.4;

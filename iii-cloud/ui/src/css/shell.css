@@ -19,11 +19,29 @@
   padding: 0 10px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-side-name {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
+/* The link to the console: its icon stays on the text's line. */
 [data-iii-ui='iii-cloud'] .iii-cloud-side > .iii-cloud-linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 10px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side > .iii-cloud-linkbtn > svg {
+  flex-shrink: 0;
+}
+/* Environment rows are 44 px (the board's), the name 13 px and 500 once selected. */
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item {
+  min-height: 44px;
+  padding-block: 4px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item__title {
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item[aria-current='page'] .iii-ui-list-item__title {
+  font-weight: 500;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-side-foot {
   display: flex;
@@ -113,11 +131,20 @@
     grid-column: 1 / -1;
   }
 }
-/* SectionCard's count: a small neutral number next to the title. */
+/* SectionCard's count: a grey 20 px pill next to the title (the header is grey, the pill is the edge tone). */
 [data-iii-ui='iii-cloud'] .iii-cloud-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-edge);
   font-size: 12px;
   font-weight: 500;
-  color: var(--color-ink-faint);
+  color: var(--color-ink);
 }
 /* The primary action of a page header: sits at the end of the title's line, full width on a phone. */
 [data-iii-ui='iii-cloud'] .iii-cloud-pageaction {
@@ -203,45 +230,4 @@
   [data-iii-ui='iii-cloud'] .iii-cloud-stephead-fwd > * {
     width: 100%;
   }
-}
-/* DeployPill: the deploys going on now, 28 px buttons with their dot, first in a path bar's end slot. */
-[data-iii-ui='iii-cloud'] .iii-cloud-pills {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-pill {
-  position: relative;
-  flex-shrink: 1;
-  min-width: 88px;
-  max-width: 280px;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-pill-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-pill-more {
-  min-width: 0;
-}
-/* Short of room, the pills give way first (their words end in …), before the page's own name. */
-[data-iii-ui='iii-cloud'] .iii-cloud-shell:not([data-narrow]) .iii-cloud-envhead > :has(> .iii-cloud-pills) {
-  flex-shrink: 20;
-  min-width: 0;
-}
-/* A phone keeps the pill 28 px and its touch area 44 px. */
-[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-pill::after {
-  position: absolute;
-  inset: -8px 0;
-  content: '';
-}
-[data-iii-ui='iii-cloud'] .iii-cloud-pill-err {
-  font-size: 12px;
-  color: var(--color-alert);
 }

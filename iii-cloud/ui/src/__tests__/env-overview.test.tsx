@@ -332,6 +332,10 @@ describe('the environment page', () => {
     const liveNow = el.querySelector('section[aria-label="Live now"]')?.textContent ?? ''
     expect(liveNow).toContain('Serving9c04e7f Search: rank by starsdeployment #6, since')
     expect(liveNow).toContain('Health 11 of 11 workers upchecked')
+    // A healthy environment says it with no dot; the commit in the card is mono; "Next" is the label, not a note.
+    expect(el.querySelector('section[aria-label="Live now"] [data-dot]')).toBeNull()
+    expect(card()?.querySelector('.iii-cloud-mono')?.textContent).toBe('2be71d0')
+    expect(card()?.querySelector('.iii-cloud-next-label')?.textContent).toBe('Next')
     expect(liveNow).toContain("Deploys fromthis machine, after the checka push to dev's branch deploys without it")
     expect(text()).toContain('Secrets and variables')
     expect(text()).toContain("Machines, domains, rollback and a new environment are in iii cloud's console.")

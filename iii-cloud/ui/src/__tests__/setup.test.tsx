@@ -72,7 +72,7 @@ describe('sign in (First1)', () => {
     expect(el.querySelector('h2#iii-cloud-signin')?.textContent).toBe('Sign in to iii cloud')
     expect(text()).toContain('Check that it shows this code, then approve.')
     expect(text()).toContain('WXYZ-1234')
-    expect(text()).toMatch(/Waiting for your approval · the code expires in 9:\d\d/)
+    expect(text()).toMatch(/Waiting for your approval · the code expires in 9 min/)
     const link = el.querySelector('a[href="https://cloud.iii.dev/device"]')
     expect(link?.getAttribute('target')).toBe('_blank')
     expect(link?.textContent).toBe('Open the page again')
@@ -99,14 +99,14 @@ describe('sign in (First1)', () => {
     await click(btn('Sign in with the browser'))
     expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::connect', payload: { method: 'browser' } })
     expect(el.querySelector('#iii-cloud-secret-name')).toBeNull()
-    await click(btn("Can't use a browser? Use an API key"))
+    await click(btn("Can't use a browser here? Use an API key"))
     expect((el.querySelector('#iii-cloud-secret-name') as HTMLInputElement).value).toBe('IIICLOUD_API_KEY')
     expect(text()).toContain("It can't create projects or environments, so adding a project needs the browser")
   })
 
   it('the key goes to the vault with secrets::set, then connect carries only its name', async () => {
     const h = await mount({ ...boards['setup-signin'].status, connection: { ...cardRecords.signedOut } })
-    await click(btn("Can't use a browser? Use an API key"))
+    await click(btn("Can't use a browser here? Use an API key"))
     await type(el.querySelector('input[type="password"]'), 'k-123')
     await click(btn('Save key'))
     expect(sent(h).slice(-2)).toEqual(['secrets::set', 'iii-cloud::connect'])
@@ -162,7 +162,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
     ])
     expect(detail('Folder')).toMatchObject({
       value: '~/workspaces/registry',
-      note: 'iii-hq/registry on GitHub · you are on main',
+      note: 'iii-hq/registry on GitHub · you are on main, up to date',
     })
     expect(detail('Project')).toMatchObject({
       value: 'New project: registry',
@@ -517,6 +517,18 @@ describe('no folder known yet, and adding a project', () => {
     expect(text()).toContain('Pick the folder of your project. The page reads it and fills in the rest.')
     expect(el.querySelector('[data-directory-picker]')).not.toBeNull()
     expect(primary()).toBeNull()
+  })
+
+  it('the first step: the Folder editor is in a card, the picker says "Choose folder", no Done and no note about a button below', async () => {
+    await mount({ ...base, project: null, check: null }, ctx({ at: 'setup' }))
+    expect(el.querySelector('.iii-cloud-detailcard [data-directory-picker]')?.getAttribute('placeholder')).toBe(
+      'Choose folder',
+    )
+    expect(btn('Done')).toBeNull()
+    expect(text()).not.toContain('Only the button below does')
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe("Choose your project's folder")
+    // Who is signed in is in the bar, as on the board.
+    expect(el.querySelector('[role=toolbar]')?.textContent).toMatch(/@.+ · team .+\(.+\)/)
   })
 
   const candidate = {

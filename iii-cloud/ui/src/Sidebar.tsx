@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { List, ListGroup, ListGroupLabel, ListItem, PageSidebar, SegmentedControl } from '@iii-dev/console-ui'
-import { ExternalLink, ShieldCheck } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react'
 import { type Cloud, Feeds, useCloud } from './api'
 import { envPageUrl, liveOf, needsAction, projectName, roleOf, sha7, type Tone, tilde } from './model'
@@ -136,7 +136,6 @@ export function ProjectShell({
                       leading={<Dot tone={line.tone} />}
                       label={e.name}
                       description={line.text || undefined}
-                      trailing={e.production ? <ShieldCheck role="img" aria-label="Production" size={16} /> : undefined}
                       selected={route.env === e.id}
                       aria-current={route.env === e.id ? 'page' : undefined}
                       onClick={() => open(e)}
