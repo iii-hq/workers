@@ -1050,3 +1050,59 @@ async fn an_empty_default_set_in_iii_cloud_needs_its_value_here() {
         (Here::FromFile, Some("api/.env.test".into()))
     );
 }
+
+#[tokio::test]
+async fn a_cancelled_save_leaves_no_write_running_and_its_value_is_still_redacted() {
+    let w = world(false, "developer").await;
+    Mock::given(method("PUT"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(400))
+                .set_body_json(json!({})),
+        )
+        .mount(&w.server)
+        .await;
+    let value = "typed-value-for-the-cancelled-save";
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        save(
+            &w.h.ctx,
+            request(
+                json!([{"name": "SET_ONE", "from": "typed", "type": "variable", "value": value}]),
+            ),
+        ),
+    )
+    .await;
+    assert!(cancelled.is_err(), "the call was dropped before its answer");
+    assert!(
+        w.h.ctx
+            .known_secrets
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v == value)
+    );
+}
+
+#[tokio::test]
+async fn a_value_typed_for_a_name_with_an_empty_default_reaches_the_run_too() {
+    let w = world(false, "developer").await;
+    put_ok(&w.server).await;
+    let out = save(
+        &w.h.ctx,
+        request(json!([
+            {"name": "OPTIONAL_FLAG", "from": "typed", "type": "variable", "value": "typed-on-the-page"},
+            {"name": "SENTRY", "from": "leave_empty"}
+        ])),
+    )
+    .await
+    .unwrap();
+    assert!(out.results[0].ok);
+    // The run here takes a `${NAME:-}` that iii cloud has a value for from the folder: so it gets this one.
+    let env = std::fs::read_to_string(w.ws.join("api/.env")).unwrap();
+    assert!(env.contains("OPTIONAL_FLAG=typed-on-the-page"), "{env}");
+    assert!(
+        !w.checkout.join("api/.env").exists(),
+        "never the person's folder"
+    );
+}

@@ -61,9 +61,13 @@ pub struct State {
     /// When each fresh worktree was made (key: `<path>\n<branch>`): pull
     /// requests created before are an earlier try's, not this one's.
     pub worktree_started: std::collections::BTreeMap<String, String>,
-    /// The base branch and sha when each fresh worktree was made (same key).
     /// Failed creates per idempotency key: a retry after a failure is a new key.
     pub create_attempts: std::collections::BTreeMap<String, u32>,
+    /// The compose file this worker last switched each environment to (by id). It
+    /// is dropped when a newer check of the environment is kept.
+    #[serde(default)]
+    pub env_switched: std::collections::BTreeMap<String, String>,
+    /// The base branch and sha when each fresh worktree was made (key as `worktree_started`).
     pub worktree_base: std::collections::BTreeMap<String, (String, String)>,
     /// `Workspace.from_head` per worktree path: kept while the worktree is reused.
     pub worktree_from_head: std::collections::BTreeMap<String, String>,
@@ -153,6 +157,13 @@ impl State {
     /// console, and the check's file is not kept (it would undo that change).
     pub fn work_file(&self, env_id: &str, current: Option<&str>) -> Option<String> {
         let c = self.checks.iter().find(|c| c.environment_id == env_id)?;
+        // This worker switched the environment after that check: the check's file is
+        // kept only while the environment still has the file it was switched to.
+        if let Some(switched) = self.env_switched.get(env_id) {
+            return (current.is_none() || current == Some(switched.as_str()))
+                .then(|| c.manifest.clone())
+                .flatten();
+        }
         let at_check = self
             .check_sources
             .get(&c.id)
@@ -163,24 +174,12 @@ impl State {
         c.manifest.clone()
     }
 
-    /// The environment's file is `file` now (this worker just switched it): every check
-    /// of that environment was made for another, so a later change back in the
-    /// console is seen as a change by `work_file`.
+    /// The environment's file is `file` now (this worker just switched it): a later
+    /// change back in the console is seen as a change by `work_file`. What the
+    /// older checks were made for (`check_sources`) is left as it was.
     pub fn env_file_is(&mut self, env_id: &str, file: &str) {
-        let ids: Vec<String> = self
-            .check_sources
-            .keys()
-            .filter(|id| {
-                self.find_check(id)
-                    .is_some_and(|c| c.environment_id == env_id)
-            })
-            .cloned()
-            .collect();
-        for id in ids {
-            if let Some(r) = self.check_sources.get_mut(&id) {
-                r.compose = Some(file.to_string());
-            }
-        }
+        self.env_switched
+            .insert(env_id.to_string(), file.to_string());
     }
 
     /// Record `check` as the latest and keep it in the history.
@@ -192,8 +191,14 @@ impl State {
     /// A check something still points at (a merge, a hand-off, an open PR, a
     /// deploy of its commit) is never dropped by the cap.
     pub fn put_check_for(&mut self, check: Check, latest: bool) {
+        let new = !self.checks.iter().any(|c| c.id == check.id);
         self.checks.retain(|c| c.id != check.id);
         self.checks.insert(0, check.clone());
+        // A check made now is of the file the environment has now (a kept check's
+        // update is not a new one).
+        if new {
+            self.env_switched.remove(&check.environment_id);
+        }
         // Recorded once, when the check is first kept: a later update of its run is not a new source.
         if let Some(now) = self.checked_for_now(&check.environment_id) {
             self.check_sources.entry(check.id.clone()).or_insert(now);

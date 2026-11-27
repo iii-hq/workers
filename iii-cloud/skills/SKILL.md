@@ -23,14 +23,16 @@ Load `iii://iii-cloud/onboarding` only when the work starts from nothing
 
 - The person asks to put a project on iii cloud, or to make it ready for iii cloud.
 - A plan problem, a failed deployment or a "will this work in the cloud?" question.
-- You need a value for a secret. Use `iii-cloud::secret`, never the chat.
+- You replaced a literal credential with `${NAME}` in the compose file and need its value: ask with `iii-cloud::secret`, never in the chat. Any other value is asked for by the page.
 - The person asks you to watch a deployment, or how to deploy.
 
 ## Boundaries
 
 - Secret values never pass through you. Never ask for one in chat, never read
-  a `.env`, never put one in a command. `iii-cloud::secret` opens a request on
-  the page, and you only see whether it was saved.
+  a `.env`, never put one in a command. The page asks for variables' and
+  secrets' values. `iii-cloud::secret` is only for a literal credential you
+  replaced with `${NAME}`: it opens a request on the page, and you only see
+  whether it was saved.
 - Never print or store a token or an API key.
 - iii cloud's GitHub App is read-only. Pull requests use the person's own `gh` login.
 - Only the person deploys, approves a deployment, merges the pull request,
@@ -59,7 +61,7 @@ Load `iii://iii-cloud/onboarding` only when the work starts from nothing
 - `iii-cloud::api` — read any iii cloud route as the person (GET only). Any other method is `PERSON_ONLY`: the person makes the change on the page.
 - `iii-cloud::check` — iii cloud's plan for a commit plus the checks on this machine. `run: true` also does the local run and waits for it (up to 240 s). `manifest` checks another `worker-compose*.yaml` instead of the environment's; on a hand-off its file is the default. `push: true` pushes your fix branch first. `force: true` runs again when a passed run of the same commit exists.
 - `iii-cloud::check::get` — `{id}`: one kept check as recorded; nothing runs again.
-- `iii-cloud::secret` — ask the person on the page for the value of ONE secret the compose file reads (a variable name such as `SESSION_SECRET`), or mark that name as not needed. Never for a decision, a worker, a group or a setting: those go in the `harness::ask` card.
+- `iii-cloud::secret` — only for a literal credential you replaced with `${NAME}` in the compose file (`LITERAL_CREDENTIAL`): ask the person on the page for that ONE name's value, or mark it as not needed. Every other value is asked for by the page. Never for a decision, a worker, a group or a setting: those go in the `harness::ask` card.
 - `iii-cloud::values` — `{manifest?, from?}`: every name the compose file reads, whether iii cloud has it, secret or variable, and where a value can come from. Names and flags only. The person sets them in Secrets and variables on the page.
 - `iii-cloud::watch` — follow a deployment to Ready and bring back the evidence when it fails.
 - `iii-cloud::handoff::brief` — `{handoff_id}`: what you need for a hand-off (below).

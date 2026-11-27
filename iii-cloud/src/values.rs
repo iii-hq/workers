@@ -625,15 +625,24 @@ pub async fn skip_problem(ctx: &Arc<Ctx>, request: ProblemSkip) -> Res<ProblemsS
     })
 }
 
+/// Spawned tasks that stop when the call that spawned them is dropped (a cancelled
+/// save leaves no write running on its own).
+struct Tasks<T>(Vec<(usize, tokio::task::JoinHandle<T>)>);
+
+impl<T> Drop for Tasks<T> {
+    fn drop(&mut self) {
+        for (_, task) in &self.0 {
+            task.abort();
+        }
+    }
+}
+
 /// Await spawned tasks in the order given. A task that panicked or was cancelled
 /// answers `lost(index)`; the others keep theirs.
-async fn join_in_order<T>(
-    tasks: Vec<(usize, tokio::task::JoinHandle<T>)>,
-    lost: impl Fn(usize) -> T,
-) -> Vec<T> {
+async fn join_in_order<T>(mut tasks: Tasks<T>, lost: impl Fn(usize) -> T) -> Vec<T> {
     let mut done = vec![];
-    for (i, task) in tasks {
-        done.push(task.await.unwrap_or_else(|_| lost(i)));
+    for (i, task) in tasks.0.iter_mut() {
+        done.push(task.await.unwrap_or_else(|_| lost(*i)));
     }
     done
 }
@@ -831,7 +840,6 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
     }
     // Every other item: one PUT each, WRITE_AT_A_TIME at once. A refusal of the
     // session stops the chunks after the one it came in.
-    let mut saved_values: Vec<String> = vec![];
     let mut set_names: Vec<(String, LocalOutcome)> = vec![];
     for (i, item) in request.items.iter().enumerate() {
         if matches!(item, SaveItem::Copy { .. }) && results[i].as_ref().is_some_and(|r| r.ok) {
@@ -848,12 +856,12 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             }
             continue;
         }
-        let mut tasks = vec![];
+        let mut tasks = Tasks(vec![]);
         for &i in chunk {
             let (ctx, sel, manifest) = (ctx.clone(), sel.clone(), manifest.clone());
             let project_path = project.path.clone();
             let item = request.items[i].clone();
-            tasks.push((
+            tasks.0.push((
                 i,
                 tokio::spawn(async move {
                     let (ctx, sel) = (&ctx, &sel);
@@ -901,6 +909,11 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
                     match chosen {
                         Err(e) => (i, Err(e)),
                         Ok((kind, value)) => {
+                            // Known to redaction before the write starts: a call that is
+                            // cancelled or panics meanwhile may still have written it.
+                            if value.len() >= 3 {
+                                ctx.known_secrets.lock().unwrap().push(value.clone());
+                            }
                             let written = crate::secret::write_value(
                                 ctx,
                                 sel,
@@ -932,7 +945,7 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
         .await;
         for (i, outcome) in done {
             let item = &request.items[i];
-            let (value, written) = match outcome {
+            let (_, written) = match outcome {
                 Ok(v) => v,
                 Err(e) => {
                     results[i] = Some(result(item, Err(e)));
@@ -941,9 +954,6 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             };
             let outcome = match &written.cloud_error {
                 None => {
-                    if value.len() >= 3 {
-                        saved_values.push(value);
-                    }
                     set_names.push((item.name().to_string(), written.local));
                     Ok(())
                 }
@@ -964,7 +974,6 @@ pub async fn save(ctx: &Arc<Ctx>, request: ValuesSave) -> Res<ValuesSaved> {
             results[i] = Some(r);
         }
     }
-    ctx.known_secrets.lock().unwrap().extend(saved_values);
     // The agent's asks for these names are answered.
     let answered: Vec<SecretRequest> = ctx.store.update(|s| {
         let mut out = vec![];
@@ -1004,16 +1013,32 @@ fn result(item: &SaveItem, outcome: Result<(), WorkerError>) -> SaveResult {
 
 #[cfg(test)]
 mod tests {
-    use super::join_in_order;
+    use super::{Tasks, join_in_order};
 
     #[tokio::test]
     async fn a_task_that_panics_loses_only_its_own_answer() {
-        let tasks = vec![
+        let tasks = Tasks(vec![
             (0, tokio::spawn(async { "zero" })),
             (1, tokio::spawn(async { panic!("a write blew up") })),
             (2, tokio::spawn(async { "two" })),
-        ];
+        ]);
         let done = join_in_order(tasks, |_| "lost").await;
         assert_eq!(done, vec!["zero", "lost", "two"]);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_tasks_stops_the_writes_still_running() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let f = flag.clone();
+        let tasks = Tasks(vec![(
+            0,
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )]);
+        drop(tasks);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

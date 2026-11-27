@@ -284,9 +284,18 @@ pub async fn write_value(
         .and_then(|m| Path::new(m).parent())
         .unwrap_or(Path::new(""));
     let env_file = sel.workspace.join(manifest_dir).join(".env");
+    // A `${NAME}` the run needs, and a `${NAME:-}` too once iii cloud has a value for it
+    // (the run takes that one from the folder then): the value typed on the page reaches
+    // the run's `.env` as well. (`wanted` below counts a cloud write that succeeded.)
     let run_needs = crate::local::Manifest::load(&sel.workspace, manifest).is_some_and(|m| {
         crate::local::required_variables(&m)
             .iter()
+            .chain(
+                // An empty value is what the run takes anyway.
+                crate::local::empty_default_variables(&m)
+                    .iter()
+                    .filter(|_| !value.is_empty()),
+            )
             .any(|n| n == name)
     });
     let wanted = match cloud_error {

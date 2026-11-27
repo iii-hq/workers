@@ -538,3 +538,25 @@ async fn files_uncommitted_in_the_folder_and_the_worktree_alike_are_copies_not_w
     assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
     assert!(!c.problems.iter().any(|p| p.code == "BROUGHT_FILES"));
 }
+
+#[tokio::test]
+async fn a_new_directory_beside_the_folders_untracked_directory_of_the_same_name_is_the_agents_work()
+ {
+    let (h, _s, repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    // The agent's work: a new directory. The person has an untracked directory of the same name, other files.
+    std::fs::create_dir_all(ws.join("migrations")).unwrap();
+    std::fs::write(ws.join("migrations/001.sql"), "agent\n").unwrap();
+    std::fs::create_dir_all(repo.checkout.join("migrations")).unwrap();
+    std::fs::write(repo.checkout.join("migrations/002.sql"), "person\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
+    assert!(!c.problems.iter().any(|p| p.code == "BROUGHT_FILES"));
+    // A file removed in both places is not a copy either.
+    std::fs::remove_dir_all(ws.join("migrations")).unwrap();
+    std::fs::remove_dir_all(repo.checkout.join("migrations")).unwrap();
+    std::fs::remove_file(ws.join("README.md")).unwrap();
+    std::fs::remove_file(repo.checkout.join("README.md")).unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!c.problems.iter().any(|p| p.code == "BROUGHT_FILES"));
+}
