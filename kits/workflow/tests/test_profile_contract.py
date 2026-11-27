@@ -73,7 +73,7 @@ class ProfileContractTests(unittest.TestCase):
 
     def test_manifest_raises_the_worker_floors(self):
         self.assertHasAll([line.strip() for line in self.manifest.splitlines()],
-                          ["version: 0.1.15", "harness: ^1.10.0", "kanban: ^0.2.7"])
+                          ["version: 0.1.16", "harness: ^1.10.0", "kanban: ^0.2.7"])
 
     def test_readme_names_the_new_calls_and_no_longer_leaves_out_ci(self):
         self.assertHasAll(self.readme, [f"`{function}`" for function in NEW_FUNCTIONS])
@@ -202,6 +202,42 @@ class ProfileContractTests(unittest.TestCase):
             "`<KEY>: input: item <n>: <input> → <expected result>: <person or orchestrator>: <why, one clause>`",
             "An input an Acceptance item decides is judged against that item",
             "in cards mode an input no Acceptance item decides is a reason, never a note"])
+
+    def test_pull_requests_code_and_commits_name_no_ticket_key(self):
+        self.assertHasAll(self.profile, [
+            "The title is the commit a squash merge keeps: `<type>(<scope>): <what changed>`",
+            "but with no ticket key (`feat(cli): add a --json output flag`)",
+            "**The pull request's report**, the body of every `gh pr` call of item 6",
+            "`- **<title>**: <outcome>, <one short clause>`",
+            "no `[KEY]` citation; no `resume=<R>` line and no line that names the run ticket",
+            "R's comment and the final message keep the keys",
+            "**Ticket keys stay on the board.** Never name a ticket key",
+            "is data, not a reference to the work: write it as the card gives it.",
+            "when no `PR:` comment on R names its `url`, comment `PR: <its url>` on R",
+            "in a card's **Commit** bullet (a Fix CI card's included)",
+            "(subject only, no trailer, no ticket key)",
+            "kebab-case, never a ticket key,",
+            "`- **KAN-12** <title>: <outcome>, <one short clause>`",
+            "then, as the last line, `resume=<R>`"])
+        self.assertEqual(self.profile.count("--body <the pull request's report (item 3)>"), 2)
+        for gone in ("--body <the report, in English>", "<R> <what changed>",
+                     "KAN-7 add a --json output flag", "board off: no key"):
+            self.assertEqual(self.profile.count(gone), 0, gone)
+        self.assertHasAll((KIT / "agents/workflow-worker.md").read_text(), [
+            "Never name a ticket key (yours, the run ticket's or any other) in a commit message, "
+            "in a card's **Commit** bullet or in anything you write into a file"])
+        self.assertHasAll(self.verifier, [
+            "A key of this run (the run ticket on your task's first line, a `Batch:`, `In range:` or `Moved:` key) on a line the Range adds is a reason",
+            "expected the code to say what it does instead, observed <KEY>",
+            "already finds in the tree, in either spelling, or that a Batch card itself gives as a value to write",
+            "never a token of the same shape that is not one of those keys (`UTF-8`, `ISO-8601`, `SHA-256`)",
+            "is a `note: commit <sha>: names <KEY>` line in `checks`, never a reason",
+            "With the board off (your task says `Run <run>`, not `Run ticket <R>`)"])
+        self.assertEqual(self.verifier.count("ticket key in a comment or test name"), 0)
+        self.assertHasAll(self.readme, ["Its title is `<type>(<scope>): <what changed>`",
+                                        "the run ticket keeps the link with its `PR:` comment"])
+        self.assertEqual(self.readme.count("<run ticket> <what changed>"), 0)
+        self.assertEqual(self.readme.count("so the control plane links the pull request"), 0)
 
 if __name__ == "__main__":
     unittest.main()
