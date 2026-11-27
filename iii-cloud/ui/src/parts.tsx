@@ -17,6 +17,7 @@ import {
   CircleAlert,
   CircleCheck,
   ExternalLink,
+  FolderOpen,
   Info,
   Loader2,
   RefreshCw,
@@ -131,14 +132,25 @@ export const Spinner = () => <Loader2 className="iii-ui-spin" aria-hidden />
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
 
 /**
- * A file that looks like a secret (`.env*`, private keys): it stays on this machine, so it is neither counted as
- * an uncommitted change the page talks about nor ever advised to be committed.
+ * A file that holds secrets and stays on this machine: an env file with values (`.env`, `.env.local`,
+ * `.env.<name>`, but not the templates `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, nor `.envrc`)
+ * or a private key (`*.key`, `*.p12`, `*.pfx`, `id_rsa` and the like). `*.pem` is ambiguous (a public CA bundle
+ * or a private key), so it counts as an ordinary change.
  */
 export const secretLike = (path: string) =>
-  /(^|\/)(\.env[^/]*|[^/]*\.(pem|key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)[^/]*)$/i.test(path)
+  /(^|\/)(\.env(\.(?!(example|sample|template|dist)$)[^/]+)?|[^/]*\.(key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)(\.[^/]*)?)$/i.test(
+    path,
+  )
 
-/** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count. */
+/** The uncommitted changes of a folder that are not secret-like: the ones a sentence may count and advise to commit. */
 export const uncommittedCount = (files: string[]) => files.filter((f) => !secretLike(f)).length
+
+/** "2 look like secrets and stay on this machine." (a count, never names), or null when none does. */
+export function secretsNote(files: string[]): string | null {
+  const n = files.filter(secretLike).length
+  if (!n) return null
+  return `${n} ${n === 1 ? 'looks like a secret and stays' : 'look like secrets and stay'} on this machine.`
+}
 
 /** A sentence with each short commit sha (seven hex characters, at least one a digit) set in mono. */
 export function monoShas(text: string): ReactNode {
@@ -300,16 +312,16 @@ export function Notice({ variant = 'info', className, headline, ...rest }: Statu
 
 /**
  * A deployment of any project on this machine waits for the person (iii cloud holds it for approval) and the
- * screen does not already show it: not the deploy screen of that deployment, nor its environment's page.
+ * screen does not already show it. Shown means only: the deploy screen that follows that very deployment, and
+ * that environment's own page (not its check view, its secrets, or another deployment's record).
  */
 export function waitingElsewhere(s: Status, r?: Route): boolean {
-  const on =
-    r && (r.at === 'env' || r.at === 'deploy' || r.at === 'secrets') ? r.env || s.project?.environment?.id : null
+  const home = r?.at === 'env' && !r.deploy ? r.env || s.project?.environment?.id : null
   return moving(s).some(
     (m) =>
       needsAction(m.deploy) &&
       !(r?.at === 'deploy' && r.deploy === m.deploy.id) &&
-      !(!m.other && on && m.deploy.environment_id === on),
+      !(!m.other && home && m.deploy.environment_id === home),
   )
 }
 
@@ -346,6 +358,7 @@ export function PathBar({
   const dot = <StatusDot tone="warn" className="iii-cloud-crumb-dot" aria-hidden />
   const up = path.slice(0, -1)
   const parent = up.filter((p) => p.to).at(-1)
+  const toProjects = parent?.to?.at === 'start'
   return (
     <Toolbar aria-label={here.label} className="iii-cloud-envhead" data-rule={rule ? '' : undefined} end={end}>
       {narrow ? (
@@ -366,6 +379,18 @@ export function PathBar({
             </IconButton>
           ) : null}
           <h2 className="iii-cloud-head-title iii-cloud-head-name">{here.label}</h2>
+          {held && !toProjects ? (
+            // Back goes to the environment here, so Projects gets its own small control while something waits.
+            <IconButton
+              label="A deployment needs you: see Projects"
+              variant="ghost"
+              className="iii-cloud-crumb-back"
+              onClick={() => go({ at: 'start' })}
+            >
+              <FolderOpen />
+              {dot}
+            </IconButton>
+          ) : null}
         </>
       ) : (
         <nav aria-label="Breadcrumb" className="iii-cloud-crumbs">

@@ -261,7 +261,7 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   } else if (held && !going) {
     line1 = `${held.env ?? env?.name ?? 'deploying'} · deployment #${held.deploy.number} needs your action`
   } else if (going && run) {
-    line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far`
+    line1 = `${going.env ?? env?.name ?? 'deploying'} · deployment #${run.number} is running · ${minutesLabel(now - Date.parse(run.created_at))} so far${held ? ` · ${held.env ?? 'another environment'} deployment #${held.deploy.number} needs your action` : ''}`
   } else if (offline) line1 = "Sign in to see what's live"
   // Only the folder and the names are known: say what exists, and how to see the rest.
   else if (!team) line1 = place.envName ? `${place.envName} · open it to see what's live` : "Open it to see what's live"
@@ -288,10 +288,10 @@ function PlaceRow({ host, status, place, narrow, offline, locked, switching, go,
   const name = key ? place.repository : place.name
   const state = gone
     ? { label: 'Deleted', tone: 'ghost' as const }
-    : run
-      ? { label: 'Deploying', tone: 'live' as const }
-      : waits.length
-        ? { label: 'Needs you', tone: 'warn' as const }
+    : waits.length
+      ? { label: 'Needs you', tone: 'warn' as const }
+      : run
+        ? { label: 'Deploying', tone: 'live' as const }
         : offline
           ? null
           : pillOf(live)

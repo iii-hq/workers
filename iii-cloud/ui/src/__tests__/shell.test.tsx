@@ -315,6 +315,62 @@ describe("every project's deploys going on (running_deploys)", () => {
     expect(crumb()?.querySelector('[data-dot]')).toBeNull()
   })
 
+  it('a deployment held here: the crumb dot shows on every screen but its own deploy follow and its environment home', async () => {
+    const b = boards['manage-overview-deploying']
+    const held = { ...b.status.deploys[0], status: 'needs_action' as const }
+    const other = b.status.deploys[1] ?? { ...held, id: 'd-other', number: 3, status: 'ready' as const }
+    const status = { ...b.status, deploys: [held, ...(b.status.deploys[1] ? b.status.deploys.slice(1) : [other])] }
+    const dot = () => el.querySelector('button.iii-cloud-crumbs-up [data-dot=warn]')
+    let n = 10
+    const at = async (route: unknown) => {
+      await mount(status, ctx(route, n++), cloudAnswers(b.cloud ?? {}))
+      await flush()
+    }
+    await at({ at: 'deploy', env: held.environment_id })
+    expect(dot()).not.toBeNull()
+    await at({ at: 'secrets', env: held.environment_id })
+    expect(dot()).not.toBeNull()
+    await at({ at: 'env', env: held.environment_id, deploy: other.id })
+    expect(dot()).not.toBeNull()
+    await at({ at: 'env', env: held.environment_id })
+    expect(dot()).toBeNull()
+    await at({ at: 'deploy', env: held.environment_id, deploy: held.id })
+    expect(dot()).toBeNull()
+  })
+
+  it('a phone: screens whose back goes to the environment get their own control to Projects while something waits', async () => {
+    const b = boards['manage-overview-deploying']
+    const held = { ...b.status.deploys[0], status: 'needs_action' as const }
+    ui.narrow = true
+    await mount(
+      { ...b.status, deploys: [held] },
+      ctx({ at: 'secrets', env: held.environment_id }),
+      cloudAnswers(b.cloud ?? {}),
+    )
+    const control = el.querySelector('[role=toolbar] button[aria-label="A deployment needs you: see Projects"]')
+    expect(control).not.toBeNull()
+    await click(control)
+    expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('Projects')
+  })
+
+  it('Projects: a running deployment and a held one on the same project: the row says both, and Needs you wins the chip', async () => {
+    const b = boards['start-moving']
+    const other = { id: 'e-staging', name: 'staging', production: false, branch: 'staging' }
+    const withOther = {
+      ...b.status,
+      project: { ...b.status.project!, environments: [...b.status.project!.environments, other] },
+    }
+    const [here] = b.status.running_deploys ?? []
+    const held = {
+      ...here,
+      environment_name: other.name,
+      deploy: { ...here.deploy, id: 'd-h', number: 5, environment_id: other.id, status: 'needs_action' as const },
+    }
+    await mount({ ...withOther, running_deploys: [here, held] }, ctx({ at: 'start' }), cloudAnswers(b.cloud ?? {}))
+    expect(text()).toMatch(/registryNeeds you.*deployment #6 is running.*staging deployment #5 needs your action/)
+    expect(text()).not.toMatch(/registryDeploying/)
+  })
+
   it('Start: every row with a deploy going on says it; Open on another project takes it up first', async () => {
     const h = await board('start-moving')
     expect(text()).toMatch(/registryDeployingproduction · deployment #6 is running · \d+ min so far/)
