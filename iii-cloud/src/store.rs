@@ -215,10 +215,9 @@ impl State {
         let Some(now) = now else {
             return true;
         };
-        // A check that asked for another file than the environment had switches
-        // the environment to it on purpose; else the environment's file must be the same.
-        let compose_same = check.manifest != rec.compose || now.compose == rec.compose;
-        now.source == rec.source && now.source_sha == rec.source_sha && compose_same
+        // The compose file is compared in `deploy`, against the cloud's current one:
+        // this cache is only as new as the last refresh.
+        now.source == rec.source && now.source_sha == rec.source_sha
     }
 
     /// Put a used project first; one entry per folder and cloud project.
@@ -229,9 +228,10 @@ impl State {
         self.recent_projects.truncate(MAX_RECENT_PROJECTS);
     }
 
-    /// A deployment this worker did not make or adopt: another person's, or the console's.
-    pub fn from_console(&self, deploy_id: &str) -> bool {
-        !self.worker_deploys.iter().any(|id| id == deploy_id)
+    /// A deployment made in the console: a manual one this worker did not make
+    /// or adopt (a teammate's push deployment is not).
+    pub fn from_console(&self, deploy: &Deploy) -> bool {
+        deploy.kind == "manual" && !self.worker_deploys.contains(&deploy.id)
     }
 
     pub fn put_deploy(&mut self, deploy: Deploy) {

@@ -1437,3 +1437,23 @@ async fn a_check_is_recorded_for_the_source_it_started_on() {
         .unwrap();
     assert_eq!(made_for.source, None);
 }
+
+/// What a check is recorded for is the compose file the cloud has, not the cache.
+#[tokio::test]
+async fn a_check_records_the_cloud_s_compose_file_not_the_cached_one() {
+    let server = MockServer::start().await;
+    let (h, _repo, _ws) = ready(&server, 200).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": "z-compose.yaml", "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let made_for = h
+        .ctx
+        .store
+        .read(|s| s.check_sources.get(&c.id).cloned())
+        .unwrap();
+    assert_eq!(made_for.compose.as_deref(), Some("z-compose.yaml"));
+}

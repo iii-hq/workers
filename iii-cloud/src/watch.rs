@@ -299,7 +299,7 @@ pub fn record(ctx: &Ctx, deploy: &Deploy) {
     // The event carries what the status read would say about where it came from
     // (the stored record is compared with the cloud's, so it keeps its own value).
     let mut event = deploy.clone();
-    event.from_console = ctx.store.read(|s| s.from_console(&deploy.id));
+    event.from_console = ctx.store.read(|s| s.from_console(deploy));
     ctx.emit(EventKind::Deploy, &deploy.id, terminal, summary, &event);
 }
 

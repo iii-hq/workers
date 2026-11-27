@@ -3608,3 +3608,73 @@ async fn a_deploy_event_says_whether_it_came_from_the_console_like_the_status_do
         assert_eq!(d.from_console, d.id != mine, "{}", d.id);
     }
 }
+
+/// The compose file is compared with the cloud's own, not the cache's: a change made in
+/// the console before the next refresh is not undone by the deploy.
+#[tokio::test]
+async fn deploy_refuses_when_the_cloud_has_another_compose_file_than_the_check_before_any_refresh()
+{
+    let s = setup(plan(false)).await;
+    s.h.ctx.store.update(|st| {
+        for c in st.check.iter_mut().chain(st.checks.iter_mut()) {
+            c.manifest = Some("worker-compose.yaml".into());
+        }
+    });
+    // The console changed the file; the worker's cache still says the old one.
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": "console/z.yaml", "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    assert_eq!(
+        s.h.ctx.store.read(|st| st
+            .project
+            .as_ref()
+            .and_then(|p| p.environment.as_ref())
+            .and_then(|e| e.manifest.clone())),
+        Some("worker-compose.yaml".to_string())
+    );
+    let err = deploy_chk(&s).await.unwrap_err();
+    assert_eq!(err.code, "SOURCE_CHANGED");
+    let requests = s.server.received_requests().await.unwrap();
+    assert!(
+        !requests.iter().any(|r| r.method.as_str() == "PATCH"),
+        "the environment was switched back"
+    );
+}
+
+/// A teammate's push deployment is not "from the console"; a manual one made there is.
+#[tokio::test]
+async fn only_a_manual_deployment_this_worker_did_not_make_is_from_the_console() {
+    let s = setup(plan(false)).await;
+    let push = "33333333-cccc-4ccc-8ccc-333333333333";
+    let manual = "44444444-dddd-4ddd-8ddd-444444444444";
+    for (id, kind) in [(push, "push"), (manual, "manual")] {
+        let d = iii_cloud::watch::to_deploy(
+            "http://x",
+            (None, None, "production"),
+            &deployment(id, "abc1234", "needs_action", kind),
+            None,
+            false,
+        )
+        .unwrap();
+        iii_cloud::watch::record(&s.h.ctx, &d);
+    }
+    let events = s.h.fake.events.lock().unwrap().clone();
+    let of = |id: &str| {
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == EventKind::Deploy && e.id == id)
+            .map(|e| e.record["from_console"].clone())
+    };
+    assert_eq!(of(push), Some(json!(false)));
+    assert_eq!(of(manual), Some(json!(true)));
+    let st = iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
+        .await
+        .unwrap();
+    for d in st.deploys {
+        assert_eq!(d.from_console, d.id == manual, "{}", d.id);
+    }
+}

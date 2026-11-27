@@ -1067,7 +1067,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 phase = AgentPhase::Working;
                 current = Some("the local run is going".to_string());
             } else if let Some((line, run)) = waiting {
-                // Information, not a failed attempt: once per run, outside the cap.
+                // The first notice of a hand-off is information, outside the cap; later ones count.
                 let sent =
                     send_continue(ctx, &handoff, &session, &[line], &secrets, Some(&run)).await;
                 phase = if sent == Continue::Sent {
@@ -1334,7 +1334,7 @@ async fn send_continue(
     session: &str,
     problems: &[(String, String)],
     secrets: &[String],
-    // The run a waiting notice is for: sent outside the cap and not counted.
+    // The run a waiting notice is for: the first one of a hand-off goes outside the cap, later ones count.
     waiting_run: Option<&str>,
 ) -> Continue {
     // Only the first waiting notice of a hand-off is information; a later one

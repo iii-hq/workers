@@ -980,6 +980,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             })
         })
         .filter(|m| env_manifest.as_deref() != Some(m.as_str()));
+    // What this check is for: the file the cloud has now, not the cache.
+    let made_for = made_for.map(|mut m| {
+        m.compose = env_manifest.clone();
+        m
+    });
     let manifest_path = asked.clone().or(env_manifest);
 
     let mut plan_value: Option<Value> = None;

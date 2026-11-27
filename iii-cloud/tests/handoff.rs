@@ -3007,7 +3007,7 @@ async fn a_refused_continue_still_reads_stalled_after_a_restart() {
 
 /// The waiting notice is information: once per run, outside the cap of three.
 #[tokio::test]
-async fn the_waiting_continue_goes_once_per_run_and_does_not_use_the_cap() {
+async fn the_first_waiting_continue_goes_once_for_its_run_and_does_not_use_the_cap() {
     let waiting = |r: &mut Run| {
         r.status = RunStatus::Running;
         r.error = None;

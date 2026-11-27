@@ -527,6 +527,26 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
         Some(_) => env_manifest(ctx, &sel).await?,
         None => None,
     };
+    // The check did not ask for another file than the environment's own, and the
+    // cloud's file is not the check's any more (changed in the console): deploying
+    // would switch it back. Check again.
+    let recorded = ctx.store.read(|s| {
+        s.check_sources
+            .get(&check.id)
+            .and_then(|r| r.compose.clone())
+    });
+    if let (Some(m), Some(rec)) = (&check.manifest, &recorded)
+        && m == rec
+        && current.as_deref() != Some(m.as_str())
+    {
+        return Err(CloudError::new(
+            "SOURCE_CHANGED",
+            format!(
+                "{}'s source or compose file changed after this check. Check again.",
+                sel.env.name
+            ),
+        ));
+    }
     let switch = check
         .manifest
         .clone()
