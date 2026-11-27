@@ -1439,6 +1439,8 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
         {
             let (code, line) = run_failure_of(run);
             match run_code_owner(&code) {
+                // Replaced by a newer run: that check is judged in its turn.
+                _ if code == "RUN_REPLACED" => {}
                 RunOwner::Agent => lines.push((code, line)),
                 RunOwner::Interrupted => lines.push((
                     code,

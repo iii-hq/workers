@@ -3447,3 +3447,15 @@ async fn a_refused_continue_to_a_waiting_agent_is_not_retried_inside_the_grace_a
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert_eq!(sent(&h).len() - before, 1, "one try inside the grace");
 }
+
+#[tokio::test]
+async fn a_person_run_that_a_newer_run_replaced_sends_the_agent_nothing() {
+    let mut run = failed_run("person-check", "abc");
+    run.error = Some(RunError {
+        stage: StageName::Workers,
+        code: "RUN_REPLACED".into(),
+        message: "A newer commit of this workspace started a run, so this one stopped.".into(),
+    });
+    let (_h, told) = person_check_while_waiting(vec![], Some(run), false, 1).await;
+    assert!(told.is_empty(), "{told:?}");
+}
