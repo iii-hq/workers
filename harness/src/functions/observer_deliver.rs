@@ -363,6 +363,12 @@ pub async fn handle(
     )
     .await;
 
+    if let Err(error) = &outcome
+        && binding.target.function_id != crate::functions::SEND_ID
+    {
+        notify_call_failure(deps, &binding, error, retiring).await;
+    }
+
     Ok(match outcome {
         Ok(()) => DeliverResult::delivered(),
         Err(e) => DeliverResult::stopped("dispatch", e),
@@ -917,9 +923,71 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
 
 /// One notice per binding, ever — session-manager's entry-id idempotence is
 /// the dedup. Distinct by construction from `e_fire_*`/`e_obsfired_*`/
-/// `e_obsskip_*`/`e_expire_*`/`e_claimfail_*`.
+/// `e_obsskip_*`/`e_expire_*`/`e_claimfail_*`/`e_callfail_*`.
 fn condition_failure_entry_id(binding_id: &str) -> String {
     format!("e_condfail_{binding_id}")
+}
+
+/// Bindings whose owner was already told that their call fails.
+// ponytail: process-wide and never pruned, one id per binding that ever failed.
+// A restart tells the owner once more; the entry id keeps that to one row.
+static CALL_FAILURE_TOLD: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// The fire record is for the timeline; this is for the OWNER. A call target
+/// that fails is recorded on every fire in a transcript no model reads, so the
+/// owner goes on reporting an observer that never worked: two pipe observers
+/// on a one-second source failed some 3,770 fires each over 71 minutes, an
+/// hour of it after the user's stop, while their agent said the updates were
+/// on. Told on the first failure only: the owner cannot be woken once a second.
+async fn notify_call_failure(deps: &Deps, binding: &Binding, error: &str, retired: bool) {
+    let told = || CALL_FAILURE_TOLD.lock().unwrap_or_else(|p| p.into_inner());
+    if !told().insert(binding.id.clone()) {
+        return;
+    }
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &binding.owner.session_id,
+        AgentMessage::user_text(call_failure_text(binding, error, retired)),
+        Some(&call_failure_entry_id(&binding.id)),
+        Some(&json!({ "notification": true, "binding": binding.id })),
+    )
+    .await
+    {
+        tracing::warn!(binding = %binding.id, error = %e, "call-failure notice failed to deliver");
+        // Not told after all: the next failing fire tries again.
+        told().remove(&binding.id);
+    }
+}
+
+/// What the owner reads: which binding, what it watches, the function it
+/// called and why that failed, and that no later failure will be reported.
+fn call_failure_text(binding: &Binding, error: &str, retired: bool) -> String {
+    const MAX_REASON: usize = 400;
+    let reason = truncate_chars(error, MAX_REASON);
+    let label = binding_label(binding)
+        .map(|l| format!(" `{l}`"))
+        .unwrap_or_default();
+    let watch = binding
+        .source_text()
+        .map(|source| format!(" observing {source}"))
+        .unwrap_or_default();
+    let next = if retired {
+        "That was its last fire, so the binding is retired."
+    } else {
+        "The binding stays armed and this is the only notice: a later fire that fails is \
+         recorded in the timeline and not reported to you. If the call is misconfigured, \
+         unobserve it and observe again corrected."
+    };
+    format!(
+        "[notification] binding {}{label}{watch} fired, and its call to {} FAILED: {reason}. \
+         {next}",
+        binding.id, binding.target.function_id
+    )
+}
+
+fn call_failure_entry_id(binding_id: &str) -> String {
+    format!("e_callfail_{binding_id}")
 }
 
 fn skip_record_entry_id(binding_id: &str, gate: &str) -> String {
@@ -1292,9 +1360,32 @@ mod tests {
             "e_obsskip_sub_1_condition-error_x",
             "e_expire_sub_1",
             "e_claimfail_sub_1",
+            &call_failure_entry_id("sub_1"),
         ] {
             assert_ne!(id, other);
         }
+    }
+
+    /// Prevents: an owner reading a failure it cannot act on. The notice names
+    /// the binding, the called function and the error, and says whether the
+    /// binding is still there to fix.
+    #[test]
+    fn the_call_failure_notice_names_the_call_and_what_happens_next() {
+        let mut call = wake_binding("tmux::on-changed");
+        call.target = crate::bindings::BindingTarget::new("fp::pipe");
+        let armed = call_failure_text(&call, "pipe refused, 1 problem(s)", false);
+        assert!(armed.starts_with("[notification] binding "), "{armed}");
+        assert!(
+            armed.contains("its call to fp::pipe FAILED: pipe refused"),
+            "{armed}"
+        );
+        assert!(
+            armed.contains("stays armed and this is the only notice"),
+            "{armed}"
+        );
+        let spent = call_failure_text(&call, &"x".repeat(5_000), true);
+        assert!(spent.contains("the binding is retired"), "{spent}");
+        assert!(spent.chars().count() < 1200, "{}", spent.chars().count());
     }
 
     #[test]
