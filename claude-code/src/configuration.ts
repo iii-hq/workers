@@ -104,7 +104,11 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
-export type ReplyAccess = { readonly epoch: number | null; confirm(): Promise<number | null> };
+type ConfirmOptions = { waitForWatchRecovery?: boolean };
+export type ReplyAccess = {
+  readonly epoch: number | null;
+  confirm(options?: ConfirmOptions): Promise<number | null>;
+};
 
 /** Bind a series of reads to one grant. Even a rejected inventory lookup can
  * disclose whether a session exists; check the grant before and after each read. */
@@ -135,6 +139,7 @@ export class ReplyPermission {
   private refreshConnection: number | null = null;
   private reloading = false;
   private confirmation?: Promise<number | null>;
+  private watchRecovery?: Promise<void>;
   private recoverWatches?: (epoch: number) => Promise<void>;
   private watch?: { iii: IIIClient; handle: ObserverHandle };
 
@@ -176,6 +181,7 @@ export class ReplyPermission {
     this.refreshConnection = null;
     this.reloading = false;
     this.confirmation = undefined;
+    this.watchRecovery = undefined;
   }
 
   onConfirmedRecovery(recover: (epoch: number) => Promise<void>) {
@@ -184,31 +190,39 @@ export class ReplyPermission {
 
   // An explicit probe, admission or poll can recover on the same connection.
   // Concurrent readers share a probe; a config event always supersedes it.
-  async confirm(): Promise<number | null> {
+  async confirm({ waitForWatchRecovery = true }: ConfirmOptions = {}): Promise<number | null> {
     const connection = this.watchConnection();
     if (connection !== this.refreshConnection) this.invalidate();
     if (!this.watch || connection === null || this.reloading) return null;
     if (!this.confirmation) {
       const generation = this.generation;
       this.refreshConnection = connection;
-      this.confirmation = fetchRuntime(this.watch.iii).then(async (runtime) => {
+      this.confirmation = fetchRuntime(this.watch.iii).then((runtime) => {
         if (generation !== this.generation) return null;
+        this.confirmation = undefined;
         if (connection !== this.watchConnection() || runtime?.external_sessions !== true) {
           this.invalidate();
           return null;
         }
         this.currentEpoch = generation;
-        try {
-          // Set the grant before host reads, but do not return a confirmed
-          // probe before retained watches have attempted to skip the gap.
-          await this.recoverWatches?.(generation);
-          return this.epoch === generation ? generation : null;
-        } finally {
-          if (generation === this.generation) this.confirmation = undefined;
+        // Share rebaselining separately so inventory callers need only the
+        // live config read. A slow recovery must not cache its positive probe.
+        if (!this.watchRecovery && this.recoverWatches) {
+          this.watchRecovery = this.recoverWatches(generation)
+            .catch(() => {
+              // An authorized poll can still rebaseline a stale watch.
+            })
+            .finally(() => {
+              if (generation === this.generation) this.watchRecovery = undefined;
+            });
         }
+        return generation;
       });
     }
-    return this.confirmation;
+    const epoch = await this.confirmation;
+    if (epoch === null || epoch !== this.epoch) return null;
+    if (waitForWatchRecovery) await this.watchRecovery;
+    return epoch === this.epoch ? epoch : null;
   }
 
   async refresh(iii: IIIClient) {

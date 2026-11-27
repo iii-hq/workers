@@ -402,7 +402,7 @@ export function registerAgents(
       // The ordinary worker listing needs inventory even with external access off.
       // Read it alongside confirmation, but authorize external rows only at publication.
       const [epoch, { merge, detail }] = await Promise.all([
-        access.confirm(),
+        access.confirm({ waitForWatchRecovery: !include_config_id }),
         inventory(all === true, {
           showAll: false,
           markExternal: include_config_id,

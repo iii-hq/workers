@@ -440,6 +440,55 @@ describe('claude::agents::list', () => {
     });
   });
 
+  it('returns partial rail inventory while a retained reply watch is still recovering', async () => {
+    await withSyntheticHost(async (s) => {
+      const appendReply = (n: number, text: string) =>
+        appendFile(s.file, `${JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text))}\n`);
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      await appendReply(2, 'during outage');
+      s.host.records.push(record('owned', 'done'));
+      s.host.config = async () => ({ external_sessions: true });
+      s.host.inventoryOK = false;
+
+      vi.useFakeTimers();
+      try {
+        s.host.beforeInventory = () => new Promise((resolve) => setTimeout(resolve, 21_000));
+        const response = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        const rail = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('rail deadline exceeded'), 20_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(20_000);
+        const result = await rail;
+        await vi.advanceTimersByTimeAsync(1_000);
+        await response;
+        expect(result).toMatchObject({
+          agents: [{ id: 'owned' }],
+          inventory_status: 'unavailable',
+          detail: 'Terminal host inventory unavailable',
+          external_visibility: expect.any(String),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      s.host.beforeInventory = async () => {};
+      s.host.inventoryOK = true;
+      await s.poll(); // Rebaseline after the failed recovery; do not replay the outage.
+      expect(s.host.deliveries).toEqual([]);
+      await appendReply(3, 'after recovery');
+      await s.poll();
+      expect(s.host.deliveries).toMatchObject([
+        { observer: 'retained', event: { reply: { id: recordId(3), text: 'after recovery' } } },
+      ]);
+    });
+  });
+
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
     const fake = host(ok([]), { external: true });
     await list(fake);
