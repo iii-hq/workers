@@ -164,7 +164,7 @@ export function nextAction(
       you.items[0]?.title ??
       (you.decide[0]
         ? `${name}'s ${you.decide[0].setting} was changed in iii cloud's console`
-        : 'Names a file of your folder can fill')
+        : `Set ${plural(you.values.length, 'value')} for ${name}`)
     // A first deploy's count needs the values read (it groups what a .env can fill): without it, no number.
     const title = opts.valuesPending
       ? `Things need you before ${name} can get ${branch ?? 'your changes'}`
