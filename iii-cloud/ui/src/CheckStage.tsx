@@ -86,7 +86,7 @@ import {
   useNow,
 } from './parts'
 import type { Route } from './route'
-import type { AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
+import type { AgentRun, AgentState, Check, CheckRequest, Deploy, Status, WorkerError } from './types'
 import { ValuesCard } from './ValuesCard'
 import { useValues, ValuesDialog } from './ValuesEditor'
 
@@ -166,8 +166,17 @@ export function deployLockReason(
 ): string | null {
   if (o.stale) return 'The page is out of date or signed out. Sign in or refresh first.'
   if (o.sending) return 'A deploy is being sent.'
-  if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix')
-    return 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
+  if (agentOn(s) && (s.agent?.kind ?? s.handoff_brief?.kind) === 'deploy_fix') {
+    // Said by what the agent is really doing: only a working one is "fixing"; the rest say what moves it on.
+    const st = s.agent?.state
+    return st === 'waiting'
+      ? `Your agent's fix of a failed deployment waits${waitsFor(s.agent as AgentRun)}. Tell it in its chat, or check again; its fix goes through the check first.`
+      : st === 'stalled'
+        ? "Your agent's fix of a failed deployment stopped making progress. Open its chat, or stop it; its fix goes through the check first."
+        : st === 'waiting_for_you'
+          ? 'Your agent asks about the fix of a failed deployment. Answer it in its chat; its fix goes through the check first.'
+          : 'Your agent is fixing a failed deployment. Its fix goes through the check first.'
+  }
   const other = s.deploys.find(
     (d) => d.environment_id === envId && d.id !== o.exceptId && d.outcome === 'running' && !heldElsewhere(d),
   )

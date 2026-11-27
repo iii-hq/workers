@@ -1308,6 +1308,25 @@ describe('small things the review found', () => {
     )
   })
 
+  it('the deploy lock says what a deploy-fix agent does: works, waits, stalls or asks', () => {
+    const r = B('deploy-review')
+    const lock = (state: 'working' | 'waiting' | 'stalled' | 'waiting_for_you') =>
+      deployLockReason(
+        {
+          ...r,
+          agent: { ...agent(state), kind: 'deploy_fix' as const, waiting_for: 'the deploy to end' },
+          deploys: [serving5],
+        },
+        DEV.id,
+        { stale: false, sending: false },
+      )
+    expect(lock('working')).toContain('is fixing a failed deployment')
+    expect(lock('waiting')).toContain('waits for the deploy to end')
+    expect(lock('stalled')).toContain('stopped making progress')
+    expect(lock('waiting_for_you')).toContain('asks about the fix')
+    for (const st of ['waiting', 'stalled', 'waiting_for_you'] as const) expect(lock(st)).not.toContain('is fixing')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
