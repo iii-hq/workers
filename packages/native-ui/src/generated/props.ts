@@ -419,7 +419,7 @@ export interface StatProps extends CommonProps {
   /** Smaller, after the value (ms, GB). */
   unit?: Prop<string>
   icon?: Prop<IconName>
-  /** The icon's and the series' color; none = the accent. */
+  /** The icon's and the series' color; none: the icon muted and the series blue. */
   hue?: Prop<Hue>
   /** A change, formatted (+12%, -3 today). */
   delta?: Prop<string>

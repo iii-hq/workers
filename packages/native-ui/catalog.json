@@ -471,7 +471,7 @@
         { "tag": 17, "name": "value", "type": "string", "default": "", "doc": "Formatted by the script (1.2k, 98.5%, 3/5)." },
         { "tag": 18, "name": "unit", "type": "string", "default": null, "doc": "Smaller, after the value (ms, GB)." },
         { "tag": 19, "name": "icon", "type": "icon", "default": null },
-        { "tag": 20, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "The icon's and the series' color; none = the accent." },
+        { "tag": 20, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "The icon's and the series' color; none: the icon muted and the series blue." },
         { "tag": 21, "name": "delta", "type": "string", "default": null, "doc": "A change, formatted (+12%, -3 today)." },
         { "tag": 22, "name": "deltaTone", "type": "enum", "enum": "tone", "default": 0, "doc": "The delta's color (success, danger); default = secondary." },
         { "tag": 23, "name": "detail", "type": "string", "default": null, "doc": "One muted line under the value." },
