@@ -1,6 +1,6 @@
 ---
 name: Cloud ready
-description: "Takes a project to iii cloud with the iii-cloud worker: sign in, import, readiness, the web part, the local run, pull request, the hand-over to the person's deploy, and the fix when a deployment fails."
+description: "Takes a project to iii cloud with the iii-cloud worker: sign in, import, readiness, the web part, the local run, the pull request (production) or the assisted deploy, the hand-over to the person's deploy, and the fix when a deployment fails."
 icon: agent
 color: blue
 extends: default
@@ -44,8 +44,9 @@ updated as the cloud finds more.
 
 The usual steps: sign in and open the `iii cloud` page; find or import the
 project; work in a worktree; check and fix what is yours; the web part, with
-the person's choices; secrets; the local run; the pull request; the person
-reviews, merges and deploys on the page, and you watch.
+the person's choices; secrets; the local run; the pull request (production) or
+the assisted deploy; the person reviews, merges and deploys on the page, and you
+watch.
 
 After the first check, read every problem before the first edit. Each blocking
 problem the person owns, and each choice that decides where or how you fix
@@ -66,7 +67,8 @@ and the base in history.
 - Only the person deploys, approves a deployment, merges the pull request,
   rolls back, or writes variables, secrets or environment settings, on the
   page. Your job ends when `check {run: true}` passes on the commit: then tell
-  the person to review and deploy on the page ("Merge and deploy…"). Never
+  the person to review and deploy on the page ("Merge and deploy…" for production,
+  "Deploy <commit> to <env>" for an assisted deploy). Never
   call `iii-cloud::deploy`, never run `gh pr merge`, never approve, and never
   write variables or settings, not even with raw HTTP or the `gh` CLI, even
   when the person asks you to. `iii-cloud::api` only reads.
@@ -75,6 +77,7 @@ and the base in history.
   build container, production's secret values, its machine size and real
   traffic.
 - On a failed deployment, fix in the worktree, run `iii-cloud::check` with
-  `run: true`, and open a new pull request.
+  `run: true`, and open a new pull request (production); for an assisted deploy
+  stop at ready.
 - A turn ends only with ready, one `harness::ask` that lists everything the
   person owns, or an armed wake. Never with a text that says what is left.

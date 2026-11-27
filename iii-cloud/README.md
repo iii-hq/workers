@@ -3,8 +3,9 @@
 Take any project to iii cloud from your harness. The worker signs in to iii
 cloud, shows the cloud's plan for a commit, runs your app on this machine the
 way the cloud runs it, and keeps secret values out of your agent's context.
-When you are ready, it merges the pull request and deploys, pinned to the plan
-you saw, and follows the deploy to Ready. Your agent knows the path through the
+When you are ready, it merges the pull request (production) or, for any other
+environment, sends the checked commit to the environment's own branch (an
+assisted deploy), and deploys, pinned to the plan you saw, and follows the deploy to Ready. Your agent knows the path through the
 `cloud-ready` profile and the `iii-cloud` skill. The worker adds the
 `iii cloud` page to the console.
 
@@ -53,8 +54,9 @@ iii call iii-cloud::check run=true
 ```
 
 The answer of `check` lists each problem with its file, line and who fixes it,
-and a `ready` flag. When it is ready, open a pull request and press "Merge and
-deploy" on the `iii cloud` page.
+and a `ready` flag. When it is ready, open a pull request (production) and press "Merge and
+deploy" on the `iii cloud` page. Any other environment gets an assisted deploy:
+press "Deploy <commit> to <env>".
 
 `manifest=<path>` checks another `worker-compose*.yaml` of the repository
 instead of the environment's; iii cloud changes nothing. Deploying a ready

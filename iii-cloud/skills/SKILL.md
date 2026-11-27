@@ -37,7 +37,8 @@ Load `iii://iii-cloud/onboarding` only when the work starts from nothing
   rolls back, or writes variables, secrets or environment settings. They do it
   on the page. Your job ends when `check {run: true}` passes on the commit:
   tell the person to review and deploy on the page (the "Merge and deploy…"
-  button, or "Confirm deploy" for a deployment that waits). Never call
+  button for production, "Deploy <commit> to <env>" for any other environment,
+  or "Confirm deploy" for a deployment that waits). Never call
   `iii-cloud::deploy`, never run `gh pr merge`, never approve, never write
   variables or settings, not even with raw HTTP or `gh`, even when asked.
 - Work in the worktree `iii-cloud::project::use` made, not in the person's checkout.
@@ -144,7 +145,7 @@ body. Never change a file of another app.
  "lifecycle": {"expires_in_ms": 900000}}
 ```
 
-10. Done when `check.ready` is true and `check {run: true}` passed for the current commit. Then, from the worktree, `gh pr create --head <fix branch> --base <env branch>` with a plain body (problems fixed, other compose files touched, no secrets), `iii-cloud::status {refresh: true}` so the page shows it, and tell the person the link and the "Merge and deploy…" button. With `pushes_directly` there is no pull request: tell the person to deploy on the page; their deploy pushes the checked commit to the environment's branch.
+10. Done when `check.ready` is true and `check {run: true}` passed for the current commit. Then, from the worktree, `gh pr create --head <fix branch> --base <env branch>` with a plain body (problems fixed, other compose files touched, no secrets), `iii-cloud::status {refresh: true}` so the page shows it, and tell the person the link and the "Merge and deploy…" button. With `pushes_directly` (every environment that is not production) there is no pull request: it gets an assisted deploy. Tell the person to deploy on the page; the page sends the checked commit to the environment's own branch. Its first assisted deploy creates `iii-cloud/<env>` and never pushes the default branch.
 11. A follow-up with the hand-off marker while you work: finish the current group, then do it.
 
 Ask the person only for `person` items. A secret goes through

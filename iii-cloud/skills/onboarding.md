@@ -49,7 +49,8 @@ Call `iii-cloud::project::resolve {path}` with the project's folder. Read
   the team in the iii cloud console. This is the GitHub authorization. Resolve
   again after. (`iii-cloud::api` only reads: you cannot start it.)
 - Not imported, `importable` set: the person imports it on the page, choosing
-  the environment name, whether it is production, and one of the listed
+  the environment name, whether it is production (production deploys by pull
+  request; any other environment gets an assisted deploy), and one of the listed
   `manifests`. When several were detected, recommend one with the cloud's
   `suggested_environment`. Each environment has one manifest; see "Several
   compose files" in `iii-cloud`.
@@ -127,7 +128,7 @@ harness::observe {function_id: "iii-cloud::on-change",
 
 On a failed stage, read `run.error` and `run.log_tail`, and the code in `iii-cloud/plan-codes` ("Local run failures"). Fix in the worktree and run again. The run copy moves every engine, http and ade port to a free one, and never uses 3111, 3112, 3113 or 49134. One run per workspace: a run of the same environment and inputs attaches to the going one, and any other replaces it.
 
-## 9. Commit, push and open the pull request
+## 9. Commit, push, and for production open the pull request
 
 ```
 git add -A && git commit -m "<message>"
@@ -141,10 +142,12 @@ Changes: <one line of what you changed>"
 Run it from the worktree. The fix branch is `worktree.branch` of the brief
 (`project.workspace.branch`).
 
-An environment on its own branch (`pushes_directly` in the brief) has no pull
-request: push only your fix branch, check and run, and stop there. The
-person's deploy on the page pushes the checked commit to the environment's
-branch. Never push that branch yourself.
+An environment that is not production (`pushes_directly` in the brief) has no
+pull request: it gets an assisted deploy. Push only your fix branch, check and
+run, and stop there. The person's deploy on the page sends the checked commit to
+the environment's own branch (its first one creates `iii-cloud/<env>`; the
+default branch is never pushed). Never push a branch an environment deploys
+from yourself.
 
 A check is ready only when its base commit is in the branch's history, the worktree is clean, and the run's commit equals the check's commit. A run of uncommitted files has a commit ending in `+dirty`, and it does not count. Commit first, then check and run. Use the `report` of the ready check as the body. `gh` uses the person's
 own GitHub login. Run `iii-cloud::status {refresh: true}` to see the pull request.
@@ -152,8 +155,9 @@ own GitHub login. Run `iii-cloud::status {refresh: true}` to see the pull reques
 ## 10. Hand over the deploy
 
 Your job ends when `check {run: true}` passed on the commit. Tell the person
-to review and deploy on the page with the "Merge and deploy…" button (its
-dialog merges and deploys). Only the person deploys, merges, confirms a
+to review and deploy on the page: the "Merge and deploy…" button for production
+(its dialog merges and deploys), "Deploy <commit> to <env>" for any other
+environment (an assisted deploy). Only the person deploys, merges, confirms a
 waiting deployment, rolls back, or writes variables and settings:
 `iii-cloud::deploy` and `iii-cloud::api::write` are denied to you, and you
 never do it another way (`gh pr merge`, raw HTTP), even when asked. The merge
