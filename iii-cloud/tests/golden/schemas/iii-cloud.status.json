@@ -1695,6 +1695,13 @@
           },
           "title": {
             "type": "string"
+          },
+          "variable": {
+            "description": "The variable a value problem is about (`SECRET_MISSING`, `EMPTY_DEFAULT_VARIABLE`, `LOCAL_VARIABLE_UNSET`), as the problem itself knows it.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

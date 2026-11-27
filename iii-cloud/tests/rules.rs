@@ -1787,3 +1787,13 @@ fn no_skill_or_agent_file_tells_the_agent_to_stage_everything() {
         }
     }
 }
+
+#[test]
+fn a_value_problem_carries_its_variable_itself() {
+    let problems = plan_problems(&plan_fixture()["plan"]);
+    let secret = problems
+        .iter()
+        .find(|p| p.code == "SECRET_MISSING")
+        .expect("the fixture has one");
+    assert_eq!(secret.variable.as_deref(), Some("SESSION_SECRET"));
+}

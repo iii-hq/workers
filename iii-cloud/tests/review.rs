@@ -1315,3 +1315,53 @@ async fn only_the_runs_own_data_directories_are_moved_a_new_file_beside_existing
     let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run2.path())).await;
     assert_eq!(done.moved, vec!["data/queue/x.json"]);
 }
+
+#[tokio::test]
+async fn paths_that_carry_a_secret_are_redacted_and_no_empty_line_is_printed() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx
+        .known_secrets
+        .lock()
+        .unwrap()
+        .push("key-abc-123".into());
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::create_dir_all(ws.join("vault/key-abc-123")).unwrap();
+    std::fs::write(ws.join("vault/key-abc-123/v.json"), "{}").unwrap();
+    iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let d = c
+        .problems
+        .iter()
+        .find(|p| p.code == "RUN_FILES_RESTORED")
+        .and_then(|p| p.detail.clone())
+        .unwrap();
+    assert!(!d.contains("key-abc-123"), "{d}");
+    // Five put-back paths take the whole list: no empty "Moved" line follows.
+    let five: Vec<String> = (0..5).map(|i| format!("f{i}")).collect();
+    let p = iii_cloud::run::restored_problem(
+        &five,
+        &["x".to_string(), "y".to_string()],
+        run_dir.path(),
+    );
+    let d = p.detail.unwrap();
+    assert!(!d.contains("Moved out of the copy"), "{d}");
+    assert!(d.contains("And 2 more."), "{d}");
+}
+
+#[tokio::test]
+async fn a_folder_the_agent_made_before_the_run_stays_when_the_run_writes_in_it() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::create_dir_all(ws.join("data/queue")).unwrap();
+    let run_dir = tempfile::tempdir().unwrap();
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("data/queue/x.json"), "{}").unwrap();
+    // The file was created during the run in a folder that was already there (empty): the file stays,
+    // set aside, and the folder is never removed.
+    let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(run_dir.path())).await;
+    assert!(done.moved.is_empty());
+    assert!(ws.join("data/queue/x.json").exists());
+    assert!(ws.join("data/queue").is_dir());
+}

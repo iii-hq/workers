@@ -1020,6 +1020,10 @@ pub struct Problem {
     /// `EMPTY_DEFAULT_VARIABLE` then has severity `info`; `SECRET_MISSING` stays `block`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+    /// The variable a value problem is about (`SECRET_MISSING`, `EMPTY_DEFAULT_VARIABLE`,
+    /// `LOCAL_VARIABLE_UNSET`), as the problem itself knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

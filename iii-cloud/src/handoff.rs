@@ -1515,6 +1515,10 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
     }) else {
         return false;
     };
+    // That check was already told (the poll, or this button a moment ago): not twice.
+    if h.person_check_told.as_deref() == Some(check_id.as_str()) {
+        return false;
+    }
     let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
         return false;
     };
@@ -1618,16 +1622,8 @@ fn open_value_names(ctx: &Ctx, handoff: &Handoff) -> Vec<String> {
                 && p.severity == Severity::Block
                 && VALUE_CODES.contains(&p.code.as_str())
         }) {
-            // `LOCAL_VARIABLE_UNSET` names it in the title, the plan's issues in the message.
-            let text = if p.code == "LOCAL_VARIABLE_UNSET" {
-                Some(p.title.as_str())
-            } else {
-                p.detail.as_deref()
-            };
-            if let Some(name) = text
-                .and_then(|t| t.split_whitespace().next())
-                .map(|w| w.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
-                .filter(|w| !w.is_empty())
+            // The variable the problem itself carries, never a word of its text.
+            if let Some(name) = p.variable.as_deref()
                 && !names.iter().any(|n| n == name)
             {
                 names.push(name.to_string());

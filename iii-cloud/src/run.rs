@@ -749,13 +749,14 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
         shown.join(", ")
     };
     let mut parts: Vec<String> = vec![];
-    if !restored.is_empty() {
-        parts.push(format!("Put back as committed: {}.", take(restored)));
+    let put_back = take(restored);
+    if !put_back.is_empty() {
+        parts.push(format!("Put back as committed: {put_back}."));
     }
-    if !moved.is_empty() {
+    let taken_out = take(moved);
+    if !taken_out.is_empty() {
         parts.push(format!(
-            "Moved out of the copy (created during the run): {}.",
-            take(moved)
+            "Moved out of the copy (created during the run): {taken_out}."
         ));
     }
     let more = if n > 5 {
@@ -830,6 +831,31 @@ pub async fn dirty_snapshot(ws: &Path) -> Option<std::collections::BTreeMap<Stri
             let dir = p.trim_end_matches('/');
             dirs.insert(dir.to_string());
             parents(&mut dirs, dir);
+            // git collapses an untracked folder to its top: every folder under it was there too.
+            let (root, top) = (ws.to_path_buf(), dir.to_string());
+            let below = tokio::task::spawn_blocking(move || {
+                let mut found = vec![];
+                let mut todo = vec![top];
+                while let Some(d) = todo.pop() {
+                    if found.len() > 5000 {
+                        break;
+                    }
+                    let Ok(read) = std::fs::read_dir(root.join(&d)) else {
+                        continue;
+                    };
+                    for e in read.flatten() {
+                        if e.file_type().is_ok_and(|t| t.is_dir()) {
+                            let sub = format!("{d}/{}", e.file_name().to_string_lossy());
+                            found.push(sub.clone());
+                            todo.push(sub);
+                        }
+                    }
+                }
+                found
+            })
+            .await
+            .unwrap_or_default();
+            dirs.extend(below);
         }
     }
     snapshot.extend(
@@ -916,8 +942,35 @@ pub async fn set_aside_run(
             .filter(|p| !before.contains_key(*p) && tracked.contains(*p))
             .cloned()
             .collect();
-        // Untracked, not ignored files the run created: moved out of the copy (the agent's
-        // staging would sweep them into a commit).
+        let candidates = if candidates.len() <= MAX_WROTE {
+            candidates
+        } else {
+            vec![]
+        };
+        let dir = run_dir.join("left");
+        let before_dirs: std::collections::BTreeSet<String> = before
+            .keys()
+            .map(|k| k.strip_prefix(DIR_KEY).unwrap_or(k).to_string())
+            .collect();
+        // One byte budget for the put-back and the moved files together.
+        let mut budget = LEFT_BYTES_MAX;
+        // Tracked files: save each, check it again, then put it back.
+        let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
+        let (saved, left_over) = tokio::task::spawn_blocking(move || {
+            let mut budget = budget;
+            let kept = keep_files(&ws2, &dir2, candidates, &mut budget);
+            (kept, budget)
+        })
+        .await
+        .unwrap_or_default();
+        budget = left_over;
+        restored = put_back(ws, &saved).await;
+        for p in &restored {
+            after.remove(p);
+        }
+        // Untracked, not ignored files the run created, listed AFTER the put-back (a `.gitignore` the
+        // run changed is back by now): moved out of the copy, or the agent's staging would sweep them
+        // into a commit.
         let untracked: std::collections::BTreeSet<String> =
             tool::git(ws, &["ls-files", "-z", "--others", "--exclude-standard"])
                 .await
@@ -947,63 +1000,29 @@ pub async fn set_aside_run(
             .filter(|p| !before.contains_key(*p) && untracked.contains(*p) && is_runs(p))
             .cloned()
             .collect();
-        let candidates = if candidates.len() <= MAX_WROTE {
-            candidates
-        } else {
-            vec![]
-        };
         let created = if created.len() <= MAX_WROTE {
             created
         } else {
             vec![]
         };
-        if !candidates.is_empty() || !created.is_empty() {
-            let dir = run_dir.join("left");
-            let (ws2, dir2) = (ws.to_path_buf(), dir.clone());
-            let before_dirs: std::collections::BTreeSet<String> = before
-                .keys()
-                .map(|k| k.strip_prefix(DIR_KEY).unwrap_or(k).to_string())
-                .collect();
-            // Save each file, then check again that it still is what was saved: what is put back or
-            // taken away is exactly what `left/` holds. One byte budget for both. (Blocking work.)
-            let (saved, saved_new): (Vec<String>, Vec<String>) =
-                tokio::task::spawn_blocking(move || {
-                    let mut total = 0u64;
-                    let mut keep = |list: Vec<String>| {
-                        let mut kept: Vec<(String, String)> = vec![];
-                        for p in list {
-                            let Some((hash, len)) = save_left(&ws2, &dir2, &p) else {
-                                continue;
-                            };
-                            if total + len > LEFT_BYTES_MAX {
-                                // Over the cap: left as it is, stays set aside.
-                                let _ = std::fs::remove_file(dir2.join(&p));
-                                continue;
-                            }
-                            total += len;
-                            kept.push((p, hash));
-                        }
-                        recheck(&ws2, &dir2, kept)
-                    };
-                    let tracked = keep(candidates);
-                    let created = keep(created);
-                    // The moved files leave the copy now (their copies are in `left/`).
-                    let gone: Vec<String> = created
-                        .into_iter()
-                        .filter(|p| remove_moved(&ws2, p, &before_dirs))
-                        .collect();
-                    (tracked, gone)
-                })
-                .await
-                .unwrap_or_default();
-            restored = put_back(ws, &saved).await;
-            for p in restored.iter().chain(saved_new.iter()) {
+        if !created.is_empty() {
+            let (ws3, dir3) = (ws.to_path_buf(), dir.clone());
+            moved = tokio::task::spawn_blocking(move || {
+                let mut budget = budget;
+                let kept = keep_files(&ws3, &dir3, created, &mut budget);
+                // The moved files leave the copy now (their copies are in `left/`).
+                kept.into_iter()
+                    .filter(|p| remove_moved(&ws3, p, &before_dirs))
+                    .collect::<Vec<String>>()
+            })
+            .await
+            .unwrap_or_default();
+            for p in &moved {
                 after.remove(p);
             }
-            moved = saved_new;
-            if !restored.is_empty() || !moved.is_empty() {
-                left_dir = Some(dir);
-            }
+        }
+        if !restored.is_empty() || !moved.is_empty() {
+            left_dir = Some(dir);
         }
     }
     let mut files: std::collections::BTreeMap<String, String> = after
@@ -1045,6 +1064,25 @@ pub async fn set_aside_run(
         moved,
         saved_in: left_dir,
     }
+}
+
+/// Save each file of `list` under `dir`, within the byte budget, and keep those that still are what
+/// was saved when looked at again (`recheck`).
+fn keep_files(ws: &Path, dir: &Path, list: Vec<String>, budget: &mut u64) -> Vec<String> {
+    let mut kept: Vec<(String, String)> = vec![];
+    for p in list {
+        let Some((hash, len)) = save_left(ws, dir, &p) else {
+            continue;
+        };
+        if len > *budget {
+            // Over the cap: left as it is, stays set aside.
+            let _ = std::fs::remove_file(dir.join(&p));
+            continue;
+        }
+        *budget -= len;
+        kept.push((p, hash));
+    }
+    recheck(ws, dir, kept)
 }
 
 /// Take a moved file out of the copy (its saved copy is in `left/`), and the directories it leaves
@@ -1109,16 +1147,21 @@ async fn put_back(ws: &Path, paths: &[String]) -> Vec<String> {
     if batch.is_ok_and(|o| o.ok()) {
         return paths.to_vec();
     }
-    let mut back = vec![];
     for p in paths {
-        if tool::git(ws, &["--literal-pathspecs", "checkout", "--", p])
-            .await
-            .is_ok()
-        {
-            back.push(p.clone());
-        }
+        let _ = tool::git(ws, &["--literal-pathspecs", "checkout", "--", p]).await;
     }
-    back
+    // Which are back, whatever the batch or the single checkouts answered: the ones git no longer
+    // lists as modified or deleted.
+    let still: std::collections::BTreeSet<String> =
+        tool::git(ws, &["ls-files", "-z", "--modified", "--deleted"])
+            .await
+            .map(|o| o.split('\0').map(str::to_owned).collect())
+            .unwrap_or_default();
+    paths
+        .iter()
+        .filter(|p| !still.contains(*p))
+        .cloned()
+        .collect()
 }
 
 /// Every parent of `rel` that exists in `ws` is a real directory (not a file, not a symlink).
@@ -1544,10 +1587,13 @@ impl Exec {
                 self.note(&note);
             }
             if !done.restored.is_empty() || !done.moved.is_empty() {
-                self.run.restored = done.restored.clone();
-                self.run.moved = done.moved.clone();
+                // A path can carry a secret (a vault named after a key): said redacted.
+                let restored: Vec<String> = done.restored.iter().map(|p| self.redact(p)).collect();
+                let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
+                self.run.restored = restored.clone();
+                self.run.moved = moved.clone();
                 if let Some(dir) = &done.saved_in {
-                    let problem = restored_problem(&done.restored, &done.moved, dir);
+                    let problem = restored_problem(&restored, &moved, dir);
                     let mut ids = self.followers.lock().unwrap().clone();
                     ids.push(self.check_id.clone());
                     ids.sort();

@@ -114,6 +114,7 @@ pub fn plan_problems(plan: &Value) -> Vec<Problem> {
             let kind = issue.get("kind").and_then(Value::as_str);
             let mut problem = Problem {
                 skipped: false,
+                variable: crate::problems::issue_variable(issue).map(str::to_owned),
                 id: problem_id(
                     Source::CloudPlan,
                     &code,
@@ -1356,7 +1357,11 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 match &own_changes {
                     Some(p) => format!(
                         "{}{}. ",
-                        p.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+                        p.iter()
+                            .take(5)
+                            .map(|x| crate::run::redact(x, &crate::handoff::env_values(ctx)))
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         if p.len() > 5 { " and more" } else { "" }
                     ),
                     None => String::new(),
@@ -1379,9 +1384,13 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             .map(|w| (w.restored.clone(), w.moved.clone(), w.left_dir.clone()))
     }) && !(restored.is_empty() && moved.is_empty())
     {
+        let secrets = crate::handoff::env_values(ctx);
+        let say = |l: &[String]| -> Vec<String> {
+            l.iter().map(|p| crate::run::redact(p, &secrets)).collect()
+        };
         here_problems.push(crate::run::restored_problem(
-            &restored,
-            &moved,
+            &say(&restored),
+            &say(&moved),
             std::path::Path::new(&dir),
         ));
     }
@@ -1401,7 +1410,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 set_aside
                     .iter()
                     .take(5)
-                    .cloned()
+                    .map(|p| crate::run::redact(p, &crate::handoff::env_values(ctx)))
                     .collect::<Vec<_>>()
                     .join(", "),
                 if set_aside.len() > 5 { " and more" } else { "" }

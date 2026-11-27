@@ -623,6 +623,7 @@ async fn an_import_hand_off_needs_no_check_and_the_brief_has_what_the_agent_need
     std::fs::write(ws.join(".env"), "TOKEN=hunter2hunter2\n").unwrap();
     let problem = |owner, title: &str, detail: &str| Problem {
         skipped: false,
+        variable: None,
         id: title.into(),
         source: Source::CheckHere,
         code: "X".into(),
@@ -1432,6 +1433,7 @@ async fn auto_fix_is_on_by_default_and_the_status_follows_the_config() {
 fn prob(id: &str, code: &str) -> Problem {
     Problem {
         skipped: false,
+        variable: None,
         id: id.into(),
         source: Source::CheckHere,
         code: code.into(),

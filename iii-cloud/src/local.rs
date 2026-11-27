@@ -748,6 +748,7 @@ pub fn here(
 ) -> Problem {
     Problem {
         skipped: false,
+        variable: None,
         id: problem_id(Source::CheckHere, code, file.as_deref(), None, &title),
         source: Source::CheckHere,
         code: code.to_string(),
@@ -1171,7 +1172,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 if !env.iter().any(|e| e == name) {
                     // Only an empty default that iii cloud has a value for is needed for that reason.
                     let because_cloud_has_it = of_name().all(|x| x.default.is_some());
-                    out.push(here(
+                    let mut unset = here(
                         "LOCAL_VARIABLE_UNSET",
                         format!("{name} has no value here"),
                         Some(if because_cloud_has_it {
@@ -1183,7 +1184,9 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                         }),
                         Owner::Person,
                         None,
-                    ));
+                    );
+                    unset.variable = Some(name.to_string());
+                    out.push(unset);
                 }
             }
         }
