@@ -560,6 +560,34 @@ pub fn runtime_base(runtime: &str) -> &str {
     runtime.split('@').next().unwrap_or(runtime)
 }
 
+/// Tools the cloud's image of a runtime is KNOWN not to hold: `(runtime base, tool)`. Only what is
+/// confirmed goes here (a false block is worse than a miss); a row is one line.
+const NOT_IN_IMAGE: &[(&str, &str)] = &[("node", "bun"), ("node", "bunx")];
+
+/// The tools of `command` that the image of `runtime` is known not to have. The command is split on
+/// `&&`, `||`, `;` and `|`; of each part the first word after leading `NAME=value` words and `exec`.
+pub fn tools_missing_in_image(runtime: &str, command: &str) -> Vec<String> {
+    let mut found: Vec<String> = vec![];
+    for part in command.split(['&', '|', ';']) {
+        let tool = part
+            .split_whitespace()
+            .skip_while(|w| {
+                *w == "exec"
+                    || w.split_once('=').is_some_and(|(k, _)| {
+                        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    })
+            })
+            .next();
+        if let Some(t) = tool
+            && NOT_IN_IMAGE.iter().any(|(r, x)| *r == runtime && x == &t)
+            && !found.iter().any(|f| f == t)
+        {
+            found.push(t.to_string());
+        }
+    }
+    found
+}
+
 fn accepted_locks(runtime: &str) -> &'static [Lock] {
     match runtime {
         "node" => &[Lock::Npm, Lock::Pnpm, Lock::Yarn],
@@ -924,6 +952,30 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 continue;
             };
             let base = runtime_base(&runtime).to_string();
+            // The commands that run in this worker's image: its run script, and the release
+            // command when the manifest ties it to this worker. (`cloud.build` is one command
+            // for the whole project, not tied to a worker's image: not read here.)
+            let release = m.cloud_release().filter(|r| r.worker == name);
+            let commands = [
+                container
+                    .pointer("/scripts/run")
+                    .and_then(Value::as_str)
+                    .map(|c| ("run", c)),
+                release.as_ref().map(|r| ("release", r.command.as_str())),
+            ];
+            for (what, command) in commands.into_iter().flatten() {
+                for tool in tools_missing_in_image(&base, command) {
+                    out.push(here(
+                        "RUN_COMMAND_NOT_IN_IMAGE",
+                        format!("{name} runs with {tool}, but its runtime is {base}"),
+                        Some(format!(
+                            "The cloud's {base} image has no {tool}: the worker would exit as it starts (127). Its {what} command is `{command}`."
+                        )),
+                        Owner::Agent,
+                        Some(rel(i.workspace, &dir)),
+                    ));
+                }
+            }
             if seen_runtimes.contains(&base) || accepted_locks(&base).is_empty() {
                 continue;
             }
