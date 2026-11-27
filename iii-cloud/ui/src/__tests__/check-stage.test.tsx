@@ -1268,7 +1268,23 @@ describe('the check follows the canvas', () => {
       expect(agentAsks({ ...quiet, agent: { ...bare, question: 'Keep path://?' } })).toBe(true)
     })
 
-    it('a run that failed at another stage says values are not the cause, and never "optional ones can wait"', async () => {
+    it('a run that failed at install says values are not the cause, and never "optional ones can wait"', async () => {
+      const atRelease = {
+        ...quiet,
+        check: {
+          ...quiet.check!,
+          run: {
+            ...quiet.check!.run!,
+            error: { ...quiet.check!.run!.error!, stage: 'install' as const, code: 'INSTALL_FAILED' },
+          },
+        },
+      }
+      await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
+      expect(card()?.textContent).toContain('The local run failed at Frozen install; values are not the cause.')
+      expect(card()?.textContent).not.toContain('If the application needs')
+      expect(card()?.textContent).not.toContain('Optional ones can wait')
+    })
+    it("a run that failed at the release command may be a value, or the agent's", async () => {
       const atRelease = {
         ...quiet,
         check: {
@@ -1280,9 +1296,10 @@ describe('the check follows the canvas', () => {
         },
       }
       await stage(atRelease, { 'iii-cloud::values': answer(names('OPT', 4)) })
-      expect(card()?.textContent).toContain('The local run failed at Release command; values are not the cause.')
-      expect(card()?.textContent).not.toContain('If the application needs')
-      expect(card()?.textContent).not.toContain('Optional ones can wait')
+      expect(card()?.textContent).toContain(
+        "The local run failed at Release command. If that command reads one of the names above, set it; otherwise it is your agent's.",
+      )
+      expect(card()?.textContent).not.toContain('values are not the cause')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

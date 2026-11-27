@@ -11,6 +11,8 @@ import type { ValuesRead } from './ValuesEditor'
 
 /** Where the application starts: the stages a missing value can make fail. */
 const APP_STAGES = new Set(['workers', 'healthcheck'])
+/** The release command and the compose start run with the run's values too: a value may explain them, or the agent's part does. */
+const COMMAND_STAGES = new Set(['release', 'compose_up'])
 const NO_WRITE = {
   api_key:
     "An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser.",
@@ -167,12 +169,17 @@ export function ValuesCard({
             ) : null}
             {failedAt ? (
               // Values can explain a run only where the application starts; at any other stage they are not the cause.
-              APP_STAGES.has(failedAt.stage) && plan.optional.length ? (
+              COMMAND_STAGES.has(failedAt.stage) && toSet.length ? (
+                <p className="iii-cloud-cs-sub">
+                  {`The local run failed at ${failedAt.label}. If that command reads one of the names above, set it; otherwise it is your agent's.`}
+                </p>
+              ) : APP_STAGES.has(failedAt.stage) && plan.optional.length ? (
                 <p className="iii-cloud-cs-sub">
                   The local run failed. If the application needs one of the names above, set it:{' '}
                   {linesShown ? "the run's last lines say which." : "open the local run's row below."}
                 </p>
               ) : !APP_STAGES.has(failedAt.stage) &&
+                !COMMAND_STAGES.has(failedAt.stage) &&
                 !plan.required.length &&
                 !plan.asked.length &&
                 !plan.local.length ? (
