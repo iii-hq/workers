@@ -725,6 +725,29 @@ describe('no folder known yet, and adding a project', () => {
     expect(of(h, 'iii-cloud::project::resolve').at(-1)).toEqual({ path: '/home/you/workspaces/billing' })
   })
 
+  it('a failed read of the projects is not "no project": the failure and Try again on the start screen', async () => {
+    await mount(stale, add, cloudAnswers({}))
+    expect(text()).toContain("iii cloud's projects could not be read")
+    expect(text()).not.toContain('You have no project in iii cloud yet.')
+    expect(btn('Try again')).toBeTruthy()
+  })
+
+  it('Back during a folder read drops its answer', async () => {
+    let answer: (p: unknown) => void = () => {}
+    await mount(stale, add, {
+      ...cloud,
+      'iii-cloud::project::resolve': () => new Promise((r) => (answer = r)),
+    })
+    await pick('Create a new project in iii cloud')
+    await folder('/home/you/workspaces/billing')
+    await click(btn('Back'))
+    await act(async () => answer(candidate))
+    await flush()
+    expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe('Add a project')
+    expect(detail('Folder')).toBeNull()
+    expect(text()).not.toContain('is already billing')
+  })
+
   it('more than eight projects: a filter', async () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       id: `p${i}`,
@@ -737,6 +760,9 @@ describe('no folder known yet, and adding a project', () => {
     expect(input).not.toBeNull()
     await type(input, 'app-3')
     expect(el.querySelectorAll('[aria-label="Projects in iii cloud"] [role=row]')).toHaveLength(1)
+    expect(text()).not.toContain('No project matches')
+    await type(input, 'zzz')
+    expect(text()).toContain('No project matches “zzz”.')
   })
 
   it("the old context with newProject lands on option 2's folder step", async () => {

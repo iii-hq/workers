@@ -6,7 +6,7 @@ import type { Host } from '@iii-dev/console-ui'
 import { Button, ConfirmDialog, DirectoryPicker, List, ListItem, PageMain, Select, Skeleton } from '@iii-dev/console-ui'
 import { Circle, CircleDot } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { AddStart, Already, FolderStep, type Listed, ProjectList, useAccountProjects } from './AddProject'
+import { AddStart, Already, FolderStep, type Listed, ProjectList, ReadFailure, useAccountProjects } from './AddProject'
 import { useCloud } from './api'
 import { useLaunch } from './asked'
 import { ConnectView } from './ConnectView'
@@ -123,7 +123,16 @@ function AddFlow(props: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) 
   if (flow.at === 'start')
     step = (
       <AddStart
-        existing={account.loaded && !account.projects.length ? 'You have no project in iii cloud yet.' : null}
+        existing={
+          !account.loaded || account.projects.length
+            ? null
+            : account.failed.length
+              ? "iii cloud's projects could not be read."
+              : 'You have no project in iii cloud yet.'
+        }
+        failure={
+          <ReadFailure failed={account.failed} teams={account.teams} error={account.error} retry={account.retry} />
+        }
         onExisting={() => setFlow({ at: 'list' })}
         onNew={() => setFlow({ at: 'folder' })}
         cancel={back}
@@ -134,7 +143,9 @@ function AddFlow(props: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) 
       <ProjectList
         projects={account.projects}
         loaded={account.loaded}
-        error={account.error}
+        failure={
+          <ReadFailure failed={account.failed} teams={account.teams} error={account.error} retry={account.retry} />
+        }
         onPick={(cp) => setFlow({ at: 'folder', cp })}
         onBack={() => setFlow({ at: 'start' })}
       />
