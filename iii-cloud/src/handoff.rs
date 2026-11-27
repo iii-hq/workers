@@ -277,7 +277,28 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
                 .cloned()
         })
     });
+    // The same kind already exists and its agent is not working (it ended its turn, waits on a
+    // wake, or stalled): that one is reused, and sent on.
+    let same = same.or_else(|| {
+        ctx.store.read(|s| {
+            s.handoffs
+                .iter()
+                .find(|h| {
+                    h.environment_id == sel.env.id
+                        && h.kind == request.kind
+                        && h.deployment_id == request.deployment_id
+                        && h.agent.session_id.is_some()
+                        && match h.agent.state {
+                            AgentPhase::Done => !retired(ctx, h),
+                            AgentPhase::WaitingForYou | AgentPhase::Stalled => true,
+                            _ => false,
+                        }
+                })
+                .cloned()
+        })
+    });
     if let Some(h) = same {
+        let sent = send_on(ctx, &h).await;
         let delivered = match (&h.agent.session_id, request.text.as_deref()) {
             (Some(session), Some(text)) => {
                 deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
@@ -304,6 +325,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
             delivered,
             session_id: h.agent.session_id,
             reused: true,
+            sent: Some(sent),
         });
     }
     let (mut workspace_path, mut branch, checkout, source) = ctx.store.read(|s| {
@@ -400,6 +422,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         delivered: delivered_to.is_some(),
         session_id: delivered_to,
         reused: false,
+        sent: None,
     })
 }
 
@@ -1443,6 +1466,44 @@ fn open_problems(ctx: &Ctx, handoff: &Handoff, owner: Owner) -> Vec<(String, Str
             })
             .unwrap_or_default()
     })
+}
+
+/// An existing hand-off's agent is not working and the person asks again: send it on with what
+/// the newest check of the environment leaves it (its blocking problems and its failed run).
+/// Nothing for an agent that works, one with a real ask of its own open (the person owes an
+/// answer first), one with nothing open, or a check whose run still goes. Whether it went.
+async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
+    let idle = match h.agent.state {
+        AgentPhase::Waiting | AgentPhase::Done | AgentPhase::Stalled => true,
+        AgentPhase::WaitingForYou => h.agent.question_source != Some(QuestionSource::Agent),
+        _ => false,
+    };
+    let Some(session) = h.agent.session_id.clone().filter(|_| idle) else {
+        return false;
+    };
+    let Some(check_id) = ctx.store.read(|s| {
+        s.check
+            .iter()
+            .chain(s.checks.iter())
+            .find(|c| c.environment_id == h.environment_id)
+            .map(|c| c.id.clone())
+    }) else {
+        return false;
+    };
+    let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
+        return false;
+    };
+    let sent =
+        send_continue(ctx, h, &session, &lines, &env_values(ctx), None).await == Continue::Sent;
+    if sent {
+        // The poll must not send the same check again.
+        ctx.store.update(|s| {
+            if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
+                h2.person_check_told = Some(check_id.clone());
+            }
+        });
+    }
+    sent
 }
 
 /// A check the person started on a hand-off's worktree has ended: when the agent is not

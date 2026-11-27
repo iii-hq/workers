@@ -319,6 +319,12 @@ pub struct HandoffResponse {
     /// True: an equal hand-off was already open (a double click), and this is it.
     #[serde(default)]
     pub reused: bool,
+    /// With `reused`: the worker sent the open hand-off's agent on (the same "continue" as after a
+    /// person's check: the newest check's blocking problems of the agent's, and its failed run).
+    /// False: nothing was sent (it works, asks the person something, or has nothing open).
+    /// Absent for a new hand-off.
+    #[serde(default)]
+    pub sent: Option<bool>,
 }
 
 /// `iii-cloud::handoff::stop` input.

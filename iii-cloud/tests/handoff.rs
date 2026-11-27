@@ -3614,3 +3614,47 @@ async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
     assert!(continues(&h).is_empty());
     assert!(h.ctx.store.read(|s| s.handoffs[0].person_check.is_none()));
 }
+
+#[tokio::test]
+async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_check_leaves_it() {
+    let (h, _ws, _w) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    let before = continues(&h).len();
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(true), "{again:?}");
+    let told = continues(&h);
+    assert_eq!(told.len() - before, 1);
+    assert!(told.last().unwrap().contains("RELEASE_FAILED"));
+    // Asked again with the same check: the poll does not send it a second time.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(continues(&h).len() - before, 1);
+}
+
+#[tokio::test]
+async fn fix_with_your_agent_sends_nothing_to_a_working_agent_an_open_ask_or_nothing_open() {
+    // Nothing open for the agent: a ready check.
+    let (h, _ws, _w) = ended_agent().await;
+    person_check(&h, vec![], None, true);
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(false), "{again:?}");
+    assert!(continues(&h).is_empty());
+    // A real ask of the agent's is open: the person owes an answer first.
+    let (h, _ws, w) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    *w.question.lock().unwrap() = Some("Which role do you want?".into());
+    until(&h, "a real ask", |a| {
+        a.question_source == Some(QuestionSource::Agent)
+    })
+    .await;
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(false), "{again:?}");
+    assert!(continues(&h).is_empty());
+    // A working agent.
+    let (h, _ws, w) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    *w.status.lock().unwrap() = "working".into();
+    until(&h, "working again", |a| a.state == AgentPhase::Working).await;
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(again.reused && again.sent == Some(false), "{again:?}");
+    assert!(continues(&h).is_empty());
+}
