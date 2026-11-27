@@ -152,6 +152,9 @@ export function hubOf(host: Host): Hub {
     if (m && m !== checkId) {
       writeKey(MOVED(envId), null)
       writeKey(PICKED(envId), null)
+    } else if (!m) {
+      // A new environment has no move to end: the check that arrived is the one the pick was for.
+      writeKey(PICKED(envId), null)
     }
   }
   const listeners = new Set<() => void>()
