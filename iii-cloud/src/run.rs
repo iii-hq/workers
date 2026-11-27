@@ -422,6 +422,8 @@ struct Exec {
     problems: Vec<String>,
     /// Values the run must never show: `.env` values and bindings.
     secrets: Vec<String>,
+    /// The run's own `.env` and folder values by name, for the kept copies.
+    named: Vec<Named>,
     prep: Option<Prep>,
     pg: Vec<String>,
     child: Option<Child>,
@@ -773,7 +775,7 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
             if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{more} The versions the run left are in {}; values of secrets are replaced in those copies. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
+            "{}{more} The versions the run left are in {}; values of secrets are replaced in those copies (a value that came from a variable reads `[redacted:NAME]`, so an ordinary one is recovered from its name). If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
             parts.join(" "),
             dir.display()
         )),
@@ -939,8 +941,11 @@ pub async fn set_aside_run(
     before: &std::collections::BTreeMap<String, String>,
     run_dir: Option<&Path>,
 ) -> SetAside {
-    set_aside_run_with(ctx, ws, before, run_dir, &crate::handoff::env_values(ctx)).await
+    set_aside_run_with(ctx, ws, before, run_dir, &crate::handoff::env_pairs(ctx)).await
 }
+
+/// A secret value and the variable it came from, when it came from one.
+pub type Named = (Option<String>, String);
 
 /// `set_aside_run` with the secret values to replace in the kept copies: the run's own full set.
 pub async fn set_aside_run_with(
@@ -948,7 +953,7 @@ pub async fn set_aside_run_with(
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
     run_dir: Option<&Path>,
-    secrets: &[String],
+    secrets: &[Named],
 ) -> SetAside {
     // The person's own folder: every change in it is theirs to judge, none is the run's.
     if is_persons_folder(ctx, ws) {
@@ -1113,7 +1118,7 @@ fn keep_files(
     dir: &Path,
     list: Vec<String>,
     budget: &mut u64,
-    secrets: &[String],
+    secrets: &[Named],
 ) -> Vec<String> {
     let mut kept: Vec<(String, String)> = vec![];
     for p in list {
@@ -1159,7 +1164,7 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
 /// Right before the checkout: each saved file is hashed again. One whose content changed since its
 /// save is saved again, and put back only if it holds still: `left/` always has the bytes that
 /// the checkout replaces.
-fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>, secrets: &[String]) -> Vec<String> {
+fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>, secrets: &[Named]) -> Vec<String> {
     kept.into_iter()
         .filter_map(|(p, hash)| {
             if fingerprint(&ws.join(&p)) == hash {
@@ -1238,7 +1243,7 @@ fn parents_are_directories(ws: &Path, rel: &str) -> bool {
 /// otherwise sit there in the clear, for anyone who reads `left/`); putting a file back uses
 /// `git checkout`, never this copy. The hash returned is of the SOURCE bytes, so the guard that
 /// looks at the file again compares what is really there. A file that is not text is not kept.
-fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(String, u64)> {
+fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[Named]) -> Option<(String, u64)> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -1263,7 +1268,13 @@ fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(St
         .ok()?;
     let bytes = std::fs::read(&from).ok()?;
     let text = std::str::from_utf8(&bytes).ok()?;
-    let kept = redact(text, secrets);
+    let kept = redact_named(
+        text,
+        &secrets
+            .iter()
+            .map(|(n, v)| (n.as_deref(), v.as_str()))
+            .collect::<Vec<_>>(),
+    );
     std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -1465,6 +1476,7 @@ async fn prepare(
         settings: env_body.get("settings").cloned().unwrap_or(Value::Null),
         problems: check.problems.iter().map(|p| p.code.clone()).collect(),
         secrets: vec![],
+        named: vec![],
         prep: None,
         pg: vec![],
         child: None,
@@ -1638,8 +1650,10 @@ impl Exec {
         if let Some(before) = self.wrote_before.take() {
             // The kept copies are written with every secret this run knows replaced (its `.env`,
             // the folder's values, the database URL and passwords) and what the worker holds.
-            let mut secrets = self.secrets.clone();
-            secrets.extend(crate::handoff::env_values(&self.ctx));
+            // Named values first: a value both named and not shows its name.
+            let mut secrets = self.named.clone();
+            secrets.extend(crate::handoff::env_pairs(&self.ctx));
+            secrets.extend(self.secrets.iter().map(|v| (None, v.clone())));
             let done = set_aside_run_with(
                 &self.ctx,
                 &self.workspace,
@@ -1783,6 +1797,8 @@ impl Exec {
             }
         }
         self.secrets.extend(run_env.iter().map(|(_, v)| v.clone()));
+        self.named
+            .extend(run_env.iter().map(|(n, v)| (Some(n.clone()), v.clone())));
         self.secrets
             .extend(self.ctx.known_secrets.lock().unwrap().iter().cloned());
         let http_ports = manifest
@@ -3198,6 +3214,26 @@ mod tests {
     use super::{recheck, redact, save_left};
 
     #[test]
+    fn a_kept_copy_names_the_variable_a_value_came_from() {
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("c.yaml"),
+            "level: info\nsee the info page\nkey: sk_live_abcdef\n",
+        )
+        .unwrap();
+        let secrets = vec![
+            (Some("LOG_LEVEL".to_string()), "info".to_string()),
+            (None, "sk_live_abcdef".to_string()),
+        ];
+        save_left(ws.path(), left.path(), "c.yaml", &secrets).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("c.yaml")).unwrap(),
+            "level: [redacted:LOG_LEVEL]\nsee the [redacted:LOG_LEVEL] page\nkey: [redacted]\n"
+        );
+    }
+
+    #[test]
     fn a_value_is_caught_as_a_writer_may_have_written_it() {
         let pem = "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQ\nsecondlineofthekey==\n-----END KEY-----";
         let quoted = "it's-a-secret-v4lue";
@@ -3237,7 +3273,10 @@ mod tests {
             ws.path(),
             left.path(),
             "c.yaml",
-            &secrets(&["test", "app", key, url]),
+            &secrets(&["test", "app", key, url])
+                .into_iter()
+                .map(|v| (None, v))
+                .collect::<Vec<_>>(),
         )
         .unwrap();
         assert_eq!(
@@ -3276,7 +3315,7 @@ mod tests {
     fn the_kept_copy_has_secrets_replaced_and_the_guard_compares_the_source() {
         let ws = tempfile::tempdir().unwrap();
         let left = tempfile::tempdir().unwrap();
-        let secrets = vec!["pg-pass-xyz".to_string()];
+        let secrets = vec![(None, "pg-pass-xyz".to_string())];
         std::fs::write(
             ws.path().join("c.yaml"),
             "url: postgres://u:pg-pass-xyz@h/db\n",

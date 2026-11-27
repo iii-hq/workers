@@ -106,8 +106,24 @@ fn first_text(message: &Value) -> String {
 }
 
 pub fn env_values(ctx: &Ctx) -> Vec<String> {
-    let mut out: Vec<String> = ctx.known_secrets.lock().unwrap().clone();
+    env_pairs(ctx).into_iter().map(|(_, v)| v).collect()
+}
+
+/// `env_values` with the variable each value came from (None for one only the worker holds):
+/// the names that a kept copy shows in place of a value.
+pub fn env_pairs(ctx: &Ctx) -> Vec<(Option<String>, String)> {
+    let known = |out: &mut Vec<(Option<String>, String)>| {
+        out.extend(
+            ctx.known_secrets
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|v| (None, v.clone())),
+        );
+    };
+    let mut out = Vec::new();
     let Ok(sel) = selected(ctx) else {
+        known(&mut out);
         return out;
     };
     let checked = ctx
@@ -127,9 +143,14 @@ pub fn env_values(ctx: &Ctx) -> Vec<String> {
     }
     for dir in dirs {
         if let Ok(text) = std::fs::read_to_string(dir.join(".env")) {
-            out.extend(crate::local::parse_env(&text).into_iter().map(|(_, v)| v));
+            out.extend(
+                crate::local::parse_env(&text)
+                    .into_iter()
+                    .map(|(n, v)| (Some(n), v)),
+            );
         }
     }
+    known(&mut out);
     out
 }
 
