@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import {
   appendFile,
   link,
@@ -1539,6 +1540,195 @@ describe('authorization', () => {
           s.host.calls.filter((c) => c.function_id === 'shell::exec').map((c) => c.payload.command),
         ),
       ).toEqual(new Set(["'fixture-cli' agents --json --all", 'python3']));
+    });
+  });
+
+  const pendingOrSettled = (promise: Promise<unknown>) =>
+    Promise.race([
+      promise.then(() => 'settled'),
+      new Promise((resolve) => setImmediate(() => resolve('pending'))),
+    ]);
+  const inventoryCalls = (s: SyntheticHost) =>
+    s.host.calls.filter((c) => String(c.payload.command).includes(' agents --json')).length;
+
+  // Denies access, then grants it again with a baseline read that fails once.
+  async function failBaselineOnce(s: SyntheticHost) {
+    await observe(s, 'retained');
+    s.host.config = async () => null;
+    await s.poll();
+    s.host.config = async () => ({ external_sessions: true });
+    let failed = false;
+    s.host.beforeRead = async () => {
+      if (failed) return;
+      failed = true;
+      throw new Error('baseline unavailable');
+    };
+  }
+
+  it('delivers a reply appended after a refresh grant with a retained watch', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      await setPermission(s, false);
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      await setPermission(s, true);
+      await s.permission.watchCheckpointSettled();
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  it('settles the refresh checkpoint without an inventory wait when no watch is retained', async () => {
+    await withSyntheticHost(async (s) => {
+      await setPermission(s, false);
+      s.host.beforeInventory = () => new Promise<void>(() => {});
+      const before = inventoryCalls(s);
+      await setPermission(s, true);
+      expect(s.permission.epoch).not.toBeNull();
+      expect(await pendingOrSettled(s.permission.watchCheckpointSettled())).toBe('settled');
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      expect(inventoryCalls(s)).toBe(before);
+    });
+  });
+
+  it('a refresh that denies access starts no checkpoint', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      const before = reads(s).length;
+      await setPermission(s, false);
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      expect(s.permission.epoch).toBeNull();
+      expect(reads(s)).toHaveLength(before);
+    });
+  });
+
+  it('a failed recovery baseline does not confirm', async () => {
+    await withSyntheticHost(async (s) => {
+      await failBaselineOnce(s);
+      const before = reads(s).length;
+      expect(await s.permission.confirm()).toBeNull();
+      expect(reads(s)).toHaveLength(before + 1);
+      expect(s.permission.epoch).toBeNull();
+      expect(s.permission.watchCheckpointPending).toBe(false);
+    });
+  });
+
+  it('retries a failed recovery baseline', async () => {
+    await withSyntheticHost(async (s) => {
+      await failBaselineOnce(s);
+      expect(await s.permission.confirm()).toBeNull();
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      // The reply lands while the retried checkpoint is still pending, right
+      // after its baseline read: the grant was never reported before it.
+      let written = false;
+      s.host.hostOutput = (stdout) => {
+        if (!written) {
+          written = true;
+          appendFileSync(s.file, lines(answer(2, 1, 'written while recovery was failing')));
+        }
+        return stdout;
+      };
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(written).toBe(true);
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(2), text: 'written while recovery was failing' },
+      ]);
+    });
+  });
+
+  it('a validated viewer boundary completes a recovery whose baseline failed', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted !== 1) return;
+        await checkpoint.wait();
+        throw new Error('baseline unavailable');
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer boundary')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.permission.watchCheckpointSettled();
+      expect(s.permission.epoch).not.toBeNull();
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after recovery')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'after viewer boundary' },
+        { id: recordId(4), text: 'after recovery' },
+      ]);
+    });
+  });
+
+  const dispatched = (s: SyntheticHost, from = 0) =>
+    s.host.calls
+      .slice(from)
+      .filter((c) => c.function_id === ON)
+      .map((c) => [c.metadata?.for_observer, (c.payload.reply as { id: string }).id]);
+  const failSecondDispatchOnce = (s: SyntheticHost) => {
+    let n = 0;
+    s.host.beforeDelivery = async () => {
+      if (++n === 2) throw new Error('dispatch failed');
+    };
+  };
+
+  it('does not redeliver replies dispatched before a mid-page failure', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      failSecondDispatchOnce(s);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'first' }]);
+      const retry = s.host.calls.length;
+      await s.poll();
+      expect(dispatched(s, retry)).toEqual([['A', recordId(3)]]);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+      ]);
+    });
+  });
+
+  it('mid-page failure with two watches delivers each reply once per watch', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      failSecondDispatchOnce(s);
+      await s.poll();
+      const retry = s.host.calls.length;
+      await s.poll();
+      expect(dispatched(s, retry)).toEqual([
+        ['A', recordId(3)],
+        ['B', recordId(2)],
+        ['B', recordId(3)],
+      ]);
+      await s.poll();
+      const both = [
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+      ];
+      expect(seen(s, 'A')).toEqual(both);
+      expect(seen(s, 'B')).toEqual(both);
     });
   });
 });

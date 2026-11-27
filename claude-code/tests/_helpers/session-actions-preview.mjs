@@ -581,4 +581,67 @@ async function testSessionActions(code) {
     assert.equal(document.documentElement.dataset.replyWatches, '0');
     assert.match(document.querySelector('main').textContent, /Terminal open calls:\s*0/);
   });
+
+  // Starts a fork of `name` whose describe stays pending until `release` runs.
+  async function pendingFork({ click, shortcut, text }, name) {
+    shortcut('KeyD');
+    await click(`Fork ${name}`);
+    await click('Create fork');
+    await text('Opening…');
+  }
+  const settle = (document) =>
+    new Promise((resolve) => document.defaultView.setTimeout(resolve, 100));
+  const openCalls = (document) =>
+    document.querySelector('main').textContent.match(/Terminal open calls:\s*(\d+)/)[1];
+
+  await test('a worker-owned row that leaves the list still forks', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, shortcut, text, until } = ui;
+    await pendingFork(ui, 'Console original');
+    shortcut('KeyI');
+    await until(() => !document.querySelector('[aria-label="Open original: Console original"]'));
+    shortcut('KeyE');
+    await text('Separate fork terminal · copy-1');
+    assert.equal(openCalls(document), '1');
+  });
+
+  await test('a refresh that keeps the grant and the row still forks', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { click, document, shortcut, text } = ui;
+    await pendingFork(ui, 'Design review');
+    await click('Refresh sessions');
+    await settle(document);
+    shortcut('KeyE');
+    await text('Separate fork terminal · copy-1');
+    assert.equal(openCalls(document), '1');
+  });
+
+  const workerRun = async (t) => {
+    const ui = setup(t);
+    await ui.text('Console original');
+    const select = ui.document.querySelector('select');
+    select.value = 'partial';
+    select.dispatchEvent(new ui.document.defaultView.Event('change', { bubbles: true }));
+    return ui;
+  };
+
+  await test('headless rows show no Open original control', async (t) => {
+    const { document, text, until } = await workerRun(t);
+    await text('Worker run');
+    await until(() => document.querySelector('[aria-label="Message Worker run"]'));
+    assert.equal(document.querySelector('[aria-label="Open original: Worker run"]'), null);
+    assert.equal(
+      Array.from(document.querySelectorAll('button, [role="button"]')).some(
+        (el) => el.textContent === 'Worker run',
+      ),
+      false,
+    );
+  });
+
+  await test('headless rows keep Message', async (t) => {
+    const { document, text, until } = await workerRun(t);
+    await text('Worker run');
+    const message = await until(() => document.querySelector('[aria-label="Message Worker run"]'));
+    assert.notEqual(message.getAttribute('aria-disabled'), 'true');
+  });
 }

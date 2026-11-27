@@ -80,16 +80,21 @@ function setup(
     );
     resolveOpen.mockImplementation(agents.resolveOpen);
   }
+  // The terminal host can be replaced (a new binary or workspace) while a describe runs.
+  let current = host;
+  const swapHost = () => {
+    current = { ...host };
+  };
   registerTerminal(
     iii,
-    () => host,
+    () => current,
     () => TerminalConfigSchema.parse({}),
     resolveOpen,
     visibilityEpoch,
   );
   const describeFn = handlers.get('claude::terminal::describe');
   if (!describeFn) throw new Error('claude::terminal::describe was not registered');
-  return { claude, describeFn, resolveOpen };
+  return { claude, describeFn, resolveOpen, swapHost };
 }
 
 describe('claude::terminal::describe', () => {
@@ -336,5 +341,86 @@ describe('claude::terminal::describe', () => {
   it('keeps the function out of the catalog and traces', () => {
     const { describeFn } = setup();
     expect(describeFn.options.metadata).toEqual({ internal: true, trace_hidden: true });
+  });
+
+  describe('host change while opening', () => {
+    const hostChanged = /^the terminal host changed while opening; refresh the list$/;
+    const resume = { args: ['--resume', 'x'], cwd: '/repo' };
+    const forkPlan = () => ({
+      args: ['--resume', id, '--fork-session'],
+      cwd: '/repo',
+      copy: true as const,
+    });
+
+    // Runs `during` the first time preparation touches the host.
+    function duringPreparation(claude: ReturnType<typeof setup>['claude'], during: () => void) {
+      const run = claude.run;
+      let changed = false;
+      vi.spyOn(claude, 'run').mockImplementation(async (program, args, folder) => {
+        if (!changed) {
+          changed = true;
+          during();
+        }
+        return run(program, args, folder);
+      });
+    }
+
+    it('refuses a spec when the host changes during preparation', async () => {
+      const { claude, describeFn, resolveOpen, swapHost } = setup();
+      resolveOpen.mockResolvedValueOnce(resume);
+      duringPreparation(claude, swapHost);
+      await expect(describeFn.handler({ session: 's' })).rejects.toThrow(hostChanged);
+    });
+
+    it('refuses a fork when the host changes during the fork re-resolve', async () => {
+      const { describeFn, resolveOpen, swapHost } = setup();
+      resolveOpen.mockResolvedValueOnce(forkPlan()).mockImplementationOnce(async () => {
+        swapHost();
+        return forkPlan();
+      });
+      await expect(describeFn.handler(fork)).rejects.toThrow(hostChanged);
+      expect(resolveOpen).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports a host change instead of the preparation error', async () => {
+      const { claude, describeFn, resolveOpen, swapHost } = setup();
+      resolveOpen.mockResolvedValueOnce(resume);
+      claude.missing.add('/repo');
+      duringPreparation(claude, swapHost);
+      await expect(describeFn.handler({ session: 's' })).rejects.toThrow(hostChanged);
+    });
+
+    it('a visibility change wins over a host change when preparation fails', async () => {
+      let epoch = 1;
+      const { claude, describeFn, resolveOpen, swapHost } = setup({}, undefined, () => epoch);
+      resolveOpen.mockResolvedValueOnce(resume);
+      claude.missing.add('/repo');
+      duringPreparation(claude, () => {
+        swapHost();
+        epoch = 2;
+      });
+      await expect(describeFn.handler({ session: 's' })).rejects.toThrow(
+        /^session visibility changed; refresh the list$/,
+      );
+    });
+
+    it('unchanged host still returns the spec', async () => {
+      const { describeFn, resolveOpen } = setup();
+      resolveOpen.mockResolvedValueOnce(forkPlan()).mockResolvedValueOnce(forkPlan());
+      await expect(describeFn.handler(fork)).resolves.toMatchObject({
+        cwd: '/repo',
+        copy: true,
+        claude_session_id: id,
+      });
+    });
+
+    it('describe without a session ignores a host change', async () => {
+      const { claude, describeFn, swapHost } = setup();
+      duringPreparation(claude, swapHost);
+      await expect(describeFn.handler({ cwd: '/work/app' })).resolves.toMatchObject({
+        program: CLAUDE,
+        cwd: '/work/app',
+      });
+    });
   });
 });

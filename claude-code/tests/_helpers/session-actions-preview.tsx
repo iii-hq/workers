@@ -90,6 +90,12 @@ let delayAdmission = false;
 let afterLookup: (() => void) | undefined;
 let holdNextLookup: Promise<void> | undefined;
 let releaseHeldLookup: (() => void) | undefined;
+// Gates that hold a follow snapshot after it was read, one per read, released in order.
+const snapshotGates: Promise<void>[] = [];
+const snapshotReleases: (() => void)[] = [];
+let holdDescribe: Promise<void> | undefined;
+let releaseDescribe: (() => void) | undefined;
+const hiddenRows = new Set<string>();
 const replyWatchCount = () => {
   document.documentElement.dataset.replyWatches = String(
     [...watches].filter((watch) => watch.source.function_id === 'claude::agents::on-reply').length,
@@ -180,6 +186,7 @@ const host = {
                     )
                     .filter(
                       (row) =>
+                        !hiddenRows.has(row.id) &&
                         (allowed || !row.external_only) &&
                         (p.all || row.kind !== 'background' || row.alive),
                     ),
@@ -204,7 +211,7 @@ const host = {
             replies: [],
           };
         }
-        return {
+        const snapshot = {
           ...row,
           last_reply: lastReply,
           cursor: String(offset),
@@ -215,8 +222,14 @@ const host = {
                   .filter((entry) => entry.offset > Number(p.cursor))
                   .map((entry) => entry.reply),
         };
+        const gate = snapshotGates.shift();
+        if (gate) await gate;
+        return snapshot;
       }
       if (fn === 'claude::terminal::describe' && p.mode === 'fork') {
+        const held = holdDescribe;
+        holdDescribe = undefined;
+        if (held) await held;
         if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
         if (missingForkDirectory)
           throw new Error(`the folder ${row.cwd} is not reachable on the terminal host`);
@@ -387,6 +400,24 @@ function Preview() {
       deliver();
     }
     if (e.code === 'KeyY') releaseHeldLookup?.();
+    if (e.code === 'KeyP') {
+      // Hold the next two follow snapshots after they were read.
+      for (let i = 0; i < 2; i++)
+        snapshotGates.push(new Promise<void>((resolve) => snapshotReleases.push(resolve)));
+    }
+    if (e.code === 'KeyQ') snapshotReleases.shift()?.();
+    if (e.code === 'KeyD') {
+      holdDescribe = new Promise<void>((resolve) => {
+        releaseDescribe = resolve;
+      });
+    }
+    if (e.code === 'KeyE') releaseDescribe?.();
+    if (e.code === 'KeyO' || e.code === 'KeyI') {
+      // The forked row leaves the list: an external one (O) or a worker-owned one (I).
+      hiddenRows.add(rows[e.code === 'KeyO' ? 0 : 1].id);
+      emit('claude::terminal::activity', {});
+    }
+    if (e.code === 'KeyM') notifyConfig();
     if (e.code === 'KeyF') {
       backgroundFinished = true;
       emit('claude::terminal::activity', {});

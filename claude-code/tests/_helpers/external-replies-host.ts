@@ -291,9 +291,11 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   await observeReplyConfig(iii, permission, (runtime) => {
     external = runtime?.external_sessions ?? true;
   });
+  // One host object, like the worker's: describe refuses a spec when it is replaced.
+  const terminalHost = { home: root, executable: 'fixture-cli', env: {}, detail: '', bridge: '' };
   registerTerminal(
     iii,
-    () => ({ home: root, executable: 'fixture-cli', env: {}, detail: '', bridge: '' }),
+    () => terminalHost,
     () => TerminalConfigSchema.parse({ setup_workspace: false }),
     agents.resolveOpen,
     agents.openVisibility,
@@ -323,6 +325,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   return {
     host,
     client,
+    permission,
     refresh,
     get externalSetting() {
       return external;
