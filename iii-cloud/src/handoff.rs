@@ -308,26 +308,47 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     };
     let same = same.or(idle);
     if let Some(h) = same {
+        // A real ask of the agent's is open: deliver nothing (the page's own sentence would read as
+        // the answer to it).
+        let asks = h.agent.session_id.is_some()
+            && h.agent.state == AgentPhase::WaitingForYou
+            && h.agent.question_source == Some(QuestionSource::Agent);
+        if asks {
+            return Ok(HandoffResponse {
+                id: h.id,
+                marker: h.marker,
+                delivered: false,
+                session_id: h.agent.session_id,
+                reused: true,
+                sent: Some(false),
+                asks: true,
+            });
+        }
         let sent = send_on(ctx, &h).await;
-        let delivered = match (&h.agent.session_id, request.text.as_deref()) {
-            (Some(session), Some(text)) => {
-                deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
+        // The continue went: one message, not two.
+        let delivered = if sent {
+            true
+        } else {
+            match (&h.agent.session_id, request.text.as_deref()) {
+                (Some(session), Some(text)) => {
+                    deliver(ctx, session, &format!("{}\n{text}", h.marker), &new_id()).await
+                }
+                (Some(_), None) => true,
+                (None, Some(text)) => {
+                    // No chat yet: the text waits and goes in once the chat is found.
+                    let text = text.to_string();
+                    ctx.store.update(|s| {
+                        if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
+                            h2.pending_text = Some(match h2.pending_text.take() {
+                                Some(old) => format!("{old}\n\n{text}"),
+                                None => text,
+                            });
+                        }
+                    });
+                    false
+                }
+                (None, None) => false,
             }
-            (Some(_), None) => true,
-            (None, Some(text)) => {
-                // No chat yet: the text waits and goes in once the chat is found.
-                let text = text.to_string();
-                ctx.store.update(|s| {
-                    if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
-                        h2.pending_text = Some(match h2.pending_text.take() {
-                            Some(old) => format!("{old}\n\n{text}"),
-                            None => text,
-                        });
-                    }
-                });
-                false
-            }
-            (None, None) => false,
         };
         return Ok(HandoffResponse {
             id: h.id,
@@ -336,6 +357,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
             session_id: h.agent.session_id,
             reused: true,
             sent: Some(sent),
+            asks: false,
         });
     }
     let (mut workspace_path, mut branch, checkout, source) = ctx.store.read(|s| {
@@ -433,6 +455,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         session_id: delivered_to,
         reused: false,
         sent: None,
+        asks: false,
     })
 }
 

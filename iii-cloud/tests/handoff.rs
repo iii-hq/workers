@@ -3745,3 +3745,38 @@ async fn a_failed_run_carries_whose_it_is_and_whether_the_worker_holds_it_back()
         (Some(RunOwner::Person), false)
     );
 }
+
+#[tokio::test]
+async fn the_pages_own_text_is_never_delivered_beside_an_open_ask_or_a_continue() {
+    let with_text = || HandoffRequest {
+        text: Some("PAGE TEXT: fix the failed run".into()),
+        ..ready_req()
+    };
+    // A real ask is open: nothing is delivered, and the answer says so.
+    let (h, _ws, w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    *w.question.lock().unwrap() = Some("Which role do you want?".into());
+    until(&h, "a real ask", |a| {
+        a.question_source == Some(QuestionSource::Agent)
+    })
+    .await;
+    let before = sent(&h).len();
+    let again = create(&h.ctx, with_text()).await.unwrap();
+    assert!(
+        again.reused && again.asks && again.sent == Some(false) && !again.delivered,
+        "{again:?}"
+    );
+    assert_eq!(sent(&h).len(), before, "nothing went into the chat");
+    // The continue goes: one message, and the page's text is not a second one.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    let before = sent(&h).len();
+    let again = create(&h.ctx, with_text()).await.unwrap();
+    assert!(
+        again.reused && !again.asks && again.sent == Some(true),
+        "{again:?}"
+    );
+    let new: Vec<String> = sent(&h).into_iter().skip(before).collect();
+    assert_eq!(new.len(), 1, "{new:?}");
+    assert!(new[0].contains("RELEASE_FAILED") && !new[0].contains("PAGE TEXT"));
+}

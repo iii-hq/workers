@@ -370,6 +370,10 @@ pub struct HandoffResponse {
     /// Absent for a new hand-off.
     #[serde(default)]
     pub sent: Option<bool>,
+    /// With `reused`: the agent has a real ask of its own open. Nothing was delivered, not even
+    /// the page's `text` (it would read as the answer): the person answers in the chat.
+    #[serde(default)]
+    pub asks: bool,
 }
 
 /// `iii-cloud::handoff::stop` input.
