@@ -278,6 +278,29 @@ pub async fn list_pages(
     Ok(json!({ "deployments": all }))
 }
 
+/// A live read before a push failed: say so, and "Try again" only for what a
+/// retry can fix. A session or permission answer keeps its own words.
+fn live_read_error(e: CloudError) -> CloudError {
+    match e.status {
+        Some(404) => CloudError::new(
+            "PROJECT_DELETED",
+            "This project is gone from iii cloud, so nothing was pushed.",
+        ),
+        Some(401 | 403) => e,
+        _ if matches!(
+            e.code.as_str(),
+            "NEEDS_BROWSER_SIGN_IN" | "NOT_CONNECTED" | "KEY_REJECTED" | "SIGN_IN_REQUIRED"
+        ) =>
+        {
+            e
+        }
+        _ => CloudError::new(
+            "CLOUD_ERROR",
+            "Could not read the project's environments from iii cloud, so nothing was pushed. Try again.",
+        ),
+    }
+}
+
 /// The ids of every deployment of `commit` the environment already has (five
 /// pages at most), read before an assisted deploy pushes or moves anything:
 /// none of them is the deployment this deploy makes or waits for.
@@ -864,7 +887,7 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
             let way = if sel.env.production {
                 Way::PullRequest
             } else {
-                sel.env = crate::status::refresh_environment(ctx, &sel)
+                let (fresh, project_id) = crate::status::refresh_environment_of_project(ctx, &sel)
                     .await
                     .ok_or_else(|| {
                         CloudError::new(
@@ -872,26 +895,33 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                             format!("Could not read {} from iii cloud. Try again.", sel.env.name),
                         )
                     })?;
+                sel.env = fresh;
                 // Read live, not from the store: an environment made in the console
                 // or a renamed default branch after the folder was read changes
                 // where a push is safe.
-                let envs = crate::project::live_environments(ctx, &sel.team_id, &sel.env.id)
+                let project_id = project_id.ok_or_else(|| {
+                    CloudError::new(
+                        "CLOUD_ERROR",
+                        "iii cloud sent an environment without its project, so nothing was pushed. Try again.",
+                    )
+                })?;
+                let envs = crate::project::live_environments(ctx, &sel.team_id, &project_id)
                     .await
-                    .map_err(|_| {
-                        CloudError::new(
-                            "CLOUD_ERROR",
-                            "Could not read the project's environments from iii cloud, so nothing was pushed. Try again.",
-                        )
-                    })?;
-                let live_default = crate::project::live_default_branch(&sel.workspace)
+                    .map_err(live_read_error)?;
+                // An origin whose HEAD names no branch (or that did not answer) falls back
+                // to the stored default only for an environment that already follows a
+                // branch of its own that no other environment follows: that needs no
+                // decision about the default branch.
+                let (default, live) = match crate::project::live_default_branch(&sel.workspace)
                     .await
-                    .map_err(|_| {
-                        CloudError::new(
-                            "GIT_FAILED",
-                            "Could not read the default branch from GitHub, so nothing was pushed. Try again.",
-                        )
-                    })?;
-                let default = Some(live_default);
+                {
+                    Ok(d) => (Some(d), true),
+                    Err(_) => (
+                        ctx.store
+                            .read(|s| s.project.as_ref().and_then(|p| p.default_branch.clone())),
+                        false,
+                    ),
+                };
                 default_now = default.clone();
                 let others: Vec<(String, String)> = envs
                     .iter()
@@ -900,6 +930,20 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                     .collect();
                 let branches: Vec<String> = others.iter().map(|(_, b)| b.clone()).collect();
                 let way = deploy_way(default.as_deref(), &sel.env, &branches);
+                if !live
+                    && !matches!(
+                        way,
+                        Way::Assisted {
+                            own: None,
+                            taken: false
+                        }
+                    )
+                {
+                    return Err(CloudError::new(
+                        "GIT_FAILED",
+                        "Could not read the default branch from GitHub, so nothing was pushed. Try again.",
+                    ));
+                }
                 // Another environment follows the branch this one would push: a push
                 // there would deploy an unchecked commit to it.
                 if let Way::Assisted { own, taken: true } = &way {

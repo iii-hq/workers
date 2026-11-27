@@ -222,6 +222,16 @@ pub async fn refresh_environment(
     ctx: &Arc<Ctx>,
     sel: &crate::check::Selected,
 ) -> Option<EnvironmentInfo> {
+    refresh_environment_of_project(ctx, sel)
+        .await
+        .map(|(env, _)| env)
+}
+
+/// The same, with the id of the project the environment belongs to.
+pub async fn refresh_environment_of_project(
+    ctx: &Arc<Ctx>,
+    sel: &crate::check::Selected,
+) -> Option<(EnvironmentInfo, Option<String>)> {
     let body = ctx
         .call(&Req::get(format!(
             "/teams/{}/environments/{}",
@@ -231,6 +241,10 @@ pub async fn refresh_environment(
         .ok()?;
     let fresh = crate::project::env_info(&body)?;
     let removed = crate::project::is_removed(&body);
+    let project_id = body
+        .get("project_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     ctx.store.update(|s| {
         // The branch and name wherever the store copied them: a hand-off's brief
         // and `selected_for` read these, not the selection.
@@ -265,7 +279,7 @@ pub async fn refresh_environment(
             p.environment = Some(fresh.clone());
         }
     });
-    Some(fresh)
+    Some((fresh, project_id))
 }
 
 /// `store.variables`: the environment's variables as iii cloud lists them,

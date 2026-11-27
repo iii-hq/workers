@@ -2546,11 +2546,24 @@ async fn not_production(s: &Setup) {
         .with_priority(2)
         .mount(&s.server)
         .await;
+    // A person at the page: every assisted deploy reads a session-only route (the one test of an
+    // API key sets the method back).
+    s.h.ctx.store.update(|st| {
+        st.connection.as_mut().unwrap().method = Some(Method::Browser);
+    });
     // The project's environments, live: the selected one and the store's others.
     let ctx = s.h.ctx.clone();
     Mock::given(method("GET"))
         .and(path(format!("/api/v1/teams/{TEAM}/projects/p/environments")))
         .respond_with(move |_: &Request| {
+            // A session-only route: an API key is refused, as iii cloud does.
+            if ctx.store.read(|st| {
+                st.connection.as_ref().and_then(|c| c.method) == Some(Method::ApiKey)
+            }) {
+                return ResponseTemplate::new(401).set_body_json(
+                    json!({"code": "UNAUTHORIZED", "message": "An API key can't call this route."}),
+                );
+            }
             let (me, others) = ctx.store.read(|st| {
                 let p = st.project.as_ref().unwrap();
                 (p.environment.clone().unwrap(), p.environments.clone())
@@ -4171,9 +4184,15 @@ async fn a_default_branch_that_moved_since_the_check_pushes_nothing() {
 async fn an_api_key_cannot_move_an_environment_so_nothing_is_pushed() {
     let s = setup(plan(false)).await;
     not_production(&s).await;
+    s.h.ctx.store.update(|st| {
+        st.connection.as_mut().unwrap().method = Some(Method::ApiKey);
+    });
     let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    // Its own words (sign in with the browser), not "Try again": the live read is a session-only route.
     assert_eq!(err.code, "NEEDS_BROWSER_SIGN_IN");
+    assert!(!err.message.contains("Try again"), "{}", err.message);
     assert!(origin_branch(&s, OWN).is_none());
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
 }
 
 #[tokio::test]
@@ -4543,4 +4562,77 @@ async fn a_deleted_own_branch_is_created_again_by_the_deploy() {
         f.log().is_empty(),
         "the environment already follows it: no PATCH"
     );
+}
+
+#[tokio::test]
+async fn the_live_reads_say_what_is_gone_and_skip_what_the_webhook_skips() {
+    // A deleted project (404): said so, not "Try again".
+    let s = setup(plan(false)).await;
+    first_assisted(&s).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/v1/teams/{TEAM}/projects/p/environments"
+        )))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({"code": "NOT_FOUND", "message": "no"})),
+        )
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "PROJECT_DELETED");
+    assert!(!err.message.contains("Try again"));
+    assert!(origin_branch(&s, OWN).is_none());
+
+    // An environment whose destroy failed is not a follower (the push webhook skips it).
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/projects/p/environments")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"environments": [
+            {"id": ENV, "name": "production", "production": false, "branch": "main", "manifest": null, "url": null},
+            {"id": "old", "name": "production-old", "production": false, "branch": OWN, "status": "destroy_failed", "manifest": null, "url": null}
+        ]})))
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    list_of_commit(&s, &f, Some("queued")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+}
+
+#[tokio::test]
+async fn an_origin_whose_head_names_no_branch_only_stops_a_deploy_that_needs_the_default() {
+    // The environment follows a branch of its own: no decision about the default branch is needed.
+    let s = setup(plan(false)).await;
+    direct(&s).await; // store default `trunk`, the environment on `main`
+    s.h.ctx
+        .store
+        .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
+    git(
+        &s.repo.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/nowhere"],
+    );
+    push_list(&s, "queued").await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
+
+    // On the (stored) default branch it does: nothing is pushed.
+    let s = setup(plan(false)).await;
+    first_assisted(&s).await;
+    git(
+        &s.repo.origin,
+        &["symbolic-ref", "HEAD", "refs/heads/nowhere"],
+    );
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "GIT_FAILED");
+    assert!(err.message.ends_with("Try again."), "{}", err.message);
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+    assert!(origin_branch(&s, OWN).is_none());
 }
