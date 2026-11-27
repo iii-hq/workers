@@ -3153,3 +3153,77 @@ async fn only_the_first_waiting_notice_is_outside_the_cap() {
     until(&h, "stalled", |a| a.state == AgentPhase::Stalled).await;
     assert_eq!(sent(&h).len(), 4);
 }
+
+/// The hand-off and the lists copied the environment's branch when they were made.
+#[tokio::test]
+async fn a_hand_off_and_the_lists_follow_the_environment_as_iii_cloud_has_it_now() {
+    let (h, server, _r, _ws) = setup().await;
+    let created = create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx.store.update(|s| {
+        let p = s.project.as_mut().unwrap();
+        p.environments = vec![EnvironmentBrief {
+            id: ENV.into(),
+            name: "production".into(),
+            production: true,
+            branch: "main".into(),
+        }];
+        p.cloud_projects = vec![CloudProjectInfo {
+            id: "p".into(),
+            name: "p".into(),
+            slug: String::new(),
+            team: TeamName {
+                id: TEAM.into(),
+                name: "t".into(),
+            },
+            environments: vec![EnvironmentFull {
+                id: ENV.into(),
+                name: "production".into(),
+                branch: "main".into(),
+                manifest: None,
+                production: true,
+                head: None,
+            }],
+            created_at: None,
+            last_deployment_at: None,
+        }];
+    });
+    // The environment moved to its own branch in iii cloud.
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "iii-cloud/production", "manifest": null, "url": null, "settings": {}})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let sel = iii_cloud::check::selected(&h.ctx).unwrap();
+    iii_cloud::status::refresh_environment(&h.ctx, &sel)
+        .await
+        .unwrap();
+    let (hand, p) = h.ctx.store.read(|s| {
+        (
+            s.handoffs[0].env.clone().unwrap(),
+            s.project.clone().unwrap(),
+        )
+    });
+    assert_eq!(hand.branch, "iii-cloud/production");
+    assert_eq!(p.environments[0].branch, "iii-cloud/production");
+    assert_eq!(
+        p.cloud_projects[0].environments[0].branch,
+        "iii-cloud/production"
+    );
+    let again = iii_cloud::check::selected_for(&h.ctx, Some(&created.id))
+        .await
+        .unwrap();
+    assert_eq!(again.env.branch, "iii-cloud/production");
+    // Production keeps its pull request; the same hand-off of a non-production environment gets none.
+    assert!(!brief_of(&h).pushes_directly);
+    h.ctx.store.update(|s| {
+        s.handoffs[0].env.as_mut().unwrap().production = false;
+    });
+    let b = brief_of(&h);
+    assert!(b.pushes_directly, "every environment but production");
+    assert!(
+        b.next_step.contains("production gets an assisted deploy") && !b.next_step.contains("main"),
+        "{}",
+        b.next_step
+    );
+}

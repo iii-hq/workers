@@ -587,9 +587,9 @@ pub struct HandoffBrief {
     /// The compose file checked and deployed, relative to the worktree: the
     /// hand-off's, else the environment's.
     pub manifest: String,
-    /// The environment tracks its own branch: no pull request. Push only your
-    /// fix branch; the person's deploy pushes the checked commit to the
-    /// environment's branch.
+    /// The environment is not production: it gets an assisted deploy, no pull
+    /// request. Push only your fix branch; the person's deploy on the page sends
+    /// the checked commit to the environment's own branch.
     #[serde(default)]
     pub pushes_directly: bool,
     /// Other compose files tracked in the worktree that declare `containers:`

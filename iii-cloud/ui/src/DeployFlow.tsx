@@ -116,7 +116,7 @@ function Choice({ line, children }: { line: string; children: ReactNode }) {
   )
 }
 
-/** Deploying from this machine: one header, then the body the state asks for. */
+/** Deploying from this page: one header, then the body the state asks for. */
 export function DeployArea({ host, status, route, go, narrow }: AreaProps<RouteAt<'deploy'>>) {
   const act = useActions(host)
   const env = route.env
@@ -491,7 +491,7 @@ function Follow({
   )
   const c = status.check
   // The deploy is of this check: its id when the deploy names one, else the same commit. A held one counts only when
-  // the worker's own markers say this machine started it: a commit that matches proves nothing (a push by hand of the
+  // the worker's own markers say this page started it: a commit that matches proves nothing (a push by hand of the
   // checked commit makes the check's base the branch head, and the worker refuses its Confirm as MAIN_MOVED).
   const elsewhere = heldElsewhere(d)
   const ours = !!c && !elsewhere && (d.check_id ? d.check_id === c.id : d.commit.sha === c.commit)
@@ -518,7 +518,7 @@ function Follow({
   const sub = blocked
     ? `Deployment #${d.number} · iii cloud holds it, and the plan's problems keep it from starting`
     : elsewhere
-      ? `Deployment #${d.number} · not started from this machine; deploying from the check replaces it`
+      ? `Deployment #${d.number} · not started from this page; deploying from the check replaces it`
       : held
         ? `Deployment #${d.number} · iii cloud holds it until you confirm`
         : running
@@ -656,7 +656,7 @@ function Follow({
       ) : held && elsewhere ? (
         <Notice
           variant="info"
-          headline={`Deployment #${d.number} was not started from this machine`}
+          headline={`Deployment #${d.number} was not started from this page`}
           detail={`iii cloud holds it for confirmation, and nothing here can confirm it. Deploying from the check replaces it.`}
           action={
             <Button size="sm" variant="primary" onClick={() => go({ at: 'deploy', env: envId })}>

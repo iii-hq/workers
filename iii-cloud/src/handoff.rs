@@ -1705,17 +1705,12 @@ pub fn brief(s: &crate::store::State, h: &Handoff, secrets: &[String]) -> Handof
         .as_ref()
         .map(|w| other_compose_files(Path::new(&w.path), &manifest))
         .unwrap_or_default();
-    let pushes_directly = project.is_some_and(|p| {
-        env.is_some_and(|e| {
-            crate::project::tracks_other_branch(p.default_branch.as_deref(), &e.branch)
-        })
-    });
-    // Every kind but the import works in the worktree: on a direct environment, none opens a pull request.
+    let pushes_directly = env.is_some_and(|e| !e.production);
+    // Every kind but the import works in the worktree: on an assisted environment, none opens a pull request.
     let next_step = if pushes_directly && h.kind != HandoffKind::Import {
+        let env = env.map(|e| e.name.as_str()).unwrap_or("the environment");
         format!(
-            "Fix what is yours in the worktree, commit, push only your fix branch, run `iii-cloud::check {{}}`, then `iii-cloud::check {{run: true}}` until it is ready. No pull request: {} deploys from its own branch, and the person's deploy on the page pushes the checked commit to it. Never push {} yourself. Your job ends there: tell the person to review and deploy on the page; you never deploy.",
-            env.map(|e| e.name.as_str()).unwrap_or("the environment"),
-            env.map(|e| e.branch.as_str()).unwrap_or("its branch"),
+            "Fix what is yours in the worktree, commit, push only your fix branch, run `iii-cloud::check {{}}`, then `iii-cloud::check {{run: true}}` until it is ready. No pull request: {env} gets an assisted deploy. The person confirms it on the page, and the page sends the checked commit to {env}'s own branch, where iii cloud deploys it. Never push a branch an environment deploys from. Your job ends there: tell the person to review and deploy on the page; you never deploy."
         )
     } else {
         next_step

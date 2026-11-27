@@ -157,6 +157,8 @@ Besides problems, a call can fail with a code:
 
 - `DATABASE_FROM_CLOUD`: `iii-cloud::secret` refused a database URL. iii cloud creates the database: follow `DATABASE_NOT_MANAGED`. Pass `external: true` only when the person chose a database outside iii cloud.
 - `NOT_SAVED`: a secret went nowhere. Tell the person to set it in the console.
+- `OWN_BRANCH_TAKEN`: GitHub already has `iii-cloud/<env>` with other commits, so the first assisted deploy stopped before changing anything. The person deletes that branch or sets the environment's branch in iii cloud.
+- `BRANCH_NOT_MOVED`: the environment could not be pointed at its own branch (the message says what iii cloud answered). Nothing was deployed; deploying again retries without pushing again.
 - `PR_HEAD_CHANGED`: the pull request's head moved after the check. Check again.
 - `SOURCE_CHANGED`: the environment's source or compose file changed after the check (the workspace was selected again for another one). Check again.
 - `WORKTREE_FAILED`: `git worktree add` failed. Read the message.

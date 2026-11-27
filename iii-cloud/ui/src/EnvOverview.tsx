@@ -6,11 +6,9 @@ import { failedLine } from './FailureCard'
 import { needsYou } from './findings'
 import { useActions, useLocked } from './hub'
 import {
-  defaultBranch,
   deployOrigin,
   deployRows,
   fixBranch,
-  isDirectEnv,
   isFailedDeploy,
   liveOf,
   minutesLabel,
@@ -23,6 +21,7 @@ import {
   type Tone,
   when,
   withAppFile,
+  wayOf,
 } from './model'
 import { Dot, ErrorPanel, Mono, monoShas, SectionCard as Section, StatePill } from './parts'
 import type { EnvTabProps, Route } from './route'
@@ -243,7 +242,7 @@ export function nextAction(
     }
   }
 
-  if (!live && env && !isDirectEnv(s, env) && s.pr?.state === 'OPEN') {
+  if (!live && env?.production && s.pr?.state === 'OPEN') {
     const role = roleOf(s)
     const merges = role && /^(owner|admin)$/i.test(role)
     return {
@@ -276,9 +275,9 @@ export function nextAction(
       primary: false,
       title: `Nothing is live on ${name} yet`,
       detail:
-        env && !isDirectEnv(s, env)
-          ? 'It deploys when a pull request into main is merged.'
-          : 'Deploy from this machine to start it.',
+        env?.production
+          ? `It deploys when a pull request into ${env.branch} is merged.`
+          : 'An assisted deploy puts the first version live. It starts with the check.',
       action: { label: 'Open the check', kind: 'go', to: { at: 'deploy', env: envId } },
     }
   }
@@ -389,7 +388,7 @@ export function LiveNow({
   const health = useCloud<Health>(host, status, envId, serving ? '/health' : null)
   if (!env) return null
   const h = health.data ? healthOf(health.data, env.name) : null
-  const direct = isDirectEnv(status, env)
+  const way = wayOf(status, env)
   if (narrow) {
     const live = liveOf(feed.data?.deployments, feed.data?.next_cursor)
     const url = p?.environment?.id === envId ? p.environment.url : null
@@ -464,12 +463,14 @@ export function LiveNow({
       <div className="iii-cloud-cell">
         <span className="iii-cloud-cell-label">Deploys from</span>
         <span className="iii-cloud-cell-value">
-          {direct ? 'this machine, after the check' : 'when its pull request is merged'}
+          {way.way === 'assisted' ? 'an assisted deploy' : 'a pull request'}
         </span>
         <span className="iii-cloud-desc">
-          {direct
-            ? `a push to ${env.name}'s branch deploys without it`
-            : `into ${status.pr?.base ?? defaultBranch(status) ?? 'its base branch'}`}
+          {way.way === 'pull_request'
+            ? `when one into ${status.pr?.base ?? env.branch} is merged`
+            : way.own
+              ? `the first one moves ${env.name} from ${env.branch} to its own branch, ${way.own}`
+              : `to ${env.branch}; a push to it from anywhere else deploys without the check`}
         </span>
       </div>
     </Panel>

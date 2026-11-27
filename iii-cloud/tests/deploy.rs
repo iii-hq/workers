@@ -2491,12 +2491,33 @@ async fn the_deploy_fix_brief_carries_the_failure_the_log_and_the_release_comman
     );
 }
 
-/// The environment deploys `main`, which is not the repository's default
-/// branch (`trunk`): no pull request; the person's deploy pushes `main`.
-fn direct(s: &Setup) {
+/// The environment is not production and deploys `main`, which is not the
+/// repository's default branch (`trunk`): an assisted deploy that pushes `main`.
+async fn direct(s: &Setup) {
     s.h.ctx
         .store
         .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
+    not_production(s).await;
+}
+
+/// The environment is not production, in the store and in iii cloud's answer
+/// (a later `env_file` answers the same, with its own file).
+async fn not_production(s: &Setup) {
+    s.h.ctx.store.update(|st| {
+        st.project
+            .as_mut()
+            .unwrap()
+            .environment
+            .as_mut()
+            .unwrap()
+            .production = false
+    });
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": false, "branch": "main", "manifest": "worker-compose.yaml", "url": null, "settings": {}})))
+        .with_priority(2)
+        .mount(&s.server)
+        .await;
 }
 
 async fn push_list(s: &Setup, status: &'static str) {
@@ -2518,9 +2539,10 @@ async fn push_list(s: &Setup, status: &'static str) {
 }
 
 #[tokio::test]
-async fn a_direct_environment_is_pushed_by_the_persons_deploy_and_its_push_deployment_adopted() {
+async fn an_assisted_environment_on_its_own_branch_is_pushed_by_the_persons_deploy_and_its_push_deployment_adopted()
+ {
     let s = setup(plan(false)).await;
-    direct(&s);
+    direct(&s).await;
     // No pull request is read for it, whatever gh would say.
     assert!(current_pr(&s).await.is_none());
     // The brief tells the agent to push its fix branch only, never the environment's.
@@ -2544,8 +2566,14 @@ async fn a_direct_environment_is_pushed_by_the_persons_deploy_and_its_push_deplo
     assert!(brief.pushes_directly);
     assert!(
         brief.next_step.contains("push only your fix branch")
-            && brief.next_step.contains("Never push main yourself")
-            && brief.next_step.contains("No pull request"),
+            && brief
+                .next_step
+                .contains("Never push a branch an environment deploys from")
+            && brief
+                .next_step
+                .contains("production gets an assisted deploy")
+            && brief.next_step.contains("production's own branch")
+            && !brief.next_step.contains("main"),
         "{}",
         brief.next_step
     );
@@ -2601,7 +2629,7 @@ async fn a_direct_push_switches_the_file_first_and_the_confirmed_deployment_keep
     let s = setup(next_plan(true)).await;
     check_of_next(&s);
     let f = env_file(&s, "worker-compose.yaml", 201).await;
-    direct(&s);
+    direct(&s).await;
     push_list(&s, "needs_action").await;
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
@@ -2619,7 +2647,7 @@ async fn a_direct_push_that_is_refused_or_finds_main_moved_puts_the_old_file_bac
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
     let f = env_file(&s, "worker-compose.yaml", 201).await;
-    direct(&s);
+    direct(&s).await;
     // A commit on origin that main will jump to.
     let t = tempfile::tempdir().unwrap();
     git(
@@ -2683,7 +2711,7 @@ async fn changed_after_push(
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
     let f = env_file(&s, "worker-compose.yaml", 201).await;
-    direct(&s);
+    direct(&s).await;
     let mut changed = next_plan(false);
     changed["settings"] =
         json!({"release": {"worker": "a", "command": "x", "timeout": "1m", "source": "file"}});
@@ -2764,7 +2792,7 @@ async fn a_push_whose_outcome_is_unknown_keeps_the_switch_and_says_so() {
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
     let f = env_file(&s, "worker-compose.yaml", 201).await;
-    direct(&s);
+    direct(&s).await;
     // The push fails, and origin can't be read after it either.
     let config = git(&s.repo.checkout, &["rev-parse", "--git-path", "config"]);
     let config = s.repo.checkout.join(config);
@@ -3074,6 +3102,8 @@ fn check_of_next(s: &Setup) {
 /// happened to it and to deployments, in order.
 struct EnvFile {
     manifest: std::sync::Arc<std::sync::Mutex<String>>,
+    /// The branch the environment follows in the fake cloud.
+    branch: std::sync::Arc<std::sync::Mutex<String>>,
     log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
@@ -3083,24 +3113,41 @@ impl EnvFile {
     }
 }
 
+/// `production` as the context's store has it: `direct` flips it, and the cloud follows.
 async fn env_file(s: &Setup, start: &str, create_status: u16) -> EnvFile {
     let f = EnvFile {
         manifest: std::sync::Arc::new(std::sync::Mutex::new(start.into())),
+        branch: std::sync::Arc::new(std::sync::Mutex::new("main".into())),
         log: Default::default(),
     };
     let env_path = format!("/api/v1/teams/{TEAM}/environments/{ENV}");
-    let body = |m: &str| json!({"id": ENV, "project_id": "p", "name": "production", "production": true, "branch": "main", "manifest": m, "url": null, "settings": {}});
-    let m = f.manifest.clone();
+    let production = {
+        let ctx = s.h.ctx.clone();
+        move || {
+            ctx.store.read(|st| {
+                st.project
+                    .as_ref()
+                    .and_then(|p| p.environment.as_ref())
+                    .is_none_or(|e| e.production)
+            })
+        }
+    };
+    let body = std::sync::Arc::new(
+        move |m: &str, b: &str| json!({"id": ENV, "project_id": "p", "name": "production", "production": production(), "branch": b, "manifest": m, "url": null, "settings": {}}),
+    );
+    let (m, br, get_body) = (f.manifest.clone(), f.branch.clone(), body.clone());
     Mock::given(method("GET"))
         .and(path(env_path.clone()))
         .respond_with(move |_: &Request| {
-            ResponseTemplate::new(200).set_body_json(body(&m.lock().unwrap()))
+            ResponseTemplate::new(200)
+                .set_body_json(get_body(&m.lock().unwrap(), &br.lock().unwrap()))
         })
         .with_priority(1)
         .mount(&s.server)
         .await;
-    let (m, log, origin, base) = (
+    let (m, br, log, origin, base) = (
         f.manifest.clone(),
+        f.branch.clone(),
         f.log.clone(),
         s.repo.origin.clone(),
         s.check.base.clone(),
@@ -3109,18 +3156,36 @@ async fn env_file(s: &Setup, start: &str, create_status: u16) -> EnvFile {
         .and(path(env_path))
         .respond_with(move |r: &Request| {
             let sent: Value = serde_json::from_slice(&r.body).unwrap();
-            let to = sent["manifest"].as_str().unwrap().to_string();
             let merged = git(&origin, &["rev-parse", "main"]) != base;
-            log.lock().unwrap().push(format!(
-                "switch to {to}{}",
-                if merged {
-                    " with the commit on main"
-                } else {
-                    ""
-                }
-            ));
-            *m.lock().unwrap() = to.clone();
-            ResponseTemplate::new(200).set_body_json(body(&to))
+            let mut what = vec![];
+            if let Some(b) = sent["branch"].as_str() {
+                // The branch must be on origin before the environment follows it.
+                let there = std::process::Command::new("git")
+                    .args(["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")])
+                    .current_dir(&origin)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success();
+                what.push(format!(
+                    "move to {b}{}",
+                    if there { "" } else { " (not on origin)" }
+                ));
+                *br.lock().unwrap() = b.to_string();
+            }
+            if let Some(to) = sent["manifest"].as_str() {
+                what.push(format!(
+                    "switch to {to}{}",
+                    if merged && sent["branch"].is_null() {
+                        " with the commit on main"
+                    } else {
+                        ""
+                    }
+                ));
+                *m.lock().unwrap() = to.to_string();
+            }
+            log.lock().unwrap().push(what.join(" and "));
+            ResponseTemplate::new(200).set_body_json(body(&m.lock().unwrap(), &br.lock().unwrap()))
         })
         .mount(&s.server)
         .await;
@@ -3715,4 +3780,374 @@ async fn a_check_made_while_another_environment_was_selected_is_guarded_by_its_c
     assert_eq!(deploy_chk(&s).await.unwrap_err().code, "SOURCE_CHANGED");
     let requests = s.server.received_requests().await.unwrap();
     assert!(!requests.iter().any(|r| r.method.as_str() == "PATCH"));
+}
+
+#[tokio::test]
+async fn a_commit_already_on_the_branch_is_deployed_after_a_short_wait_when_no_push_deployment_comes()
+ {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    direct(&s).await;
+    git(&s.ws, &["push", "-q", "origin", "HEAD:main"]);
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"deployments": [], "next_cursor": null})),
+        )
+        .mount(&s.server)
+        .await;
+    let started = std::time::Instant::now();
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+    assert_eq!(f.log(), vec!["create with worker-compose.yaml"]);
+    // 120 ticks of 10 ms is the old wait; the grace is 10 ticks.
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
+}
+
+// ---------------------------------------------------- the first assisted deploy
+
+const OWN: &str = "iii-cloud/production";
+
+/// A first assisted deploy: not production, on the default branch, signed in with the browser.
+async fn first_assisted(s: &Setup) {
+    not_production(s).await;
+    s.h.ctx.store.update(|st| {
+        st.connection.as_mut().unwrap().method = Some(Method::Browser);
+    });
+}
+
+/// The deployments list: the checked commit's push deployment, or none.
+async fn list_of_commit(s: &Setup, status: Option<&'static str>) {
+    let sha = s.check.commit.clone();
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(move |_: &Request| {
+            let all: Vec<Value> = status
+                .map(|st| deployment(DEP_ID, &sha, st, "push"))
+                .into_iter()
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"deployments": all, "next_cursor": null}))
+        })
+        .mount(&s.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{}/{DEP_ID}", dep_base())))
+        .respond_with(|_: &Request| {
+            ResponseTemplate::new(200).set_body_json(deployment(DEP_ID, "x", "ready", "push"))
+        })
+        .mount(&s.server)
+        .await;
+}
+
+async fn requests_of(s: &Setup, verb: &str) -> Vec<Request> {
+    s.server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| {
+            r.method.as_str() == verb && r.url.path().ends_with(&format!("environments/{ENV}"))
+        })
+        .collect()
+}
+
+fn origin_branch(s: &Setup, branch: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/heads/{branch}"),
+        ])
+        .current_dir(&s.repo.origin)
+        .output()
+        .unwrap();
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[tokio::test]
+async fn the_first_assisted_deploy_pushes_the_commit_to_its_own_branch_moves_the_environment_and_adopts_the_push()
+ {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_of_commit(&s, Some("queued")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (DEP_ID, false));
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+    assert_eq!(
+        git(&s.repo.origin, &["rev-parse", "main"]),
+        s.check.base,
+        "the default branch is never pushed"
+    );
+    // One write, made after the branch exists on origin; nothing else.
+    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
+    let patches = requests_of(&s, "PATCH").await;
+    assert_eq!(patches.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&patches[0].body).unwrap(),
+        json!({"branch": OWN})
+    );
+    // The page's record follows.
+    let env =
+        s.h.ctx
+            .store
+            .read(|st| st.project.as_ref().unwrap().environment.clone().unwrap());
+    assert_eq!(env.branch, OWN);
+}
+
+#[tokio::test]
+async fn with_no_push_deployment_the_first_assisted_deploy_creates_one_after_a_short_wait() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_of_commit(&s, None).await;
+    let started = std::time::Instant::now();
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+    // The old wait was 120 ticks of 10 ms; the grace is 10.
+    assert!(started.elapsed() < Duration::from_millis(900));
+    let posts = requests_of_path(&s, "POST", &dep_base()).await;
+    assert_eq!(posts.len(), 1);
+    assert_eq!(
+        posts[0].headers.get("if-match").unwrap().to_str().unwrap(),
+        "fp-target"
+    );
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("move to {OWN}"),
+            "create with worker-compose.yaml".to_string()
+        ]
+    );
+}
+
+async fn requests_of_path(s: &Setup, verb: &str, p: &str) -> Vec<Request> {
+    s.server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == verb && r.url.path() == p)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_first_assisted_deploy_of_another_compose_file_moves_the_branch_and_the_file_in_one_write()
+ {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_of_commit(&s, Some("needs_action")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, NEW_ID);
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("move to {OWN} and switch to {NEXT}"),
+            format!("create with {NEXT}")
+        ],
+        "no manifest write of its own before the move"
+    );
+    assert_eq!(requests_of(&s, "PATCH").await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_branch_of_that_name_with_other_commits_is_never_touched() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", s.repo.origin.to_str().unwrap(), "c"],
+    );
+    let c = t.path().join("c");
+    std::fs::write(c.join("other.txt"), "o").unwrap();
+    git(&c, &["add", "."]);
+    git(&c, &["commit", "-m", "other"]);
+    git(&c, &["push", "-q", "origin", &format!("HEAD:{OWN}")]);
+    let theirs = git(&s.repo.origin, &["rev-parse", OWN]);
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "OWN_BRANCH_TAKEN", "{}", err.message);
+    assert!(err.message.len() < 200 && err.message.ends_with("Nothing changed."));
+    assert_eq!(git(&s.repo.origin, &["rev-parse", OWN]), theirs);
+    assert!(f.log().is_empty() && requests_of(&s, "PATCH").await.is_empty());
+}
+
+fn refuse_pushes(s: &Setup) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = s.repo.origin.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho 'protected branch' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test]
+async fn a_refused_push_moves_nothing() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    refuse_pushes(&s);
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "PUSH_REFUSED", "{}", err.message);
+    assert!(origin_branch(&s, OWN).is_none());
+    assert!(f.log().is_empty() && requests_of(&s, "PATCH").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_move_is_retried_by_the_second_click_without_pushing_again() {
+    let s = setup(plan(false)).await;
+    Mock::given(method("PATCH"))
+        .and(path(format!("/api/v1/teams/{TEAM}/environments/{ENV}")))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(json!({"code": "FORBIDDEN", "message": "no"})),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_of_commit(&s, Some("queued")).await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "BRANCH_NOT_MOVED", "{}", err.message);
+    assert!(err.message.contains("answered 403") && err.message.contains("Deploy again"));
+    // The branch is on origin, no environment follows it, nothing deployed.
+    assert_eq!(
+        origin_branch(&s, OWN).as_deref(),
+        Some(s.check.commit.as_str())
+    );
+    assert!(f.log().is_empty());
+    // Hand the second push a hook that refuses: it must not be asked to push.
+    refuse_pushes(&s);
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(requests_of(&s, "PATCH").await.len(), 2);
+    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
+}
+
+#[tokio::test]
+async fn a_refused_create_leaves_the_environment_on_its_branch_and_the_second_click_goes_straight_to_it()
+ {
+    let s = setup(plan(false)).await;
+    Mock::given(method("POST"))
+        .and(path(dep_base()))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({"code": "UNPROCESSABLE", "message": "commit: not a commit of the environment's branch."})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_of_commit(&s, None).await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.status, Some(422));
+    assert!(
+        err.message.ends_with(&format!(
+            "production now follows {OWN}; main was not pushed."
+        )),
+        "{}",
+        err.message
+    );
+    refuse_pushes(&s);
+    let started = std::time::Instant::now();
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, NEW_ID);
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("move to {OWN}"),
+            "create with worker-compose.yaml".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_default_branch_that_moved_since_the_check_pushes_nothing() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    let t = tempfile::tempdir().unwrap();
+    git(
+        t.path(),
+        &["clone", "-q", s.repo.origin.to_str().unwrap(), "c"],
+    );
+    let c = t.path().join("c");
+    std::fs::write(c.join("other.txt"), "o").unwrap();
+    git(&c, &["add", "."]);
+    git(&c, &["commit", "-m", "other"]);
+    git(&c, &["push", "-q", "origin", "HEAD:main"]);
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "MAIN_MOVED");
+    assert!(origin_branch(&s, OWN).is_none() && f.log().is_empty());
+}
+
+#[tokio::test]
+async fn an_api_key_cannot_move_an_environment_so_nothing_is_pushed() {
+    let s = setup(plan(false)).await;
+    not_production(&s).await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "NEEDS_BROWSER_SIGN_IN");
+    assert!(origin_branch(&s, OWN).is_none());
+}
+
+#[tokio::test]
+async fn production_never_pushes_whatever_the_default_branch_is() {
+    let s = setup(plan(false)).await;
+    s.h.ctx
+        .store
+        .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "MERGE_FIRST");
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+}
+
+#[tokio::test]
+async fn a_branch_another_environment_follows_gets_its_own_branch_for_this_one() {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    // `main` is not the default here, but production (another environment) follows it.
+    s.h.ctx.store.update(|st| {
+        let p = st.project.as_mut().unwrap();
+        p.default_branch = Some("trunk".into());
+        p.environments = vec![EnvironmentBrief {
+            id: "other".into(),
+            name: "live".into(),
+            production: true,
+            branch: "main".into(),
+        }];
+    });
+    list_of_commit(&s, Some("queued")).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(d.id, DEP_ID);
+    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
+}
+
+#[tokio::test]
+async fn only_production_reads_a_pull_request_and_a_stale_one_is_cleared() {
+    let s = setup(plan(false)).await;
+    assert!(
+        current_pr(&s).await.is_some(),
+        "production on main reads it"
+    );
+    // The same environment, not production, still on the default branch.
+    not_production(&s).await;
+    assert!(current_pr(&s).await.is_none());
+    assert!(
+        s.h.ctx
+            .store
+            .read(|st| st.pr.is_none() && st.pr_error.is_none())
+    );
 }

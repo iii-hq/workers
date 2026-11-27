@@ -3,6 +3,8 @@ import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import setup from '../../page'
+// The shared cases the worker's Rust rule reads too.
+import wayCases from '../../../tests/fixtures/deploy-way.json'
 import { clock } from '../asked'
 import { CloudPage } from '../CloudPage'
 import { cardRecords } from '../fixtures'
@@ -12,6 +14,7 @@ import {
   configDir,
   deployOrigin,
   deployState,
+  deployWay,
   listMayHideServing,
   liveOf,
   opensToPublic,
@@ -30,6 +33,17 @@ vi.mock('@iii-dev/console-ui', async () => await import('./console-ui-mock'))
 vi.mock('@iii-dev/console-ui/hooks', async () => await import('./hooks-mock'))
 
 usePage()
+
+describe('how an environment deploys', () => {
+  it('follows the cases the worker reads too', () => {
+    expect(wayCases.length).toBeGreaterThanOrEqual(8)
+    for (const c of wayCases) {
+      const others = c.others.map((branch, i) => ({ name: `other-${i}`, branch }))
+      const got = deployWay(c.default, c.env, [c.env, ...others])
+      expect(got, c.case).toEqual(c.way === 'pull_request' ? { way: 'pull_request' } : { way: 'assisted', own: c.own })
+    }
+  })
+})
 
 describe('the header who-line (P5)', () => {
   it('names the person (name, else email) and the team with its role; an API key and signed out say so; never "as you"', () => {
@@ -126,8 +140,8 @@ describe('one source per fact (the review, defects 1, 2 and 7)', () => {
     // Made by this worker: it was checked first, and an API key from iii cloud is still "you".
     const mine = dep({ id: 'm', type: 'manual', check_id: 'chk-1', checked_ready: true })
     const viaKey = cloud(mine, { triggered_by: { user_id: null, api_key_id: 'k' } })
-    expect(deployOrigin(at(mine), mine, viaKey).line).toBe('you, from this machine · checked')
-    expect(deployOrigin(at(mine), mine).line).toBe('you, from this machine · checked')
+    expect(deployOrigin(at(mine), mine, viaKey).line).toBe('you, from this page · checked')
+    expect(deployOrigin(at(mine), mine).line).toBe('you, from this page · checked')
     // A merge, a console deployment, a teammate by name (iii cloud wins for who).
     const merged = dep({ id: 'g', pr: 12, approved_by_worker: true, checked_ready: true })
     expect(deployOrigin(at(merged), merged).line).toBe('you, from the merge of #12 · checked')
@@ -228,6 +242,10 @@ describe("codes that keep the worker's own words", () => {
       MERGE_IN_PROGRESS: 'A merge is still open in the worktree ~/w.',
       WORKTREE_PATH_TAKEN: '~/w-iii-cloud is already a folder of another repository.',
       NO_ACCESS: 'You are not a member of team acme.',
+      OWN_BRANCH_TAKEN:
+        "GitHub already has a branch iii-cloud/test with other commits. Delete it, or set test's branch in iii cloud. Nothing changed.",
+      BRANCH_NOT_MOVED:
+        'test could not move to its own branch iii-cloud/test (iii cloud answered 403). Nothing was deployed. Deploy again to retry.',
     }
     for (const [code, message] of Object.entries(own)) {
       expect(plainMessage({ code, message })).toBe(message)

@@ -629,15 +629,20 @@ async fn push_fix_branch(ctx: &Ctx, sel: &Selected, commit: &str) -> Res<()> {
 
 /// The environment branch's head on the remote.
 pub async fn remote_head(ws: &std::path::Path, branch: &str) -> Res<String> {
+    remote_ref(ws, branch)
+        .await?
+        .ok_or_else(|| CloudError::new("GIT_FAILED", format!("origin has no branch {branch}.")))
+}
+
+/// A branch's head on the remote: `Ok(None)` when origin answered and has no
+/// such branch, `Err` when it did not answer.
+pub async fn remote_ref(ws: &std::path::Path, branch: &str) -> Res<Option<String>> {
     let out = git(
         ws,
         &["ls-remote", "origin", &format!("refs/heads/{branch}")],
     )
     .await?;
-    out.split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .ok_or_else(|| CloudError::new("GIT_FAILED", format!("origin has no branch {branch}.")))
+    Ok(out.split_whitespace().next().map(str::to_owned))
 }
 
 /// `base` is an ancestor of `commit`. The base is fetched first, and the

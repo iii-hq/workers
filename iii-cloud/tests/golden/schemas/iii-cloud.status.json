@@ -1235,7 +1235,7 @@
           },
           "pushes_directly": {
             "default": false,
-            "description": "The environment tracks its own branch: no pull request. Push only your fix branch; the person's deploy pushes the checked commit to the environment's branch.",
+            "description": "The environment is not production: it gets an assisted deploy, no pull request. Push only your fix branch; the person's deploy on the page sends the checked commit to the environment's own branch.",
             "type": "boolean"
           },
           "remote_branch_note": {

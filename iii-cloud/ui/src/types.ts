@@ -133,7 +133,7 @@ export type Project = {
   team: { id: string; name: string; slug: string } | null
   teams: { id: string; name: string; slug: string }[] // when team is null
   cloud_project: { id: string; name: string; slug: string } | null
-  /** The repository's default branch: an environment on another branch deploys directly. */
+  /** The repository's default branch: an assisted environment on it moves to its own branch on its first deploy. */
   default_branch?: string | null
   /** Every cloud project of this repository (more than one: the person picks). */
   cloud_projects?: CloudProjectChoice[]
@@ -429,7 +429,7 @@ export type HandoffBrief = {
     log_tail: string[]
   } | null
   next_step: string
-  /** The environment follows its own branch: no pull request; the person's deploy pushes the checked commit to it. */
+  /** Not production: an assisted deploy, no pull request; the person's deploy sends the checked commit to the environment's own branch. (The page decides the way from `production`, not from this.) */
   pushes_directly?: boolean
 }
 

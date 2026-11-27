@@ -186,6 +186,8 @@ const PLAIN: Record<string, string> = {
   NO_ACCESS: "You don't have access to that in iii cloud.",
   PUSH_REFUSED: 'GitHub refused the push.',
   PUSH_UNKNOWN: "Couldn't tell whether the push reached GitHub.",
+  OWN_BRANCH_TAKEN: 'GitHub already has a branch of the environment\'s own name with other commits. Nothing changed.',
+  BRANCH_NOT_MOVED: 'The environment could not move to its own branch. Nothing was deployed. Deploy again to retry.',
   CLOUD_ERROR: 'iii cloud had a problem. Try again in a moment.',
   PROJECT_DELETED: 'That project no longer exists in iii cloud.',
   ENVIRONMENT_DELETED: 'That environment no longer exists in iii cloud.',
@@ -218,7 +220,14 @@ const PLAIN_DETAIL: Record<string, string> = {
 }
 const GENERIC = 'Something went wrong. Try again in a moment.'
 /** Codes whose worker message is already the plain sentence ("billing no longer exists in iii cloud."). */
-const OWN_WORDS = new Set(['PROJECT_DELETED', 'MERGE_IN_PROGRESS', 'WORKTREE_PATH_TAKEN', 'NO_ACCESS'])
+const OWN_WORDS = new Set([
+  'PROJECT_DELETED',
+  'MERGE_IN_PROGRESS',
+  'WORKTREE_PATH_TAKEN',
+  'NO_ACCESS',
+  'OWN_BRANCH_TAKEN',
+  'BRANCH_NOT_MOVED',
+])
 /**
  * `values::save`, per value: what happened to it, after "Not saved." (`LOCAL_NOT_SAVED` comes with a saved one:
  * iii cloud has it, the run here's .env does not). `{env}`, `{name}` and `{file}` are the row's.
@@ -310,17 +319,6 @@ export function usablePr(s: Status): Status['pr'] {
 
 /** The repository's default branch, as the worker reports it. */
 export const defaultBranch = (s: Status): string | null => s.project?.default_branch ?? null
-
-/** An environment that follows another branch deploys it directly: there is no pull request to merge. */
-export function directBranch(s: Status): string | null {
-  const env = s.project?.environment
-  // Core says so outright (`pushes_directly`); otherwise compare with the default branch.
-  const says = s.handoff_brief?.pushes_directly
-  if (says === true) return env?.branch ?? null
-  if (says === false) return null
-  const base = defaultBranch(s)
-  return env && base && env.branch !== base ? env.branch : null
-}
 
 /**
  * One set of sentence-case words for a deployment's state, the cloud console's (never lower-cased or
@@ -450,9 +448,9 @@ export type Origin = {
   checked: boolean
   /** The pull request that was merged, for `from: 'merge'`. */
   pr: number | null
-  /** "you, from this machine", "a push to GitHub", "you, from the merge of #12 · approved by you". */
+  /** "you, from this page", "a push to GitHub", "you, from the merge of #12 · approved by you". */
   origin: string
-  /** `origin`, then ` · checked` or `, not checked`: "you, from this machine · checked". */
+  /** `origin`, then ` · checked` or `, not checked`: "you, from this page · checked". */
   line: string
 }
 
@@ -487,7 +485,7 @@ export function deployOrigin(
     from === 'merge'
       ? `the merge of #${pr}`
       : from === 'machine'
-        ? 'this machine'
+        ? 'this page'
         : from === 'push'
           ? 'a push to GitHub'
           : from === 'console'
@@ -571,12 +569,36 @@ export function servingDeploy(s: Status, envId = s.project?.environment?.id): De
   return s.deploys.find((d) => d.environment_id === envId && d.outcome === 'ready') ?? null
 }
 
-/** The environment deploys its own branch directly (no pull request): the selected one as core says, others by branch. */
-export function isDirectEnv(s: Status, env: { id: string; branch: string }): boolean {
-  if (env.id === s.project?.environment?.id) return directBranch(s) !== null
-  const base = defaultBranch(s)
-  return !!base && env.branch !== base
+/** The branch an environment's assisted deploys push to (`project::own_branch`). */
+export const ownBranch = (name: string) => `iii-cloud/${name}`
+
+/**
+ * How an environment gets a deploy, from production alone (`project::deploy_way`; both read
+ * `tests/fixtures/deploy-way.json`). `own` is the branch an assisted environment moves to on its first deploy:
+ * its branch is the default one, one another environment follows, or the default is unknown. `envs` is the
+ * project's environments, this one included.
+ */
+export type DeployWay = { way: 'pull_request' } | { way: 'assisted'; own: string | null }
+export function deployWay(
+  base: string | null,
+  env: { name: string; production: boolean; branch: string },
+  envs: { name: string; branch: string }[],
+): DeployWay {
+  if (env.production) return { way: 'pull_request' }
+  const own = ownBranch(env.name)
+  const shared = envs.some((e) => e.name !== env.name && e.branch === env.branch)
+  const moves = env.branch !== own && (base === null || base === env.branch || shared)
+  return { way: 'assisted', own: moves ? own : null }
 }
+
+/** How the environment gets a deploy, decided from production alone (never from the hand-off's brief). */
+export const wayOf = (s: Status, env: { name: string; production: boolean; branch: string }): DeployWay =>
+  deployWay(defaultBranch(s), env, s.project?.environments ?? [])
+
+export const ASSISTED = 'Assisted deploy'
+/** The one sentence that says what an assisted deploy is. */
+export const assistedHow = (env: string) =>
+  `This page checks a commit in a clean copy of your code (what is committed, plus your agent's fixes) and, when you confirm, sends that commit to ${env}'s own branch, where iii cloud deploys it.`
 
 /** The head of an environment's branch on GitHub, as the last refresh read it (`null` when unknown). */
 export function envHead(s: Status, envId = s.project?.environment?.id): string | null {

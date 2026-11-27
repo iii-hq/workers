@@ -624,8 +624,8 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     // The title and the line under it agree with the notice: it waits in iii cloud, and deploying replaces it.
     expect(title()).toBe('Deployment #6 is waiting for confirmation in iii cloud')
     expect(text()).not.toContain('needs your action')
-    expect(text()).toContain('not started from this machine; deploying from the check replaces it')
-    expect(text()).toContain('Deployment #6 was not started from this machine')
+    expect(text()).toContain('not started from this page; deploying from the check replaces it')
+    expect(text()).toContain('Deployment #6 was not started from this page')
     expect(text()).toContain('Deploying from the check replaces it.')
     await click(btn('Go to the check'))
     expect(path()).toBe('Projects / registry · dev / Deploy')
