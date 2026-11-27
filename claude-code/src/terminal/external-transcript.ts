@@ -34,7 +34,8 @@ ANNOTATIONS = {'summary', 'metadata', 'file-history-snapshot', 'queue-operation'
 HIDDEN = ('isMeta', 'isCompactSummary', 'isVirtual', 'isVisibleInTranscriptOnly', 'isApiErrorMessage')
 
 # The CLI writes this record when it compacts a conversation. It starts the
-# chain the conversation continues on, so the active chain ends there.
+# chain the conversation continues on, so the active chain ends there; only
+# a viewer with no reply since then looks before it.
 def compact_boundary(row):
     return row['type'] == 'system' and row.get('subtype') == 'compact_boundary'
 
@@ -249,7 +250,33 @@ def scan(sid, mode, previous):
         if not side and not row.get('teamName') and (compact_boundary(row) or (
                 kind in ('user', 'assistant') and not any(row.get(flag) for flag in HIDDEN))):
             leaf = key
-    replies = []
+    def before_compaction(key, limit):
+        # Walks the chain a compaction left behind, from the record its
+        # boundary names. Only strictly earlier records are followed, so the
+        # walk cannot cycle; an earlier compaction is crossed the same way.
+        found = None
+        while key is not None:
+            require(isinstance(key, str) and key in nodes and nodes[key][1] < limit)
+            row, pos = nodes[key]
+            require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
+            if row['type'] in ('assistant', 'user'):
+                content = message_content(row, row['type'])
+            if compact_boundary(row):
+                if found is not None:
+                    break
+                key, limit = row.get('logicalParentUuid'), pos
+                continue
+            parent = row['parentUuid']
+            if parent is not None and parent not in nodes:
+                require(windowed and isinstance(parent, str) and UUID.fullmatch(parent))
+                parent = None
+            if found is None and row['type'] == 'assistant' and not any(row.get(k) for k in HIDDEN):
+                text = visible(content)
+                if text.strip():
+                    found = {'id': key, 'text': text}
+            key, limit = parent, pos
+        return found
+    replies, crossing = [], None
     while leaf is not None:
         row, pos = nodes[leaf]
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
@@ -257,9 +284,13 @@ def scan(sid, mode, previous):
             content = message_content(row, row['type'])
         parent = row['parentUuid']
         if compact_boundary(row):
-            # Neither parentUuid nor logicalParentUuid crosses a compaction.
+            # Neither parentUuid nor logicalParentUuid extends the active chain
+            # across a compaction. With no reply after it, a viewer ('last')
+            # still shows the newest reply from before it.
             require(parent is None or (isinstance(parent, str) and UUID.fullmatch(parent)))
             parent = None
+            if mode == 'last' and not replies:
+                crossing = (row.get('logicalParentUuid'), pos)
         elif parent is not None and parent not in nodes:
             # Only an ancestor before the parsed window may be absent: the
             # walk ends there. Otherwise a missing parent fails closed.
@@ -274,6 +305,15 @@ def scan(sid, mode, previous):
                 if mode != 'last' or not replies:
                     replies.append((pos, {'id': leaf, 'text': text}))
         leaf = parent
+    if crossing is not None:
+        # History before a compaction is read best effort: any record there
+        # the active chain would reject, or a link that leaves it, shows none.
+        try:
+            found = before_compaction(*crossing)
+        except Exception:
+            found = None
+        if found is not None:
+            replies.append((end, found))
     # Validate the entire chain before selecting a page. Watches start at the
     # oldest unread reply; a viewer needs the newest suffix and the actual tip.
     encode = lambda obj: json.dumps(obj, separators=(',', ':'))

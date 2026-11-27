@@ -1090,7 +1090,8 @@ describe('claude::agents::follow-snapshot', () => {
         ),
       );
       const compacted = await snapshot(first.cursor);
-      expect(compacted).toMatchObject({ replies: [], last_reply: null });
+      // No reply follows the compaction yet: the viewer keeps the one before it.
+      expect(compacted).toMatchObject({ replies: [], last_reply: first.last_reply });
       await appendFile(
         s.file,
         rows(

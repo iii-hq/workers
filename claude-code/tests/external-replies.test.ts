@@ -624,6 +624,11 @@ describe('compacted sessions and long lines', () => {
       compactBoundary(3, 2, linked ? 2 : null),
       compactSummary(4, 3),
     );
+  const follow = (s: SyntheticHost, cursor?: string) =>
+    s.client.call({
+      function_id: 'claude::agents::follow-snapshot',
+      payload: { claude_session_id: id, ...(cursor ? { cursor } : {}) },
+    }) as Promise<{ cursor: string; last_reply: unknown; replies: unknown[] }>;
   const toolResult = (n: number, parent: number, bytes: number) =>
     record(n, parent, 'user', [
       { type: 'tool_result', tool_use_id: 'toolu_1', content: 'r'.repeat(bytes) },
@@ -647,14 +652,15 @@ describe('compacted sessions and long lines', () => {
   it('ends the active chain at a boundary whose parentUuid points before the compaction', async () => {
     await withSyntheticHost(async (s) => {
       await writeFile(s.file, compacted(true) + lines(prompt(5, 4)));
-      expect((await lookup(s)).last_reply).toBeNull();
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'before compaction' });
       await appendFile(s.file, lines(answer(6, 5, 'after compaction')));
+      const earlier = s.host.snapshots.length;
       expect((await lookup(s)).last_reply).toEqual({ id: recordId(6), text: 'after compaction' });
-      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+      expect(s.host.snapshots.slice(earlier).join('')).not.toContain('before compaction');
     });
   });
 
-  it('returns no reply when nothing was answered since the latest compaction', async () => {
+  it('returns the reply from between compactions when nothing was answered since the latest one', async () => {
     await withSyntheticHost(async (s) => {
       await writeFile(
         s.file,
@@ -671,19 +677,112 @@ describe('compacted sessions and long lines', () => {
             toolResult(11, 10, 16),
           ),
       );
-      expect((await lookup(s)).last_reply).toBeNull();
-      expect(s.host.snapshots.join('')).not.toMatch(/compaction/);
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(6),
+        text: 'between compactions',
+      });
+      expect(s.host.snapshots.join('')).not.toMatch(/before compaction|early prompt/);
     });
   });
 
-  it('returns no reply when the boundary or its hidden summary is the newest chain record', async () => {
+  it('returns the reply before the compaction when the boundary or its hidden summary is the newest chain record', async () => {
     await withSyntheticHost(async (s) => {
       const before = lines(prompt(1, null), answer(2, 1, 'before compaction'));
       await writeFile(s.file, before + lines(compactBoundary(3, 2)));
-      expect((await lookup(s)).last_reply).toBeNull();
+      const reply = { id: recordId(2), text: 'before compaction' };
+      expect((await lookup(s)).last_reply).toEqual(reply);
       await appendFile(s.file, lines(compactSummary(4, 3)));
+      expect((await lookup(s)).last_reply).toEqual(reply);
+    });
+  });
+
+  it('shows the reply before a compaction in lookup and follow-snapshot, with and without a cursor', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted() + lines(prompt(5, 4)));
+      const reply = { id: recordId(2), text: 'before compaction' };
+      expect((await lookup(s)).last_reply).toEqual(reply);
+      const first = await follow(s);
+      expect(first).toMatchObject({ last_reply: reply, replies: [] });
+      expect(await follow(s, first.cursor)).toMatchObject({ last_reply: reply, replies: [] });
+    });
+  });
+
+  it('returns the reply before the earlier of two compactions when neither was answered', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() + lines(compactBoundary(5, 4), compactSummary(6, 5), prompt(7, 6)),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'before compaction' });
+    });
+  });
+
+  /** Records 1 to 5: an answered prompt, then a boundary whose logical parent is `logical`. */
+  const crossing = (logical: unknown, ...before: unknown[]) =>
+    lines(
+      ...(before.length ? before : [prompt(1, null), answer(2, 1, 'before compaction')]),
+      { ...compactBoundary(3, 2), logicalParentUuid: logical },
+      compactSummary(4, 3),
+      prompt(5, 4),
+    );
+
+  it.each([
+    ['is missing', undefined],
+    ['names no record in the file', recordId(99)],
+    ['names the boundary itself', recordId(3)],
+    ['names its compact summary', recordId(4)],
+    ['names a later record', recordId(5)],
+  ])('returns no reply before a compaction whose logicalParentUuid %s', async (_, logical) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, crossing(logical));
       expect((await lookup(s)).last_reply).toBeNull();
       expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it.each([
+    ['a sidechain record', { isSidechain: true }],
+    ['a team record', { teamName: 'synthetic-team' }],
+    ['a record of another session', { sessionId: '22222222-2222-4222-8222-222222222222' }],
+  ])('returns no reply before a compaction whose logical parent is %s', async (_, fields) => {
+    await withSyntheticHost(async (s) => {
+      const before = [prompt(1, null), { ...answer(2, 1, 'before compaction'), ...fields }];
+      await writeFile(s.file, crossing(recordId(2), ...before));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it.each([
+    [
+      'holds a record the reader rejects',
+      [
+        prompt(1, null),
+        answer(0, 1, 'before compaction'),
+        record(2, 0, 'user', [{ type: 'unsupported-fixture-block' }]),
+      ],
+    ],
+    [
+      'has a parentUuid naming no record in the file',
+      [prompt(1, 99), answer(2, 1, 'before compaction')],
+    ],
+  ])('returns no reply when the chain before a compaction %s', async (_, before) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, crossing(recordId(2), ...before));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it('never sends a watcher admitted after an unanswered compaction the reply before it', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted() + lines(prompt(5, 4)));
+      await observe(s, 'admitted');
+      await s.poll();
+      await appendFile(s.file, lines(answer(6, 5, 'after admission')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'admitted')).toEqual([{ id: recordId(6), text: 'after admission' }]);
     });
   });
 
