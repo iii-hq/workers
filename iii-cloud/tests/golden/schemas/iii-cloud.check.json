@@ -21,6 +21,11 @@
           "null"
         ]
       },
+      "from_page": {
+        "default": false,
+        "description": "The page's own: a check the person started on the page. When the hand-off's agent waits on a wake, it hears what is left for it. Agents never send it.",
+        "type": "boolean"
+      },
       "handoff_id": {
         "default": null,
         "description": "An agent works on its own hand-off: use that one's environment and worktree.",

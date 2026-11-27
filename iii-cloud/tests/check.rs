@@ -223,6 +223,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             manifest: None,
             push: None,
             force: None,
+            from_page: false,
         },
     )
     .await
@@ -238,6 +239,7 @@ async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
             manifest: None,
             push: None,
             force: None,
+            from_page: false,
         },
     )
     .await
@@ -289,6 +291,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             manifest: None,
             push: None,
             force: None,
+            from_page: false,
         },
     )
     .await
@@ -321,6 +324,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
             manifest: None,
             push: None,
             force: None,
+            from_page: false,
         },
     )
     .await
@@ -1208,6 +1212,7 @@ async fn a_passed_run_is_reused_until_something_it_was_made_from_changes() {
         &h.ctx,
         CheckRequest {
             force: Some(true),
+            from_page: false,
             ..run_req()
         },
     )

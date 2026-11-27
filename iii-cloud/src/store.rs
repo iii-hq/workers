@@ -71,10 +71,11 @@ pub struct State {
     pub worktree_started: std::collections::BTreeMap<String, String>,
     /// Failed creates per idempotency key: a retry after a failure is a new key.
     pub create_attempts: std::collections::BTreeMap<String, u32>,
-    /// The compose file this worker last switched each environment to (by id). It
-    /// is dropped when a newer check of the environment is kept.
+    /// What the last local run left dirty in each worktree (by path).
     #[serde(default)]
     pub run_wrote: std::collections::BTreeMap<String, RunWrote>,
+    /// The compose file this worker last switched each environment to (by id). It
+    /// is dropped when a newer check of the environment is kept.
     #[serde(default)]
     pub env_switched: std::collections::BTreeMap<String, String>,
     /// The base branch and sha when each fresh worktree was made (key as `worktree_started`).

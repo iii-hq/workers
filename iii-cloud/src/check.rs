@@ -1230,8 +1230,18 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     // As the run reads it: unreadable counts as dirty. What a local run left in the
     // worktree (rewritten seed files, data) is not the agent's: it counts again only
     // once its content is not what the run left.
-    let own_changes = crate::run::dirty_paths(ctx, &sel.workspace).await;
+    let split = crate::run::dirty_split(ctx, &sel.workspace).await;
+    let own_changes = split.as_ref().map(|(agent, _)| agent.clone());
+    let set_aside = split.map(|(_, aside)| aside).unwrap_or_default();
     let dirty = own_changes.as_ref().is_none_or(|p| !p.is_empty());
+    let interrupted = ctx.store.read(|s| {
+        s.checks
+            .iter()
+            .find(|c| c.environment_id == sel.env.id && c.run.is_some())
+            .and_then(|c| c.run.as_ref())
+            .and_then(|r| r.error.as_ref())
+            .is_some_and(|e| e.code == "WORKER_RESTARTED")
+    });
     let folder = ctx.store.read(|s| {
         s.project
             .as_ref()
@@ -1262,7 +1272,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
             "UNCOMMITTED_CHANGES",
             "The worktree has changes that are not committed".into(),
             Some(format!(
-                "{}Commit your own changes (`git add <paths>`; the files the local run wrote are not yours: do not commit them), then check and run again.",
+                "{}{}",
                 match &own_changes {
                     Some(p) => format!(
                         "{}{}. ",
@@ -1270,11 +1280,44 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                         if p.len() > 5 { " and more" } else { "" }
                     ),
                     None => String::new(),
+                },
+                // A run cut off by a restart never set its files aside: some of these may be its.
+                if interrupted {
+                    "The local run was interrupted by a restart, so some of these may be what it wrote: restore those (`git checkout -- <file>`, or delete an untracked one) and commit yours (`git add <paths>`), then check and run again."
+                } else {
+                    "Commit your own changes (`git add <paths>`; the files the local run wrote are not yours: do not commit them), then check and run again."
                 }
             )),
             Owner::Agent,
             None,
         ));
+    }
+    // What a local run left is not counted; one of those could still be the agent's own edit.
+    if !set_aside.is_empty() {
+        let mut info = crate::local::here(
+            "RUN_LEFT_FILES",
+            "The local run left files changed in the worktree".into(),
+            Some(format!(
+                "The local run left {} {} changed in the agent's copy; they do not count as uncommitted: {}{}. If one of them is your own edit, commit it.",
+                set_aside.len(),
+                if set_aside.len() == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
+                set_aside
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if set_aside.len() > 5 { " and more" } else { "" }
+            )),
+            Owner::None,
+            None,
+        );
+        info.severity = Severity::Info;
+        here_problems.push(info);
     }
     let here = HerePart {
         problems: here_problems.len() as u32,
@@ -1403,7 +1446,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
         }
     }
     // A check the person started on a hand-off's worktree: an agent that waits on a wake hears of it.
-    if request.handoff_id.is_none() {
+    if request.from_page && request.handoff_id.is_none() {
         crate::handoff::person_check_ended(ctx, &check, &sel.workspace);
     }
     Ok(check)

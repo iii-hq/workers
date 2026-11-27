@@ -3228,14 +3228,8 @@ async fn a_hand_off_and_the_lists_follow_the_environment_as_iii_cloud_has_it_now
     );
 }
 
-/// A hand-off whose agent ended its turn on an armed wake (so it is `Waiting`), and a check the
-/// person starts on its worktree, with the given problems and run.
-async fn person_check_while_waiting(
-    problems: Vec<Problem>,
-    run: Option<Run>,
-    ready: bool,
-    times: usize,
-) -> (Harness, Vec<String>) {
+/// A hand-off whose agent ended its turn on an armed wake (so it is `Waiting`).
+async fn waiting_agent() -> (Harness, std::path::PathBuf, World) {
     let (h, _s, _r, ws) = setup().await;
     clean_manifest(&ws);
     accept_sends(&h);
@@ -3248,6 +3242,11 @@ async fn person_check_while_waiting(
     until(&h, "working", |a| a.state == AgentPhase::Working).await;
     *w.status.lock().unwrap() = "idle".into();
     until(&h, "waiting", |a| a.state == AgentPhase::Waiting).await;
+    (h, ws, w)
+}
+
+/// A check the person starts on the waiting hand-off's worktree.
+fn person_check(h: &Harness, problems: Vec<Problem>, run: Option<Run>, ready: bool) -> Check {
     let mut check = h.ctx.store.read(|s| s.check.clone().unwrap());
     check.id = "person-check".into();
     check.handoff_id = None;
@@ -3255,15 +3254,30 @@ async fn person_check_while_waiting(
     check.run = run;
     check.ready = ready;
     h.ctx.store.update(|s| s.put_check(check.clone()));
+    check
+}
+
+fn continues(h: &Harness) -> Vec<String> {
+    sent(h)
+        .into_iter()
+        .filter(|m| m.contains("continue"))
+        .collect()
+}
+
+async fn person_check_while_waiting(
+    problems: Vec<Problem>,
+    run: Option<Run>,
+    ready: bool,
+    times: usize,
+) -> (Harness, Vec<String>) {
+    let (h, ws, _w) = waiting_agent().await;
+    let check = person_check(&h, problems, run, ready);
     for _ in 0..times {
         iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let told = sent(&h)
-        .into_iter()
-        .filter(|m| m.contains("continue"))
-        .collect();
+    let told = continues(&h);
     (h, told)
 }
 
@@ -3302,4 +3316,134 @@ async fn a_ready_check_or_one_with_only_the_persons_things_open_sends_the_agent_
     values.owner = Owner::Person;
     let (_h, told) = person_check_while_waiting(vec![values], None, false, 1).await;
     assert!(told.is_empty(), "{told:?}");
+}
+
+#[tokio::test]
+async fn only_the_pages_own_check_marks_a_waiting_agents_hand_off() {
+    let (h, _s, _r, _ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Waiting);
+    let pending = |h: &Harness| h.ctx.store.read(|s| s.handoffs[0].person_check.clone());
+    // An agent's (or a subagent's) check carries no flag: nothing is marked.
+    let c = iii_cloud::check::check(&h.ctx, CheckRequest::default())
+        .await
+        .unwrap();
+    assert!(pending(&h).is_none());
+    // The page's own is.
+    let page = iii_cloud::check::check(
+        &h.ctx,
+        CheckRequest {
+            from_page: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_ne!(c.id, page.id);
+    assert_eq!(pending(&h).as_deref(), Some(page.id.as_str()));
+}
+
+#[tokio::test]
+async fn a_run_that_failed_for_the_persons_missing_value_is_not_sent_to_the_agent() {
+    let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
+    values.owner = Owner::Person;
+    let (_h, told) = person_check_while_waiting(
+        vec![values],
+        Some(failed_run("person-check", "abc")),
+        false,
+        1,
+    )
+    .await;
+    assert!(told.is_empty(), "{told:?}");
+}
+
+#[tokio::test]
+async fn a_run_still_going_when_the_check_returned_is_judged_when_it_ends() {
+    let (h, ws, _w) = waiting_agent().await;
+    let mut run = failed_run("person-check", "abc");
+    run.status = RunStatus::Running;
+    run.error = None;
+    let check = person_check(&h, vec![], Some(run), false);
+    iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(continues(&h).is_empty(), "nothing to say while it goes");
+    // It fails later: now the agent hears it.
+    h.ctx.store.update(|s| {
+        let mut c = s.find_check("person-check").cloned().unwrap();
+        c.run = Some(failed_run("person-check", "abc"));
+        s.put_check(c);
+    });
+    for _ in 0..40 {
+        if !continues(&h).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let told = continues(&h);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("WORKERS_NOT_READY"));
+}
+
+#[tokio::test]
+async fn a_pending_person_check_is_dropped_when_the_agent_wakes_by_itself() {
+    let (h, ws, w) = waiting_agent().await;
+    // Its run still goes, so the check stays pending.
+    let mut run = failed_run("person-check", "abc");
+    run.status = RunStatus::Running;
+    run.error = None;
+    let check = person_check(&h, vec![], Some(run), false);
+    iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+    // The agent works again on its own.
+    *w.status.lock().unwrap() = "working".into();
+    for _ in 0..100 {
+        let done = h
+            .ctx
+            .store
+            .read(|s| s.handoffs[0].person_check == s.handoffs[0].person_check_told);
+        if done {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The run ends badly, and the agent waits again: the old check is not told.
+    h.ctx.store.update(|s| {
+        let mut c = s.find_check("person-check").cloned().unwrap();
+        c.run = Some(failed_run("person-check", "abc"));
+        s.put_check(c);
+    });
+    *w.status.lock().unwrap() = "idle".into();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(continues(&h).is_empty(), "{:?}", continues(&h));
+}
+
+#[tokio::test]
+async fn when_the_armed_wake_is_on_that_run_the_wake_tells_the_agent_not_the_worker() {
+    let (h, ws, _w) = waiting_agent().await;
+    // `wake_row` is an on-change wake on run 0c87581a.
+    let mut run = failed_run("person-check", "abc");
+    run.id = "0c87581a".into();
+    let check = person_check(&h, vec![], Some(run), false);
+    iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(continues(&h).is_empty(), "{:?}", continues(&h));
+}
+
+#[tokio::test]
+async fn a_refused_continue_to_a_waiting_agent_is_not_retried_inside_the_grace_and_says_so() {
+    let (h, ws, _w) = waiting_agent().await;
+    h.fake.on("harness::send", |_| {
+        Err(iii_cloud::error::CloudError::new("BOOM", "refused"))
+    });
+    let before = sent(&h).len();
+    let check = person_check(&h, vec![], Some(failed_run("person-check", "abc")), false);
+    iii_cloud::handoff::person_check_ended(&h.ctx, &check, &ws);
+    let a = until(&h, "stalled", |a| a.state == AgentPhase::Stalled).await;
+    assert_eq!(
+        a.question.as_deref(),
+        Some("Your agent stopped; open the chat to see what it needs.")
+    );
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert_eq!(sent(&h).len() - before, 1, "one try inside the grace");
 }

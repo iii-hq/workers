@@ -924,6 +924,15 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     let mut continue_at = handoff.continue_at_ms;
     if obs.status == "working" {
         local.idle_checked = false;
+        // The agent is up by itself (its wake fired, or it was never idle): a check the person
+        // started earlier is old news, and would arrive stale at its next wait.
+        if handoff.person_check != handoff.person_check_told {
+            ctx.store.update(|s| {
+                if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
+                    h.person_check_told = h.person_check.clone();
+                }
+            });
+        }
         if continue_at.take().is_some() {
             ctx.store.update(|s| {
                 if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
@@ -950,9 +959,13 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
     // A turn that ended (or went quiet) on a wake the agent armed waits on an
     // event, not on the person; once the wake fires or expires the rules below apply.
     let mut waiting_for = None;
+    let mut wake_on: Option<String> = None;
     if matches!(phase, AgentPhase::Done | AgentPhase::Stalled) && !confirm_pending {
         match awaited_wake(ctx, &session).await {
-            Ok(w) => waiting_for = w,
+            Ok(w) => {
+                waiting_for = w.as_ref().map(|(text, _)| text.clone());
+                wake_on = w.and_then(|(_, id)| id);
+            }
             Err(()) => return Poll::Continue,
         }
     }
@@ -965,13 +978,34 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             .clone()
             .filter(|c| handoff.person_check_told.as_deref() != Some(c.as_str()))
         {
-            let mine = person_check_lines(ctx, &check_id);
-            let sent = if mine.is_empty() {
-                Continue::Spent
+            // None: its run still goes; the failure reaches the agent when the run ends.
+            // The armed wake is on that very run or check: it tells the agent itself.
+            let woken = wake_on.as_deref().is_some_and(|w| {
+                w == check_id
+                    || ctx.store.read(|s| {
+                        s.find_check(&check_id)
+                            .and_then(|c| c.run.as_ref())
+                            .is_some_and(|r| r.id == w)
+                    })
+            });
+            let lines = if woken {
+                Some(vec![])
             } else {
-                send_continue(ctx, &handoff, &session, &mine, &secrets, None).await
+                person_check_lines(ctx, &check_id)
             };
-            if sent != Continue::Refused {
+            // The chat refused our last "continue": no other inside the grace (as the Done branch).
+            let refused_lately = continuing && handoff.continue_refused;
+            let sent = match &lines {
+                None => Continue::Refused,
+                Some(mine) if mine.is_empty() => Continue::Spent,
+                Some(_) if refused_lately => Continue::Refused,
+                Some(mine) => send_continue(ctx, &handoff, &session, mine, &secrets, None).await,
+            };
+            if lines.as_ref().is_some_and(|l| !l.is_empty()) && sent == Continue::Refused {
+                phase = AgentPhase::Stalled;
+                question = Some(STOPPED_TEXT.to_string());
+            }
+            if lines.is_some() && sent != Continue::Refused {
                 ctx.store.update(|s| {
                     if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                         h.person_check_told = Some(check_id.clone());
@@ -1204,13 +1238,40 @@ const PROPOSE_FN: &str = "ade::working-directory::propose";
 
 /// What the session's armed wake waits for, from `harness::observers::list`.
 /// `Ok(None)` when it has none; `Err` when the list fails (nothing is known).
-async fn awaited_wake(ctx: &Ctx, session: &str) -> Result<Option<String>, ()> {
+async fn awaited_wake(ctx: &Ctx, session: &str) -> Result<Option<(String, Option<String>)>, ()> {
     let list = ctx
         .plat
         .call("harness::observers::list", json!({ "session_id": session }))
         .await
         .map_err(|_| ())?;
-    Ok(waiting_for(&list, now_ms()))
+    Ok(waiting_for(&list, now_ms()).map(|text| (text, woken_by(&list, now_ms()))))
+}
+
+/// The id (run or check) the armed wake is an `iii-cloud::on-change` on: when it ends, the wake
+/// tells the agent itself.
+fn woken_by(list: &Value, now_ms: i64) -> Option<String> {
+    let o = list
+        .get("observers")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|o| armed_wake(o, now_ms))?;
+    if o.get("function_id").and_then(Value::as_str) != Some("iii-cloud::on-change") {
+        return None;
+    }
+    let f = o.pointer("/filters/input.id")?;
+    f.get("$eq").unwrap_or(f).as_str().map(str::to_owned)
+}
+
+fn armed_wake(o: &Value, now_ms: i64) -> bool {
+    let fires = o.get("fires").and_then(Value::as_u64).unwrap_or(0);
+    let once = o.get("once").and_then(Value::as_bool).unwrap_or(false);
+    let max = o.get("max_fires").and_then(Value::as_u64).unwrap_or(1);
+    o.get("target").is_none_or(Value::is_null)
+        && fires < if once { 1 } else { max }
+        && o.get("expires_at")
+            .and_then(Value::as_i64)
+            .is_none_or(|at| at > now_ms)
 }
 
 /// The newest armed wake in an `harness::observers::list` answer, as plain
@@ -1218,16 +1279,7 @@ async fn awaited_wake(ctx: &Ctx, session: &str) -> Result<Option<String>, ()> {
 /// fires left (`once`: none yet; else under `max_fires`, default 1) and not
 /// past `expires_at`.
 pub fn waiting_for(list: &Value, now_ms: i64) -> Option<String> {
-    let armed = |o: &&Value| {
-        let fires = o.get("fires").and_then(Value::as_u64).unwrap_or(0);
-        let once = o.get("once").and_then(Value::as_bool).unwrap_or(false);
-        let max = o.get("max_fires").and_then(Value::as_u64).unwrap_or(1);
-        o.get("target").is_none_or(Value::is_null)
-            && fires < if once { 1 } else { max }
-            && o.get("expires_at")
-                .and_then(Value::as_i64)
-                .is_none_or(|at| at > now_ms)
-    };
+    let armed = |o: &&Value| armed_wake(o, now_ms);
     let o = list
         .get("observers")?
         .as_array()?
@@ -1356,19 +1408,35 @@ pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path)
 }
 
 /// What the agent owns in that check: its blocking problems, and a failed local run
-/// that is its to fix. Nothing when the check is ready or only the person's things are open.
-fn person_check_lines(ctx: &Ctx, check_id: &str) -> Vec<(String, String)> {
+/// that is its to fix (not while the person has a blocking problem open: a missing value
+/// of theirs makes the run fail too, as in the Done branch). Nothing when the check is ready
+/// or only the person's things are open. None while its run still goes: not yet.
+fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>> {
     ctx.store.read(|s| {
         let Some(c) = s.find_check(check_id).filter(|c| !c.ready) else {
-            return vec![];
+            return Some(vec![]);
         };
+        if c.run
+            .as_ref()
+            .is_some_and(|r| r.status == RunStatus::Running)
+        {
+            return None;
+        }
+        let persons = c
+            .problems
+            .iter()
+            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
         let mut lines: Vec<(String, String)> = c
             .problems
             .iter()
             .filter(|p| p.owner == Owner::Agent && p.severity == Severity::Block)
             .map(|p| (p.code.clone(), p.title.clone()))
             .collect();
-        if let Some(run) = c.run.as_ref().filter(|r| r.status == RunStatus::Failed) {
+        if let Some(run) = c
+            .run
+            .as_ref()
+            .filter(|r| r.status == RunStatus::Failed && !persons)
+        {
             let (code, line) = run_failure_of(run);
             match run_code_owner(&code) {
                 RunOwner::Agent => lines.push((code, line)),
@@ -1379,7 +1447,7 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Vec<(String, String)> {
                 RunOwner::Person => {}
             }
         }
-        lines
+        Some(lines)
     })
 }
 
