@@ -38,10 +38,30 @@ tokio = { version = "1", features = ["io-util", "time", "net"] }
 # A scripted engine for tests/process.rs; already in the graph through iii-sdk.
 tokio-tungstenite = "0.28"
 
-# Release profile for published binaries: thin LTO with one codegen unit runs
-# faster than Cargo's default, and strip drops the symbol table for a smaller
-# download at no runtime cost.
+# Release profile for published binaries: fat LTO, one codegen unit, stripped.
+# Dependencies (mostly the SDK, TLS and telemetry graph) build for size; the
+# image path stays at opt-level 3, as does this crate, where image's generic
+# codecs are instantiated: "z" on either makes a call up to 5x slower.
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
+
+[profile.release.package]
+"*" = { opt-level = "z" }
+image = { opt-level = 3 }
+fast_image_resize = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+jpeg-decoder = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+flate2 = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+adler2 = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+moxcms = { opt-level = 3 }
+pxfm = { opt-level = 3 }
+# Its C build reads OPT_LEVEL from this profile.
+libwebp-sys = { opt-level = 3 }
