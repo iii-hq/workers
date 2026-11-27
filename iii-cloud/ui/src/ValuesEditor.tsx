@@ -537,6 +537,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
               {some.length ? (
                 (props.describe ??
                 `The local run needs ${some.length === 1 ? 'this name' : `these ${some.length} names`} on this machine.`)
+              ) : props.only ? (
+                'Nothing left to set here.'
               ) : (
                 <>
                   <Mono>{v.manifest}</Mono> reads {plural(items.length, 'name')};{' '}
@@ -572,6 +574,8 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
                   <>
                     All {plural(items.length, 'value')} <Mono>{v.manifest}</Mono> reads are set in {env}.
                   </>
+                ) : props.only ? (
+                  'Nothing left to set here.'
                 ) : (
                   <>
                     <Mono>{v.manifest}</Mono> reads no names.

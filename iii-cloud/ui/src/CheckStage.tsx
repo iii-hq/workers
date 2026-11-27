@@ -1526,7 +1526,7 @@ export function CheckStage(props: CheckStageProps) {
         ? { line: 'Your agent goes on when the check ends.', chat: false }
         : !lines.length && missing.length
           ? {
-              line: 'The local run failed on a value only you can set: set it in Secrets and variables above.',
+              line: 'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
               chat: false,
             }
           : a?.session_id && canOpenChat(host)

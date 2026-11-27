@@ -1466,7 +1466,9 @@ describe('an agent that ended its turn waiting on a wake', () => {
     }
     const none = waiting(true)
     await stage({ ...none, check: { ...none.check!, problems: [value] } }, {}, { openScreen })
-    expect(region('Your agent')?.textContent).toContain('set it in Secrets and variables above')
+    expect(region('Your agent')?.textContent).toContain(
+      'The local run failed, and values are still missing: set them in Secrets and variables above, then check again.',
+    )
     expect(el.querySelector('.iii-cloud-cs-nudge button')).toBeNull()
     // c. no chat session: "Check again" alone
     await stage({ ...w, agent: { ...w.agent!, session_id: null } }, {}, { openScreen })
@@ -1601,5 +1603,10 @@ describe("the run's last lines", () => {
   it('no matching line: the last six', () => {
     const tail = runTail(Array.from({ length: 12 }, (_, i) => `plain ${i}`))
     expect(tail).toEqual(Array.from({ length: 6 }, (_, i) => `plain ${i + 6}`))
+  })
+
+  it('a colour code without its escape character is not shown', () => {
+    const tail = runTail(['[31mInvalid environment variables:[0m', 'X_KEY: required'])
+    expect(tail.join('\n')).toBe('Invalid environment variables:\nX_KEY: required')
   })
 })

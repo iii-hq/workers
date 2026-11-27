@@ -499,6 +499,7 @@ export function deployOrigin(
 // Colour codes (with or without their escape character), and the lines that are only drawing.
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]|\\[[0-9;]*m`, 'g')
 const DRAWING = /^[\s\-=_*#~.\u2500-\u257f]+$/
+const BARE_CODE = new RegExp(`(?<!${String.fromCharCode(27)})\\[[0-9;]*m`, 'g')
 const FAILURE = /invalid|missing|required|not set|error/i
 
 /**
@@ -507,7 +508,10 @@ const FAILURE = /invalid|missing|required|not set|error/i
  */
 export function runTail(log: string[], max = 6): string[] {
   const kept = log
-    .map((raw) => ({ raw, plain: raw.replace(ANSI, '').replace(/^\s*\[[^\]]+\]\s*/, '') }))
+    .map((raw) => ({
+      raw: raw.replace(BARE_CODE, ''),
+      plain: raw.replace(ANSI, '').replace(/^\s*\[[^\]]+\]\s*/, ''),
+    }))
     .filter((l) => l.plain.trim() && !DRAWING.test(l.plain))
   if (kept.length <= max) return kept.map((l) => l.raw)
   // Anchor on the start of the LAST run of failure lines before the final two (those are usually the exit lines), so an
