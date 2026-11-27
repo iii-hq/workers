@@ -2538,6 +2538,15 @@ async fn not_production(s: &Setup) {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": ENV, "project_id": "p", "name": "production", "production": false, "branch": "main", "manifest": "worker-compose.yaml", "url": null, "settings": {}})))
         .with_priority(2)
         .mount(&s.server)
+        .await; // The deployments list as it is before anything happens (an assisted deploy reads it first).
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"deployments": [], "next_cursor": null})),
+        )
+        .with_priority(9)
+        .mount(&s.server)
         .await;
 }
 
@@ -2933,10 +2942,15 @@ async fn the_deployment_list_is_followed_by_cursor_until_the_push_shows_up() {
         })))
         .mount(&s.server)
         .await;
-    let list =
-        iii_cloud::deploy::list_pages(&s.h.ctx, base.trim_start_matches("/api/v1"), &target, None)
-            .await
-            .unwrap();
+    let list = iii_cloud::deploy::list_pages(
+        &s.h.ctx,
+        base.trim_start_matches("/api/v1"),
+        &target,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
     let ids: Vec<&str> = list["deployments"]
         .as_array()
         .unwrap()
@@ -3095,7 +3109,7 @@ async fn a_failed_or_canceled_deployment_of_the_commit_is_never_adopted() {
             .mount(&s.server)
             .await;
         // The credential survives a reset of the mocks only through the memory cache.
-        let got = iii_cloud::deploy::push_deployment(&s.h.ctx, base, &target, false, None)
+        let got = iii_cloud::deploy::push_deployment(&s.h.ctx, base, &target, false, None, &[])
             .await
             .unwrap();
         assert_eq!(got.is_some(), adopted, "{status}");
@@ -3839,13 +3853,25 @@ async fn first_assisted(s: &Setup) {
     });
 }
 
-/// The deployments list: the checked commit's push deployment, or none.
-async fn list_of_commit(s: &Setup, status: Option<&'static str>) {
+/// The deployments list. The checked commit's push deployment shows only once
+/// the environment follows `OWN` and the branch is on origin (what the real
+/// webhook needs), so a deploy that adopts it has made it happen first.
+async fn list_of_commit(s: &Setup, f: &EnvFile, status: Option<&'static str>) {
     let sha = s.check.commit.clone();
+    let (origin, branch) = (s.repo.origin.clone(), f.branch.clone());
     Mock::given(method("GET"))
         .and(path(dep_base()))
         .respond_with(move |_: &Request| {
+            let follows = *branch.lock().unwrap() == OWN
+                && std::process::Command::new("git")
+                    .args(["rev-parse", "--verify", "-q", &format!("refs/heads/{OWN}")])
+                    .current_dir(&origin)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success();
             let all: Vec<Value> = status
+                .filter(|_| follows)
                 .map(|st| deployment(DEP_ID, &sha, st, "push"))
                 .into_iter()
                 .collect();
@@ -3854,6 +3880,10 @@ async fn list_of_commit(s: &Setup, status: Option<&'static str>) {
         })
         .mount(&s.server)
         .await;
+    one_deployment(s).await;
+}
+
+async fn one_deployment(s: &Setup) {
     Mock::given(method("GET"))
         .and(path(format!("{}/{DEP_ID}", dep_base())))
         .respond_with(|_: &Request| {
@@ -3897,7 +3927,7 @@ async fn the_first_assisted_deploy_pushes_the_commit_to_its_own_branch_moves_the
     let s = setup(plan(false)).await;
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     first_assisted(&s).await;
-    list_of_commit(&s, Some("queued")).await;
+    list_of_commit(&s, &f, Some("queued")).await;
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!((d.id.as_str(), d.approved_by_worker), (DEP_ID, false));
     assert_eq!(
@@ -3930,7 +3960,7 @@ async fn with_no_push_deployment_the_first_assisted_deploy_creates_one_after_a_s
     let s = setup(plan(false)).await;
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     first_assisted(&s).await;
-    list_of_commit(&s, None).await;
+    list_of_commit(&s, &f, None).await;
     let started = std::time::Instant::now();
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
@@ -3968,7 +3998,7 @@ async fn a_first_assisted_deploy_of_another_compose_file_moves_the_branch_and_th
     check_of_next(&s);
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     first_assisted(&s).await;
-    list_of_commit(&s, Some("needs_action")).await;
+    list_of_commit(&s, &f, Some("needs_action")).await;
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!(d.id, NEW_ID);
     assert_eq!(
@@ -4038,7 +4068,7 @@ async fn a_refused_move_is_retried_by_the_second_click_without_pushing_again() {
         .await;
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     first_assisted(&s).await;
-    list_of_commit(&s, Some("queued")).await;
+    list_of_commit(&s, &f, Some("queued")).await;
     let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
     assert_eq!(err.code, "BRANCH_NOT_MOVED", "{}", err.message);
     assert!(err.message.contains("answered 403") && err.message.contains("Deploy again"));
@@ -4069,7 +4099,7 @@ async fn a_refused_create_leaves_the_environment_on_its_branch_and_the_second_cl
         .await;
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     first_assisted(&s).await;
-    list_of_commit(&s, None).await;
+    list_of_commit(&s, &f, None).await;
     let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
     assert_eq!(err.status, Some(422));
     assert!(
@@ -4149,7 +4179,7 @@ async fn a_branch_another_environment_follows_gets_its_own_branch_for_this_one()
             branch: "main".into(),
         }];
     });
-    list_of_commit(&s, Some("queued")).await;
+    list_of_commit(&s, &f, Some("queued")).await;
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!(d.id, DEP_ID);
     assert_eq!(f.log(), vec![format!("move to {OWN}")]);
@@ -4171,4 +4201,77 @@ async fn only_production_reads_a_pull_request_and_a_stale_one_is_cleared() {
             .store
             .read(|st| st.pr.is_none() && st.pr_error.is_none())
     );
+}
+
+/// The list always holds one deployment of the checked commit, made before this deploy began.
+async fn list_with_older(s: &Setup, status: &'static str) {
+    let sha = s.check.commit.clone();
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(move |_: &Request| {
+            ResponseTemplate::new(200).set_body_json(
+                json!({"deployments": [deployment(DEP_ID, &sha, status, "push")], "next_cursor": null}),
+            )
+        })
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    one_deployment(s).await;
+}
+
+#[tokio::test]
+async fn an_older_deployment_of_the_commit_is_never_taken_for_this_deploys_own() {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    list_with_older(&s, "ready").await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!(
+        (d.id.as_str(), d.approved_by_worker),
+        (NEW_ID, true),
+        "a new deployment carries the switch"
+    );
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("move to {OWN} and switch to {NEXT}"),
+            format!("create with {NEXT}")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_older_running_deployment_of_the_commit_is_not_cancelled_when_the_plan_changed() {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    first_assisted(&s).await;
+    let mut changed = next_plan(false);
+    changed["settings"] =
+        json!({"release": {"worker": "a", "command": "x", "timeout": "1m", "source": "file"}});
+    Mock::given(method("GET"))
+        .and(path_regex(r"/plan$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
+        )
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    list_with_older(&s, "in_progress").await;
+    Mock::given(method("POST"))
+        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(0)
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
+    assert_eq!(err.code, "PLAN_CHANGED", "{}", err.message);
+    assert!(
+        err.message.contains(&format!("now follows {OWN}")),
+        "{}",
+        err.message
+    );
+    assert!(f.log().iter().any(|l| l == "switch to worker-compose.yaml"));
 }

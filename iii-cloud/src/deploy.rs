@@ -166,13 +166,18 @@ fn parse_time(text: Option<&str>) -> Since {
 }
 
 /// The push's deployment for `target`, from the list: not a replaced one (its
-/// successor is the one), and not one made before the merge (`since`).
-fn find_push(list: &Value, target: &str, since: Since) -> Option<Value> {
+/// successor is the one), not one made before the merge (`since`), and not one
+/// that existed before this deploy began (`old`).
+fn find_push(list: &Value, target: &str, since: Since, old: &[String]) -> Option<Value> {
     list.get("deployments")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|d| d.get("status").and_then(Value::as_str) != Some("replaced"))
+        .filter(|d| {
+            let id = d.get("id").and_then(Value::as_str).unwrap_or_default();
+            !old.iter().any(|o| o == id)
+        })
         .filter(|d| {
             let created = parse_time(d.get("created_at").and_then(Value::as_str));
             match (since, created) {
@@ -196,12 +201,18 @@ fn find_push(list: &Value, target: &str, since: Since) -> Option<Value> {
 /// `ready`, or one whose cancel the cloud refused (409, once Routes and TLS has
 /// begun). Any other answer (a 404 because it ended meanwhile, a network error)
 /// reads the list again; at the deadline the one last seen is returned.
-async fn cancel_push(ctx: &Ctx, base: &str, target: &str, since: Since) -> Option<Value> {
+async fn cancel_push(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: &[String],
+) -> Option<Value> {
     let deadline = Instant::now() + ctx.secs(120);
     let mut running = None;
     loop {
         if let Ok(list) = ctx.call(&Req::get(base)).await
-            && let Some(d) = find_push(&list, target, since)
+            && let Some(d) = find_push(&list, target, since, old)
         {
             match (
                 d.get("status").and_then(Value::as_str),
@@ -234,7 +245,13 @@ async fn cancel_push(ctx: &Ctx, base: &str, target: &str, since: Since) -> Optio
 /// The environment's deployments, following `next_cursor` (at most 5 pages)
 /// until the commit's own push shows up: a busy environment can have more than
 /// one page of newer ones.
-pub async fn list_pages(ctx: &Ctx, base: &str, target: &str, since: Since) -> Res<Value> {
+pub async fn list_pages(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: &[String],
+) -> Res<Value> {
     let mut all: Vec<Value> = vec![];
     let mut cursor: Option<String> = None;
     for _ in 0..5 {
@@ -254,11 +271,48 @@ pub async fn list_pages(ctx: &Ctx, base: &str, target: &str, since: Since) -> Re
             .and_then(Value::as_str)
             .map(str::to_owned);
         let merged = json!({ "deployments": all });
-        if cursor.is_none() || find_push(&merged, target, since).is_some() {
+        if cursor.is_none() || find_push(&merged, target, since, old).is_some() {
             return Ok(merged);
         }
     }
     Ok(json!({ "deployments": all }))
+}
+
+/// The ids of every deployment of `commit` the environment already has (five
+/// pages at most), read before an assisted deploy pushes or moves anything:
+/// none of them is the deployment this deploy makes or waits for.
+async fn commit_deployments(ctx: &Ctx, base: &str, commit: &str) -> Res<Vec<String>> {
+    let mut ids = vec![];
+    let mut cursor: Option<String> = None;
+    for _ in 0..5 {
+        let mut req = Req::get(base);
+        if let Some(c) = &cursor {
+            req = req.query("cursor", c.as_str());
+        }
+        let page = ctx.call(&req).await?;
+        for d in page
+            .get("deployments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if d.pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .is_some_and(|s| same_commit(s, commit))
+                && let Some(id) = d.get("id").and_then(Value::as_str)
+            {
+                ids.push(id.to_string());
+            }
+        }
+        cursor = page
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(ids)
 }
 
 /// How long an assisted deploy waits for a push deployment that may never come
@@ -267,11 +321,17 @@ pub async fn list_pages(ctx: &Ctx, base: &str, target: &str, since: Since) -> Re
 const FIRST_PUSH_GRACE_S: u64 = 10;
 
 /// A push deployment of `target` shows up in the list within the grace.
-async fn push_coming(ctx: &Ctx, base: &str, target: &str, since: Since) -> Res<bool> {
+async fn push_coming(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: &[String],
+) -> Res<bool> {
     let deadline = Instant::now() + ctx.secs(FIRST_PUSH_GRACE_S);
     loop {
-        let list = list_pages(ctx, base, target, since).await?;
-        if find_push(&list, target, since).is_some() {
+        let list = list_pages(ctx, base, target, since, old).await?;
+        if find_push(&list, target, since, old).is_some() {
             return Ok(true);
         }
         if Instant::now() >= deadline {
@@ -287,11 +347,12 @@ pub async fn push_deployment(
     target: &str,
     need_confirm: bool,
     since: Since,
+    old: &[String],
 ) -> Res<Option<Value>> {
     let deadline = Instant::now() + ctx.secs(120);
     loop {
-        let list = list_pages(ctx, base, target, since).await?;
-        if let Some(d) = find_push(&list, target, since) {
+        let list = list_pages(ctx, base, target, since, old).await?;
+        if let Some(d) = find_push(&list, target, since, old) {
             let status = d.get("status").and_then(Value::as_str).unwrap_or_default();
             // One that already failed is history, not this deploy: start a new one.
             if matches!(status, "failed" | "canceled" | "gone") {
@@ -581,6 +642,8 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     let mut maybe = false;
     // The first assisted deploy's move: (own branch, the branch it left).
     let mut moved: Option<(String, String)> = None;
+    // The commit's deployments that existed before this deploy (assisted only).
+    let mut old: Vec<String> = vec![];
     let mut since: Since = None;
     let mut waiting: Option<String> = None;
     let target = match (request.pr, &request.deployment_id) {
@@ -809,6 +872,9 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 });
                 deploy_way(default.as_deref(), &sel.env, &others)
             };
+            if way != Way::PullRequest {
+                old = commit_deployments(ctx, &base, &check.commit).await?;
+            }
             match way {
                 // The first assisted deploy of an environment on a branch it must
                 // not push: the checked commit goes to its own new branch, the
@@ -937,10 +1003,10 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     if Some(plan_digest(&plan)) != check.plan.digest {
         if (landed
             || (maybe
-                && push_coming(ctx, &base, &target, since)
+                && push_coming(ctx, &base, &target, since, &old)
                     .await
                     .unwrap_or(false)))
-            && let Some(running) = cancel_push(ctx, &base, &target, since).await
+            && let Some(running) = cancel_push(ctx, &base, &target, since, &old).await
         {
             // Not "check again": the merged commit is deploying. Status shows it, followed.
             if let Some(id) = running.get("id").and_then(Value::as_str) {
@@ -1012,11 +1078,11 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     // waiting deployment is confirmed; nothing else is searched.
     let adopted = if waiting.is_some()
         || late
-        || (maybe && !push_coming(ctx, &base, &target, since).await?)
+        || (maybe && !push_coming(ctx, &base, &target, since, &old).await?)
     {
         None
     } else {
-        push_deployment(ctx, &base, &target, need_confirm, since)
+        push_deployment(ctx, &base, &target, need_confirm, since, &old)
             .await
             .map_err(&after_move)?
     };
