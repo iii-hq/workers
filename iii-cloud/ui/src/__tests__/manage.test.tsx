@@ -256,7 +256,7 @@ describe('page states (Mng9)', () => {
     expect(note?.textContent).toContain(
       `It can be restored until ${until} in the iii cloud console. Nothing can deploy to it.`,
     )
-    expect(byText('a', 'Open in iii cloud')?.getAttribute('href')).toBe('https://cloud.iii.dev/iii')
+    expect(byText('a', 'Open in iii cloud')?.getAttribute('href')).toBe('https://cloud.iii.dev/iii/deletions')
     expect(reads(h)).toEqual([`/teams/${TEAM.id}/deletions`])
   })
 

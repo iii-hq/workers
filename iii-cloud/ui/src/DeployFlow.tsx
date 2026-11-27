@@ -52,7 +52,7 @@ import {
   minutesLabel,
   needsAction,
   plural,
-  projectUrl,
+  envPageUrl,
   RESOURCE_KIND,
   sendLabel,
   servingId,
@@ -500,7 +500,7 @@ function Follow({
     await cloudWrite(host, status, envId, 'POST', `/deployments/${d.id}/cancel`)
     void hubOf(host).refresh(true)
   }
-  const cloudLog = d.console_url || projectUrl(status)
+  const cloudLog = d.console_url || envPageUrl(status, 'deployments', env.name)
   const chatOpen = activeSameKind(status, 'deploy_fix')
 
   let action: ReactNode = null
@@ -709,10 +709,10 @@ function Follow({
           ) : null}
         </>
       ) : null}
-      {live && prev && projectUrl(status) ? (
+      {live && prev && envPageUrl(status, `deployments/${prev.number}`, env.name) ? (
         <p className="iii-cloud-cs-foot">
           If something's off,{' '}
-          <a href={projectUrl(status) as string} target="_blank" rel="noreferrer">
+          <a href={envPageUrl(status, `deployments/${prev.number}`, env.name) as string} target="_blank" rel="noreferrer">
             roll back to #{prev.number} in iii cloud
           </a>
           .

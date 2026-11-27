@@ -5,7 +5,7 @@ import { DeploymentRecord, Deployments, useMembers } from './EnvDeploys'
 import { LiveNow, liveOf, NextCard, nextAction, StateChip, servingOf, useDeployments } from './EnvOverview'
 import { EnvSettings } from './EnvSettings'
 import { useActions, useLocked, useStale } from './hub'
-import { deployState, projectUrl, servingId, shortDate, signInRequired } from './model'
+import { deletionsUrl, deployState, envPageUrl, servingId, shortDate, signInRequired } from './model'
 import { ErrorPanel, Fresh, Notice, PathBar, StaleNotice, useSwitch } from './parts'
 import { type AreaProps, envState, pathOf, type Route, type RouteAt } from './route'
 import { useEnvTabs } from './Sidebar'
@@ -82,7 +82,7 @@ export function Deleted({ host, status, problem }: { host: Host; status: Status;
     rec?.restorable && rec.restorable_until
       ? `It can be restored until ${shortDate(rec.restorable_until)} in the iii cloud console. `
       : ''
-  const url = `${status.connection.cloud_url.replace(/\/$/, '')}/${p?.team?.slug ?? ''}`
+  const url = deletionsUrl(status)
   return (
     <Notice
       variant="alert"
@@ -178,7 +178,7 @@ function EnvHome({ host, status, envId, go }: { host: Host; status: Status; envI
     values: values.data,
     valuesPending: first && !!c && !values.data,
   })
-  const url = projectUrl(status)
+  const url = envPageUrl(status, '', status.project?.environments.find((e) => e.id === envId)?.name)
   return (
     <>
       <NextCard host={host} status={status} envId={envId} next={next} go={go} />

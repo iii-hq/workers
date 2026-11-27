@@ -20,7 +20,7 @@ import { errorCode, errorMessage } from '@iii-dev/console-ui/format'
 import { CircleAlert } from 'lucide-react'
 import { Fragment, type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useActions } from './hub'
-import { ago, plainMessage, plural, valueMessage, variablesUrl, workerError } from './model'
+import { ago, envPageUrl, plainMessage, plural, valueMessage, workerError } from './model'
 import { Dot, ErrorPanel, Mono, Notice, Spinner, StepHeader, StepLink } from './parts'
 import type { SaveItem, Status, ValueItem, Values, ValuesSaved, ValuesSkipped, WorkerError } from './types'
 
@@ -687,7 +687,7 @@ function Editor(props: ValuesEditorProps & { read: ValuesRead }) {
 /** An API key, or production without Owner or Admin: the list only, and where to set the values instead. */
 export function ReadOnly({ host, status, values }: { host: Host; status: Status; values: Values }) {
   const { busy, call } = useActions(host)
-  const url = variablesUrl(status)
+  const url = envPageUrl(status, 'config')
   if (values.save === 'role')
     return <Notice variant="info" headline="Changing production's secrets and variables takes Owner or Admin." />
   return (

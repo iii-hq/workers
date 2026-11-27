@@ -7,6 +7,7 @@ import envCases from '../../../tests/fixtures/env-parse.json'
 import { rcFixing, TEST_ENV } from '../fixtures/check'
 import { devValues, RC_PROD, RC_URL, rcSkippedValues, rcValues, valueItem } from '../fixtures/values'
 import type { Status, Values } from '../types'
+import { Destinations } from '../SecretEntry'
 import { parseEnv, ValuesEditor, type ValuesEditorProps } from '../ValuesEditor'
 import { type Call, fakeHost } from './host'
 import { btn, byText, click, el, flush, root, text, type, ui, usePage } from './util'
@@ -349,13 +350,22 @@ describe('Paste a .env', () => {
   })
 })
 
+describe('Destinations', () => {
+  it('an API key points at the environment\'s config page, not at a variables page', async () => {
+    const s = { ...rcFixing, connection: { ...rcFixing.connection, method: 'api_key' as const } }
+    await act(async () => root.render(<Destinations status={s} saved={false} />))
+    expect(byText('a', "Set it in iii cloud's console too")?.getAttribute('href')).toMatch(/\/test\/config$/)
+  })
+})
+
 describe('read-only', () => {
   it('an API key: the list without pickers, the console link and the browser sign-in; Check still works', async () => {
     const h = await editor({ ...rcValues, save: 'api_key' }, {}, { mode: 'step' }, { ...rcFixing })
     expect(text()).toContain(
       "An API key can't write secrets and variables. Set them in iii cloud's console, or sign in with the browser.",
     )
-    expect(el.querySelector('a[href$="/variables"]')?.textContent).toBe("Open test's values in iii cloud")
+    const link = byText('a', "Open test's values in iii cloud")
+    expect(link?.getAttribute('href')).toMatch(/\/test\/config$/)
     expect(text()).toContain("Continue still works: the check lists what's missing.")
     expect(el.querySelector('select, input, textarea')).toBeNull()
     expect(btn('Paste a .env')).toBeNull()
