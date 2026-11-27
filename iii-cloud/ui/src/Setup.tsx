@@ -20,6 +20,7 @@ import {
   NewProjectFields,
   newEnvReady,
 } from './CreateForms'
+import { Already, AddStart, FolderStep, type Listed, ProjectList, useAccountProjects } from './AddProject'
 import { handOff } from './handoff'
 import { hubOf, useActions, useChecking } from './hub'
 import {
@@ -88,11 +89,104 @@ export function SetupArea(props: AreaProps<RouteAt<'setup'>>) {
       <div className="iii-cloud-setup" data-step={signedOut ? 'signin' : 'confirm'}>
         {signedOut ? (
           <SignIn host={host} status={status} cancel={cancel} go={go} />
+        ) : route.adding || (route.newProject && status.project?.workspace) ? (
+          <AddFlow {...props} cancel={cancel} />
         ) : (
           <Confirm {...props} cancel={cancel} />
         )}
       </div>
     </PageMain>
+  )
+}
+
+type Flow =
+  | { at: 'start' }
+  | { at: 'list' }
+  | { at: 'folder'; cp?: Listed }
+  | { at: 'already'; project: Project }
+  | { at: 'confirm'; path: string; cp?: { id: string; name: string }; another?: boolean }
+
+/**
+ * Add a project, from `{at:'setup', adding:true}`: it starts clean, with nothing read and nothing preselected
+ * (not the chat's folder, not an earlier visit's candidate). A project already in iii cloud (its list, then its
+ * folder) or a new one (its folder) ends in the same confirmation, whose button starts the check.
+ */
+function AddFlow(props: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) {
+  const { host, status, route, go, cancel, workingDir } = props
+  const [flow, setFlow] = useState<Flow>(route.newProject ? { at: 'folder' } : { at: 'start' })
+  const account = useAccountProjects(status)
+  const back = () => go(cancel ?? { at: 'start' })
+  let step: ReactNode
+  if (flow.at === 'start')
+    step = (
+      <AddStart
+        existing={account.loaded && !account.projects.length ? 'You have no project in iii cloud yet.' : null}
+        onExisting={() => setFlow({ at: 'list' })}
+        onNew={() => setFlow({ at: 'folder' })}
+        cancel={back}
+      />
+    )
+  else if (flow.at === 'list')
+    step = (
+      <ProjectList
+        projects={account.projects}
+        loaded={account.loaded}
+        error={account.error}
+        onPick={(cp) => setFlow({ at: 'folder', cp })}
+        onBack={() => setFlow({ at: 'start' })}
+      />
+    )
+  else if (flow.at === 'folder') {
+    const cp = flow.cp
+    step = (
+      <FolderStep
+        host={host}
+        title={cp ? 'Where is it on this machine?' : 'Which folder?'}
+        lead={
+          cp
+            ? `Pick the folder of ${cp.repository || cp.name} on this machine.`
+            : 'Pick the folder of your project. The page reads its repository.'
+        }
+        projectId={cp?.id}
+        defaultDir={workingDir}
+        onRead={(project) =>
+          cp
+            ? setFlow({ at: 'confirm', path: project.path, cp: { id: cp.id, name: cp.name } })
+            : project.cloud_project
+              ? setFlow({ at: 'already', project })
+              : setFlow({ at: 'confirm', path: project.path })
+        }
+        onBack={() => setFlow(cp ? { at: 'list' } : { at: 'start' })}
+      />
+    )
+  } else if (flow.at === 'already') {
+    const { project } = flow
+    const cp = project.cloud_project
+    step = (
+      <Already
+        project={project}
+        onUse={() => cp && setFlow({ at: 'confirm', path: project.path, cp: { id: cp.id, name: cp.name } })}
+        onAnother={() => setFlow({ at: 'confirm', path: project.path, another: true })}
+        onBack={() => setFlow({ at: 'folder' })}
+      />
+    )
+  } else
+    step = (
+      <Confirm
+        {...props}
+        route={{ ...route, adding: true }}
+        cancel={cancel}
+        startPath={flow.path}
+        fixedCp={flow.cp}
+        startNew={flow.another}
+        onBackToList={() => setFlow({ at: 'list' })}
+      />
+    )
+  return (
+    <>
+      {account.readers(host)}
+      {step}
+    </>
   )
 }
 
@@ -236,7 +330,19 @@ function Confirm({
   go,
   workingDir,
   cancel,
-}: AreaProps<RouteAt<'setup'>> & { cancel: Route | null }) {
+  startPath,
+  fixedCp,
+  startNew,
+  onBackToList,
+}: AreaProps<RouteAt<'setup'>> & {
+  cancel: Route | null
+  /** Add a project: the folder the person picked, already read by `project::resolve`. */
+  startPath?: string
+  /** Add a project from one in iii cloud: the Project row is this one; its Change goes back to the list. */
+  fixedCp?: { id: string; name: string }
+  startNew?: boolean
+  onBackToList?: () => void
+}) {
   const actions = useActions(host)
   const checking = useChecking(host)
   const launching = useLaunch()?.kind === 'launching'
@@ -244,20 +350,22 @@ function Confirm({
   const selected = status.project
   // Adding leaves the project in use selected: the screen reads the folder `resolve` read beside it (the
   // candidate), once this screen read it with success, and only for the folder picked.
-  const [fresh, setFresh] = useState(false)
-  const [path, setPath] = useState(
-    (adding
-      ? (status.candidate?.path ?? workingDir ?? (route.newProject ? selected?.path : null))
-      : (selected?.path ?? workingDir)) ?? '',
-  )
-  const candidate = fresh && status.candidate?.path === path ? status.candidate : null
+  const [fresh, setFresh] = useState(!!startPath)
+  const [path, setPath] = useState((adding ? startPath : (selected?.path ?? workingDir)) ?? '')
+  // The folder read by this visit: beside a project in use it is the candidate, else the selection itself.
+  const candidate =
+    fresh && status.candidate?.path === path
+      ? status.candidate
+      : fresh && !selected?.workspace && selected?.path === path
+        ? selected
+        : null
   const view: Status = adding ? { ...status, project: candidate, check: null, compose_files: [] } : status
   const project = view.project
 
   const [open, setOpen] = useState<Row | null>(null)
   const [mode, setMode] = useState<'worktree' | 'checkout'>((adding ? null : selected?.workspace?.mode) ?? 'worktree')
   const [askCheckout, setAskCheckout] = useState(false)
-  const [cpPick, setCpPick] = useState<string | null>(route.newProject ? NEW : null)
+  const [cpPick, setCpPick] = useState<string | null>(fixedCp ? fixedCp.id : startNew || route.newProject ? NEW : null)
   const [envPick, setEnvPick] = useState<string | null>(null)
   const [manifest, setManifest] = useState<string | null>(null)
   const [localCps, setLocalCps] = useState<CloudProjectChoice[] | null>(null)
@@ -268,12 +376,16 @@ function Confirm({
   const read = (dir: string, team?: string) => {
     setPath(dir)
     setManifest(null)
-    setCpPick(null)
+    setCpPick(fixedCp?.id ?? null)
     setEnvPick(null)
     setLocalCps(null)
     setFresh(false)
     void actions
-      .call<Project>('resolve', 'iii-cloud::project::resolve', { path: dir, ...(team ? { team_id: team } : {}) })
+      .call<Project>('resolve', 'iii-cloud::project::resolve', {
+        path: dir,
+        ...(team ? { team_id: team } : {}),
+        ...(fixedCp ? { cloud_project_id: fixedCp.id } : {}),
+      })
       .then(async (out) => {
         if (out === null) return
         // The worker reads the repository's top folder; the candidate arrives with the status (no event).
@@ -285,7 +397,8 @@ function Confirm({
   // The folder resolves once, on arrival: the chat's folder; adding reads its own (a new cloud project may be
   // for the folder in use).
   useEffect(() => {
-    if (path && (adding || !selected)) read(path)
+    // Add a project hands over a folder already read; the other arrivals read theirs once.
+    if (path && !startPath && (adding || !selected)) read(path)
   }, [])
   const pickFolder = (dir: string) => {
     // Another folder while a project is in use is added beside it: the worker keeps it as the candidate.
@@ -651,7 +764,7 @@ function Confirm({
           {open === 'project' ? (
             projectEditor
           ) : (
-            <DetailRow label="Project" onChange={toggle('project')} note={projectNote}>
+            <DetailRow label="Project" onChange={fixedCp ? onBackToList : toggle('project')} note={projectNote}>
               <strong>{projectValue}</strong>
             </DetailRow>
           )}

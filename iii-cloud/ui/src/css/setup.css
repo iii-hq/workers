@@ -135,3 +135,20 @@
   border-color: var(--color-ink);
   background: var(--color-panel);
 }
+
+/* Add a project: the ways in and the project list are framed choices, one per row, stacked on a phone too. */
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-cloud-choice {
+  min-height: 56px;
+  border-radius: var(--radius-lg);
+  white-space: normal;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-ui-list-item__title,
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-ui-list-item__description {
+  white-space: normal;
+}

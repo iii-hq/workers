@@ -195,6 +195,33 @@ async fn without_deployments_the_newest_project_is_taken_and_none_is_silent() {
 }
 
 #[tokio::test]
+async fn resolve_refuses_the_copy_the_agent_works_in_and_names_the_main_checkout() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = cloud(&server, true).await;
+    let copy = r.checkout.parent().unwrap().join("hello-iii-iii-cloud");
+    git(
+        &r.checkout,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "iii-cloud/ready-test",
+            copy.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    let err = resolve(&h.ctx, resolve_req(&copy)).await.unwrap_err();
+    assert_eq!(err.code, "AGENT_COPY");
+    assert_eq!(
+        std::fs::canonicalize(err.fix.as_deref().unwrap()).unwrap(),
+        std::fs::canonicalize(&r.checkout).unwrap()
+    );
+    // The person's own checkout reads as before.
+    assert!(resolve(&h.ctx, resolve_req(&r.checkout)).await.is_ok());
+}
+
+#[tokio::test]
 async fn use_takes_a_project_an_environment_or_both_and_checks_they_belong_together() {
     let server = MockServer::start().await;
     let r = repo();
@@ -1024,7 +1051,8 @@ async fn removed_projects_and_environments_are_dropped_and_other_repositories_ar
         .await
         .unwrap_err();
     assert_eq!(err.code, "REPOSITORY_MISMATCH");
-    assert!(err.message.contains("workers deploys iii-hq/workers"));
+    assert!(err.message.contains("workers is built from iii-hq/workers"));
+    assert!(err.message.starts_with("This folder is "));
     // Nothing is wrong yet.
     let status = iii_cloud::status::status(
         &h.ctx,

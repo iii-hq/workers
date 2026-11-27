@@ -431,10 +431,10 @@ export function StartArea({ host, status, route, go, narrow }: AreaProps<RouteAt
   const places = placesOf(status)
   const key = status.connection.api_key
   const offline = status.connection.status !== 'connected'
-  // Adding keeps the project in use until the button of the confirmation; with none in use, it is the first time.
-  const addRoute: Route = status.project?.workspace
-    ? { at: 'setup', step: 'confirm', adding: true }
-    : { at: 'setup', step: 'confirm' }
+  // Adding starts clean and keeps the project in use until the confirmation's button; with no project on this
+  // machine at all, it is the first time.
+  const addRoute: Route =
+    status.project?.workspace || places.length ? { at: 'setup', adding: true } : { at: 'setup', step: 'confirm' }
   const open: RowProps['open'] = (k, name, payload, envName) => {
     setTried(name)
     switchTo(k, name, payload, envName)
