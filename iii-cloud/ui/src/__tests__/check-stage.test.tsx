@@ -1315,7 +1315,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(title()).not.toMatch(/is fixing|checking its fix/)
     const note = region('Your agent')?.textContent ?? ''
     expect(note).toMatch(new RegExp(`waiting \\d+ min for ${WAKE}`))
-    expect(note).not.toContain('working')
+    expect(note).not.toMatch(/working \d+ min/)
   })
 
   it('with nothing for it to fix: "Your agent waits for …"', async () => {
@@ -1378,6 +1378,41 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(title()).not.toMatch(/is fixing/)
     expect(region('Your agent')?.textContent).toContain('waiting for your answer')
     expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
+  })
+
+  it("the line follows what the agent waits for: a running check goes on by itself, a missing value is the values card's, no chat means check again", async () => {
+    const openScreen = vi.fn()
+    const w = waiting()
+    // a. a check is running: the wake fires by itself
+    await stage(
+      { ...w, check: { ...w.check!, run: { ...w.check!.run!, status: 'running' as const } } },
+      {},
+      { openScreen },
+    )
+    expect(region('Your agent')?.textContent).toContain('Your agent goes on when the check ends.')
+    expect(region('Your agent')?.textContent).not.toContain('Tell it in the chat')
+    // b. nothing open for the agent, the run failed on the person's own value
+    const value = {
+      ...rcVariables[0],
+      id: 'p-own',
+      code: 'LOCAL_VARIABLE_UNSET',
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'person' as const,
+      title: 'JWT_SECRET has no value here',
+    }
+    const none = waiting(true)
+    await stage({ ...none, check: { ...none.check!, problems: [value] } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('set it in Secrets and variables above')
+    expect(el.querySelector('.iii-cloud-cs-nudge button')).toBeNull()
+    // c. no chat session: "Check again" alone
+    await stage({ ...w, agent: { ...w.agent!, session_id: null } }, {}, { openScreen })
+    expect(region('Your agent')?.textContent).toContain('Your agent is not working on this: check again.')
+    expect(btn('Open chat')).toBeNull()
+    // no activity time: no invented number
+    await stage({ ...w, agent: { ...w.agent!, last_activity_at: null } })
+    expect(region('Your agent')?.textContent).toMatch(/waiting for test environment|waiting: /)
+    expect(region('Your agent')?.textContent).not.toMatch(/waiting \d+ min/)
   })
 
   it('an agent that works still says it works', async () => {

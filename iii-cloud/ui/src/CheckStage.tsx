@@ -1493,13 +1493,23 @@ export function CheckStage(props: CheckStageProps) {
   const current = new Set(workingOnIds(s))
   if (working && !lines.some((l) => l.id && current.has(l.id))) current.clear()
   const leader = working ? (lines.find((l) => l.id && current.has(l.id)) ?? lines[0]) : null
-  // The agent is not working and something is open for it: the next step is the chat, said beside the sentence.
-  const nudge =
-    !!a &&
-    (a.state === 'waiting' || a.state === 'stalled') &&
-    (lines.length > 0 || run?.status === 'failed') &&
-    !!a.session_id &&
-    canOpenChat(host)
+  // The agent is not working and something is open for it: the next step, said beside the sentence, follows what it
+  // waits for. A check going on makes it go on by itself; the person's own missing value is the values card's; the chat
+  // only where there is one to open.
+  const stuck = !!a && (a.state === 'waiting' || a.state === 'stalled')
+  const nudge: { line: string; chat: boolean } | null =
+    !stuck || !(lines.length > 0 || run?.status === 'failed')
+      ? null
+      : running
+        ? { line: 'Your agent goes on when the check ends.', chat: false }
+        : !lines.length && missing.length
+          ? {
+              line: 'The local run failed on a value only you can set: set it in Secrets and variables above.',
+              chat: false,
+            }
+          : a?.session_id && canOpenChat(host)
+            ? { line: 'Your agent is not working on this. Tell it in the chat, or check again.', chat: true }
+            : { line: 'Your agent is not working on this: check again.', chat: false }
   const idle = a?.last_activity_at ? now - Date.parse(a.last_activity_at) : 0
   const configItem = warnings.find(configAction)
   const lastCheck = past.at(-1)
@@ -1606,7 +1616,7 @@ export function CheckStage(props: CheckStageProps) {
           }
           end={
             engaged && a ? (
-              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge} />
+              <AgentControls host={host} agent={a} branch={p?.workspace?.branch} chat={!nudge?.chat} />
             ) : lines.length && !running && !stops.some((x) => x.key === 'stopped') ? (
               <Button size="sm" variant="secondary" disabled={!canAsk} onClick={ask}>
                 {sendLabel(s, 'ready', 'Fix with your agent')}
@@ -1626,10 +1636,12 @@ export function CheckStage(props: CheckStageProps) {
           ) : null}
           {nudge ? (
             <div className="iii-cloud-cs-agentnote iii-cloud-cs-nudge">
-              <span>Your agent is not working on this. Tell it in the chat, or check again.</span>
-              <Button size="sm" variant="secondary" onClick={() => void openAgentChat(host, s)}>
-                Open chat
-              </Button>
+              <span>{nudge.line}</span>
+              {nudge.chat ? (
+                <Button size="sm" variant="secondary" onClick={() => void openAgentChat(host, s)}>
+                  Open chat
+                </Button>
+              ) : null}
             </div>
           ) : null}
           <ul className="iii-cloud-cs-rows">
