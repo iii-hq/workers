@@ -467,6 +467,7 @@ async fn probe_a_live_session_prints_only_the_derived_agent_state() {
         working_on: vec![],
         note: None,
         waiting_for: None,
+        question_source: None,
     };
     ctx.store.update(|s| {
         s.handoffs.push(Handoff {
@@ -564,6 +565,7 @@ async fn a_follow_up_handoff_is_delivered_with_harness_send() {
                 working_on: vec![],
                 note: None,
                 waiting_for: None,
+                question_source: None,
             },
             checked: true,
             pending_text: None,

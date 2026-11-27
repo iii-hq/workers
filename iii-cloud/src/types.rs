@@ -404,6 +404,19 @@ pub struct AgentState {
     /// What the agent waits for when `state` is `waiting` ("the run here to end").
     #[serde(default)]
     pub waiting_for: Option<String>,
+    /// Where `question` comes from: a real ask from the agent's session, or text this
+    /// worker made from the check's open problems. Absent when there is no question.
+    #[serde(default)]
+    pub question_source: Option<QuestionSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionSource {
+    /// An ask the agent made in its session.
+    Agent,
+    /// The worker's own words about what the check leaves open.
+    Check,
 }
 
 /// `iii-cloud::handoff::progress` input: the agent says what it starts on.

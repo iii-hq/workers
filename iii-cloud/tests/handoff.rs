@@ -449,6 +449,7 @@ async fn a_question_for_the_person_is_waiting_for_you_and_quiet_is_stalled() {
         a.question.as_deref(),
         Some("Which migration tool do you want me to keep?")
     );
+    assert_eq!(a.question_source, Some(QuestionSource::Agent), "a real ask");
     *w.question.lock().unwrap() = None;
     until(&h, "working again", |a| {
         a.state == AgentPhase::Working && a.question.is_none()
@@ -1287,19 +1288,14 @@ async fn only_problems_for_the_person_left_waits_for_you_and_names_them() {
         a.state == AgentPhase::WaitingForYou
     })
     .await;
-    let theirs = h.ctx.store.read(|s| {
-        s.check
-            .as_ref()
-            .unwrap()
-            .problems
-            .iter()
-            .filter(|p| p.owner == Owner::Person && p.severity != Severity::Info)
-            .map(|p| format!("{}: {}", p.code, p.title))
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    assert!(theirs.starts_with("LOCAL_VARIABLE_UNSET: "), "{theirs}");
-    assert_eq!(a.question.as_deref(), Some(theirs.as_str()));
+    // In the person's voice: no code, a count, where to set it.
+    assert_eq!(
+        a.question.as_deref(),
+        Some(
+            "Your agent's part is done for now. It waits for 1 value: set it in Secrets and variables."
+        )
+    );
+    assert_eq!(a.question_source, Some(QuestionSource::Check));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(sent(&h).is_empty(), "nothing for the agent to continue on");
 }
@@ -2891,7 +2887,7 @@ async fn a_run_that_failed_on_the_persons_machine_waits_for_the_person_and_shows
     assert!(
         a.question
             .as_deref()
-            .is_some_and(|q| q.starts_with("DOCKER_MISSING: Docker is not running")),
+            .is_some_and(|q| q.starts_with("Docker is not running")),
         "{:?}",
         a.question
     );
@@ -3475,5 +3471,32 @@ async fn a_page_check_while_the_waiting_agent_is_stalled_by_a_refusal_is_still_r
             .read(|s| s.handoffs[0].person_check.clone())
             .as_deref(),
         Some("person-check")
+    );
+}
+
+#[test]
+fn what_waits_for_the_person_is_said_in_their_voice_without_codes_or_repeats() {
+    use iii_cloud::handoff::waits_for_person_text;
+    let p = |code: &str, title: &str| (code.to_string(), title.to_string());
+    let values: Vec<_> = (0..8)
+        .map(|_| p("SECRET_MISSING", "A secret has no value"))
+        .collect();
+    assert_eq!(
+        waits_for_person_text(&values),
+        "Your agent's part is done for now. It waits for 8 values: set them in Secrets and variables."
+    );
+    // Not only values: one line per distinct title, a count when it repeats, four lines at most.
+    let mixed = vec![
+        p("SECRET_MISSING", "A secret has no value"),
+        p("SECRET_MISSING", "A secret has no value"),
+        p("DOCKER_MISSING", "Docker is not running"),
+        p("A", "a"),
+        p("B", "b"),
+        p("C", "c"),
+        p("D", "d"),
+    ];
+    assert_eq!(
+        waits_for_person_text(&mixed),
+        "2 × A secret has no value\nDocker is not running\na\nb\nand 2 more"
     );
 }
