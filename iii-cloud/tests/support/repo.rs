@@ -83,6 +83,11 @@ pub fn repo() -> Repo {
         &checkout,
         &["branch", "--set-upstream-to=origin/main", "main"],
     );
+    // The person's repository has an identity, as a real one does: the worker's own merges and commits in
+    // its worktrees use it, and a runner has no global one.
+    for (key, value) in [("user.name", "Ada"), ("user.email", "ada@example.test")] {
+        git(&checkout, &["config", key, value]);
+    }
     Repo {
         root,
         origin,
