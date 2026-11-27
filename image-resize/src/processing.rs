@@ -8,7 +8,7 @@ use image::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use crate::config::{ResizeConfig, ResizeStrategy, check_quality};
 
@@ -56,6 +56,12 @@ pub struct ImageMetadata {
     pub target_width: Option<NonZeroU32>,
     /// Box height in pixels. The image is never enlarged. Defaults to the configured box.
     pub target_height: Option<NonZeroU32>,
+    /// Largest output in pixels, width times height: a larger one shrinks further,
+    /// keeping its aspect ratio. Defaults to the configured limit, if any.
+    pub max_pixels: Option<NonZeroU64>,
+    /// Largest output in bytes: JPEG and WebP lower their quality, then shrink;
+    /// PNG shrinks. Defaults to the configured limit, if any.
+    pub max_bytes: Option<NonZeroU64>,
 }
 
 /// The call result: the output's format and size, and the source's size after
@@ -68,6 +74,9 @@ pub struct ThumbnailMetadata {
     pub source_width: u32,
     pub source_height: u32,
     pub strategy: ResizeStrategy,
+    /// The JPEG or WebP quality used, which `max_bytes` can lower; absent for PNG.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -78,6 +87,8 @@ pub struct ProcessingParams {
     pub quality: u8,
     pub input_format: Format,
     pub output_format: Format,
+    pub max_pixels: Option<NonZeroU64>,
+    pub max_bytes: Option<NonZeroU64>,
 }
 
 /// The input format, from the bytes: a caller's label is not trusted.
@@ -114,6 +125,8 @@ pub fn resolve_params(
         quality: check_quality(quality).map_err(invalid)?,
         input_format,
         output_format,
+        max_pixels: meta.max_pixels.or(config.max_pixels),
+        max_bytes: meta.max_bytes.or(config.max_bytes),
     })
 }
 
@@ -453,14 +466,42 @@ where
     true
 }
 
-pub fn resize_scale_to_fit(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
+/// `w`x`h` shrunk to at most `max` pixels, keeping its aspect ratio; never
+/// enlarged, and no side below 1.
+fn within_pixels(w: u32, h: u32, max: Option<NonZeroU64>) -> (u32, u32) {
+    let area = u64::from(w) * u64::from(h);
+    let Some(max) = max.map(NonZeroU64::get).filter(|&max| area > max) else {
+        return (w, h);
+    };
+    let scale = (max as f64 / area as f64).sqrt();
+    let short = ((f64::from(w.min(h)) * scale) as u32).max(1);
+    // Bounded in integers, so float rounding never lands above `max`.
+    let bound = u32::try_from(max / u64::from(short)).unwrap_or(u32::MAX);
+    let long = ((f64::from(w.max(h)) * scale) as u32).clamp(1, bound);
+    if w <= h { (short, long) } else { (long, short) }
+}
+
+pub fn resize_scale_to_fit(
+    img: DynamicImage,
+    max_w: u32,
+    max_h: u32,
+    max_pixels: Option<NonZeroU64>,
+) -> DynamicImage {
+    // The pixel limit narrows the box, so the image is resized once.
+    let (pw, ph) = within_pixels(img.width(), img.height(), max_pixels);
+    let (max_w, max_h) = (max_w.min(pw), max_h.min(ph));
     if img.width() <= max_w && img.height() <= max_h {
         return img;
     }
     premultiplied(img, |img| img.resize(max_w, max_h, FilterType::Lanczos3))
 }
 
-pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicImage {
+pub fn resize_crop_to_fit(
+    img: DynamicImage,
+    box_w: u32,
+    box_h: u32,
+    max_pixels: Option<NonZeroU64>,
+) -> DynamicImage {
     let (box_w, box_h) = (box_w.max(1), box_h.max(1));
     let (sw, sh) = (u64::from(img.width()), u64::from(img.height()));
     let (bw, bh) = (u64::from(box_w), u64::from(box_h));
@@ -477,12 +518,11 @@ pub fn resize_crop_to_fit(img: DynamicImage, box_w: u32, box_h: u32) -> DynamicI
     } else {
         img.crop_imm((img.width() - cw) / 2, (img.height() - ch) / 2, cw, ch)
     };
-    if cw > box_w || ch > box_h {
-        premultiplied(cropped, |img| {
-            img.resize_exact(cw.min(box_w), ch.min(box_h), FilterType::Lanczos3)
-        })
-    } else {
+    let (w, h) = within_pixels(cw.min(box_w), ch.min(box_h), max_pixels);
+    if (w, h) == (cw, ch) {
         cropped
+    } else {
+        premultiplied(cropped, |img| img.resize_exact(w, h, FilterType::Lanczos3))
     }
 }
 
@@ -498,13 +538,10 @@ pub fn process_image(
         img = over_white(&img);
     }
 
+    let (box_w, box_h, max_pixels) = (params.target_width, params.target_height, params.max_pixels);
     let thumbnail = match params.strategy {
-        ResizeStrategy::ScaleToFit => {
-            resize_scale_to_fit(img, params.target_width, params.target_height)
-        }
-        ResizeStrategy::CropToFit => {
-            resize_crop_to_fit(img, params.target_width, params.target_height)
-        }
+        ResizeStrategy::ScaleToFit => resize_scale_to_fit(img, box_w, box_h, max_pixels),
+        ResizeStrategy::CropToFit => resize_crop_to_fit(img, box_w, box_h, max_pixels),
     };
     // After the resize, so the conversion touches only the thumbnail's pixels.
     let thumbnail = match icc {
@@ -524,28 +561,84 @@ pub fn process_image(
         )));
     }
 
-    let mut buf = Vec::new();
-    let encoded = match params.output_format {
-        Format::Jpeg => {
-            thumbnail.write_with_encoder(JpegEncoder::new_with_quality(&mut buf, params.quality))
-        }
-        Format::Png => thumbnail.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png),
-        Format::Webp => {
-            buf = encode_webp(&thumbnail, params.quality)?;
-            Ok(())
-        }
-    };
-    encoded.map_err(|e| Error::Handler(format!("could not encode the output: {e}")))?;
-
+    let (buf, thumbnail, quality) = encode_within(thumbnail, params)?;
     let result = ThumbnailMetadata {
         format: params.output_format,
-        width,
-        height,
+        width: thumbnail.width(),
+        height: thumbnail.height(),
         source_width,
         source_height,
         strategy: params.strategy,
+        quality: (params.output_format != Format::Png).then_some(quality),
     };
     Ok((buf, result))
+}
+
+/// Most encodes one call runs to meet `max_bytes`.
+const MAX_ENCODES: usize = 8;
+/// The JPEG and WebP qualities tried, in turn, before an output over `max_bytes` shrinks.
+const QUALITY_STEPS: [u8; 3] = [70, 55, 40];
+
+/// `img` encoded, at lower qualities and then smaller sizes until it fits in
+/// `max_bytes`: the bytes, the image they hold and its quality.
+fn encode_within(
+    img: DynamicImage,
+    params: &ProcessingParams,
+) -> Result<(Vec<u8>, DynamicImage, u8), Error> {
+    let format = params.output_format;
+    let mut quality = params.quality;
+    let mut buf = encode(&img, format, quality)?;
+    let Some(max) = params.max_bytes.map(NonZeroU64::get) else {
+        return Ok((buf, img, quality));
+    };
+    let mut steps = QUALITY_STEPS
+        .into_iter()
+        .filter(move |&q| format != Format::Png && q < quality);
+    let mut shrunk: Option<DynamicImage> = None;
+    for _ in 1..MAX_ENCODES {
+        let len = buf.len() as u64;
+        if len <= max {
+            break;
+        }
+        if let Some(q) = steps.next() {
+            quality = q;
+        } else {
+            let current = shrunk.as_ref().unwrap_or(&img);
+            let pixels = f64::from(current.width()) * f64::from(current.height());
+            // Bytes track pixels roughly; the margin covers what does not, such as headers.
+            let budget = (pixels * max as f64 / len as f64 * 0.9) as u64;
+            let (w, h) = within_pixels(img.width(), img.height(), NonZeroU64::new(budget.max(1)));
+            if (w, h) == (current.width(), current.height()) {
+                break;
+            }
+            // From the first thumbnail each time, so resizes never stack more than two deep.
+            shrunk = Some(premultiplied(img.clone(), |img| {
+                img.resize_exact(w, h, FilterType::Lanczos3)
+            }));
+        }
+        buf = encode(shrunk.as_ref().unwrap_or(&img), format, quality)?;
+    }
+    let img = shrunk.unwrap_or(img);
+    if buf.len() as u64 > max {
+        return Err(invalid(format!(
+            "the output does not fit in max_bytes ({max}): at {}x{} it is still {} bytes",
+            img.width(),
+            img.height(),
+            buf.len()
+        )));
+    }
+    Ok((buf, img, quality))
+}
+
+fn encode(img: &DynamicImage, format: Format, quality: u8) -> Result<Vec<u8>, Error> {
+    let mut buf = Vec::new();
+    let encoded = match format {
+        Format::Jpeg => img.write_with_encoder(JpegEncoder::new_with_quality(&mut buf, quality)),
+        Format::Png => img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png),
+        Format::Webp => return encode_webp(img, quality),
+    };
+    encoded.map_err(|e| Error::Handler(format!("could not encode the output: {e}")))?;
+    Ok(buf)
 }
 
 fn encode_webp(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, Error> {
@@ -645,9 +738,39 @@ mod tests {
     }
 
     #[test]
+    fn limits_default_to_the_config_and_a_call_overrides_them() {
+        let config = ResizeConfig {
+            max_pixels: NonZeroU64::new(10_000),
+            max_bytes: NonZeroU64::new(1_000_000),
+            ..default_config()
+        };
+        let limits = |p: &ProcessingParams| {
+            (
+                p.max_pixels.map(NonZeroU64::get),
+                p.max_bytes.map(NonZeroU64::get),
+            )
+        };
+        let params = resolve_params(&config, &ImageMetadata::default(), Format::Png).unwrap();
+        assert_eq!(limits(&params), (Some(10_000), Some(1_000_000)));
+        let png = encode_image(&make_rgb_image(400, 300, 1, 2, 3), ImageFormat::Png);
+        let (_, result) = process_image(&png, &params).unwrap();
+        assert_eq!((result.width, result.height), (115, 86));
+
+        let metadata = ImageMetadata {
+            max_pixels: NonZeroU64::new(40_000),
+            max_bytes: NonZeroU64::new(5_000),
+            ..Default::default()
+        };
+        let params = resolve_params(&config, &metadata, Format::Png).unwrap();
+        assert_eq!(limits(&params), (Some(40_000), Some(5_000)));
+        let params = resolve_params(&default_config(), &ImageMetadata::default(), Format::Png);
+        assert_eq!(limits(&params.unwrap()), (None, None));
+    }
+
+    #[test]
     fn test_scale_to_fit_landscape() {
         let img = make_rgb_image(1000, 500, 255, 0, 0);
-        let result = resize_scale_to_fit(img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200, None);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 100);
     }
@@ -655,7 +778,7 @@ mod tests {
     #[test]
     fn test_scale_to_fit_portrait() {
         let img = make_rgb_image(500, 1000, 0, 255, 0);
-        let result = resize_scale_to_fit(img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200, None);
         assert_eq!(result.width(), 100);
         assert_eq!(result.height(), 200);
     }
@@ -663,7 +786,7 @@ mod tests {
     #[test]
     fn test_scale_to_fit_square() {
         let img = make_rgb_image(1000, 1000, 0, 0, 255);
-        let result = resize_scale_to_fit(img, 200, 200);
+        let result = resize_scale_to_fit(img, 200, 200, None);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
     }
@@ -671,7 +794,7 @@ mod tests {
     #[test]
     fn test_crop_to_fit_landscape() {
         let img = make_rgb_image(1000, 500, 255, 0, 0);
-        let result = resize_crop_to_fit(img, 200, 200);
+        let result = resize_crop_to_fit(img, 200, 200, None);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
     }
@@ -679,7 +802,7 @@ mod tests {
     #[test]
     fn test_crop_to_fit_portrait() {
         let img = make_rgb_image(500, 1000, 0, 255, 0);
-        let result = resize_crop_to_fit(img, 200, 200);
+        let result = resize_crop_to_fit(img, 200, 200, None);
         assert_eq!(result.width(), 200);
         assert_eq!(result.height(), 200);
     }
@@ -700,6 +823,8 @@ mod tests {
             quality,
             input_format,
             output_format,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(input, &params).unwrap();
         image::load_from_memory_with_format(&output, output_format.image_format()).unwrap()
@@ -711,14 +836,14 @@ mod tests {
             make_rgb_image(100, 80, 10, 20, 30),
             make_rgb_image(1, 1, 10, 20, 30),
         ] {
-            assert_eq!(resize_scale_to_fit(img.clone(), 200, 200), img);
+            assert_eq!(resize_scale_to_fit(img.clone(), 200, 200, None), img);
         }
     }
 
     #[test]
     fn crop_to_fit_small_source_crops_without_enlarging() {
         for side in [200, 96] {
-            let result = resize_crop_to_fit(make_rgb_image(100, 80, 10, 20, 30), side, side);
+            let result = resize_crop_to_fit(make_rgb_image(100, 80, 10, 20, 30), side, side, None);
             assert_eq!((result.width(), result.height()), (80, 80), "box {side}");
         }
     }
@@ -751,14 +876,46 @@ mod tests {
 
     #[test]
     fn crop_to_fit_extreme_aspect_is_cheap() {
-        let result = resize_crop_to_fit(make_rgb_image(20_000, 2, 10, 20, 30), 200, 200);
+        let result = resize_crop_to_fit(make_rgb_image(20_000, 2, 10, 20, 30), 200, 200, None);
         assert_eq!((result.width(), result.height()), (2, 2));
     }
 
     #[test]
     fn crop_to_fit_never_exceeds_the_box() {
-        let result = resize_crop_to_fit(make_rgb_image(5000, 1009, 10, 20, 30), 100, 1000);
+        let result = resize_crop_to_fit(make_rgb_image(5000, 1009, 10, 20, 30), 100, 1000, None);
         assert_eq!((result.width(), result.height()), (100, 1000));
+    }
+
+    #[test]
+    fn within_pixels_keeps_the_aspect_under_the_limit() {
+        let max = NonZeroU64::new;
+        assert_eq!(within_pixels(400, 300, None), (400, 300));
+        assert_eq!(within_pixels(400, 300, max(120_000)), (400, 300));
+        assert_eq!(within_pixels(400, 300, max(30_000)), (200, 150));
+        assert_eq!(within_pixels(400, 300, max(10_000)), (115, 86));
+        assert_eq!(within_pixels(20_000, 2, max(100)), (100, 1));
+        assert_eq!(within_pixels(2, 20_000, max(100)), (1, 100));
+        for (w, h) in [
+            (4000, 3000),
+            (1, 50_000),
+            (12_345, 678),
+            (7, 7),
+            (u32::MAX, 3),
+        ] {
+            for limit in [1, 2, 3, 99, 1000, 123_457, 11_999_999] {
+                let (nw, nh) = within_pixels(w, h, max(limit));
+                let (area, out) = (u64::from(w) * u64::from(h), u64::from(nw) * u64::from(nh));
+                let ok = if area > limit {
+                    out <= limit
+                } else {
+                    (nw, nh) == (w, h)
+                };
+                assert!(
+                    ok && (1..=w).contains(&nw) && (1..=h).contains(&nh),
+                    "{w}x{h} under {limit}: {nw}x{nh}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -834,6 +991,8 @@ mod tests {
             quality: 85,
             input_format: Format::Jpeg,
             output_format: Format::Jpeg,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();
@@ -852,6 +1011,8 @@ mod tests {
             quality: 100,
             input_format: Format::Png,
             output_format: Format::Png,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
@@ -875,6 +1036,8 @@ mod tests {
             quality: 80,
             input_format: Format::Webp,
             output_format: Format::Webp,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = decode(&output, ImageFormat::WebP).unwrap().0;
@@ -890,6 +1053,8 @@ mod tests {
             quality,
             input_format,
             output_format: Format::Webp,
+            max_pixels: None,
+            max_bytes: None,
         }
     }
 
@@ -970,6 +1135,8 @@ mod tests {
             quality: 50,
             input_format: Format::Jpeg,
             output_format: Format::Jpeg,
+            max_pixels: None,
+            max_bytes: None,
         };
         let params_high = ProcessingParams {
             target_width: 200,
@@ -978,6 +1145,8 @@ mod tests {
             quality: 95,
             input_format: Format::Jpeg,
             output_format: Format::Jpeg,
+            max_pixels: None,
+            max_bytes: None,
         };
 
         let (output_low, _) = process_image(&bytes, &params_low).unwrap();
@@ -1366,8 +1535,8 @@ mod tests {
         for img in [rgba8.clone(), DynamicImage::ImageRgba16(rgba8.to_rgba16())] {
             let color = img.color();
             for out in [
-                resize_scale_to_fit(img.clone(), 10, 10),
-                resize_crop_to_fit(img.clone(), 10, 10),
+                resize_scale_to_fit(img.clone(), 10, 10, None),
+                resize_crop_to_fit(img.clone(), 10, 10, None),
             ] {
                 assert_eq!(out.color(), color);
                 for (x, y, p) in out.to_rgba8().enumerate_pixels() {
@@ -1387,7 +1556,7 @@ mod tests {
         });
         let img = DynamicImage::ImageRgba8(noise);
         assert_eq!(
-            resize_scale_to_fit(img.clone(), 20, 20),
+            resize_scale_to_fit(img.clone(), 20, 20, None),
             img.resize(20, 20, FilterType::Lanczos3)
         );
     }
@@ -1462,6 +1631,8 @@ mod tests {
             quality: 100,
             input_format: Format::Jpeg,
             output_format: Format::Png,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Png).unwrap();
@@ -1480,6 +1651,8 @@ mod tests {
             quality: 85,
             input_format: Format::Png,
             output_format: Format::Jpeg,
+            max_pixels: None,
+            max_bytes: None,
         };
         let (output, _) = process_image(&bytes, &params).unwrap();
         let decoded = image::load_from_memory_with_format(&output, ImageFormat::Jpeg).unwrap();

@@ -114,6 +114,14 @@ fn rejected(call: Call) -> String {
 }
 
 fn decoded_dims(bytes: &[u8]) -> (u32, u32) {
+    // The image crate here has no WebP decoder.
+    if image::guess_format(bytes).unwrap() == ImageFormat::WebP {
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: libwebp reads at most `bytes.len()` bytes and writes only `w` and `h`.
+        let ok = unsafe { libwebp_sys::WebPGetInfo(bytes.as_ptr(), bytes.len(), &mut w, &mut h) };
+        assert_ne!(ok, 0, "not a WebP libwebp can read");
+        return (w as u32, h as u32);
+    }
     let img = image::load_from_memory(bytes).unwrap();
     (img.width(), img.height())
 }
@@ -344,8 +352,8 @@ async fn quality_out_of_range_is_invalid_args() {
 
 #[tokio::test]
 async fn zero_target_is_invalid_args() {
-    for key in ["target_width", "target_height"] {
-        let message = rejected(call(png(4, 4), Some(json!({ key: 0 }))).await);
+    for key in ["target_width", "target_height", "max_pixels", "max_bytes"] {
+        let message = rejected(call(Vec::new(), Some(json!({ key: 0 }))).await);
         assert!(message.contains("invalid metadata"), "{key}: {message}");
     }
 }
@@ -378,10 +386,87 @@ async fn result_reports_output_and_source_dims() {
             source_width: 300,
             source_height: 200,
             strategy: ResizeStrategy::ScaleToFit,
+            quality: None,
         }
     );
     assert_eq!(decoded_dims(&call.bytes), (150, 100));
     assert!(call.output.contains("closed"), "{}", call.output);
+}
+
+#[tokio::test]
+async fn max_pixels_shrinks_past_the_box_keeping_the_aspect() {
+    for (metadata, dims) in [
+        (json!({ "max_pixels": 10_000 }), (115, 86)),
+        (
+            json!({ "target_width": 1000, "target_height": 1000, "max_pixels": 10_000 }),
+            (115, 86),
+        ),
+        (
+            json!({ "strategy": "crop-to-fit", "target_width": 100, "target_height": 100, "max_pixels": 2_500 }),
+            (50, 50),
+        ),
+        (json!({ "max_pixels": 30_000 }), (200, 150)),
+        (json!({ "max_pixels": 1 }), (1, 1)),
+    ] {
+        let call = call(png(400, 300), Some(metadata.clone())).await;
+        let result = call.result.unwrap();
+        assert_eq!((result.width, result.height), dims, "{metadata}");
+        assert_eq!(decoded_dims(&call.bytes), dims, "{metadata}");
+        assert_eq!((result.source_width, result.source_height), (400, 300));
+    }
+}
+
+#[tokio::test]
+async fn max_bytes_lowers_the_quality_then_shrinks_lossy_output() {
+    let input = noise(300, ImageFormat::Jpeg);
+    for (format, default_quality) in [("jpeg", 85), ("webp", 80)] {
+        let plain = call(input.clone(), Some(json!({ "output_format": format }))).await;
+        assert_eq!(plain.result.unwrap().quality, Some(default_quality));
+        let full = plain.bytes.len();
+        for (cap, shrinks) in [(full * 4 / 5, false), (full / 5, true)] {
+            let metadata = json!({ "output_format": format, "max_bytes": cap });
+            let call = call(input.clone(), Some(metadata.clone())).await;
+            let result = call.result.unwrap();
+            let size = (result.width, result.height);
+            assert!(
+                call.bytes.len() <= cap,
+                "{metadata}: {} bytes",
+                call.bytes.len()
+            );
+            assert_eq!(decoded_dims(&call.bytes), size, "{metadata}");
+            assert!(
+                result.quality < Some(default_quality),
+                "{metadata}: {result:?}"
+            );
+            assert_eq!(size != (200, 200), shrinks, "{metadata}: {result:?}");
+            assert_eq!(result.width, result.height, "{metadata}: {result:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn max_bytes_shrinks_png_output() {
+    let input = noise(300, ImageFormat::Png);
+    let full = call(input.clone(), None).await.bytes.len();
+    let cap = full / 3;
+    let call = call(input, Some(json!({ "max_bytes": cap }))).await;
+    let result = call.result.unwrap();
+    assert!(call.bytes.len() <= cap, "{} bytes", call.bytes.len());
+    assert!(
+        result.width < 200 && result.width == result.height,
+        "{result:?}"
+    );
+    assert_eq!(decoded_dims(&call.bytes), (result.width, result.height));
+    assert_eq!(result.quality, None);
+}
+
+#[tokio::test]
+async fn max_bytes_no_output_meets_is_invalid_args() {
+    for format in ["jpeg", "png", "webp"] {
+        let metadata = json!({ "output_format": format, "max_bytes": 10 });
+        let message = rejected(call(png(400, 300), Some(metadata)).await);
+        assert!(message.contains("max_bytes (10)"), "{format}: {message}");
+    }
 }
 
 #[tokio::test]
@@ -450,6 +535,8 @@ async fn registered_schema_matches_types() {
     assert_eq!(
         keys,
         BTreeSet::from([
+            "max_bytes",
+            "max_pixels",
             "output_format",
             "quality",
             "strategy",
@@ -461,6 +548,8 @@ async fn registered_schema_matches_types() {
     assert_eq!(props["quality"]["maximum"].as_f64(), Some(100.0));
     assert_eq!(props["target_width"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(props["target_height"]["minimum"].as_f64(), Some(1.0));
+    assert_eq!(props["max_pixels"]["minimum"].as_f64(), Some(1.0));
+    assert_eq!(props["max_bytes"]["minimum"].as_f64(), Some(1.0));
     assert_eq!(defs["Format"]["enum"], json!(["jpeg", "png", "webp"]));
     assert_eq!(
         defs["ResizeStrategy"]["enum"],

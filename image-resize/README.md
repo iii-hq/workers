@@ -31,7 +31,7 @@ const result = await iii.call({
   },
   timeoutMs: 30_000,
 })
-// → { format: 'webp', width: 1568, height: 1049, source_width: 3116, source_height: 2084, strategy: 'scale-to-fit' }
+// → { format: 'webp', width: 1568, height: 1049, source_width: 3116, source_height: 2084, strategy: 'scale-to-fit', quality: 80 }
 ```
 
 Every `metadata` key is optional:
@@ -42,9 +42,16 @@ Every `metadata` key is optional:
 | `target_width`, `target_height` | the box in pixels; the image is never enlarged | the configured box (200 x 200 out of the box) |
 | `strategy` | `scale-to-fit` fits the image inside the box; `crop-to-fit` centre-crops it to the box's aspect ratio, then shrinks it to the box | the configured strategy (`scale-to-fit`) |
 | `quality` | 1-100; ignored for `png` | the configured quality (jpeg 85, webp 80) |
+| `max_pixels` | the largest output, width times height; a larger one shrinks further, keeping its aspect ratio | the configured limit (none out of the box) |
+| `max_bytes` | the largest output in bytes; `jpeg` and `webp` lower their quality, then shrink; `png` shrinks | the configured limit (none out of the box) |
 
 Any other key, in `metadata` or beside it, is rejected with `INVALID_ARGS`,
 including `format`, `width` and `height` (deprecated in 0.3.0, now removed).
+A limit in `metadata` replaces the configured one, larger or smaller; `null`
+or leaving it out uses the configured one, so a call cannot remove a
+configured limit. For `jpeg` and `webp` output the result also carries
+`quality`, the quality used, which `max_bytes` can lower.
+
 The input format is detected from the bytes. `output_channel` also carries the
 result as one JSON text frame before the image bytes; byte readers and sinks
 such as `OutputStream.to` never see it.
@@ -63,6 +70,8 @@ strategy: scale-to-fit  # or crop-to-fit
 quality:
   jpeg: 85              # 1-100
   webp: 80              # 1-100
+max_pixels: null        # largest output, width x height; null or absent: no limit
+max_bytes: null         # largest output in bytes; null or absent: no limit
 ```
 
 Under compose, set `config_override` on the worker's container in
@@ -81,18 +90,18 @@ containers:
 On a bare engine the built-in defaults are stored on first boot in the engine
 project's `./config/<id>.yaml`; edit that file, use the Console's global
 Settings modal, or call `configuration::set`. The worker ships the modal's
-form for this entry: the box, strategy and quality are fields, and an empty
-field falls back to the built-in default. `--config <file>` seeds the
-entry once, only while nothing is stored; a file that cannot be read or is
-invalid is ignored with a warning.
+form for this entry: the box, strategy, quality and limits are fields, and an
+empty field falls back to the built-in default, which for a limit is none.
+`--config <file>` seeds the entry once, only while nothing is stored; a file
+that cannot be read or is invalid is ignored with a warning.
 
 Every key hot-reloads: a change applies to the calls that start after it.
 Each call takes one snapshot, so a call in flight keeps the values it started
 with, and nothing needs a restart. A value that does not match the schema (an
-unknown key, a 0 side, quality outside 1-100) is rejected: on a live change
-the previous configuration stays in use, and at start the worker does not
-start. A change moves the default output of every caller that relies on the
-defaults.
+unknown key, a 0 side or limit, quality outside 1-100) is rejected: on a live
+change the previous configuration stays in use, and at start the worker does
+not start. A change moves the default output of every caller that relies on
+the defaults.
 
 ## Console page
 
@@ -119,6 +128,13 @@ page shows an error that tells you to update the ade worker.
   colour hidden under fully transparent pixels does not bleed into the edges.
 - The output is always re-encoded, even when the image already fits, so it
   can be larger than the input.
+- `max_pixels` applies after the box and the image is resized once, straight
+  to the final size; no side goes below 1 px.
+- An output over `max_bytes` is encoded again: `jpeg` and `webp` first at
+  quality 70, 55 and 40 (those below the quality asked for), then smaller,
+  by the ratio of the limit to the size, until it fits. A call encodes at
+  most 8 times; if the output still does not fit, the call fails with
+  `INVALID_ARGS` naming `max_bytes`.
 - An animated WebP is resized from its first frame; the output is a still
   image.
 - A JPEG must end with its end-of-image marker: one that stops after its
@@ -141,7 +157,8 @@ page shows an error that tells you to update the ade worker.
 - WebP output is lossy and honours `quality`.
 - A bad image or bad `metadata` returns `INVALID_ARGS` instead of
   `invocation_failed` and aborts the output.
-- The result gains `source_width` and `source_height`.
+- The result gains `source_width` and `source_height`, and for `jpeg` and
+  `webp` output `quality`.
 - PNG output is no longer forced to 8-bit RGBA: gray stays gray, 16-bit stays
   16-bit, and alpha is written only when the source has it (a tRNS chunk
   counts). Palette and 1/2/4-bit PNGs come out as 8-bit gray, RGB or RGBA.
