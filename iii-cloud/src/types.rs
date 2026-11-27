@@ -214,6 +214,51 @@ pub struct CheckGetRequest {
     pub id: String,
 }
 
+/// `iii-cloud::check::read` input: a slice of a check's run's whole redacted log, and/or a file
+/// the worker kept of that run (`left`).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckReadRequest {
+    /// A check's id.
+    pub id: String,
+    /// Lines of the run's log (`run.log_path`'s file), 1-based.
+    #[serde(default)]
+    pub log: Option<LogSlice>,
+    /// A path listed in the run's `restored` or `moved`: what the run left there, kept in `left/`.
+    #[serde(default)]
+    pub left: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LogSlice {
+    /// The first line (1-based; default 1).
+    #[serde(default)]
+    pub from_line: Option<u32>,
+    /// How many (default and most: 400).
+    #[serde(default)]
+    pub lines: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckRead {
+    pub log: Option<LogLines>,
+    pub left: Option<LeftFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LogLines {
+    pub from_line: u32,
+    /// All the lines the log has now.
+    pub total_lines: u32,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LeftFile {
+    pub path: String,
+    /// The kept file's text, redacted with the run's secrets.
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretMode {

@@ -770,9 +770,8 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
             if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Compare with `diff {}/<path> <path>`.",
+            "{}{more} The versions the run left are in {}. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
             parts.join(" "),
-            dir.display(),
             dir.display()
         )),
         Owner::None,
@@ -1308,6 +1307,7 @@ async fn prepare(
     let dir = cfg.data_path().join("runs").join(id);
     std::fs::create_dir_all(&dir)
         .map_err(|e| CloudError::new("GIT_FAILED", format!("cannot create the run folder: {e}")))?;
+    harden_runs(&cfg.data_path().join("runs"));
     let engine = crate::check::local_iii_version(&cfg.iii_bin)
         .await
         .unwrap_or_else(|| "unknown".into());
@@ -1469,7 +1469,9 @@ impl Exec {
 
     fn note(&self, line: &str) {
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         if let Ok(mut f) = std::fs::OpenOptions::new()
+            .mode(0o600)
             .create(true)
             .append(true)
             .open(self.dir.join("run.log"))
@@ -2890,9 +2892,29 @@ pub fn redact_urls(text: &str) -> String {
 
 /// Copy `out` into `file` (appended) a line at a time, each line redacted.
 // ponytail: a value split across a 64 KiB line cut is not caught; values are short.
+/// Run folders are for the person who runs them: 0700, their logs 0600 (new ones and the older
+/// ones, at each run's start).
+fn harden_runs(runs: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(read) = std::fs::read_dir(runs) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        for log in ["run.log", "compose.log"] {
+            let _ = std::fs::set_permissions(dir.join(log), std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
 async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Arc<Vec<String>>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let Ok(mut log) = tokio::fs::OpenOptions::new()
+        .mode(0o600)
         .create(true)
         .append(true)
         .open(&file)

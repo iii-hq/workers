@@ -1,0 +1,137 @@
+{
+  "description": "Read, for a kept check, a slice of its run's whole redacted log (`log: {from_line, lines}`, at most 400 lines a call, with the line count) and/or a file the run left that the worker kept (`left: <path>`, only a path in the run's `restored` or `moved`, text up to 256 KiB). No path is read from disk by you.",
+  "function_id": "iii-cloud::check::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LogSlice": {
+        "properties": {
+          "from_line": {
+            "default": null,
+            "description": "The first line (1-based; default 1).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "default": null,
+            "description": "How many (default and most: 400).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "`iii-cloud::check::read` input: a slice of a check's run's whole redacted log, and/or a file the worker kept of that run (`left`).",
+    "properties": {
+      "id": {
+        "description": "A check's id.",
+        "type": "string"
+      },
+      "left": {
+        "default": null,
+        "description": "A path listed in the run's `restored` or `moved`: what the run left there, kept in `left/`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "log": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LogSlice"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Lines of the run's log (`run.log_path`'s file), 1-based."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "CheckReadRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LeftFile": {
+        "properties": {
+          "content": {
+            "description": "The kept file's text, redacted with the run's secrets.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "path"
+        ],
+        "type": "object"
+      },
+      "LogLines": {
+        "properties": {
+          "from_line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "total_lines": {
+            "description": "All the lines the log has now.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_line",
+          "lines",
+          "total_lines"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "left": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LeftFile"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "log": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LogLines"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "title": "CheckRead",
+    "type": "object"
+  }
+}

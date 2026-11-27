@@ -1253,3 +1253,101 @@ async fn a_run_says_where_its_whole_log_is() {
     assert_eq!(run.log_path.as_deref(), Some(expected.to_str().unwrap()));
     assert!(expected.exists(), "the file the path names is there");
 }
+
+#[tokio::test]
+async fn the_agent_reads_the_whole_log_and_a_kept_file_through_the_worker_only() {
+    use iii_cloud::check::read;
+    use std::os::unix::fs::PermissionsExt;
+    let server = MockServer::start().await;
+    let (h, ws) = with_check(&server, SLOW_START).await;
+    std::fs::write(ws.join("seed.yaml"), "# committed\nport: ${PORT}\n").unwrap();
+    git(&ws, &["add", "."]);
+    git(&ws, &["commit", "-qm", "seed"]);
+    let head = git(&ws, &["rev-parse", "HEAD"]);
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();
+        for c in s.checks.iter_mut().chain(s.check.iter_mut()) {
+            c.commit = head.clone();
+        }
+    });
+    // An older run folder, made loose before this change.
+    let old = h.dir.path().join("data/runs/old-run");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("run.log"), "old\n").unwrap();
+    let bin = fake_iii(&h, "printf 'port: 8080\\n' > seed.yaml;");
+    use_iii(&h, &server, &bin).await;
+    set_workers(&h, ONLY_ALPHA);
+    start(&h.ctx, "chk".into()).await.unwrap();
+    let run = ended(&h, "chk").await;
+    // The whole log, in slices of at most 400 lines.
+    let log = run.log_path.clone().unwrap();
+    let many: String = (1..=450).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(&log, &many).unwrap();
+    let got = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: Some(iii_cloud::types::LogSlice {
+                from_line: Some(441),
+                lines: Some(1000),
+            }),
+            left: None,
+        },
+    )
+    .unwrap()
+    .log
+    .unwrap();
+    assert_eq!(
+        (got.from_line, got.total_lines, got.lines.len()),
+        (441, 450, 10)
+    );
+    let first = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: Some(iii_cloud::types::LogSlice {
+                from_line: None,
+                lines: Some(1000),
+            }),
+            left: None,
+        },
+    )
+    .unwrap()
+    .log
+    .unwrap();
+    assert_eq!(first.lines.len(), 400);
+    // A kept file: only a path the run's lists name.
+    let kept = read(
+        &h.ctx,
+        iii_cloud::types::CheckReadRequest {
+            id: "chk".into(),
+            log: None,
+            left: Some("seed.yaml".into()),
+        },
+    )
+    .unwrap()
+    .left
+    .unwrap();
+    assert_eq!(kept.content, "port: 8080\n");
+    for other in ["worker-compose.yaml", "../run.log", "/etc/passwd"] {
+        assert!(
+            read(
+                &h.ctx,
+                iii_cloud::types::CheckReadRequest {
+                    id: "chk".into(),
+                    log: None,
+                    left: Some(other.into()),
+                },
+            )
+            .is_err(),
+            "{other}"
+        );
+    }
+    // The run's folder and logs are private; the older folder is tightened at this run.
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let dir = std::path::Path::new(&log).parent().unwrap().to_path_buf();
+    assert_eq!(mode(&dir), 0o700);
+    assert_eq!(mode(&dir.join("run.log")), 0o600);
+    assert_eq!(mode(&old), 0o700);
+    assert_eq!(mode(&old.join("run.log")), 0o600);
+}

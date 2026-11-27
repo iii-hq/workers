@@ -963,10 +963,7 @@ async fn the_tracked_files_a_run_rewrote_are_put_back_and_kept_aside() {
         "never a kept file's content"
     );
     assert!(
-        detail.ends_with(&format!(
-            "Compare with `diff {}/<path> <path>`.",
-            run_dir.path().join("left").display()
-        )),
+        detail.ends_with("Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file."),
         "{detail}"
     );
     // Nothing is left to name.

@@ -26,6 +26,7 @@ pub const API_ID: &str = "iii-cloud::api";
 pub const API_WRITE_ID: &str = "iii-cloud::api::write";
 pub const CHECK_ID: &str = "iii-cloud::check";
 pub const CHECK_GET_ID: &str = "iii-cloud::check::get";
+pub const CHECK_READ_ID: &str = "iii-cloud::check::read";
 pub const SECRET_ID: &str = "iii-cloud::secret";
 pub const PROVIDE_ID: &str = "iii-cloud::secret::provide";
 pub const DEPLOY_ID: &str = "iii-cloud::deploy";
@@ -51,6 +52,7 @@ pub const CREATE_ENVIRONMENT_DESC: &str = "The page's own: make a new environmen
 pub const API_DESC: &str = "Read any iii cloud route as the person (GET only); temporary credentials are refused. A change is PERSON_ONLY: the person makes it on the page.";
 pub const API_WRITE_DESC: &str = "The page's own: change an iii cloud route as the person (POST, PUT, PATCH, DELETE); secret values are refused. Agents never call it.";
 pub const CHECK_DESC: &str = "The cloud plan for a commit plus the fast checks here; with run: true, also the run here. Without manifest it checks the file the work is on: the newest check's of this environment if it named one and the environment's file is unchanged since, else the environment's own. manifest checks another worker-compose*.yaml instead, changing nothing in iii cloud. push: true pushes the workspace's fix branch first, never an environment's branch.";
+pub const CHECK_READ_DESC: &str = "Read, for a kept check, a slice of its run's whole redacted log (`log: {from_line, lines}`, at most 400 lines a call, with the line count) and/or a file the run left that the worker kept (`left: <path>`, only a path in the run's `restored` or `moved`, text up to 256 KiB). No path is read from disk by you.";
 pub const CHECK_GET_DESC: &str = "Read one kept check by id (status.checks lists them, a deploy names its check_id), as it was recorded; nothing runs again.";
 pub const SECRET_DESC: &str = "Ask the person, on the page, for the value of one secret the compose file reads (a name like STRIPE_KEY in ${STRIPE_KEY}), or mark such a name as not needed or their decision. It is not for workers, groups or any choice that is not a variable: a decision goes to the person with harness::ask.";
 pub const PROVIDE_DESC: &str = "The page's own: the person's secret value goes to iii cloud and the worktree's .env. Agents never call it, and the value never comes back.";
@@ -111,6 +113,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ApiRequest, ApiResponse>(API_WRITE_ID, API_WRITE_DESC),
         spec::<CheckRequest, Check>(CHECK_ID, CHECK_DESC),
         spec::<CheckGetRequest, Check>(CHECK_GET_ID, CHECK_GET_DESC),
+        spec::<CheckReadRequest, CheckRead>(CHECK_READ_ID, CHECK_READ_DESC),
         spec::<SecretAsk, SecretRequest>(SECRET_ID, SECRET_DESC),
         spec::<ProvideRequest, SecretRequest>(PROVIDE_ID, PROVIDE_DESC),
         spec::<DeployRequest, Deploy>(DEPLOY_ID, DEPLOY_DESC),
@@ -282,6 +285,14 @@ pub fn register_all(iii: &IIIClient, ctx: &Arc<Ctx>) {
         CHECK_GET_DESC,
         false,
         |c, r: CheckGetRequest| async move { crate::check::get(&c, r) },
+    );
+    register(
+        iii,
+        ctx,
+        CHECK_READ_ID,
+        CHECK_READ_DESC,
+        false,
+        |c, r: CheckReadRequest| async move { crate::check::read(&c, r) },
     );
     register(
         iii,

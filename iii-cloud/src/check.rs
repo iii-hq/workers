@@ -582,6 +582,85 @@ pub fn get(ctx: &Ctx, request: CheckGetRequest) -> Res<Check> {
         .ok_or_else(|| CloudError::invalid("no such check (only the latest 20 are kept)"))
 }
 
+/// `iii-cloud::check::read`: a slice of the run's whole log, and a file the worker kept of it, served
+/// by the worker so the agent needs no grant to the data folder. Redacted with everything the
+/// worker knows as a secret.
+pub fn read(ctx: &Ctx, request: CheckReadRequest) -> Res<CheckRead> {
+    const LOG_LINES_MAX: u32 = 400;
+    const LEFT_BYTES_MAX: u64 = 256 * 1024;
+    let check = get(
+        ctx,
+        CheckGetRequest {
+            id: request.id.clone(),
+        },
+    )?;
+    let run = check
+        .run
+        .ok_or_else(|| CloudError::invalid("that check has no run"))?;
+    let log_path = run
+        .log_path
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| CloudError::invalid("that run has no log"))?;
+    let secrets = crate::handoff::env_values(ctx);
+    let log = match request.log {
+        None => None,
+        Some(slice) => {
+            let text = std::fs::read_to_string(&log_path)
+                .map_err(|_| CloudError::invalid("the log of that run is gone"))?;
+            let all: Vec<&str> = text.lines().collect();
+            let from = slice.from_line.unwrap_or(1).max(1);
+            let take = slice.lines.unwrap_or(LOG_LINES_MAX).min(LOG_LINES_MAX);
+            Some(LogLines {
+                from_line: from,
+                total_lines: all.len() as u32,
+                lines: all
+                    .iter()
+                    .skip(from as usize - 1)
+                    .take(take as usize)
+                    .map(|l| crate::run::redact(l, &secrets))
+                    .collect(),
+            })
+        }
+    };
+    let left = match request.left {
+        None => None,
+        Some(path) => {
+            // Only what the worker itself kept for this run: a path of its lists, never another.
+            if !run
+                .restored
+                .iter()
+                .chain(run.moved.iter())
+                .any(|p| *p == path)
+            {
+                return Err(CloudError::invalid(
+                    "that path is not one the run's restored or moved lists name",
+                ));
+            }
+            let file = log_path
+                .parent()
+                .map(|d| d.join("left").join(&path))
+                .ok_or_else(|| CloudError::invalid("that run has no kept files"))?;
+            let meta = std::fs::metadata(&file)
+                .map_err(|_| CloudError::invalid("nothing is kept for that path (a deletion)"))?;
+            if meta.len() > LEFT_BYTES_MAX {
+                return Err(CloudError::invalid("the kept file is over 256 KiB"));
+            }
+            let bytes = std::fs::read(&file)
+                .map_err(|_| CloudError::invalid("the kept file can't be read"))?;
+            let content = String::from_utf8(bytes)
+                .ok()
+                .filter(|t| !t.contains('\0'))
+                .ok_or_else(|| CloudError::invalid("the kept file is not text"))?;
+            Some(LeftFile {
+                path,
+                content: crate::run::redact(&content, &secrets),
+            })
+        }
+    };
+    Ok(CheckRead { log, left })
+}
+
 /// `check {push: true}`: the checked commit goes to the workspace's branch on
 /// origin, replacing an earlier try's (`--force-with-lease`). The commit, not
 /// `HEAD`: a commit made meanwhile is not what this check plans. Only an

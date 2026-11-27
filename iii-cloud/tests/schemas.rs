@@ -39,6 +39,7 @@ fn catalog_lists_the_public_ids_in_registration_order() {
             "iii-cloud::api::write",
             "iii-cloud::check",
             "iii-cloud::check::get",
+            "iii-cloud::check::read",
             "iii-cloud::secret",
             "iii-cloud::secret::provide",
             "iii-cloud::deploy",

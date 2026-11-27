@@ -1019,7 +1019,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                         "COMMAND_PRINTS_ENVIRONMENT",
                         format!("{name}'s {what} command runs `{part}`"),
                         Some(format!(
-                            "This command prints every variable, secrets included, into the log. Its {what} command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                            "This command prints every variable, secrets included, into the log. Its {what} command is `{command}`. Take it out; read the whole log of the run with `iii-cloud::check::read` instead."
                         )),
                         Owner::Agent,
                         Some(rel(i.workspace, &dir)),
@@ -1086,7 +1086,7 @@ pub fn local_checks(i: &LocalInput) -> Vec<Problem> {
                 "COMMAND_PRINTS_ENVIRONMENT",
                 format!("The build command runs `{part}`"),
                 Some(format!(
-                    "This command prints every variable, secrets included, into the log. The build command is `{command}`. Take it out; read the whole log of the run at `run.log_path` instead."
+                    "This command prints every variable, secrets included, into the log. The build command is `{command}`. Take it out; read the whole log of the run with `iii-cloud::check::read` instead."
                 )),
                 Owner::Agent,
                 None,
