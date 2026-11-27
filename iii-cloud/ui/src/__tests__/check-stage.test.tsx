@@ -1150,6 +1150,46 @@ describe('the check follows the canvas', () => {
       expect(checklist(ready).rows.some((r) => r.title === rcVariables[0].title)).toBe(false)
     })
 
+    it('the title counts what the card places: an outside-database ask, unreadable values, an ask for a name already set; the badge is the title number', async () => {
+      // a. the person chose a database outside iii cloud and the agent asks for its URL
+      const db = [
+        valueItem('DATABASE_URL', {
+          database: true,
+          need: 'required',
+          default: null,
+          asked: { request_id: 'r9', description: 'The database is outside iii cloud.' },
+          suggestions: [],
+        }),
+      ]
+      await stage(quiet, { 'iii-cloud::values': answer(db) })
+      expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(title()).toBe('1 value to set')
+      expect(countOf('Secrets and variables')).toBe('1')
+      // b. iii cloud's variables could not be read: nothing is known to be missing
+      const unknown = names('REQ', 3, { need: 'required', default: null, in_cloud: 'unknown' as const })
+      await stage(quiet, { 'iii-cloud::values': answer(unknown, { cloud: 'unreadable' }) })
+      expect(card()?.textContent).toContain('could not be read')
+      expect(title() ?? '').not.toMatch(/to set/)
+      // c. the agent asks for a name that is already set
+      const p = B('deploy-problems')
+      const asked = findings(p)
+        .values.map((i) => i.secret ?? i.name)
+        .filter((n): n is string => !!n)
+      expect(asked.length).toBeGreaterThan(0)
+      const set = asked.map((n) => valueItem(n, { in_cloud: 'set', suggestions: [] }))
+      await stage(
+        { ...p, check: { ...p.check!, problems: [] } },
+        { 'iii-cloud::values': () => ({ ...rcValues, environment_id: p.project?.environment?.id, items: set }) },
+      )
+      expect(title() ?? '').not.toMatch(/to set/)
+      // The badge counts the names that need the person; the optional ones have their own line.
+      await stage(quiet, {
+        'iii-cloud::values': answer([...names('REQ', 2, { need: 'required', default: null }), ...names('OPT', 5)]),
+      })
+      expect(countOf('Secrets and variables')).toBe('2')
+      expect(card()?.textContent).toContain('5 optional, not set')
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })

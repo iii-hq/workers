@@ -54,7 +54,7 @@ export function ValuesCard({
   return (
     <SectionCard
       title="Secrets and variables"
-      count={v && !unreadable ? toSet.length : undefined}
+      count={v && !unreadable ? plan.required.length + plan.asked.length + plan.local.length : undefined}
       end={
         <button type="button" className="iii-cloud-linkbtn iii-cloud-small" onClick={onAll}>
           All names
