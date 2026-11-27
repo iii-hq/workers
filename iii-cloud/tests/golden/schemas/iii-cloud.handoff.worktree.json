@@ -1,5 +1,5 @@
 {
-  "description": "Your hand-off's own worktree: {path, branch, base, created, merged_from, conflict}. Work only there, never in the person's folder. A hand-off that points at the person's folder gets one now (from the environment's branch, the person's branch merged in, their changed files brought, never their secrets) and works there from then on; the page's selection does not change. handoff_id defaults to the selected environment's open hand-off.",
+  "description": "Your hand-off's own worktree: {path, branch, base, created, merged_from, conflict}. Work only there, never in the person's folder. A hand-off that points at the person's folder gets one now (from the environment's branch, the person's branch merged in) and works there from then on; the page's selection does not change. handoff_id defaults to the selected environment's open hand-off.",
   "function_id": "iii-cloud::handoff::worktree",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -144,8 +144,7 @@ fn own_worktree(checkout: &str, path: &str, branch: &str) -> bool {
 
 /// `iii-cloud::handoff::worktree`: the hand-off's own worktree. One that has it
 /// answers it; one that points at the person's folder (made before hand-offs
-/// had their own) gets one, made like `use {from: checkout, bring_changes:
-/// true}`, and works there from now on. The selection never changes.
+/// had their own) gets one, made like `use {from: checkout}`, and works there from now on. The selection never changes.
 pub async fn worktree(ctx: &Arc<Ctx>, request: HandoffWorktreeRequest) -> Res<HandoffWorktree> {
     let selected_env = ctx.store.read(|s| s.environment_id().map(str::to_owned));
     let h = ctx

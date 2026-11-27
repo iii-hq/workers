@@ -21,14 +21,6 @@
     },
     "description": "`iii-cloud::project::use` input.",
     "properties": {
-      "bring_changes": {
-        "default": null,
-        "description": "Copy the checkout's uncommitted changes into the worktree.",
-        "type": [
-          "boolean",
-          "null"
-        ]
-      },
       "cloud_project_id": {
         "default": null,
         "description": "Several cloud projects use the repository: take this one.",
@@ -55,7 +47,7 @@
           }
         ],
         "default": null,
-        "description": "Where the worktree's commits come from. `environment` (default): the environment's branch. `checkout`: the person's own HEAD with the environment's head: a fast-forward when one contains the other, else a merge commit made in the worktree (never in the checkout); a conflict leaves the worktree as it was (`MERGE_CONFLICT`, the files in the message). `bring_changes` becomes one commit. Never for production, which goes through a pull request."
+        "description": "Where the worktree's commits come from. `environment` (default): the environment's branch. `checkout`: the person's own HEAD with the environment's head: a fast-forward when one contains the other, else a merge commit made in the worktree (never in the checkout); a conflict leaves the worktree as it was (`MERGE_CONFLICT`, the files in the message). Only commits move: nothing uncommitted is copied. Never for production, which goes through a pull request."
       },
       "mode": {
         "allOf": [
@@ -70,7 +62,7 @@
       },
       "source": {
         "default": null,
-        "description": "With `from: checkout`: take this branch (`main`, `origin/feature-x`, one of `checkout.branches`) instead of the checkout's HEAD, by the same rule. `bring_changes` still brings the folder's own changed files.",
+        "description": "With `from: checkout`: take this branch (`main`, `origin/feature-x`, one of `checkout.branches`) instead of the checkout's HEAD, by the same rule.",
         "type": [
           "string",
           "null"
@@ -497,7 +489,7 @@
           },
           "from_head": {
             "default": null,
-            "description": "The last commit the worktree took from the person's checkout (`from: checkout`, after the `bring_changes` commit): commits after it are the agent's. Null for a worktree made from the environment's branch.",
+            "description": "The last commit the worktree took from the person's checkout (`from: checkout`): commits after it are the agent's. Null for a worktree made from the environment's branch.",
             "type": [
               "string",
               "null"
@@ -505,22 +497,6 @@
           },
           "mode": {
             "$ref": "#/definitions/WorkspaceMode"
-          },
-          "not_brought": {
-            "default": [],
-            "description": "The checkout's changed files `bring_changes` left behind: possible secrets (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.netrc`, `.pypirc`, `credentials.json`) and the run's own files.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "not_brought_reasons": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": {},
-            "description": "Why each `not_brought` file was left behind, by path.",
-            "type": "object"
           },
           "path": {
             "type": "string"

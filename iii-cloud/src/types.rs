@@ -74,9 +74,6 @@ pub struct UseRequest {
     pub environment_id: Option<String>,
     /// `worktree` (recommended) or `checkout`.
     pub mode: WorkspaceMode,
-    /// Copy the checkout's uncommitted changes into the worktree.
-    #[serde(default)]
-    pub bring_changes: Option<bool>,
     /// Several cloud projects use the repository: take this one.
     #[serde(default)]
     pub cloud_project_id: Option<String>,
@@ -85,13 +82,13 @@ pub struct UseRequest {
     /// environment's head: a fast-forward when one contains the other, else a
     /// merge commit made in the worktree (never in the checkout); a conflict
     /// leaves the worktree as it was (`MERGE_CONFLICT`, the files in the
-    /// message). `bring_changes` becomes one commit. Never for production,
-    /// which goes through a pull request.
+    /// message). Only commits move: nothing uncommitted is copied. Never for
+    /// production, which goes through a pull request.
     #[serde(default)]
     pub from: Option<UseFrom>,
     /// With `from: checkout`: take this branch (`main`, `origin/feature-x`,
     /// one of `checkout.branches`) instead of the checkout's HEAD, by the same
-    /// rule. `bring_changes` still brings the folder's own changed files.
+    /// rule.
     #[serde(default)]
     pub source: Option<String>,
 }
@@ -834,19 +831,9 @@ pub struct Workspace {
     pub path: String,
     pub branch: String,
     /// The last commit the worktree took from the person's checkout
-    /// (`from: checkout`, after the `bring_changes` commit): commits after it
-    /// are the agent's. Null for a worktree made from the environment's branch.
+    /// (`from: checkout`): commits after it are the agent's. Null for a worktree made from the environment's branch.
     #[serde(default)]
     pub from_head: Option<String>,
-    /// The checkout's changed files `bring_changes` left behind: possible
-    /// secrets (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`,
-    /// `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.netrc`, `.pypirc`,
-    /// `credentials.json`) and the run's own files.
-    #[serde(default)]
-    pub not_brought: Vec<String>,
-    /// Why each `not_brought` file was left behind, by path.
-    #[serde(default)]
-    pub not_brought_reasons: std::collections::BTreeMap<String, String>,
     /// The branch `use {from: checkout, source}` took; null: the checkout's HEAD.
     #[serde(default)]
     pub source: Option<String>,

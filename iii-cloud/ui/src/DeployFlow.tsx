@@ -5,7 +5,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import {
   Button,
-  Checkbox,
   ConfirmDialog,
   EmptyState,
   List,
@@ -67,8 +66,6 @@ type Act = ReturnType<typeof useActions>
 type Health = { status: string; workers: { ready: boolean }[] }
 type LogPage = { lines: { worker: string | null; message: string }[] }
 
-/** Files `bring_changes` never brings (secrets stay on this machine): never offered. */
-const unbringable = (path: string) => /(^|\/)\.env[^/]*$/.test(path)
 const span = (from: string, to: string) => Date.parse(to) - Date.parse(from)
 /** "stopped while starting the workers": the cloud's stage names, as an activity. */
 const WHILE: Record<string, string> = {
@@ -246,7 +243,6 @@ function ChangePanel({
 }) {
   const [pick, setPick] = useState(() => appFile(status).path)
   const [source, setSource] = useState<string | null>(null)
-  const [bring, setBring] = useState(true)
   const top = useRef<HTMLDivElement>(null)
   // The panel takes focus when it opens and gives it back to "Change" when it closes.
   useEffect(() => {
@@ -261,8 +257,7 @@ function ChangePanel({
   if (!p || !env) return null
   const files = status.compose_files ?? []
   const current = composeFile(env.manifest)
-  const changed = p.checkout.changed_files.filter((f) => !unbringable(f))
-  const kept = p.workspace?.not_brought ?? p.checkout.changed_files.filter(unbringable)
+  const changed = p.checkout.changed_files.length
   const sources = env.production ? null : sourcesOf(p, env.name)
   const chosen = sources ? (sources.find((o) => o.value === source) ?? sources.find((o) => o.default)) : undefined
   const serving = servingNamed(status, envId, feed.data?.deployments)
@@ -284,7 +279,6 @@ function ChangePanel({
         // Production goes through a pull request: its check starts from the environment, never the checkout.
         from: env.production ? 'environment' : 'checkout',
         ...(chosen?.ref ? { source: chosen.ref.name } : {}),
-        bring_changes: bring && (chosen?.folder ?? true) && !env.production && changed.length > 0,
       },
       { changesSource: true },
     )
@@ -334,17 +328,10 @@ function ChangePanel({
                 : `The check starts from ${p.checkout.branch ?? sha7(p.checkout.head)}.`}
             </p>
           )}
-          {!env.production && (chosen?.folder ?? true) && (changed.length || kept.length) ? (
-            <Checkbox
-              checked={bring}
-              disabled={!changed.length}
-              onChange={(e) => setBring(e.target.checked)}
-              label={
-                changed.length
-                  ? `Include my ${plural(changed.length, 'uncommitted file')}: ${changed.slice(0, 3).join(', ')}${changed.length > 3 ? ` and ${changed.length - 3} more` : ''}. They go in as one commit you can review. Only with your folder's branch.${kept.length ? ` Not brought: ${kept.join(', ')} (secrets stay on this machine).` : ''}`
-                  : `Not brought: ${kept.join(', ')} (secrets stay on this machine).`
-              }
-            />
+          {!env.production && (chosen?.folder ?? true) && changed ? (
+            <p className="iii-cloud-cs-sub">
+              {`The ${plural(changed, 'uncommitted change')} in your folder stay there: commit them to include them.`}
+            </p>
           ) : null}
         </fieldset>
         <fieldset className="iii-cloud-cs-fieldset">

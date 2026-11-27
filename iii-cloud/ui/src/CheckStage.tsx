@@ -137,8 +137,6 @@ const MARKS = {
   wait: [CircleDashed, 'next'],
   note: [Info, 'warning'],
 } as const
-/** Files `bring_changes` never brings: secrets stay on this machine. */
-const unbringable = (path: string) => /(^|\/)\.env[^/]*$/.test(path)
 
 const elapsed = (ms: number) => {
   const t = Math.max(0, Math.round(ms / 1000))
@@ -246,19 +244,13 @@ export function ActionBar({ narrow, action, note }: { narrow: boolean; action?: 
   )
 }
 
-/** "feat/search-rank: 3 commits and your 2 uncommitted files, to dev": what goes, from what the check and the folder carry. */
+/** "feat/search-rank: 3 commits, to dev": what goes, from what the check and the folder carry. */
 function goesLine(s: Status, c: Check | null, env: string): string {
   const p = s.project
   const source = sourceLabel(s, env)
-  const brought = !!c?.commits?.some((x) => x.message.startsWith('Uncommitted changes from '))
-  // Before a check, the folder's own files are what the check will take.
-  const files = !c || brought ? (p?.checkout.changed_files.filter((f) => !unbringable(f)).length ?? 0) : 0
   const list = c?.commits?.length ? c.commits : p?.checkout.not_served
-  const commits = list ? list.length - (brought ? 1 : 0) : null
-  const parts = [commits ? plural(commits, 'commit') : null, files ? `your ${plural(files, 'uncommitted file')}` : null]
-    .filter(Boolean)
-    .join(' and ')
-  return `${source}: ${parts || `nothing ${env} doesn't have`}, to ${env}`
+  const commits = list?.length ?? 0
+  return `${source}: ${commits ? plural(commits, 'commit') : `nothing ${env} doesn't have`}, to ${env}`
 }
 
 /** The line under every title: what goes, the compose file, and "Change". */
@@ -848,17 +840,12 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const from = p.workspace?.from_head
   const at = from ? commits.findIndex((x) => x.sha === from) : -1
   const agent = !from ? commits.length : at >= 0 ? at : from === c.base ? commits.length : null
-  const brought = commits.some((x) => x.message.startsWith('Uncommitted changes from '))
-  const files = brought ? p.checkout.changed_files.filter((f) => !unbringable(f)).length : 0
   const mine = agent === null ? 0 : commits.length - agent
-  // The commit that carries the uncommitted files is the folder's too, said apart.
-  const own = mine - (brought ? 1 : 0)
   const whose =
     agent === null
       ? null
       : [
-          own > 0 ? `${own} of yours` : null,
-          brought && files ? `1 with your ${plural(files, 'uncommitted file')}` : null,
+          mine > 0 ? `${mine} of yours` : null,
           agent ? `${plural(agent, 'fix', 'fixes')} by your agent` : null,
         ]
           .filter(Boolean)
@@ -876,8 +863,6 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
       (!since || Date.parse(r.resolved_at) >= Date.parse(since)),
   )
   const fixes = agent && branch ? `your agent's ${plural(agent, 'fix', 'fixes')}` : null
-  const filesText = files ? `your ${plural(files, 'uncommitted file')}` : null
-  const goes = [fixes, filesText].filter(Boolean).join(' and ')
   return (
     <>
       <SectionCard title="What this deploy does" flush>
@@ -931,9 +916,9 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
             <Mono>{release.detail}</Mono>
           </DetailRow>
         ) : null}
-        {goes && branch ? (
+        {fixes && branch ? (
           <DetailRow label="Your branch" note="The next deploy starts from it.">
-            {`After the deploy, ${branch} gets ${goes}${fixes && filesText ? ' as one commit' : ''}`}
+            {`After the deploy, ${branch} gets ${fixes}`}
           </DetailRow>
         ) : null}
         {direct ? null : (
@@ -1208,8 +1193,6 @@ export function CheckStage(props: CheckStageProps) {
         ? p?.checkout.head
         : p?.checkout.branches?.find((b) => b.name === ws.source)?.sha
     if (taken && tipHere && sha7(tipHere) !== sha7(taken)) {
-      // ponytail: the workspace doesn't record `bring_changes`; its commit's message says it was used.
-      const brought = !!c.commits?.some((x) => x.message.startsWith('Uncommitted changes from '))
       const useCheckout = async () => {
         const used = await call(
           'use',
@@ -1220,7 +1203,6 @@ export function CheckStage(props: CheckStageProps) {
             mode: ws?.mode,
             from: 'checkout',
             ...(ws?.source ? { source: ws.source } : {}),
-            ...(brought ? { bring_changes: true } : {}),
           },
           { changesSource: true },
         )

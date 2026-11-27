@@ -61,7 +61,7 @@ describe('one screen, no step rail', () => {
   it('opening it with no check starts nothing: what goes, and Check', async () => {
     const h = await board('deploy-what')
     expect(title()).toBe('Check feat/search-rank for dev')
-    expect(text()).toContain('feat/search-rank: 3 commits and your 2 uncommitted files, to dev')
+    expect(text()).toContain('feat/search-rank: 3 commits, to dev')
     expect(worker(h.calls)).toEqual([])
     expect(btn('Deploy to dev')?.hasAttribute('disabled')).toBe(true)
     await click(btn('Check'))
@@ -73,7 +73,7 @@ describe('one screen, no step rail', () => {
     expect(title()).toBe('Ready to deploy to dev')
     const rows = region('What this deploy does')?.textContent ?? ''
     expect(rows).toContain("6 commits dev doesn't have")
-    expect(rows).toContain('3 of yours, 1 with your 2 uncommitted files, 2 fixes by your agent')
+    expect(rows).toContain('4 of yours, 2 fixes by your agent')
     expect(rows).toContain('11 workers in 3 groups')
     expect(el.querySelector('input[type=checkbox]')).toBeNull()
     await click(btn('Deploy 9c04e7f to dev'))
@@ -96,9 +96,9 @@ describe('Change', () => {
     const panel = region('What goes to dev')
     expect(panel?.textContent).toContain('dev serves d738d2f · deployment #5')
     expect(panel?.textContent).toContain('The check starts from feat/search-rank.')
-    expect(panel?.textContent).toContain('Include my 2 uncommitted files')
-    // .env never goes: it says it stays.
-    expect(panel?.textContent).toContain('Not brought: .env (secrets stay on this machine).')
+    expect(panel?.textContent).toContain(
+      'The 3 uncommitted changes in your folder stay there: commit them to include them.',
+    )
     expect(el.querySelectorAll('[aria-label="Compose files in this folder"] [role=radio]')).toHaveLength(3)
     expect(radio('api/workers-compose.yaml')?.getAttribute('aria-disabled')).toBe('true')
     // The environment is not changed here: it says to open the other one, and that control is on screen.
@@ -127,17 +127,16 @@ describe('Change', () => {
     expect(radio('feat/search-rank')?.textContent).toContain("your folder · 3 commits dev doesn't have")
     expect(radio('main')?.textContent).toContain("2 commits dev doesn't have")
     await click(radio('main'))
-    expect(region('What goes to dev')?.textContent).not.toContain('Include my 2 uncommitted files')
+    expect(region('What goes to dev')?.textContent).not.toContain('uncommitted change')
     await click(btn('Check this instead'))
     const use = worker(h.calls)[0]
-    expect(use.payload).toMatchObject({ from: 'checkout', source: 'main', bring_changes: false })
+    expect(use.payload).toMatchObject({ from: 'checkout', source: 'main' })
   })
 
   it('Check this instead: project::use with the pick, then the check with the file; the panel closes', async () => {
     const h = await board('deploy-what')
     await click(btn('Change'))
     await click(radio('api/worker-compose.staging.yaml'))
-    await click(el.querySelector('input[type=checkbox]'))
     await click(btn('Check this instead'))
     const calls = worker(h.calls)
     expect(calls.map((c) => c.id)).toEqual(['iii-cloud::project::use', 'iii-cloud::check'])
@@ -145,7 +144,6 @@ describe('Change', () => {
       environment_id: DEV.id,
       mode: 'worktree',
       from: 'checkout',
-      bring_changes: false,
     })
     expect(calls[1].payload).toEqual({ run: true, push: true, manifest: 'api/worker-compose.staging.yaml' })
     expect(region('What goes to dev')).toBeNull()

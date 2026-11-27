@@ -23,7 +23,6 @@ export const devProject = (): NonNullable<Status['project']> => ({
   checkout: {
     branch: 'feat/search-rank',
     head: notServed[0].sha,
-    // `.env` is never brought: the page never offers it.
     changed_files: ['api/src/search.ts', 'api/migrations/0008_trgm.sql', '.env'],
     ahead: 3,
     not_served: notServed,
@@ -34,7 +33,7 @@ export const devProject = (): NonNullable<Status['project']> => ({
     mode: 'worktree',
     path: '~/workspaces/registry-iii-cloud-dev',
     branch: 'iii-cloud/ready-dev',
-    // The commit "Uncommitted changes from feat/search-rank": the agent's commits come after it.
+    // The folder's commit the agent's fixes come after.
     from_head: sha('4b8f001'),
     // The folder's HEAD when the worktree took it: nothing moved since.
     source_sha: notServed[0].sha,
@@ -87,7 +86,7 @@ export const devCheck = {
   commits: [
     line('9c04e7f', 'Pin search to 0.4.2'),
     line('5e1d2a3', 'Add the billing lock'),
-    line('4b8f001', 'Uncommitted changes from feat/search-rank'),
+    line('4b8f001', 'Search: weight stars by recency'),
     ...notServed,
   ],
 }

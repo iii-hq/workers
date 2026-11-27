@@ -384,8 +384,6 @@ function Confirm({
         ...(cpId ? { cloud_project_id: cpId } : {}),
         environment_id: envId,
         mode,
-        // The copy the agent works in starts with the files changed here that aren't on GitHub.
-        ...(mode === 'worktree' && changed ? { bring_changes: true } : {}),
       },
       { changesSource: true },
     )
@@ -445,7 +443,7 @@ function Confirm({
             {changed ? (
               <div className="iii-cloud-fact">
                 <dt>Not on GitHub</dt>
-                <dd>{plural(changed, 'changed file')}; they go into your agent's copy</dd>
+                <dd>{plural(changed, 'uncommitted change')}; they stay in your folder</dd>
               </div>
             ) : null}
           </dl>
@@ -589,7 +587,7 @@ function Confirm({
   const agent =
     mode === 'checkout'
       ? 'Your agent changes the files in this folder directly, with no separate copy.'
-      : `Your agent works in a separate copy of the repository, so your folder stays as it is.${changed ? ` The ${plural(changed, 'file')} you changed on this machine that aren't on GitHub go into the copy too.` : ''}`
+      : `Your agent works in a clean copy of what is committed, so your folder stays as it is.${changed ? ` The ${plural(changed, 'uncommitted change')} in your folder stay there: commit them to include them.` : ''}`
   const loading = resolving || (!project && !!path && !err)
 
   return (
