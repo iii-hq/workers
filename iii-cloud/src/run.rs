@@ -3078,20 +3078,57 @@ async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Ar
 
 /// Replace every secret value (3 characters or more) with `[redacted]`. The longest value goes
 /// first, so a short one that sits inside a longer secret (`test` in `sk_test_51N…`) cannot
-/// leave the rest of that secret in the clear.
+/// leave the rest of that secret in the clear. A value is also caught as a writer may have
+/// written it: JSON-escaped, YAML single-quoted (`'` doubled), and, when it has several lines,
+/// each line of 8 characters or more (a block scalar indents them).
 pub fn redact(text: &str, secrets: &[String]) -> String {
+    redact_named(
+        text,
+        &secrets
+            .iter()
+            .map(|s| (None, s.as_str()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `redact`, where a value that came from a named variable is replaced by `[redacted:NAME]`
+/// (the first name given for a value wins). Used for the kept copies only: there the agent
+/// needs to tell an ordinary value (`LOG_LEVEL=info`) from a secret to apply a file again.
+pub fn redact_named(text: &str, secrets: &[(Option<&str>, &str)]) -> String {
     // Every non-empty value, so `s3cret` goes too; only 1-2 characters would turn the log into
     // noise.
-    let mut values: Vec<&str> = secrets
-        .iter()
-        .map(String::as_str)
-        .filter(|s| s.len() >= 3)
-        .collect();
-    values.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
-    values.dedup();
-    values
+    let mut needles: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in secrets.iter().filter(|(_, v)| v.len() >= 3) {
+        let marker = match name {
+            Some(n) => format!("[redacted:{n}]"),
+            None => "[redacted]".to_string(),
+        };
+        let json = serde_json::to_string(value).unwrap_or_default();
+        let mut forms = vec![
+            value.to_string(),
+            json.trim_matches('"').to_string(),
+            value.replace('\'', "''"),
+        ];
+        if value.contains('\n') {
+            forms.extend(
+                value
+                    .lines()
+                    .map(|l| l.trim_end_matches('\r'))
+                    .filter(|l| l.len() >= 8)
+                    .map(str::to_string),
+            );
+        }
+        for f in forms {
+            if f.len() >= 3 && seen.insert(f.clone()) {
+                needles.push((f, marker.clone()));
+            }
+        }
+    }
+    needles.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    needles
         .into_iter()
-        .fold(text.to_string(), |acc, s| acc.replace(s, "[redacted]"))
+        .fold(text.to_string(), |acc, (n, m)| acc.replace(&n, &m))
 }
 
 fn tail_of(file: &Path) -> Vec<String> {
@@ -3159,6 +3196,23 @@ pub async fn prune(runs: &Path, keep: usize) {
 #[cfg(test)]
 mod tests {
     use super::{recheck, redact, save_left};
+
+    #[test]
+    fn a_value_is_caught_as_a_writer_may_have_written_it() {
+        let pem = "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQ\nsecondlineofthekey==\n-----END KEY-----";
+        let quoted = "it's-a-secret-v4lue";
+        let secrets = vec![pem.to_string(), quoted.to_string()];
+        let block = "key: |-\n  -----BEGIN KEY-----\n  MIIEvQIBADANBgkqhkiG9w0BAQ\n  secondlineofthekey==\n  -----END KEY-----\n";
+        let out = redact(block, &secrets);
+        assert!(
+            !out.contains("MIIEvQ") && !out.contains("secondline"),
+            "{out}"
+        );
+        let yaml = "pw: 'it''s-a-secret-v4lue'\n";
+        assert_eq!(redact(yaml, &secrets), "pw: '[redacted]'\n");
+        let json = format!("{{\"pem\":{}}}", serde_json::to_string(pem).unwrap());
+        assert_eq!(redact(&json, &secrets), "{\"pem\":\"[redacted]\"}");
+    }
 
     #[test]
     fn a_short_value_inside_a_longer_secret_does_not_leave_the_secret_in_the_clear() {
