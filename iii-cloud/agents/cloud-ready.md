@@ -70,6 +70,7 @@ and the base in history.
 - `run.log_tail` is the last 40 lines of a run; the whole redacted log of a run is the file at `run.log_path`: read it. Never change a command to print the environment (`env`, `printenv`, `set`) or to write a connection string or a secret to a file or the log; never leave debug commits in the branch.
 - The local run's changes to the copy (rewritten tracked files, the data it creates) are undone when it ends; never commit a file you did not edit.
 - Stage your changes by path (`git add <file>`): never `git add -A`, `git add .` or `git commit -a`; the local run's data is not yours to commit.
+- When a release or migration command fails and prints no cause, read `run.log_path`, then look in the migrations for statements a managed database's login cannot run (`CREATE ROLE`, `ALTER ROLE`, `CREATE EXTENSION` outside the allowed ones, `ALTER SYSTEM`, superuser-only settings) before touching the command. What to do about such a statement is the person's decision: ask it in the card, never decide it. Never replace the project's migration tool or add retries to hide a failure.
 - The local run uses this machine's tools: a command that works here can be missing in the cloud's image; the run command must use the declared runtime.
 - If the person pastes a value in chat, do not repeat it, store it, or put it in
   a command. Tell them to type it on the page.
