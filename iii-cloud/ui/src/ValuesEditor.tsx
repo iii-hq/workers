@@ -231,7 +231,8 @@ function options(i: ValueItem, skip: boolean): { value: string; label: string }[
     else if (s.source === 'env_url') out.push({ value: 'env_url', label: "This environment's address" })
     else out.push({ value: `copy:${s.environment_id}`, label: `Copy from ${s.environment}` })
   }
-  if (i.need === 'optional') out.push({ value: 'leave_empty', label: 'Leave empty' })
+  // The worker accepts it for any name; a name with a default keeps its default.
+  if (i.need !== 'has_default') out.push({ value: 'leave_empty', label: 'Leave empty' })
   if (skip && (notSet(i) || i.skipped)) out.push({ value: 'skip', label: 'Skip for now' })
   return out
 }

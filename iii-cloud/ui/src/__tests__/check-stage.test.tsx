@@ -924,10 +924,17 @@ describe('the check follows the canvas', () => {
 
     it("the agent's secret request is in the card, not in You", async () => {
       const items = [
-        valueItem('ASKED_KEY', { asked: { request_id: 'r1', description: 'Signs the cookies.' }, suggestions: [] }),
+        valueItem('ASKED_KEY', {
+          // The worker marks an ask `required` too.
+          need: 'required',
+          default: null,
+          asked: { request_id: 'r1', description: 'Signs the cookies.' },
+          suggestions: [],
+        }),
       ]
       await stage(quiet, { 'iii-cloud::values': answer(items) })
       expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(card()?.textContent).not.toContain('required by')
       expect(card()?.textContent).toContain('Signs the cookies.')
       expect(region('You')).toBeNull()
     })
@@ -991,6 +998,16 @@ describe('the check follows the canvas', () => {
       expect(fixed).toBe(checklist(rcFixing).fixed)
       expect(handoffMessage(s)).toContain(`fix the ${openProblems(s, true).length} problems`)
       expect(openProblems(s, true).length).toBeGreaterThan(openProblems(s).length)
+    })
+
+    it('a required name can be left empty from the editor, and the dialog speaks for this screen', async () => {
+      const items = names('REQ', 1, { need: 'required', default: null })
+      await stage(quiet, { 'iii-cloud::values': answer(items) })
+      await click(btn('Set values'))
+      const dialog = el.querySelector('[role=dialog]')
+      expect([...(dialog?.querySelectorAll('option') ?? [])].map((o) => o.textContent)).toContain('Leave empty')
+      expect(dialog?.textContent).toContain('iii cloud does not deploy without the required ones')
+      expect(dialog?.textContent).not.toContain('The local run needs')
     })
 
     it('a mixed check lists the other problems unchanged', async () => {

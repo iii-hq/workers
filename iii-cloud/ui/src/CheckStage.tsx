@@ -1705,6 +1705,7 @@ export function CheckStage(props: CheckStageProps) {
       {editing ? (
         <ValuesDialog
           only={editing}
+          describe="Set them from a file, type them, leave them empty on purpose, or skip the optional ones: iii cloud does not deploy without the required ones."
           host={host}
           status={s}
           narrow={narrow}
