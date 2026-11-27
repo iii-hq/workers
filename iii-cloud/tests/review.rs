@@ -1027,9 +1027,10 @@ async fn a_newer_run_does_not_take_away_what_the_older_one_kept() {
         let done = iii_cloud::run::set_aside_run(&h.ctx, &ws, &before, Some(dir.path())).await;
         assert_eq!(done.restored.len(), 1);
     }
-    assert!(
-        !one.path().join("left").exists(),
-        "the older run's copy is gone"
+    assert_eq!(
+        std::fs::read_to_string(one.path().join("left/config/http.yaml")).unwrap(),
+        "first\n",
+        "the older run's copy stays until its folder is pruned"
     );
     assert_eq!(
         std::fs::read_to_string(two.path().join("left/config/http.yaml")).unwrap(),
