@@ -60,7 +60,7 @@ describe('Manage', () => {
     expect(side()?.textContent).toContain('registry')
     expect(side()?.textContent).toContain('iii-hq/registry · team iii')
     expect(current()).toContain('production')
-    expect(row('production')?.querySelector('[aria-label=Production]')).not.toBeNull()
+    expect(row('production')?.querySelector('[aria-label=Production]')).toBeNull()
     expect(row('dev')?.querySelector('[aria-label=Production]')).toBeNull()
     // The state line of each environment, from iii cloud's deployments (nothing is deployed to dev).
     expect(row('dev')?.textContent).toContain('Not deployed yet')
@@ -222,63 +222,18 @@ describe('Manage', () => {
   })
 })
 
-describe('DeployPill: the way back to a deploy going on', () => {
-  const pills = () => [...el.querySelectorAll('[role=toolbar] .iii-cloud-pill')]
+describe('no deploy pill in the path bar (no board has one; Projects says which project needs the person)', () => {
+  const pills = () => [...el.querySelectorAll('[role=toolbar] .iii-cloud-pill, [role=toolbar] button[aria-busy]')]
 
   it.each([
     'manage-overview-deploying',
     'setup-check-deploying',
     'start-deploying',
-  ] as const)('%s: "Deploying #6 to <env> · N min", a live dot, in the path bar', async (id) => {
+    'manage-overview-moving',
+  ] as const)('%s: the bar has the place and "as of", no deploy button', async (id) => {
     await board(id)
-    const env = boards[id].status.project?.environment?.name
-    expect(pills().map((p) => p.textContent)).toEqual([expect.stringMatching(`^Deploying #6 to ${env} · \\d+ min$`)])
-    expect(pills()[0].querySelector('[data-dot]')?.getAttribute('data-pulse')).toBe('')
-  })
-
-  it('the click goes to its follow page, where it is no longer shown', async () => {
-    await board('manage-overview-deploying')
-    await click(pills()[0])
-    expect(el.querySelector('h2.iii-cloud-h')?.textContent).toMatch(/^Deploying \w{7} to \w+$/)
     expect(pills()).toEqual([])
-  })
-
-  it('never on its own follow page', async () => {
-    await board('deploy-follow-running')
-    expect(pills()).toEqual([])
-  })
-
-  it('a deploy waiting on the person: the warn dot and "Deploy #6 needs you"; a phone: "#6 · needs you"', async () => {
-    const b = boards['manage-overview-deploying']
-    const waiting = {
-      ...b.status,
-      deploys: b.status.deploys.map((d, i) => (i ? d : { ...d, status: 'needs_action' as const })),
-    }
-    await mount(waiting, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
-    expect(pills().map((p) => p.textContent)).toEqual(['Deployment #6 needs you'])
-    expect(pills()[0].querySelector('[data-dot]')?.getAttribute('data-dot')).toBe('warn')
-    ui.narrow = true
-    await mount(waiting, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
-    expect(pills().map((p) => p.textContent)).toEqual(['#6 · needs you'])
-    expect(pills()[0].getAttribute('aria-label')).toBe('Deployment #6 needs you')
-  })
-
-  it('a phone: "#6 · deploying", the whole sentence in its aria-label', async () => {
-    ui.narrow = true
-    await board('setup-check-deploying')
-    const p = pills()[0]
-    expect(p?.textContent).toBe('#6 · deploying')
-    expect(p?.getAttribute('aria-label')).toMatch(/^Deploying #6 to dev · \d+ min$/)
-  })
-
-  it('more than two: "+N" opens the first one\'s environment', async () => {
-    const b = boards['manage-overview-deploying']
-    const [d] = b.status.deploys
-    const many = { ...b.status, deploys: [d, { ...d, id: 'd7', number: 7 }, { ...d, id: 'd8', number: 8 }] }
-    await mount(many, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
-    expect(pills().map((p) => p.textContent?.slice(0, 12))).toEqual(['Deploying #6', 'Deploying #7', '+1'])
-    await click(pills()[2])
-    expect(path()).toBe('Projects / registry · dev')
+    expect(el.querySelector('[role=toolbar]')?.textContent).not.toMatch(/deploying|needs you/i)
   })
 
   it('the Manage sidebar: the env deploying has a live dot and "deploying #6"', async () => {
@@ -298,15 +253,15 @@ describe('Start: the project in use with a deploy going on', () => {
     expect(path()).toBe('Projects / registry · production')
   })
 
-  it('a phone: the row ends with the Deploying pill', async () => {
+  it('a phone: the Deploying chip is on the name line, and the row has no chevron', async () => {
     ui.narrow = true
     await board('start-deploying')
-    expect(el.querySelector('.iii-cloud-start-word')?.textContent).toBe('Deploying')
+    expect(el.querySelector('.iii-cloud-start-name .iii-cloud-state')?.textContent).toBe('Deploying')
+    expect(el.querySelector('.iii-cloud-start-row svg:not(.iii-cloud-state svg)')).toBeNull()
   })
 })
 
 describe("every project's deploys going on (running_deploys)", () => {
-  const pills = () => [...el.querySelectorAll('[role=toolbar] .iii-cloud-pill')]
   const uses = (h: ReturnType<typeof fakeHost>) =>
     h.calls.filter((c) => c.id === 'iii-cloud::project::use').map((c) => c.payload)
   const confirmLeave = async () => {
@@ -314,90 +269,12 @@ describe("every project's deploys going on (running_deploys)", () => {
     if (ok) await click(ok)
   }
 
-  it('the pill: another environment of this project, then another project with its name', async () => {
-    await board('manage-overview-moving')
-    expect(pills().map((p) => p.textContent)).toEqual([
-      expect.stringMatching(/^Deploying #7 to production · \d+ min$/),
-      expect.stringMatching(/^billing · deploying #8 to dev · \d+ min$/),
-    ])
-  })
-
-  it('another environment of this project: its follow route, selecting that environment, no project switch', async () => {
-    const h = await board('manage-overview-moving')
-    await click(pills()[0])
-    await confirmLeave()
-    // CloudPage selects production in the same folder: the same project.
-    expect(uses(h)).toEqual([{ path: '/home/you/workspaces/registry', environment_id: ENV.id, mode: 'worktree' }])
-  })
-
-  it('another project: the switch Start uses (project::use with its folder and environment), then its follow page', async () => {
-    const h = await board('manage-overview-moving')
-    await click(pills()[1])
-    await confirmLeave()
-    await flush()
-    expect(uses(h)).toEqual([
-      // No mode: this status lists no recent billing folder to take it from; project::use keeps its own.
-      { path: '/home/you/workspaces/billing', cloud_project_id: 'p-billing', environment_id: 'e-billing-dev' },
-    ])
-    expect(path()).toContain('Deploy')
-  })
-
-  it('a phone: more than one reads "2 deploying", to Projects; one of another project\'s reads "billing #8 · deploying"', async () => {
-    ui.narrow = true
-    await board('manage-overview-moving')
-    expect(pills().map((p) => p.textContent)).toEqual(['2 deploying'])
-    await click(pills()[0])
-    expect(el.querySelector('[role=toolbar] h2')?.textContent).toBe('Projects')
-    ui.narrow = true
-    const b = boards['manage-overview-moving']
-    const only = { ...b.status, running_deploys: b.status.running_deploys?.slice(1) }
-    await mount(only, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
-    const p = pills()[0]
-    expect(p?.textContent).toBe('billing #8 · deploying')
-    expect(p?.getAttribute('aria-label')).toMatch(/^billing · deploying #8 to dev · \d+ min$/)
-  })
-
-  it('a deploy the worker never knew the origin of: "#9 · deploying", no name; not this project\'s: a link to iii cloud', async () => {
-    const b = boards['manage-overview-moving']
+  it("another project's held deployment: its row says Needs you and names the deployment", async () => {
+    const b = boards['start-moving']
     const [, billing] = b.status.running_deploys ?? []
-    const unknown = {
-      deploy: {
-        ...billing.deploy,
-        id: 'dep-x9',
-        number: 9,
-        environment_id: 'e-unknown',
-        console_url: 'https://cloud.iii.dev/x/9',
-      },
-      cloud_project_id: null,
-      project_name: null,
-      repository: null,
-      environment_name: null,
-      path: null,
-    }
-    const h = await mount(
-      { ...b.status, running_deploys: [unknown] },
-      b.context ? ctx(b.context) : {},
-      cloudAnswers(b.cloud ?? {}),
-    )
-    const p = pills()[0]
-    expect(p?.textContent).toMatch(/^Deploying #9 · \d+ min$/)
-    expect(p?.tagName).toBe('A')
-    expect(p?.getAttribute('href')).toBe('https://cloud.iii.dev/x/9')
-    expect(uses(h)).toEqual([])
-    ui.narrow = true
-    await mount(
-      { ...b.status, running_deploys: [unknown] },
-      b.context ? ctx(b.context) : {},
-      cloudAnswers(b.cloud ?? {}),
-    )
-    expect(pills()[0]?.textContent).toBe('#9 · deploying')
-  })
-
-  it("without running_deploys (an older worker): the selected environment's deploys", async () => {
-    const b = boards['manage-overview-deploying']
-    expect(b.status.running_deploys).toBeUndefined()
-    await board('manage-overview-deploying')
-    expect(pills().map((p) => p.textContent)).toEqual([expect.stringMatching(/^Deploying #6 to dev · \d+ min$/)])
+    const held = { ...billing, deploy: { ...billing.deploy, status: 'needs_action' as const } }
+    await mount({ ...b.status, running_deploys: [held] }, b.context ? ctx(b.context) : {}, cloudAnswers(b.cloud ?? {}))
+    expect(text()).toContain('billingNeeds youdev · deployment #8 needs your action')
   })
 
   it('Start: every row with a deploy going on says it; Open on another project takes it up first', async () => {
@@ -486,7 +363,7 @@ describe('the hand-over between places, end to end', () => {
 
   it('one count and one source label: the environment card and the Deploy screen say the same', async () => {
     const b = boards['deploy-problems']
-    const count = (s: string | null | undefined) => /^(\d+) things? /.exec(s ?? '')?.[1]
+    const count = (s: string | null | undefined) => /^(\d+) (?:things?|values?) /.exec(s ?? '')?.[1]
     const ws = b.status.project!.workspace!
     const status = {
       ...b.status,

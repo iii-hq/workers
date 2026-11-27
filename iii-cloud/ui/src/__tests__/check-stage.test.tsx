@@ -8,7 +8,7 @@ import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
-import { found, passed, rcFixing } from '../fixtures/check'
+import { found, passed, rcFixing, rcVariables } from '../fixtures/check'
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { devValues } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
@@ -74,10 +74,15 @@ describe('opening the screen', () => {
     expect(text()).toContain('billing: 2 commits, to dev')
     expect(text()).toContain('api/worker-compose-prod.yaml')
     expect(deployButton()?.hasAttribute('disabled')).toBe(true)
-    expect(text()).toContain('Unlocks when a check passes')
+    // The canvas draws no line under the header's action; the phone's bar is where it says when Deploy unlocks.
+    expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
+    expect(text()).not.toContain('Unlocks when')
     expect(h.calls.filter((c) => c.id !== 'iii-cloud::status')).toEqual([])
     await click(btn('Check'))
-    expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::check', payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' } })
+    expect(lastCall(h.calls)).toEqual({
+      id: 'iii-cloud::check',
+      payload: { run: true, push: true, manifest: 'api/worker-compose-prod.yaml' },
+    })
   })
 })
 
@@ -94,7 +99,7 @@ describe('the title is the next thing to do, and its numbers are the lists', () 
   )('%s: N things need you · your agent is fixing M, as many as the lists hold', async (_name, status) => {
     await stage(status)
     const t = title() ?? ''
-    const you = Number(/(\d+) things? needs? you/.exec(t)?.[1] ?? 0)
+    const you = Number(/(\d+) (?:things?|values?) needs? you/.exec(t)?.[1] ?? 0)
     const agentN = Number(
       /(?:fixing|for your agent to fix)/.test(t)
         ? (/(\d+)(?: for your agent| *$)|fixing (\d+)/.exec(t)?.slice(1).find(Boolean) ?? 0)
@@ -238,13 +243,13 @@ describe('You', () => {
 
     it('shows the numbers and the files, and counts as one item of You and of the title', async () => {
       await stage(first(), read(devValues.items.map((i) => ({ ...i, suggestions: [] }))))
-      const n = Number(/^(\d+) thing/.exec(title() ?? '')?.[1])
+      const n = Number(/^(\d+) (?:thing|value)/.exec(title() ?? '')?.[1])
       await stage(first(), read())
       expect(fillRow()?.textContent).toContain(
         '2 of 4 names your compose file reads can be filled from .env and .env.local.',
       )
       expect(fillRow()?.textContent).toContain('Review and save')
-      expect(title()).toMatch(new RegExp(`^${n + 1} things? `))
+      expect(title()).toMatch(new RegExp(`^${n + 1} (?:things?|values?) `))
     })
 
     it('its action opens the dialog; saving calls values::save once, then the check', async () => {
@@ -774,7 +779,7 @@ describe('the review: what a check that is not ready still offers', () => {
   it('the header of a replaced check names the new source and the picked file, with no old commit count', async () => {
     const s = B('deploy-passed')
     const h = await stage(s)
-    expect(text()).toMatch(/\d+ commits?/)
+    expect(text()).toContain('passed iii cloud')
     await act(async () => {
       hubOf(h.host).used(s.check!.environment_id, true)
       hubOf(h.host).setPickedManifest(s.check!.environment_id, 'api/worker-compose.staging.yaml')
@@ -987,3 +992,71 @@ describe('the words', () => {
     }
   })
 })
+
+describe('the check follows the canvas', () => {
+  const noAgent = (s: Status) => ({ ...s, agent: null, handoff_brief: null })
+  const primaries = () =>
+    [...el.querySelectorAll('button[data-variant=primary]')].filter((b) => !b.hasAttribute('disabled'))
+
+  it('a row names its variable: twenty warnings read as twenty names, not one title', async () => {
+    const s = noAgent(rcFixing)
+    await stage({ ...s, check: { ...s.check!, problems: rcVariables } })
+    const rows = [...(region('The check')?.querySelectorAll('li.iii-cloud-cs-row') ?? [])].map(
+      (r) => r.textContent ?? '',
+    )
+    const named = rows.filter((r) => r.includes('A variable defaults to empty'))
+    expect(named.length).toBe(rcVariables.length)
+    for (const p of rcVariables) {
+      const name = p.detail?.match(/environment\.(\w+)/)?.[1] as string
+      expect(named.filter((r) => r.startsWith(`${name}: A variable defaults to empty`))).toHaveLength(1)
+    }
+    // A warning is not "needs you": it says what it is, with a note mark.
+    expect(named.every((r) => r.includes('warning') && !r.includes('needs you'))).toBe(true)
+  })
+
+  it("the local run's rows are the canvas's words, with no command", async () => {
+    await stage(B('deploy-checking'))
+    const t = el.querySelector('[aria-label="Local run"]')?.textContent ?? ''
+    expect(t).toContain('Install exactly what the lock file says')
+    expect(t).not.toMatch(/Frozen install|Build command|Compose up|--frozen-lockfile/)
+  })
+
+  it('"Check again" is said once and no warning panel has a primary action', async () => {
+    await stage(B('state-stopped'))
+    expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Check again')).toHaveLength(1)
+    for (const panel of el.querySelectorAll('[role=status]')) {
+      expect(panel.querySelector('button[data-variant=primary]')).toBeNull()
+    }
+    expect(primaries()).toHaveLength(0)
+  })
+
+  it('the header says no "Unlocks when" line; the phone bar does, once', async () => {
+    await stage(B('deploy-problems'))
+    expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
+    // Where the canvas says it: the footer.
+    expect(text()).toContain('Deploy unlocks when a check passes.')
+    await stage(B('deploy-problems'), {}, { narrow: true })
+    expect(el.querySelector('.iii-cloud-cs-barnote')?.textContent).toBe('Unlocks when a check passes')
+  })
+
+  it('ready: one sub line, "See changes" and "See the file" are links, and the footer says what the canvas says', async () => {
+    await stage(B('deploy-review'))
+    expect(btn('See changes')).toBeNull()
+    expect(el.querySelector('a.iii-cloud-link')?.textContent).toBe('See changes')
+    expect(byLink('See the file')?.getAttribute('href')).toContain('/blob/')
+    expect(el.querySelectorAll('.iii-cloud-stephead-sub p')).toHaveLength(1)
+    expect(text()).toContain('A new commit before you confirm runs the check again.')
+    expect(text()).not.toContain('Pinned to the plan')
+    expect(el.querySelector('.iii-cloud-stephead-reason')).toBeNull()
+    await stage(B('deploy-passed'))
+    expect(region('Details')?.textContent).toMatch(/You did \d+ · your agent fixed \d+/)
+  })
+
+  it('"Your agent" items are rings, not spinners', async () => {
+    await stage(B('deploy-fixing'))
+    expect(el.querySelector('li.iii-cloud-cs-item .iii-cloud-ring')).toBeTruthy()
+    expect(el.querySelector('li.iii-cloud-cs-item .iii-ui-spin')).toBeNull()
+  })
+})
+
+const byLink = (label: string) => [...el.querySelectorAll('a')].find((a) => a.textContent === label)

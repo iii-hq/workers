@@ -3,7 +3,7 @@ import { Button } from '@iii-dev/console-ui'
 import { type ReactNode, useEffect, useRef } from 'react'
 import { useLaunch } from './asked'
 import { handOff, openAgentChat } from './handoff'
-import { activeSameKind, deployRows, failedStage, failureWords, sendLabel, servingDeploy } from './model'
+import { activeSameKind, failedStage, failureWords, sendLabel, servingDeploy, stageRows } from './model'
 import { Mono, SectionCard } from './parts'
 import type { Route } from './route'
 import type { Deploy, Status } from './types'
@@ -25,21 +25,25 @@ export function failureTail(d: Deploy): string[] {
   return d.failure ? d.failure.log_tail : d.log_tail
 }
 
-/** "Validation ✓ · Build ✓ · Workers × · Routes and healthcheck not run": where the deployment stopped. */
+const ORDINAL = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh']
+const COUNT = ['none', 'one', 'two', 'three', 'four', 'five', 'six', 'seven']
+
+/** "Plan ✓ · Build ✓ · Database and secrets ✕ · Workers not run · Address not run": where the deployment stopped. */
 export function stageLine(d: Deploy): string {
-  return deployRows(d)
+  return stageRows(d)
     .map(
       (r) =>
-        `${r.label}${r.tone === 'ok' ? ' ✓' : r.tone === 'alert' ? ' ×' : r.tone === 'live' ? ' running' : ' not run'}`,
+        `${r.short}${r.tone === 'ok' ? ' ✓' : r.tone === 'alert' ? ' ✕' : r.tone === 'live' ? ' running' : ' not run'}`,
     )
     .join(' · ')
 }
 
-/** "Workers, stage 5 of 6": the stage a failed deployment stopped at, for the narrow record. */
+/** "Database and secrets, the third of five stages": the stage a failed deployment stopped at, for the narrow record. */
 export function stoppedAt(d: Deploy): string {
-  const rows = deployRows(d)
+  const rows = stageRows(d)
   const at = rows.findIndex((r) => r.tone === 'alert')
-  return at < 0 ? failedStage(d) : `${rows[at].label}, stage ${at + 1} of ${rows.length}`
+  if (at < 0) return failedStage(d)
+  return `${rows[at].short}, the ${ORDINAL[at] ?? `number ${at + 1}`} of ${COUNT[rows.length] ?? rows.length} stages`
 }
 
 /** Log lines in the shared pre, scrolled to the end, where the error is. */

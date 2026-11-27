@@ -27,7 +27,6 @@ import { clock } from './asked'
 import { hubOf, useActions, useLocked, useStale } from './hub'
 import {
   envName,
-  minutesLabel,
   needsAction,
   plainDetail,
   plainMessage,
@@ -138,6 +137,13 @@ export function StatusChip({
 export const Spinner = () => <Loader2 className="iii-ui-spin" aria-hidden />
 
 export const Mono = ({ children }: { children: ReactNode }) => <span className="iii-cloud-mono">{children}</span>
+
+/** A sentence with each short commit sha (seven hex characters, at least one a digit) set in mono. */
+export function monoShas(text: string): ReactNode {
+  return text
+    .split(/\b((?=[0-9a-f]*\d)[0-9a-f]{7})\b/)
+    .map((part, i) => (i % 2 ? <Mono key={part + i}>{part}</Mono> : part))
+}
 
 const TINT: Partial<Record<Tone, string>> = { ok: 'ok', alert: 'alert', warn: 'warn' }
 
@@ -302,9 +308,6 @@ export function PathBar({
   rule,
   children,
   end,
-  host,
-  status,
-  route,
 }: {
   path: PathItem[]
   go: (r: Route) => void
@@ -313,7 +316,7 @@ export function PathBar({
   rule?: boolean
   children?: ReactNode
   end?: ReactNode
-  /** With the host, the status and the page's route: the deploys going on now, first in the end slot (`DeployPill`). */
+  /** Not read: no board has a deploy pill in the bar (Projects' rows say what is going on); callers may stop passing them. */
   host?: Host
   status?: Status
   route?: Route
@@ -321,20 +324,12 @@ export function PathBar({
   const here = path[path.length - 1]
   const up = path.slice(0, -1)
   const parent = up.filter((p) => p.to).at(-1)
-  const pill = status && host ? <DeployPill host={host} status={status} route={route} go={go} narrow={narrow} /> : null
   return (
     <Toolbar
       aria-label={here.label}
       className="iii-cloud-envhead"
       data-rule={rule ? '' : undefined}
-      end={
-        pill || end ? (
-          <>
-            {pill}
-            {end}
-          </>
-        ) : undefined
-      }
+      end={end}
     >
       {narrow ? (
         <>
@@ -367,14 +362,6 @@ export function PathBar({
       {children}
     </Toolbar>
   )
-}
-
-/** "as of 14:40" and Refresh: reads the status again, and with it every cloud route on the page. */
-/** The deploy a follow page shows: the one it names if it is that environment's, else the environment's newest. */
-function followed(s: Status, r: Route | undefined): string | undefined {
-  if (r?.at !== 'deploy' || !r.deploy) return undefined
-  const asked = s.deploys.find((d) => d.id === r.deploy && d.environment_id === r.env)
-  return (asked ?? s.deploys.find((d) => d.environment_id === r.env))?.id
 }
 
 /**
@@ -423,145 +410,11 @@ export function moving(s: Status): Moving[] {
     })
 }
 
-/** The follow page of a deploy going on: this project's goes there (CloudPage selects its environment); another project's switches first. */
-export function useFollow(host: Host, status: Status, go: (r: Route) => void) {
-  const sw = useSwitch(host, status, go)
-  const follow = (m: Moving, key = m.deploy.id) => {
-    const to: Route = { at: 'deploy', env: m.deploy.environment_id, deploy: m.deploy.id }
-    if (!m.other) {
-      // Another environment selects it: something waiting on the person here asks first.
-      const here = m.deploy.environment_id === status.project?.environment?.id
-      return here ? go(to) : sw.leave(m.env ?? 'that environment', () => go(to))
-    }
-    if (!m.path) return
-    const recent = status.recent_projects?.find((x) => x.path === m.path && x.cloud_project_id === m.cloudProject)
-    sw.switchTo(
-      key,
-      m.name ?? 'that project',
-      {
-        path: m.path,
-        ...(m.cloudProject ? { cloud_project_id: m.cloudProject } : {}),
-        environment_id: m.deploy.environment_id,
-        ...(recent?.mode ? { mode: recent.mode } : {}),
-      },
-      m.env,
-      to,
-    )
-  }
-  return { ...sw, follow }
-}
-
-/**
- * The way back to a deploy going on now, from any page: one 28 px button per deploy running or waiting on the
- * person, of this project or another (two at most, then "+N"), to its follow page; another project's switches
- * first. None for the deploy the page already follows. A phone says "#7 · deploying" ("registry #7 · deploying"),
- * its aria-label the whole sentence; with more than one, "2 deploying" to Start.
- */
-export function DeployPill({
-  host,
-  status: s,
-  route,
-  go,
-  narrow,
-}: {
-  host: Host
-  status: Status
-  route?: Route
-  go: (r: Route) => void
-  narrow?: boolean
-}) {
-  const now = useNow(15_000)
-  const { follow, switching, error, dialog } = useFollow(host, s, go)
-  const here = followed(s, route)
-  const on = moving(s).filter((m) => m.deploy.id !== here)
-  if (!on.length) return null
-  const first = on.find((m) => !m.other)
-  // A phone has room for one: more than one going on reads "2 deploying", to Start, where each project's row follows its own.
-  if (narrow && on.length > 1)
-    return (
-      <span className="iii-cloud-pills">
-        <Button
-          size="sm"
-          variant="secondary"
-          className="iii-cloud-pill iii-cloud-pill-more"
-          aria-label={`${on.length} deployments going on: see them on Projects`}
-          onClick={() => go({ at: 'start' })}
-        >
-          <Dot tone={on.some((m) => needsAction(m.deploy)) ? 'warn' : 'live'} />
-          {on.length} deploying
-        </Button>
-      </span>
-    )
-  const shown = 2
-  return (
-    <span className="iii-cloud-pills">
-      {on.slice(0, shown).map((m) => {
-        const d = m.deploy
-        const wait = needsAction(d)
-        const what = wait
-          ? `deployment #${d.number} needs you`
-          : `deploying #${d.number}${m.env ? ` to ${m.env}` : ''} · ${minutesLabel(now - Date.parse(d.created_at))}`
-        const full = m.name ? `${m.name} · ${what}` : `${what.charAt(0).toUpperCase()}${what.slice(1)}`
-        const short = `${m.name ? `${m.name} ` : ''}#${d.number} · ${wait ? 'needs you' : 'deploying'}`
-        const busy = switching === d.id
-        // Another project's deploy from a folder the worker never knew: it can't switch there; iii cloud shows it.
-        return m.other && !m.path ? (
-          <Button key={d.id} asChild size="sm" variant="secondary">
-            <a
-              className="iii-cloud-pill"
-              href={d.console_url}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={narrow ? full : undefined}
-            >
-              <Dot tone={wait ? 'warn' : 'live'} />
-              <span className="iii-cloud-pill-text">{narrow ? short : full}</span>
-            </a>
-          </Button>
-        ) : (
-          <Button
-            key={d.id}
-            size="sm"
-            variant="secondary"
-            className="iii-cloud-pill"
-            aria-label={narrow ? full : undefined}
-            aria-busy={busy || undefined}
-            disabled={!!switching}
-            onClick={() => follow(m)}
-          >
-            {busy ? <Spinner /> : <Dot tone={wait ? 'warn' : 'live'} />}
-            <span className="iii-cloud-pill-text">{narrow ? short : full}</span>
-          </Button>
-        )
-      })}
-      {on.length > shown ? (
-        <Button
-          size="sm"
-          variant="secondary"
-          className="iii-cloud-pill iii-cloud-pill-more"
-          aria-label={`${on.length - shown} more ${on.length - shown === 1 ? 'deployment' : 'deployments'} going on`}
-          // This project's go to its environment; only other projects' are listed on Start, one row each.
-          onClick={() => go(first ? { at: 'env', env: first.deploy.environment_id } : { at: 'start' })}
-        >
-          +{on.length - shown}
-        </Button>
-      ) : null}
-      {error ? (
-        <span role="alert" className="iii-cloud-pill-err" title={plainMessage(error)}>
-          Couldn't open it
-        </span>
-      ) : null}
-      {dialog}
-    </span>
-  )
-}
-
-export function Fresh({ host, status, narrow }: { host: Host; status: Status; narrow?: boolean }) {
+/** "as of 14:40" and Refresh: reads the status again, and with it every cloud route on the page. */
+export function Fresh({ host, status }: { host: Host; status: Status; narrow?: boolean }) {
   return (
     <>
-      {status.refreshed_at && !narrow ? (
-        <span className="iii-cloud-desc">as of {clock(status.refreshed_at)}</span>
-      ) : null}
+      {status.refreshed_at ? <span className="iii-cloud-desc">as of {clock(status.refreshed_at)}</span> : null}
       <IconButton label="Refresh" variant="ghost" onClick={() => void hubOf(host).refresh(true)}>
         <RefreshCw />
       </IconButton>

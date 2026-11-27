@@ -180,6 +180,11 @@
   gap: 2px;
   min-width: 0;
 }
+[data-iii-ui='iii-cloud'] .iii-cloud-next-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-next-title {
   margin: 0;
   font-size: 16px;
@@ -247,10 +252,27 @@
     border-top: 1px solid var(--color-edge);
   }
 }
+/* A phone's Live now: one compact card, chip and address on the first line. */
+[data-iii-ui='iii-cloud'] .iii-cloud-livecard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-xl);
+  flex-shrink: 0;
+}
 [data-iii-ui='iii-cloud'] .iii-cloud-envfoot {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 16px;
   font-size: 13px;
+}
+/* A phone's footer links are 44 px touch targets. */
+@container iii-cloud-mng (max-width: 639px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-envfoot > * {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
 }

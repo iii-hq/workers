@@ -235,7 +235,7 @@ export const ListItem = ({ leading, label, description, trailing, onClick, selec
     aria-disabled={(disabled as boolean) || (p['aria-disabled'] as boolean)}
     aria-current={p['aria-current'] as 'page'}
     aria-label={p['aria-label'] as string}
-    data-selected={selected ? '' : undefined}
+    data-selected={selected || p['data-selected'] !== undefined ? '' : undefined}
     data-step={p['data-step'] as string}
     onClick={disabled ? undefined : (onClick as () => void)}
   >
@@ -394,9 +394,10 @@ export const Breadcrumb = ({ items }: P) => (
 )
 export const DropdownMenuGroup = ({ children }: P) => <div data-group>{children}</div>
 export const DropdownMenuLabel = ({ children }: P) => <div>{children}</div>
-export const DirectoryPicker = ({ value, onChange }: P) => (
+export const DirectoryPicker = ({ value, onChange, emptyLabel }: P) => (
   <input
     aria-label="Folder"
+    placeholder={emptyLabel as string | undefined}
     data-directory-picker
     value={(value as string) ?? ''}
     onChange={(e) => cb(onChange)(e.target.value)}

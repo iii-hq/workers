@@ -29,6 +29,7 @@ import {
   liveOf,
   needsConnect,
   plural,
+  roleOf,
   sha7,
   signInRequired,
   tilde,
@@ -77,7 +78,13 @@ export function SetupArea(props: AreaProps<RouteAt<'setup'>>) {
     route.adding || status.project?.workspace || status.recent_projects?.length ? { at: 'start' } : null
   return (
     <PageMain className="iii-cloud-main">
-      <PathBar path={pathOf(route, status)} host={host} status={status} route={route} go={go} narrow={narrow} rule />
+      <PathBar
+        path={pathOf(route, status)}
+        go={go}
+        narrow={narrow}
+        rule
+        end={signedOut || narrow ? null : <Who status={status} />}
+      />
       <div className="iii-cloud-setup" data-step={signedOut ? 'signin' : 'confirm'}>
         {signedOut ? (
           <SignIn host={host} status={status} cancel={cancel} go={go} />
@@ -86,6 +93,20 @@ export function SetupArea(props: AreaProps<RouteAt<'setup'>>) {
         )}
       </div>
     </PageMain>
+  )
+}
+
+/** The path bar's end: who is signed in, and as what ("ana@iii.dev · team iii (Owner)"). */
+function Who({ status }: { status: Status }) {
+  const c = status.connection
+  const team = status.project?.team?.name ?? c.teams[0]?.name
+  const role = roleOf(status)
+  if (!c.user?.email) return null
+  return (
+    <span className="iii-cloud-desc">
+      {c.user.email}
+      {team ? ` · team ${team}${role ? ` (${role})` : ''}` : ''}
+    </span>
   )
 }
 
@@ -186,7 +207,8 @@ function Open({
   label: string
   help?: string
   children: ReactNode
-  onDone: () => void
+  /** None while no project is picked: there is nothing to close and no button below yet. */
+  onDone?: () => void
 }) {
   return (
     <div className="iii-cloud-detail-open">
@@ -195,12 +217,14 @@ function Open({
         {help ? <span className="iii-cloud-desc">{help}</span> : null}
       </div>
       {children}
-      <div className="iii-cloud-row">
-        <Button variant="secondary" size="sm" onClick={onDone}>
-          Done
-        </Button>
-        <span className="iii-cloud-desc">Picking one changes nothing in iii cloud. Only the button below does.</span>
-      </div>
+      {onDone ? (
+        <div className="iii-cloud-row">
+          <Button variant="secondary" size="sm" onClick={onDone}>
+            Done
+          </Button>
+          <span className="iii-cloud-desc">Picking one changes nothing in iii cloud. Only the button below does.</span>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -424,8 +448,13 @@ function Confirm({
   const toggle = (r: Row) => () => setOpen(r)
 
   const folderEditor = (
-    <Open label="Folder" onDone={done}>
-      <DirectoryPicker value={path || null} defaultDir={workingDir ?? null} onChange={pickFolder} />
+    <Open label="Folder" onDone={project ? done : undefined}>
+      <DirectoryPicker
+        value={path || null}
+        defaultDir={workingDir ?? null}
+        emptyLabel="Choose folder"
+        onChange={pickFolder}
+      />
       {project ? (
         <>
           <dl className="iii-cloud-facts">
@@ -587,14 +616,14 @@ function Confirm({
   const agent =
     mode === 'checkout'
       ? 'Your agent changes the files in this folder directly, with no separate copy.'
-      : `Your agent works in a clean copy of what is committed, so your folder stays as it is.${changed ? ` The ${plural(changed, 'uncommitted change')} in your folder stay there: commit them to include them.` : ''}`
+      : `Your agent works in a clean copy of what is committed, so your folder stays as it is.${changed ? ` The ${plural(changed, 'uncommitted change')} in your folder ${changed === 1 ? 'stays' : 'stay'} there: commit ${changed === 1 ? 'it' : 'them'} to include ${changed === 1 ? 'it' : 'them'}.` : ''}`
   const loading = resolving || (!project && !!path && !err)
 
   return (
     <>
       <div className="iii-cloud-setup-head">
         <h2 className="iii-cloud-setup-title">
-          {project ? `Put ${repoName} on iii cloud` : 'Put this project on iii cloud'}
+          {project ? `Put ${repoName} on iii cloud` : "Choose your project's folder"}
         </h2>
         <p className="iii-cloud-setup-lead">
           {project
@@ -605,7 +634,7 @@ function Confirm({
       {loading ? (
         <Skeleton className="iii-cloud-setup-skel" />
       ) : !project ? (
-        folderEditor
+        <div className="iii-cloud-detailcard">{folderEditor}</div>
       ) : (
         <div className="iii-cloud-detailcard">
           {open === 'folder' ? (
@@ -614,7 +643,7 @@ function Confirm({
             <DetailRow
               label="Folder"
               onChange={toggle('folder')}
-              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
+              note={`${project.repository} on GitHub · you are on ${project.checkout.branch ?? 'a detached HEAD'}${project.checkout.ahead ? ` · ${plural(project.checkout.ahead, 'commit')} ahead of ${base}` : project.checkout.branch ? ', up to date' : ''}${project.github_access === false ? " · iii cloud can't see it yet" : ''}`}
             >
               <Mono>{tilde(project.path)}</Mono>
             </DetailRow>
