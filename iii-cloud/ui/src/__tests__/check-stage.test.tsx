@@ -1385,6 +1385,31 @@ describe('small things the review found', () => {
     expect(el.querySelector('details.iii-cloud-cs-quiet')).toBeNull()
   })
 
+  it('a code the page has never heard of (RUN_COMMAND_NOT_IN_IMAGE) is an ordinary agent-owned row, counted', async () => {
+    const mk = (id: string, over: object) => ({
+      ...rcVariables[0],
+      id,
+      code: 'RUN_COMMAND_NOT_IN_IMAGE',
+      file: null,
+      line: null,
+      source: 'check_here' as const,
+      severity: 'block' as const,
+      owner: 'agent' as const,
+      title: 'release-control runs with bun, but its runtime is node',
+      detail: 'The image has no bun binary.',
+      fix: 'Run it with node, or use a runtime image that has bun.',
+      ...over,
+    })
+    const w = { ...rcFixing, agent: null, handoff_brief: null }
+    await stage({ ...w, check: { ...w.check!, problems: [mk('p-bun', {})] } })
+    expect(title()).toBe('1 for your agent to fix')
+    const row = region('Your agent')?.textContent ?? ''
+    expect(row).toContain('release-control runs with bun, but its runtime is node')
+    expect(row).toContain('The image has no bun binary.')
+    await stage({ ...w, check: { ...w.check!, problems: [mk('p-bun2', { detail: null })] } })
+    expect(region('Your agent')?.textContent).toContain('Run it with node, or use a runtime image that has bun.')
+  })
+
   it('the held dot is not shown on the record of that same deployment', () => {
     const r = B('deploy-review')
     const held = { ...live6, status: 'needs_action' as const, outcome: 'running' as const, check_id: 'chk-x' }
