@@ -32,6 +32,23 @@ fn echo() -> RegisterFunction {
     })
 }
 
+/// Where `GET path` was answered: `function` or `http`.
+async fn over(h: &support::Harness, path: &str) -> String {
+    let answer = h.ctx.call(&Req::get(path)).await.unwrap();
+    answer["over"].as_str().unwrap().to_owned()
+}
+
+/// Waits until `GET path` is answered by its function (the socket up and listed).
+async fn until_function(h: &support::Harness, path: &str) {
+    for _ in 0..150 {
+        if over(h, path).await == "function" {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{path} never reached its function");
+}
+
 async fn http_answers(server: &MockServer, route: &str) {
     Mock::given(path(format!("/api/v1{route}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "over": "http" })))
@@ -85,11 +102,57 @@ async fn calls_go_to_the_cloud_s_functions_and_http_takes_what_they_cannot_answe
         "cloud::gone::read",
         echo().metadata(api("GET", "/gone", &[])),
     );
+    // A function that never answers (it records the key it got): HTTP takes the write, with that key.
+    let tried = Arc::new(std::sync::Mutex::new(None::<String>));
+    let seen = tried.clone();
+    cloud.register_function(
+        "cloud::deployments::retry",
+        RegisterFunction::new_async(move |input: Value| {
+            let seen = seen.clone();
+            async move {
+                *seen.lock().unwrap() = input["idempotency_key"].as_str().map(str::to_owned);
+                Err::<Value, Error>(Error::Remote {
+                    code: "LOST".into(),
+                    message: "The worker went.".into(),
+                    stacktrace: None,
+                })
+            }
+        })
+        .metadata(api(
+            "POST",
+            "/teams/{team_id}/deployments/{deployment_id}/retry",
+            &["team_id", "deployment_id", "idempotency_key", "body"],
+        )),
+    );
+    // The control plane's own answer about a function it no longer has (its listing went stale).
+    cloud.register_function(
+        "cloud::stale::read",
+        RegisterFunction::new_async(|_: Value| async {
+            Err::<Value, Error>(Error::Remote {
+                code: "NOT_FOUND".into(),
+                message: "No such function.".into(),
+                stacktrace: Some(
+                    json!({ "status": 404, "body": { "code": "NOT_FOUND", "message": "No such function." } })
+                        .to_string(),
+                ),
+            })
+        })
+        .metadata(api("GET", "/stale", &[])),
+    );
+    cloud.register_function(
+        "cloud::slow::read",
+        RegisterFunction::new_async(|_: Value| async {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            Ok::<Value, Error>(json!({ "over": "function" }))
+        })
+        .metadata(api("GET", "/slow", &[])),
+    );
     engine.function(&cloud, "cloud::gone::read").await;
 
     let server = MockServer::start().await;
-    http_answers(&server, "/me").await;
-    http_answers(&server, "/gone").await;
+    for route in ["/me", "/gone", "/stale", "/teams/t1/deployments/d1/retry"] {
+        http_answers(&server, route).await;
+    }
     let h = harness(&server.uri(), Arc::new(Fake::default()));
     *h.ctx.functions_at.lock().unwrap() = FunctionsAt::Engine(engine.url.clone());
     *h.ctx.cred.lock().unwrap() = Some(Credential {
@@ -98,19 +161,8 @@ async fn calls_go_to_the_cloud_s_functions_and_http_takes_what_they_cannot_answe
     });
 
     // The first call opens the socket and goes over HTTP; once it has listed the functions, calls go to them.
-    assert_eq!(h.ctx.call(&Req::get("/me")).await.unwrap()["over"], "http");
-    let mut over = String::new();
-    for _ in 0..150 {
-        over = h.ctx.call(&Req::get("/me")).await.unwrap()["over"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        if over == "function" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(over, "function");
+    assert_eq!(over(&h, "/me").await, "http");
+    until_function(&h, "/me").await;
 
     // A write: its parameters decoded, its body and its idempotency key, by field.
     let (status, answer) = h
@@ -158,20 +210,67 @@ async fn calls_go_to_the_cloud_s_functions_and_http_takes_what_they_cannot_answe
         .unwrap();
     assert_eq!(queried["over"], "http");
 
+    // A credential being tried (connect checks a key before it is the connected one) goes over HTTP,
+    // and the connected one's socket stays.
+    let candidate = Credential {
+        method: Method::ApiKey,
+        token: "iii_candidate".into(),
+    };
+    let (_, tried_body) = h.ctx.send(&candidate, &Req::get("/me")).await.unwrap();
+    assert_eq!(tried_body["over"], "http");
+    assert_eq!(over(&h, "/me").await, "function");
+
+    // No answer from the function: HTTP takes the write with the very key the function got.
+    let retry = Req::post("/teams/t1/deployments/d1/retry", json!({}));
+    assert_eq!(h.ctx.call(&retry).await.unwrap()["over"], "http");
+    let sent = server.received_requests().await.unwrap();
+    let posted = sent
+        .iter()
+        .find(|r| r.url.path() == "/api/v1/teams/t1/deployments/d1/retry")
+        .expect("the write over HTTP");
+    let key = posted
+        .headers
+        .get("idempotency-key")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(tried.lock().unwrap().as_deref(), Some(key));
+
     // A function the engine no longer has (the control plane reconnecting): nothing ran, HTTP answers.
     gone.unregister();
-    let mut over = String::new();
+    let mut answered = String::new();
     for _ in 0..50 {
-        over = h.ctx.call(&Req::get("/gone")).await.unwrap()["over"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        if over == "http" {
+        answered = over(&h, "/gone").await;
+        if answered == "http" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(over, "http");
+    assert_eq!(answered, "http");
+
+    // The control plane says the function is gone: HTTP answers, and a new socket lists again.
+    assert_eq!(over(&h, "/stale").await, "http");
+    until_function(&h, "/me").await;
+
+    // A call that times out fails as HTTP's timeout does, without asking HTTP again (it may still run),
+    // and the socket rests: the next calls go over HTTP at once.
+    let slow = h.ctx.call(&Req::get("/slow")).await.unwrap_err();
+    assert!(slow.to_string().contains("took too long"), "{slow}");
+    assert!(
+        !sent_to(&server, "/api/v1/slow").await,
+        "not asked again over HTTP"
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(over(&h, "/me").await, "http");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "no wait on the resting socket"
+    );
+}
+
+async fn sent_to(server: &MockServer, path: &str) -> bool {
+    let sent = server.received_requests().await.unwrap();
+    sent.iter().any(|r| r.url.path() == path)
 }
 
 #[tokio::test(flavor = "multi_thread")]

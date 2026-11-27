@@ -7,19 +7,23 @@
 //! credential as a Bearer on its handshake, and a deployment's events are read
 //! from the channel its function answers. It goes over HTTP instead while that
 //! socket is not up and listed for the credential, for a route that is no
-//! function, a request the function can't carry whole, and when no answer came
-//! (nothing ran, or the socket went): the same request, idempotency key included,
-//! so a write that did run is not made twice.
+//! function, a request the function can't carry whole, a credential being
+//! tried (not yet the connected one), and when no answer came (nothing ran, or
+//! the socket went): the same request, idempotency key included, so a write that
+//! did run is not made twice. A call that times out fails as HTTP's own timeout
+//! does, and the socket rests (calls over HTTP) for `REST`: a control plane gone
+//! leaves its functions unanswered until the engine drops it, about 15 minutes.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use iii_sdk::protocol::StreamChannelRef;
 use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
 use iii_sdk::{
-    CallRequest, Error as SdkError, IIIClient, InitOptions, InputStream, register_worker,
+    CallRequest, Error as SdkError, IIIClient, InitOptions, InputStream, WorkerIdentityMode,
+    register_worker,
 };
 use reqwest::Method as HttpVerb;
 use serde_json::{Map, Value, json};
@@ -143,7 +147,7 @@ impl Ctx {
             .by_function(&cfg, cred, &verb, req, key.as_deref())
             .await
         {
-            return Ok(answer);
+            return answer;
         }
         let url = format!("{}{}", cfg.api_base(), req.path);
         let mut builder = self
@@ -342,6 +346,11 @@ pub enum FunctionsAt {
     Engine(String),
 }
 
+/// How long a socket that stopped serving rests (calls over HTTP) before a new one.
+pub const REST: Duration = Duration::from_secs(300);
+/// How long a new socket has to list the cloud's functions before it rests.
+pub const LIST_WITHIN: Duration = Duration::from_secs(30);
+
 /// The socket to the cloud's functions, for one credential.
 pub struct Link {
     token: String,
@@ -349,12 +358,53 @@ pub struct Link {
     client: IIIClient,
     /// Filled once the socket has listed the functions.
     routes: Arc<OnceLock<Arc<Vec<Route>>>>,
+    /// Since when it doesn't serve (a call timed out, or nothing listed in time).
+    down: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Link {
     fn close(self) {
         tokio::spawn(async move { self.client.shutdown_async().await });
     }
+}
+
+/// A link that serves: its socket, its functions, and how to rest it.
+struct Linked {
+    client: IIIClient,
+    routes: Arc<Vec<Route>>,
+    down: Arc<Mutex<Option<Instant>>>,
+}
+
+impl Linked {
+    fn rest(&self) {
+        *lock(&self.down) = Some(Instant::now());
+        let client = self.client.clone();
+        tokio::spawn(async move { client.shutdown_async().await });
+    }
+}
+
+/// A lock that a panic elsewhere doesn't poison: the link is only ever swapped whole.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The control plane's own answer about the function rather than the
+/// operation: the listing is out of date (a function it no longer has, a field
+/// it no longer takes).
+pub fn stale((status, body): &(u16, Value)) -> bool {
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    (*status == 404 && message == "No such function.")
+        || (*status == 422 && message.ends_with(": not a field of this function."))
+}
+
+fn too_slow() -> CloudError {
+    CloudError::new(
+        "CLOUD_ERROR",
+        "iii cloud is unreachable: it took too long to answer.",
+    )
 }
 
 /// A function of the cloud and the operation it is (its metadata `api`).
@@ -523,8 +573,16 @@ pub fn answer_of(error: &SdkError) -> Option<(u16, Value)> {
 
 /// Lists the socket's functions once it is up, again every 2 s until the cloud
 /// names some (the control plane registers them after the socket opens), while
-/// its link stands.
-async fn list(client: IIIClient, routes: Weak<OnceLock<Arc<Vec<Route>>>>) {
+/// its link stands. None within `within` (a cloud without `/_iii/ws`, an engine
+/// without its functions, a socket refused): it rests, rather than a reconnect
+/// and a warning every 2 s.
+async fn list(
+    client: IIIClient,
+    routes: Weak<OnceLock<Arc<Vec<Route>>>>,
+    down: Arc<Mutex<Option<Instant>>>,
+    within: Duration,
+) {
+    let started = Instant::now();
     loop {
         let Some(slot) = routes.upgrade() else {
             return;
@@ -545,32 +603,50 @@ async fn list(client: IIIClient, routes: Weak<OnceLock<Arc<Vec<Route>>>>) {
             }
         }
         drop(slot);
+        if started.elapsed() >= within {
+            *lock(&down) = Some(Instant::now());
+            client.shutdown_async().await;
+            return;
+        }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
 impl Ctx {
     /// The socket of `cred`'s calls and its functions, once it is up and has
-    /// listed them; `None` (HTTP) until then. The first call of a credential
-    /// opens its socket, closing the last one's.
-    fn linked(
-        &self,
-        cfg: &crate::config::Config,
-        cred: &Credential,
-    ) -> Option<(IIIClient, Arc<Vec<Route>>)> {
-        let address = match &*self.functions_at.lock().unwrap() {
+    /// listed them; `None` (HTTP) until then, while it rests, and for a
+    /// credential being tried (a key or session `connect` checks before it is
+    /// the connected one, whose socket stays as it is). The first call of a
+    /// credential opens its socket, closing the last one's.
+    fn linked(&self, cfg: &crate::config::Config, cred: &Credential) -> Option<Linked> {
+        let connected = lock(&self.cred).as_ref().map(|c| c.token.clone());
+        if connected.as_deref() != Some(cred.token.as_str()) {
+            return None;
+        }
+        let address = match &*lock(&self.functions_at) {
             FunctionsAt::Off => return None,
             FunctionsAt::Cloud => engine_address(&cfg.cloud_url)?,
             FunctionsAt::Engine(address) => address.clone(),
         };
-        let mut link = self.link.lock().unwrap();
+        let mut link = lock(&self.link);
         if let Some(l) = link
             .as_ref()
             .filter(|l| l.token == cred.token && l.address == address)
         {
-            let routes = l.routes.get()?.clone();
-            let up = l.client.get_connection_state() == IIIConnectionState::Connected;
-            return up.then(|| (l.client.clone(), routes));
+            let down = *lock(&l.down);
+            match down {
+                None => {
+                    let routes = l.routes.get()?.clone();
+                    let up = l.client.get_connection_state() == IIIConnectionState::Connected;
+                    return up.then(|| Linked {
+                        client: l.client.clone(),
+                        routes,
+                        down: l.down.clone(),
+                    });
+                }
+                Some(at) if at.elapsed() < REST => return None,
+                Some(_) => {}
+            }
         }
         if let Some(old) = link.take() {
             old.close();
@@ -582,6 +658,11 @@ impl Ctx {
                     name: "iii-cloud-worker".into(),
                     ..Default::default()
                 }),
+                // A second connection of this worker: never the harness's name or
+                // namespace (`III_WORKER_NAME`, `III_NAMESPACE`), since the cloud's
+                // functions are in its `default`.
+                identity: WorkerIdentityMode::Explicit,
+                namespace: Some("default".into()),
                 headers: Some(HashMap::from([(
                     "authorization".to_owned(),
                     format!("Bearer {}", cred.token),
@@ -590,25 +671,32 @@ impl Ctx {
             },
         );
         let routes = Arc::new(OnceLock::new());
-        tokio::spawn(list(client.clone(), Arc::downgrade(&routes)));
+        let down = Arc::new(Mutex::new(None));
+        tokio::spawn(list(
+            client.clone(),
+            Arc::downgrade(&routes),
+            down.clone(),
+            LIST_WITHIN,
+        ));
         *link = Some(Link {
             token: cred.token.clone(),
             address,
             client,
             routes,
+            down,
         });
         None
     }
 
     /// Closes the socket of the credential that went.
     pub fn unlink(&self) {
-        if let Some(old) = self.link.lock().unwrap().take() {
+        if let Some(old) = lock(&self.link).take() {
             old.close();
         }
     }
 
     /// `req` through its function: `Some` with the API's answer (a success as
-    /// 200, or 204 when empty), `None` for HTTP.
+    /// 200, or 204 when empty) or the timeout's error, `None` for HTTP.
     async fn by_function(
         &self,
         cfg: &crate::config::Config,
@@ -616,36 +704,47 @@ impl Ctx {
         verb: &HttpVerb,
         req: &Req,
         key: Option<&str>,
-    ) -> Option<(u16, Value)> {
-        let (client, routes) = self.linked(cfg, cred)?;
-        let (route, params) = route_of(&routes, verb.as_str(), &req.path)?;
+    ) -> Option<Res<(u16, Value)>> {
+        let linked = self.linked(cfg, cred)?;
+        let (route, params) = route_of(&linked.routes, verb.as_str(), &req.path)?;
         if route.events {
             return None;
         }
         let input = input_of(route, params, req, key)?;
-        let call = client
+        let call = linked
+            .client
             .call(CallRequest {
                 function_id: route.id.clone(),
                 payload: input,
                 action: None,
-                timeout_ms: Some(60_000),
+                timeout_ms: Some(self.secs(60).as_millis() as u64),
             })
             .await;
         match call {
-            Ok(Value::Null) => Some((204, Value::Null)),
-            Ok(answer) => Some((200, answer)),
-            Err(error) => {
-                let answer = answer_of(&error);
-                if answer.is_none() {
-                    tracing::debug!(function = %route.id, "iii cloud: no answer from the function, over HTTP");
-                }
-                answer
+            Ok(Value::Null) => Some(Ok((204, Value::Null))),
+            Ok(answer) => Some(Ok((200, answer))),
+            // Not asked again over HTTP: a read may still run (a plan holds its
+            // repository read), as it did past HTTP's own timeout.
+            Err(SdkError::Timeout) => {
+                linked.rest();
+                Some(Err(too_slow()))
             }
+            Err(error) => match answer_of(&error) {
+                Some(answer) if stale(&answer) => {
+                    self.unlink();
+                    None
+                }
+                Some(answer) => Some(Ok(answer)),
+                None => {
+                    tracing::debug!(function = %route.id, "iii cloud: no answer from the function, over HTTP");
+                    None
+                }
+            },
         }
     }
 
     /// A deployment's events through its function's channel, as `sse_events`
-    /// reads them; `None` for HTTP.
+    /// reads them, within `max` from the call; `None` for HTTP.
     async fn events_by_function(
         &self,
         cfg: &crate::config::Config,
@@ -653,36 +752,57 @@ impl Ctx {
         path: &str,
         max: Duration,
     ) -> Option<Res<Vec<Value>>> {
-        let (client, routes) = self.linked(cfg, cred)?;
-        let (route, params) = route_of(&routes, "GET", path)?;
+        let linked = self.linked(cfg, cred)?;
+        let (route, params) = route_of(&linked.routes, "GET", path)?;
         if !route.events {
             return None;
         }
         let input = input_of(route, params, &Req::get(path), None)?;
-        let answer = client
+        let started = Instant::now();
+        let answer = linked
+            .client
             .call(CallRequest {
                 function_id: route.id.clone(),
                 payload: input,
                 action: None,
-                timeout_ms: Some(15_000),
+                timeout_ms: Some(max.as_millis() as u64),
             })
             .await;
         let answer = match answer {
             Ok(answer) => answer,
+            Err(SdkError::Timeout) => {
+                linked.rest();
+                return Some(Err(too_slow()));
+            }
             Err(error) => {
-                return answer_of(&error).map(|(status, body)| Err(cloud_error(status, &body)));
+                return match answer_of(&error) {
+                    Some(answer) if stale(&answer) => {
+                        self.unlink();
+                        None
+                    }
+                    Some((status, body)) => Some(Err(cloud_error(status, &body))),
+                    None => None,
+                };
             }
         };
         let end: StreamChannelRef = serde_json::from_value(answer.get("events")?.clone()).ok()?;
-        let channel = InputStream::from_ref(end, &client).ok()?;
+        let channel = InputStream::from_ref(end, &linked.client).ok()?;
         let mut messages = channel.messages::<Value>();
         let mut events = Vec::new();
         let mut total = 0usize;
-        let started = Instant::now();
         while started.elapsed() < max && total < 2_000_000 {
             let next = tokio::time::timeout(max.saturating_sub(started.elapsed()), messages.next());
-            let Ok(Some(Ok(message))) = next.await else {
-                break;
+            let message = match next.await {
+                Ok(Some(Ok(message))) => message,
+                // A channel that would not open (its socket refused) is a failed read, as HTTP's.
+                Ok(Some(Err(_))) if events.is_empty() => {
+                    channel.cancel().await;
+                    return Some(Err(CloudError::new(
+                        "CLOUD_ERROR",
+                        "iii cloud is unreachable: the deployment's events could not be read.",
+                    )));
+                }
+                _ => break,
             };
             let data = message.get("data").cloned().unwrap_or(Value::Null);
             let ping = message.get("event").and_then(Value::as_str) == Some("ping")
@@ -873,5 +993,23 @@ mod tests {
         };
         assert_eq!(answer_of(&odd), None);
         assert_eq!(answer_of(&SdkError::Timeout), None);
+    }
+
+    #[test]
+    fn the_control_plane_s_own_answer_about_a_function_means_the_listing_is_stale() {
+        let gone = json!({ "code": "NOT_FOUND", "message": "No such function." });
+        assert!(stale(&(404, gone)));
+        let field =
+            json!({ "code": "VALIDATION_FAILED", "message": "tag: not a field of this function." });
+        assert!(stale(&(422, field)));
+        // The operation's own 404 and 422 are answers.
+        assert!(!stale(&(
+            404,
+            json!({ "code": "NOT_FOUND", "message": "No such project." })
+        )));
+        assert!(!stale(&(
+            422,
+            json!({ "code": "VALIDATION_FAILED", "message": "name: too long." })
+        )));
     }
 }
