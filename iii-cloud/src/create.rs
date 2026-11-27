@@ -214,7 +214,6 @@ pub async fn create_project(ctx: &Arc<Ctx>, request: ProjectCreateRequest) -> Re
                 path: request.path,
                 environment_id: Some(environment_id),
                 mode: WorkspaceMode::Worktree,
-                bring_changes: None,
                 cloud_project_id: Some(project_id.clone()),
                 from: None,
                 source: None,
@@ -376,7 +375,6 @@ pub async fn create_environment(
                 .as_ref()
                 .map(|w| w.mode)
                 .unwrap_or(WorkspaceMode::Worktree),
-            bring_changes: None,
             cloud_project_id: Some(cloud.id.clone()),
             from: None,
             source: None,

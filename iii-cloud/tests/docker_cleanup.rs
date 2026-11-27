@@ -69,7 +69,7 @@ async fn workspace(server: &MockServer) -> (support::Harness, PathBuf) {
             path: ws.to_string_lossy().into(), repository: "ada/app".into(),
             checkout: Checkout { branch: Some("main".into()), head: head.clone(), changed_files: vec![], ahead: 0, not_served: None, branches: vec![] },
             team: None, teams: vec![], cloud_project: None, environment: Some(env), environments: vec![], importable: None, github_access: None, cloud_projects: vec![], other_cloud_projects: vec![], default_branch: None,
-            workspace: Some(Workspace { mode: WorkspaceMode::Checkout, path: ws.to_string_lossy().into(), branch: "main".into(), from_head: None, not_brought: vec![], source: None, not_brought_reasons: Default::default(), source_sha: None }),
+            workspace: Some(Workspace { mode: WorkspaceMode::Checkout, path: ws.to_string_lossy().into(), branch: "main".into(), from_head: None, source: None, source_sha: None }),
             fell_back_from: None,
         });
         s.put_check(Check {

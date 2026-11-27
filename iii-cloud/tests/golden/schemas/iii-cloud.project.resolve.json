@@ -445,7 +445,7 @@
           },
           "from_head": {
             "default": null,
-            "description": "The last commit the worktree took from the person's checkout (`from: checkout`, after the `bring_changes` commit): commits after it are the agent's. Null for a worktree made from the environment's branch.",
+            "description": "The last commit the worktree took from the person's checkout (`from: checkout`): commits after it are the agent's. Null for a worktree made from the environment's branch.",
             "type": [
               "string",
               "null"
@@ -453,22 +453,6 @@
           },
           "mode": {
             "$ref": "#/definitions/WorkspaceMode"
-          },
-          "not_brought": {
-            "default": [],
-            "description": "The checkout's changed files `bring_changes` left behind: possible secrets (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.keystore`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.netrc`, `.pypirc`, `credentials.json`) and the run's own files.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "not_brought_reasons": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "default": {},
-            "description": "Why each `not_brought` file was left behind, by path.",
-            "type": "object"
           },
           "path": {
             "type": "string"

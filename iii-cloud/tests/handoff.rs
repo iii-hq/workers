@@ -94,7 +94,6 @@ async fn setup() -> (Harness, MockServer, Repo, std::path::PathBuf) {
             path: repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Worktree,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,
@@ -2345,7 +2344,6 @@ async fn here() -> (Harness, MockServer, Repo) {
             path: repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Checkout,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,
@@ -2384,13 +2382,10 @@ async fn a_hand_off_from_the_persons_folder_works_in_a_worker_worktree_and_the_f
     });
     assert_eq!(std::path::PathBuf::from(&path), wt);
     assert_eq!(branch, "iii-cloud/ready-production");
-    // What the check saw: the person's commit, and their changed files on top.
-    assert_eq!(git(&wt, &["log", "-1", "--format=%s", "HEAD~1"]), "mine");
-    assert_eq!(
-        git(&wt, &["log", "-1", "--format=%s"]),
-        "Uncommitted changes from main"
-    );
-    assert_eq!(std::fs::read_to_string(wt.join("new.txt")).unwrap(), "new");
+    // What the check saw: the person's commit, and none of their uncommitted files.
+    assert_eq!(git(&wt, &["log", "-1", "--format=%s"]), "mine");
+    assert!(!wt.join("new.txt").exists());
+    assert_eq!(git(&wt, &["status", "--porcelain"]), "");
     // The person's folder and the page's selection are as they were.
     assert_eq!(
         (
@@ -2474,7 +2469,7 @@ async fn an_older_hand_off_on_the_persons_folder_gets_its_worktree_and_never_a_p
     assert_eq!(first.merged_from.as_deref(), Some("main"));
     assert_eq!(first.conflict, None);
     assert_eq!(
-        git(&wt, &["log", "-1", "--format=%s", "HEAD~1"]),
+        git(&wt, &["log", "-1", "--format=%s"]),
         "Merge main into main for the check"
     );
     assert_eq!(
@@ -2507,7 +2502,7 @@ async fn an_older_hand_off_on_the_persons_folder_gets_its_worktree_and_never_a_p
 }
 
 /// A hand-off from the folder resumes the agent's pushed fix branch: its
-/// commits stay, the person's commit and changes come on top.
+/// commits stay, the person's commit comes on top.
 #[tokio::test]
 async fn a_hand_off_resumes_the_agents_earlier_fix_branch() {
     let (h, _s, repo) = here().await;
@@ -2533,9 +2528,10 @@ async fn a_hand_off_resumes_the_agents_earlier_fix_branch() {
     });
     assert_eq!(branch, "iii-cloud/ready-production");
     let wt = std::path::Path::new(&path);
-    for f in ["fix.txt", "mine.txt", "new.txt"] {
+    for f in ["fix.txt", "mine.txt"] {
         assert!(wt.join(f).exists(), "{f}");
     }
+    assert!(!wt.join("new.txt").exists());
     assert!(git(wt, &["log", "--format=%s"]).contains("Add isolated iii cloud test manifest"));
 }
 

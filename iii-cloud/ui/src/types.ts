@@ -160,10 +160,6 @@ export type Project = {
     branch: string
     /** `project::use {from: 'checkout'}`: the last commit taken from the checkout; later ones are the agent's. */
     from_head?: string | null
-    /** Changed files `bring_changes` left behind: possible secrets (`.env*`, keys, `.npmrc`, `credentials.json`…) and the run's own. */
-    not_brought?: string[]
-    /** Why each `not_brought` file stayed, by path: a possible secret, or the run's own file. */
-    not_brought_reasons?: Record<string, string>
     /** The branch `use {from: 'checkout', source}` took instead of the checkout's HEAD; null: the checkout's HEAD. */
     source?: string | null
     /** The commit `source` (else the checkout's HEAD) pointed at when the worktree was prepared. "Moved since" compares it with the source's tip now: `checkout.branches[].sha` of `source`, or `checkout.head`. */

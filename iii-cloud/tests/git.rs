@@ -8,13 +8,12 @@ use iii_cloud::types::*;
 use support::repo::*;
 use wiremock::MockServer;
 
-fn use_req(path: &std::path::Path, bring: bool) -> UseRequest {
+fn use_req(path: &std::path::Path) -> UseRequest {
     UseRequest {
         cloud_project_id: None,
         path: path.to_string_lossy().into(),
         environment_id: Some(ENV.into()),
         mode: WorkspaceMode::Worktree,
-        bring_changes: Some(bring),
         from: None,
         source: None,
     }
@@ -97,9 +96,7 @@ async fn use_makes_a_worktree_from_origin_and_leaves_the_checkout_alone() {
         git(&r.checkout, &["rev-parse", "HEAD"]),
         git(&r.checkout, &["status", "--porcelain"]),
     );
-    let p = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let p = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let ws = p.workspace.clone().unwrap();
     assert_eq!(ws.mode, WorkspaceMode::Worktree);
     assert_eq!(ws.branch, "iii-cloud/ready-production");
@@ -140,13 +137,59 @@ async fn use_makes_a_worktree_from_origin_and_leaves_the_checkout_alone() {
     );
     assert!(h.fake.kinds().iter().any(|k| k == "project:true"));
     // Again: the same worktree is reused.
-    let again = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let again = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     assert_eq!(again.workspace.unwrap(), ws);
     // Excludes are not duplicated.
     let exclude = std::fs::read_to_string(r.checkout.join(".git/info/exclude")).unwrap();
     assert_eq!(exclude.lines().filter(|l| *l == ".iii/").count(), 1);
+}
+
+/// The agent's copy holds commits only: a modified, a staged and an untracked file stay in the
+/// person's folder, with or without `from: checkout`, and an older page's `bring_changes` is ignored.
+#[tokio::test]
+async fn use_never_copies_what_is_not_committed() {
+    let server = MockServer::start().await;
+    let r = repo();
+    let h = connected(&server, "worker-compose.yaml").await;
+    staging(&server).await;
+    feature(&r);
+    let mine = old_commit(&r.checkout, "one.txt", "mine");
+    std::fs::write(r.checkout.join("README.md"), "changed\n").unwrap();
+    std::fs::write(r.checkout.join("staged.txt"), "staged").unwrap();
+    git(&r.checkout, &["add", "staged.txt"]);
+    std::fs::write(r.checkout.join("loose.txt"), "loose").unwrap();
+    let status = git(&r.checkout, &["status", "--porcelain"]);
+    let main = git(&r.origin, &["rev-parse", "main"]);
+    let old_page = |env: &str, from: Option<&str>| -> UseRequest {
+        serde_json::from_value(serde_json::json!({
+            "path": r.checkout,
+            "environment_id": env,
+            "mode": "worktree",
+            "from": from,
+            "bring_changes": true,
+        }))
+        .unwrap()
+    };
+    let requests = [
+        (use_req(&r.checkout), main.as_str()),
+        (old_page(ENV, None), main.as_str()),
+        (from_checkout(&r.checkout, ENV2), mine.as_str()),
+        (old_page(ENV2, Some("checkout")), mine.as_str()),
+    ];
+    for (req, head) in requests {
+        let w = use_project(&h.ctx, req).await.unwrap().workspace.unwrap();
+        let ws = std::path::PathBuf::from(&w.path);
+        assert_eq!(git(&ws, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(&ws, &["status", "--porcelain"]), "");
+        for f in ["staged.txt", "loose.txt"] {
+            assert!(!ws.join(f).exists(), "{f}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(ws.join("README.md")).unwrap(),
+            "hello\n"
+        );
+    }
+    assert_eq!(git(&r.checkout, &["status", "--porcelain"]), status);
 }
 
 #[tokio::test]
@@ -155,9 +198,7 @@ async fn a_path_taken_by_something_else_is_refused() {
     let r = repo();
     let h = connected(&server, "worker-compose.yaml").await;
     std::fs::create_dir_all(r.checkout.parent().unwrap().join("hello-iii-iii-cloud")).unwrap();
-    let err = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap_err();
+    let err = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap_err();
     assert_eq!(err.code, "WORKTREE_PATH_TAKEN");
 }
 
@@ -197,9 +238,7 @@ async fn an_earlier_fix_branch_is_resumed_with_its_commits_and_the_base_brought_
     );
     // main moved since.
     let moved = move_main(&r, "m.txt", "m");
-    let p = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let p = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let w = p.workspace.unwrap();
     assert_eq!(
         w.branch, "iii-cloud/ready-production",
@@ -232,8 +271,8 @@ async fn an_earlier_fix_branch_is_resumed_with_its_commits_and_the_base_brought_
 }
 
 /// The page's "moved since" compares the source's tip with `source_sha`,
-/// never the worktree's own head: brought changes and the person's later
-/// commits on another branch don't make it differ.
+/// never the worktree's own head: the person's later commits on another
+/// branch don't make it differ.
 #[tokio::test]
 async fn source_sha_is_what_the_source_pointed_at_when_it_was_taken() {
     let server = MockServer::start().await;
@@ -241,22 +280,20 @@ async fn source_sha_is_what_the_source_pointed_at_when_it_was_taken() {
     let h = connected(&server, "worker-compose.yaml").await;
     staging(&server).await;
     feature(&r);
-    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
     let req = UseRequest {
         source: Some("origin/main".into()),
-        ..from_checkout(&r.checkout, ENV2, true)
+        ..from_checkout(&r.checkout, ENV2)
     };
     let w = use_project(&h.ctx, req).await.unwrap().workspace.unwrap();
     let main = git(&r.checkout, &["rev-parse", "origin/main"]);
     assert_eq!(w.source_sha.as_deref(), Some(main.as_str()));
-    assert_ne!(w.from_head, w.source_sha, "the brought commit is on top");
     // The person commits on their own branch: the source did not move.
     old_commit(&r.checkout, "later.txt", "later");
     let plain = use_project(
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout, false)
+            ..use_req(&r.checkout)
         },
     )
     .await
@@ -265,7 +302,7 @@ async fn source_sha_is_what_the_source_pointed_at_when_it_was_taken() {
     .unwrap();
     assert_eq!(plain.source_sha.as_deref(), Some(main.as_str()));
     // Without a source it is the checkout's HEAD.
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -283,9 +320,7 @@ async fn a_resumed_fix_branch_that_conflicts_with_the_base_is_left_as_it_was() {
     let h = connected(&server, "worker-compose.yaml").await;
     let pushed = pushed_fix(&r, &["README.md"]);
     move_main(&r, "README.md", "theirs");
-    let err = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap_err();
+    let err = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap_err();
     assert_eq!(err.code, "MERGE_CONFLICT");
     assert!(err.message.contains("README.md"), "{}", err.message);
     let ws = r.root.path().join("work/hello-iii-iii-cloud");
@@ -312,7 +347,7 @@ async fn a_merged_fix_branch_is_resumed_at_the_base() {
     git(&t, &["commit", "-q", "-m", "later"]);
     git(&t, &["push", "-q", "origin", "main"]);
     let main = git(&t, &["rev-parse", "HEAD"]);
-    let w = use_project(&h.ctx, use_req(&r.checkout, false))
+    let w = use_project(&h.ctx, use_req(&r.checkout))
         .await
         .unwrap()
         .workspace
@@ -321,73 +356,6 @@ async fn a_merged_fix_branch_is_resumed_at_the_base() {
     assert_eq!(
         git(std::path::Path::new(&w.path), &["rev-parse", "HEAD"]),
         main
-    );
-}
-
-#[tokio::test]
-async fn bring_changes_copies_tracked_and_untracked_files() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    std::fs::write(r.checkout.join("README.md"), "hello\nmore\n").unwrap();
-    std::fs::create_dir_all(r.checkout.join("src")).unwrap();
-    std::fs::write(r.checkout.join("src/new.rs"), "fn main() {}\n").unwrap();
-    let p = use_project(&h.ctx, use_req(&r.checkout, true))
-        .await
-        .unwrap();
-    let ws = std::path::PathBuf::from(p.workspace.unwrap().path);
-    assert_eq!(
-        std::fs::read_to_string(ws.join("README.md")).unwrap(),
-        "hello\nmore\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(ws.join("src/new.rs")).unwrap(),
-        "fn main() {}\n"
-    );
-    // Unpushed commits are reported, not brought.
-    assert_eq!(p.checkout.ahead, 0);
-}
-
-#[tokio::test]
-async fn bringing_files_the_worktree_already_has_is_no_error() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    std::fs::write(r.checkout.join("new.txt"), "x\n").unwrap();
-    let req = || from_checkout(&r.checkout, ENV2, true);
-    let p = use_project(&h.ctx, req()).await.unwrap();
-    let ws = std::path::PathBuf::from(p.workspace.unwrap().path);
-    let head = git(&ws, &["rev-parse", "HEAD"]);
-    assert_eq!(git(&ws, &["show", "HEAD:new.txt"]), "x");
-    // The same untracked file again (already committed in the worktree): nothing to commit.
-    use_project(&h.ctx, req()).await.unwrap();
-    assert_eq!(git(&ws, &["rev-parse", "HEAD"]), head);
-}
-
-#[tokio::test]
-async fn a_patch_that_does_not_apply_leaves_the_worktree_untouched() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    let p = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
-    let ws = std::path::PathBuf::from(p.workspace.unwrap().path);
-    // The worktree moves README on; the checkout edits the old one, and adds another file.
-    std::fs::write(ws.join("README.md"), "changed in the worktree\n").unwrap();
-    git(&ws, &["commit", "-am", "wt"]);
-    std::fs::write(r.checkout.join("README.md"), "changed in the checkout\n").unwrap();
-    std::fs::write(r.checkout.join("other.txt"), "other\n").unwrap();
-    let err = use_project(&h.ctx, use_req(&r.checkout, true))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "BRING_CHANGES_CONFLICT");
-    assert!(err.message.contains("README.md"));
-    assert!(!ws.join("other.txt").exists(), "nothing is half-applied");
-    assert_eq!(
-        std::fs::read_to_string(ws.join("README.md")).unwrap(),
-        "changed in the worktree\n"
     );
 }
 
@@ -455,21 +423,18 @@ async fn switching_to_another_environment_of_the_same_folder_replaces_the_projec
     let r = repo();
     let h = connected(&server, "worker-compose.yaml").await;
     staging(&server).await;
-    let first = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let first = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let first_ws = first.workspace.unwrap();
     h.ctx.store.update(|s| s.put_check(a_check(ENV, "abc")));
-    let env2 = |bring| UseRequest {
+    let env2 = || UseRequest {
         path: r.checkout.to_string_lossy().into(),
         environment_id: Some(ENV2.into()),
         mode: WorkspaceMode::Worktree,
-        bring_changes: Some(bring),
         cloud_project_id: None,
         from: None,
         source: None,
     };
-    let second = use_project(&h.ctx, env2(false)).await.unwrap();
+    let second = use_project(&h.ctx, env2()).await.unwrap();
     // A worktree of its own, named after the environment: the first one is not in the way.
     let ws = second.workspace.clone().unwrap();
     assert_eq!(ws.branch, "iii-cloud/ready-staging");
@@ -499,9 +464,7 @@ async fn switching_to_another_environment_of_the_same_folder_replaces_the_projec
     assert_eq!(c.environment_id, ENV2);
     assert_eq!(h.ctx.store.read(|s| s.check.clone()).unwrap().id, c.id);
     // Back to the first: its own worktree is reused.
-    let back = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let back = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     assert_eq!(back.workspace.unwrap().path, first_ws.path);
 }
 
@@ -511,15 +474,13 @@ async fn switching_to_another_folder_keeps_the_checks_and_coming_back_restores_i
     let (r1, r2) = (repo(), repo());
     let h = connected(&server, "worker-compose.yaml").await;
     staging(&server).await;
-    use_project(&h.ctx, use_req(&r1.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r1.checkout)).await.unwrap();
     h.ctx.store.update(|s| s.put_check(a_check(ENV, "abc")));
     let p = use_project(
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r2.checkout, false)
+            ..use_req(&r2.checkout)
         },
     )
     .await
@@ -548,9 +509,7 @@ async fn switching_to_another_folder_keeps_the_checks_and_coming_back_restores_i
         "the check is of the new folder's worktree"
     );
     // Back to the first folder: its environment's check is the check again.
-    use_project(&h.ctx, use_req(&r1.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r1.checkout)).await.unwrap();
     assert_eq!(h.ctx.store.read(|s| s.check.clone()).unwrap().commit, "abc");
     assert_eq!(h.ctx.store.read(|s| s.checks.len()), 2);
 }
@@ -561,9 +520,7 @@ async fn resolving_another_folder_keeps_the_selection_and_reads_it_as_the_candid
     let (r1, r2) = (repo(), repo());
     let h = connected(&server, "worker-compose.yaml").await;
     staging(&server).await;
-    let first = use_project(&h.ctx, use_req(&r1.checkout, false))
-        .await
-        .unwrap();
+    let first = use_project(&h.ctx, use_req(&r1.checkout)).await.unwrap();
     let selected = || h.ctx.store.read(|s| s.project.clone().unwrap());
     let candidate = || h.ctx.store.read(|s| s.candidate.clone());
     let other = resolve(
@@ -588,7 +545,7 @@ async fn resolving_another_folder_keeps_the_selection_and_reads_it_as_the_candid
         &h.ctx,
         UseRequest {
             environment_id: Some("99999999-9999-4999-8999-999999999999".into()),
-            ..use_req(&r2.checkout, false)
+            ..use_req(&r2.checkout)
         },
     )
     .await
@@ -601,7 +558,7 @@ async fn resolving_another_folder_keeps_the_selection_and_reads_it_as_the_candid
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r2.checkout, false)
+            ..use_req(&r2.checkout)
         },
     )
     .await
@@ -620,7 +577,7 @@ async fn a_fresh_worktree_records_when_it_began_and_a_reused_one_keeps_it() {
     let server = MockServer::start().await;
     let r = repo();
     let h = connected(&server, "worker-compose.yaml").await;
-    let first = use_project(&h.ctx, use_req(&r.checkout, false))
+    let first = use_project(&h.ctx, use_req(&r.checkout))
         .await
         .unwrap()
         .workspace
@@ -631,7 +588,7 @@ async fn a_fresh_worktree_records_when_it_began_and_a_reused_one_keeps_it() {
         .read(|s| s.worktree_started.get(&key_of(&first)).cloned())
         .expect("recorded for a fresh worktree");
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let again = use_project(&h.ctx, use_req(&r.checkout, false))
+    let again = use_project(&h.ctx, use_req(&r.checkout))
         .await
         .unwrap()
         .workspace
@@ -669,9 +626,7 @@ async fn gone_remote_branches_are_pruned_before_the_worktree_is_made() {
     );
     // It is deleted on origin; `use` forgets it.
     git(&r.origin, &["branch", "-D", "iii-cloud/ready-production"]);
-    use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     assert!(
         !std::process::Command::new("git")
             .args([
@@ -706,9 +661,7 @@ async fn use_returns_the_branch_it_really_made_and_status_exposes_it() {
             "main",
         ],
     );
-    let p = use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    let p = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let w = p.workspace.unwrap();
     assert_eq!(w.branch, "iii-cloud/ready-production-2");
     assert_eq!(
@@ -725,11 +678,11 @@ async fn use_returns_the_branch_it_really_made_and_status_exposes_it() {
 }
 
 /// `project::use` of staging from the person's own branch.
-fn from_checkout(path: &std::path::Path, env: &str, bring: bool) -> UseRequest {
+fn from_checkout(path: &std::path::Path, env: &str) -> UseRequest {
     UseRequest {
         environment_id: Some(env.into()),
         from: Some(UseFrom::Checkout),
-        ..use_req(path, bring)
+        ..use_req(path)
     }
 }
 
@@ -770,12 +723,12 @@ async fn from_checkout_starts_at_the_persons_head_takes_new_commits_and_never_se
     old_commit(&r.checkout, "one.txt", "mine 1");
     let mine = old_commit(&r.checkout, "two.txt", "mine 2");
     // Production goes through a pull request: never from the checkout.
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV, false))
+    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV))
         .await
         .unwrap_err();
     assert_eq!(err.code, "INVALID_REQUEST");
     assert!(err.message.contains("pull request"), "{}", err.message);
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -795,7 +748,7 @@ async fn from_checkout_starts_at_the_persons_head_takes_new_commits_and_never_se
     );
     // A new commit of the person's comes in by fast-forward.
     let three = old_commit(&r.checkout, "three.txt", "mine 3");
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -807,7 +760,7 @@ async fn from_checkout_starts_at_the_persons_head_takes_new_commits_and_never_se
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout, false)
+            ..use_req(&r.checkout)
         },
     )
     .await
@@ -822,7 +775,7 @@ async fn from_checkout_starts_at_the_persons_head_takes_new_commits_and_never_se
     git(&ws, &["commit", "-m", "agent"]);
     let agent = git(&ws, &["rev-parse", "HEAD"]);
     let four = old_commit(&r.checkout, "four.txt", "mine 4");
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -869,24 +822,19 @@ async fn from_checkout_with_nothing_of_its_own_starts_at_the_environment_ahead_o
     feature(&r);
     let mine = git(&r.checkout, &["rev-parse", "HEAD"]);
     let moved = move_main(&r, "x.txt", "x");
-    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
         .unwrap();
     let ws = std::path::PathBuf::from(&w.path);
-    assert_eq!(git(&ws, &["rev-parse", "HEAD~1"]), moved);
-    assert_eq!(
-        git(&ws, &["show", "--name-only", "--format=", "HEAD"]),
-        "new.txt"
-    );
+    assert_eq!(git(&ws, &["rev-parse", "HEAD"]), moved);
     assert_eq!(
         w.from_head.as_deref(),
         Some(git(&ws, &["rev-parse", "HEAD"]).as_str())
     );
     assert_eq!(git(&r.checkout, &["rev-parse", "HEAD"]), mine);
-    assert_eq!(git(&r.checkout, &["status", "--porcelain"]), "?? new.txt");
+    assert_eq!(git(&r.checkout, &["status", "--porcelain"]), "");
 }
 
 #[tokio::test]
@@ -898,7 +846,7 @@ async fn from_checkout_diverged_merges_in_the_worktree_and_never_in_the_checkout
     feature(&r);
     let mine = old_commit(&r.checkout, "one.txt", "mine");
     let moved = move_main(&r, "x.txt", "x");
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -924,7 +872,7 @@ async fn from_checkout_diverged_merges_in_the_worktree_and_never_in_the_checkout
     // A diverging commit of the person's later is merged into the worktree that is there.
     let merged = git(&ws, &["rev-parse", "HEAD"]);
     let two = old_commit(&r.checkout, "two.txt", "mine 2");
-    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap();
     assert_eq!(
@@ -943,7 +891,7 @@ async fn from_checkout_conflict_leaves_the_worktree_clean_at_the_environment() {
     feature(&r);
     let mine = old_commit(&r.checkout, "README.md", "mine");
     let moved = move_main(&r, "README.md", "theirs");
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap_err();
     assert_eq!(err.code, "MERGE_CONFLICT");
@@ -966,59 +914,11 @@ async fn from_checkout_conflict_leaves_the_worktree_clean_at_the_environment() {
 }
 
 #[tokio::test]
-async fn from_checkout_brings_the_uncommitted_files_as_one_commit() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    for (k, v) in [("user.name", "Ada"), ("user.email", "ada@example.test")] {
-        git(&r.checkout, &["config", k, v]);
-    }
-    git(&r.checkout, &["checkout", "-q", "-b", "feature"]);
-    let mine = old_commit(&r.checkout, "one.txt", "mine");
-    std::fs::write(r.checkout.join("README.md"), "changed\n").unwrap();
-    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
-    std::fs::write(r.checkout.join(".env"), "SECRET=1").unwrap();
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    let ws = std::path::PathBuf::from(&w.path);
-    assert_eq!(git(&ws, &["rev-parse", "HEAD~1"]), mine);
-    assert_eq!(
-        git(&ws, &["log", "-1", "--format=%s"]),
-        "Uncommitted changes from feature"
-    );
-    let mut files: Vec<String> = git(&ws, &["show", "--name-only", "--format=", "HEAD"])
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    files.sort();
-    assert_eq!(files, vec!["README.md", "new.txt"], "never the .env");
-    assert_eq!(
-        git(&ws, &["status", "--porcelain"]),
-        "",
-        "nothing left over"
-    );
-    // The person's work, the brought commit included, is the base for the agent.
-    assert_eq!(
-        w.from_head.as_deref(),
-        Some(git(&ws, &["rev-parse", "HEAD"]).as_str())
-    );
-    // The checkout itself is untouched.
-    assert_eq!(git(&r.checkout, &["rev-parse", "HEAD"]), mine);
-    assert!(!git(&r.checkout, &["status", "--porcelain"]).is_empty());
-}
-
-#[tokio::test]
 async fn refresh_lists_the_checkouts_commits_the_environment_does_not_serve() {
     let server = MockServer::start().await;
     let r = repo();
     let h = connected(&server, "worker-compose.yaml").await;
-    use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let served = git(&r.origin, &["rev-parse", "main"]);
     let a = old_commit(&r.checkout, "a.txt", "local a");
     let b = old_commit(&r.checkout, "b.txt", "local b");
@@ -1066,121 +966,6 @@ async fn refresh_lists_the_checkouts_commits_the_environment_does_not_serve() {
     assert_eq!(refresh().await, None);
 }
 
-#[tokio::test]
-async fn brought_files_never_carry_secrets_links_or_glob_matches() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    for (k, v) in [("user.name", "Ada"), ("user.email", "ada@example.test")] {
-        git(&r.checkout, &["config", k, v]);
-    }
-    git(&r.checkout, &["checkout", "-q", "-b", "feature"]);
-    std::fs::create_dir_all(r.checkout.join("config")).unwrap();
-    for (f, text) in [
-        (".env", "SECRET=old"),
-        ("config/.env.local", "LOCAL=old"),
-        ("a.txt", "a"),
-        ("b.txt", "b"),
-    ] {
-        std::fs::write(r.checkout.join(f), text).unwrap();
-    }
-    old_commit(&r.checkout, "tracked.txt", "tracked files, .env included");
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    let ws = std::path::PathBuf::from(&w.path);
-    // The agent's own change, not committed yet.
-    std::fs::write(ws.join("a.txt"), "agent").unwrap();
-    // The person edits the tracked secrets and adds a link to a secret outside.
-    std::fs::write(r.checkout.join(".env"), "SECRET=new").unwrap();
-    std::fs::write(r.checkout.join("config/.env.local"), "LOCAL=new").unwrap();
-    std::fs::write(r.checkout.join("README.md"), "changed\n").unwrap();
-    std::fs::write(r.checkout.join("[ab].txt"), "glob").unwrap();
-    let secret = r.root.path().join("credentials");
-    std::fs::write(&secret, "AWS_SECRET=1").unwrap();
-    std::os::unix::fs::symlink(&secret, r.checkout.join("notes.md")).unwrap();
-    // Keys and credential files, by name or extension: one of each kind.
-    let keys = [
-        "deploy.pem",
-        "config/tls.key",
-        "cert.p12",
-        "cert.pfx",
-        "id_rsa",
-        "id_ed25519.pub",
-        "id_ecdsa",
-        ".npmrc",
-        ".netrc",
-        ".pypirc",
-        "credentials.json",
-        "release.keystore",
-    ];
-    for k in keys {
-        std::fs::write(r.checkout.join(k), "secret").unwrap();
-    }
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    let mut left: Vec<String> = [".env", "config/.env.local"]
-        .into_iter()
-        .chain(keys)
-        .map(str::to_owned)
-        .collect();
-    left.sort();
-    assert_eq!(w.not_brought, left);
-    for f in &left {
-        assert_eq!(
-            w.not_brought_reasons.get(f).map(String::as_str),
-            Some(iii_cloud::project::POSSIBLE_SECRET),
-            "{f}"
-        );
-        if keys.contains(&f.as_str()) {
-            assert!(!ws.join(f).exists(), "{f} never enters the worktree");
-        }
-    }
-    let mut files: Vec<String> = git(&ws, &["show", "--name-only", "--format=", "HEAD"])
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    files.sort();
-    assert_eq!(
-        files,
-        vec!["README.md", "[ab].txt", "notes.md"],
-        "no secret, and `[ab]` matched only itself"
-    );
-    assert_eq!(
-        std::fs::read_to_string(ws.join(".env")).unwrap(),
-        "SECRET=old"
-    );
-    assert!(
-        git(&ws, &["status", "--porcelain"]).contains("M a.txt"),
-        "the agent's change stays uncommitted"
-    );
-    // The link is a link: what it points to never enters the worktree or git.
-    assert!(
-        std::fs::symlink_metadata(ws.join("notes.md"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert_eq!(
-        git(&ws, &["show", "HEAD:notes.md"]),
-        secret.to_string_lossy()
-    );
-    // A file in the worktree is not the same as a link to the same bytes.
-    std::fs::write(ws.join("other.md"), "AWS_SECRET=1").unwrap();
-    std::os::unix::fs::symlink(&secret, r.checkout.join("other.md")).unwrap();
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "BRING_CHANGES_CONFLICT");
-    assert!(err.message.contains("other.md"), "{}", err.message);
-}
-
 #[test]
 fn recent_projects_keep_one_entry_per_folder_and_project_and_at_most_eight() {
     let entry = |path: &str, cloud: &str| RecentProject {
@@ -1223,12 +1008,8 @@ async fn an_api_key_session_keeps_no_recent_project() {
     let server = MockServer::start().await;
     let (r1, r2) = (repo(), repo());
     let h = connected(&server, "worker-compose.yaml").await;
-    use_project(&h.ctx, use_req(&r1.checkout, false))
-        .await
-        .unwrap();
-    use_project(&h.ctx, use_req(&r2.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r1.checkout)).await.unwrap();
+    use_project(&h.ctx, use_req(&r2.checkout)).await.unwrap();
     // A key connects one environment and has no cloud project to switch to.
     assert!(h.ctx.store.read(|s| s.recent_projects.is_empty()));
 }
@@ -1272,9 +1053,7 @@ async fn refresh_lists_the_branches_newest_first_with_what_the_environment_lacks
         git(&r.checkout, &["commit", "-q", "-m", f]);
     }
     origin_branch(&r, "feature-x", "x.txt");
-    use_project(&h.ctx, use_req(&r.checkout, false))
-        .await
-        .unwrap();
+    use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     let branches = iii_cloud::status::status(
         &h.ctx,
         StatusRequest {
@@ -1319,12 +1098,12 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
     staging(&server).await;
     feature(&r);
     let mine = old_commit(&r.checkout, "one.txt", "mine");
-    let with = |source: &str, bring: bool| UseRequest {
+    let with = |source: &str| UseRequest {
         source: Some(source.into()),
-        ..from_checkout(&r.checkout, ENV2, bring)
+        ..from_checkout(&r.checkout, ENV2)
     };
     // The environment's own branch: nothing of the person's comes in.
-    let w = use_project(&h.ctx, with("main", false))
+    let w = use_project(&h.ctx, with("main"))
         .await
         .unwrap()
         .workspace
@@ -1338,26 +1117,21 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         (Some("main"), Some(main.as_str()))
     );
     // Another branch, on origin only, diverged from main: merged in the
-    // worktree; the folder's changed file still comes on top.
+    // worktree.
     let x = origin_branch(&r, "feature-x", "x.txt");
     let moved = move_main(&r, "m.txt", "m");
-    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
-    let w = use_project(&h.ctx, with("origin/feature-x", true))
+    let w = use_project(&h.ctx, with("origin/feature-x"))
         .await
         .unwrap()
         .workspace
         .unwrap();
     assert_eq!(
-        git(&ws, &["log", "-1", "--format=%s", "HEAD~1"]),
+        git(&ws, &["log", "-1", "--format=%s", "HEAD"]),
         "Merge origin/feature-x into main for the check"
     );
     assert_eq!(
-        git(&ws, &["log", "-1", "--format=%P", "HEAD~1"]),
+        git(&ws, &["log", "-1", "--format=%P", "HEAD"]),
         format!("{moved} {x}")
-    );
-    assert_eq!(
-        git(&ws, &["show", "--name-only", "--format=", "HEAD"]),
-        "new.txt"
     );
     assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
     assert_eq!(
@@ -1369,7 +1143,7 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout, false)
+            ..use_req(&r.checkout)
         },
     )
     .await
@@ -1383,15 +1157,15 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         git(&r.checkout, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "feature"
     );
-    assert_eq!(git(&r.checkout, &["status", "--porcelain"]), "?? new.txt");
+    assert_eq!(git(&r.checkout, &["status", "--porcelain"]), "");
     // A branch that is not here, or a source without `from: checkout`, is refused.
     for req in [
-        with("nope", false),
-        with("origin/nope", false),
+        with("nope"),
+        with("origin/nope"),
         UseRequest {
             source: Some("main".into()),
             environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout, false)
+            ..use_req(&r.checkout)
         },
     ] {
         let err = use_project(&h.ctx, req).await.unwrap_err();
@@ -1408,7 +1182,7 @@ async fn a_merge_the_agent_has_not_committed_is_never_touched() {
     feature(&r);
     old_commit(&r.checkout, "README.md", "mine");
     move_main(&r, "README.md", "theirs");
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap_err();
     assert_eq!(err.code, "MERGE_CONFLICT");
@@ -1422,7 +1196,7 @@ async fn a_merge_the_agent_has_not_committed_is_never_touched() {
     assert!(!merge.status.success(), "a conflict");
     std::fs::write(ws.join("README.md"), "both").unwrap();
     git(&ws, &["add", "README.md"]);
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap_err();
     assert_eq!(err.code, "MERGE_IN_PROGRESS");
@@ -1458,7 +1232,7 @@ async fn the_fix_branch_out_in_the_persons_checkout_gets_a_new_name_and_the_chec
         git(&r.checkout, &["rev-parse", "HEAD"]),
         git(&r.checkout, &["status", "--porcelain"]),
     );
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -1466,7 +1240,10 @@ async fn the_fix_branch_out_in_the_persons_checkout_gets_a_new_name_and_the_chec
     assert_eq!(w.branch, "iii-cloud/ready-staging-2");
     let ws = std::path::Path::new(&w.path);
     assert!(!iii_cloud::project::same_path(ws, &r.checkout));
-    assert_eq!(std::fs::read_to_string(ws.join("new.txt")).unwrap(), "new");
+    assert!(
+        !ws.join("new.txt").exists(),
+        "an uncommitted file is not copied"
+    );
     assert_eq!(
         (
             git(&r.checkout, &["rev-parse", "HEAD"]),
@@ -1482,56 +1259,6 @@ async fn the_fix_branch_out_in_the_persons_checkout_gets_a_new_name_and_the_chec
         std::fs::read_to_string(r.checkout.join("new.txt")).unwrap(),
         "new"
     );
-}
-
-#[tokio::test]
-async fn a_bring_that_fails_half_way_leaves_the_worktree_as_it_was() {
-    use std::os::unix::fs::PermissionsExt;
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    feature(&r);
-    let ws = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap()
-        .path;
-    let ws = std::path::PathBuf::from(ws);
-    let head = git(&ws, &["rev-parse", "HEAD"]);
-    // A tracked change applies, a readable new file copies, then one can't be read.
-    std::fs::write(r.checkout.join("README.md"), "changed\n").unwrap();
-    std::fs::write(r.checkout.join("a.txt"), "a").unwrap();
-    let locked = r.checkout.join("z.txt");
-    std::fs::write(&locked, "z").unwrap();
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-    if std::fs::read(&locked).is_ok() {
-        // root reads anything: nothing to fail here.
-        return;
-    }
-    let err = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "GIT_FAILED", "{}", err.message);
-    assert_eq!(git(&ws, &["rev-parse", "HEAD"]), head);
-    assert_eq!(
-        git(&ws, &["status", "--porcelain"]),
-        "",
-        "nothing half-brought"
-    );
-    // Readable again: the same bring works.
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
-    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, true))
-        .await
-        .unwrap();
-    let mut files: Vec<String> = git(&ws, &["show", "--name-only", "--format=", "HEAD"])
-        .lines()
-        .map(str::to_owned)
-        .collect();
-    files.sort();
-    assert_eq!(files, vec!["README.md", "a.txt", "z.txt"]);
-    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
 }
 
 /// A commit pushed to another branch, from another clone, is pushed: the check
@@ -1564,86 +1291,6 @@ async fn a_commit_on_another_branch_pushed_from_another_clone_is_pushed() {
     assert!(!pushed(&r.checkout, &local).await);
 }
 
-/// `use` is all or nothing for the worktree: a failure after the new source came in puts it back.
-#[tokio::test]
-async fn a_use_that_fails_after_taking_the_new_source_leaves_the_worktree_where_it_was() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    feature(&r);
-    old_commit(&r.checkout, "one.txt", "mine");
-    let with = |source: &str, bring: bool| UseRequest {
-        source: Some(source.into()),
-        ..from_checkout(&r.checkout, ENV2, bring)
-    };
-    let w = use_project(&h.ctx, with("main", false))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    let ws = std::path::PathBuf::from(&w.path);
-    let (head, branch) = (
-        git(&ws, &["rev-parse", "HEAD"]),
-        git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]),
-    );
-    let stored = h.ctx.store.read(|s| s.project.clone());
-    // The commit of the brought files fails (a pre-commit hook, as a missing git identity would).
-    let hooks = std::path::PathBuf::from(git(&r.checkout, &["rev-parse", "--git-common-dir"]))
-        .join("hooks");
-    let hooks = if hooks.is_absolute() {
-        hooks
-    } else {
-        r.checkout.join(hooks)
-    };
-    std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join("pre-commit");
-    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    origin_branch(&r, "feature-x", "x.txt");
-    move_main(&r, "m.txt", "m");
-    std::fs::write(r.checkout.join("new.txt"), "new").unwrap();
-    let err = use_project(&h.ctx, with("origin/feature-x", true))
-        .await
-        .unwrap_err();
-    assert!(
-        !err.message.contains("could not be put back"),
-        "{}",
-        err.message
-    );
-    assert_eq!(
-        git(&ws, &["rev-parse", "HEAD"]),
-        head,
-        "the commit is the old source's"
-    );
-    assert_eq!(git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]), branch);
-    assert!(!ws.join("new.txt").exists() && !ws.join("x.txt").exists());
-    assert_eq!(git(&ws, &["status", "--porcelain"]), "");
-    let after = h.ctx.store.read(|s| s.project.clone());
-    assert_eq!(
-        after
-            .as_ref()
-            .and_then(|p| p.workspace.as_ref())
-            .map(|w| (&w.source, &w.from_head)),
-        stored
-            .as_ref()
-            .and_then(|p| p.workspace.as_ref())
-            .map(|w| (&w.source, &w.from_head))
-    );
-    // Without the hook the same use goes through.
-    std::fs::remove_file(&hook).unwrap();
-    let w = use_project(&h.ctx, with("origin/feature-x", true))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
-    assert!(ws.join("new.txt").exists());
-}
-
 /// The workspace's source commit is part of what a check was made for, so a branch
 /// switched in the checkout is seen with no name given; the ordinary flows are not refused.
 #[tokio::test]
@@ -1653,7 +1300,7 @@ async fn a_check_is_for_the_source_commit_and_ordinary_flows_keep_it() {
     let h = connected(&server, "worker-compose.yaml").await;
     staging(&server).await;
     feature(&r);
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap()
         .workspace
@@ -1672,21 +1319,21 @@ async fn a_check_is_for_the_source_commit_and_ordinary_flows_keep_it() {
         &h.ctx,
         UseRequest {
             environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout, false)
+            ..use_req(&r.checkout)
         },
     )
     .await
     .unwrap();
     assert!(fine(&h));
     // The same branch taken again with the same tip: unchanged.
-    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap();
     assert!(fine(&h));
     // The person switches the checkout to another branch and `use`s it: refused.
     git(&r.checkout, &["checkout", "-q", "-b", "feat-b"]);
     old_commit(&r.checkout, "b.txt", "b");
-    use_project(&h.ctx, from_checkout(&r.checkout, ENV2, false))
+    use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
         .await
         .unwrap();
     assert!(!fine(&h));

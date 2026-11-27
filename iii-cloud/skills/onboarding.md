@@ -57,9 +57,9 @@ Call `iii-cloud::project::resolve {path}` with the project's folder. Read
 ## 3. Use a worktree
 
 Call `iii-cloud::project::use {path, environment_id, mode: "worktree"}`.
-Recommend the worktree. When the checkout has uncommitted changes, ask the
-person if they should come along, then pass `bring_changes: true`. Unpushed
-commits do not come along. Tell the person.
+Recommend the worktree. It holds commits only: when the checkout has
+uncommitted changes, they stay in the person's folder until they commit them.
+Unpushed commits do not come along. Tell the person.
 
 Then move the session:
 

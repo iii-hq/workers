@@ -91,12 +91,13 @@ describe('the next-action card: one state for each combination of Env2', () => {
     expect(n.detail).toBe('2be71d0 Search: tweak weights · nothing uncommitted in your folder')
   })
 
-  it('something to deploy: uncommitted files count too, and are said', () => {
-    const n = next(dev({}, { ...clean, changed_files: ['a.ts', 'b.ts'] }))
-    expect(n).toMatchObject({ state: 'deploy', action: { kind: 'check' } })
-    expect(n.title).toBe("2 uncommitted files in your folder aren't on dev")
+  it('uncommitted changes are not a deploy: they are said to stay in the folder', () => {
+    expect(next(dev({}, { ...clean, changed_files: ['a.ts', 'b.ts'] })).state).toBe('current')
+    expect(next(dev({}, { changed_files: ['a.ts', 'b.ts'] })).detail).toBe(
+      '2be71d0 Search: tweak weights · 2 uncommitted changes stay in your folder',
+    )
     expect(next(dev({}, { changed_files: ['a.ts'] })).detail).toBe(
-      '2be71d0 Search: tweak weights · plus 1 uncommitted file',
+      '2be71d0 Search: tweak weights · 1 uncommitted change stays in your folder',
     )
   })
 
@@ -296,8 +297,7 @@ describe('the next-action card: when two states apply, the first of the order wi
     expect(next(dev({ check: { ...passed, commit: LIVE.commit.sha } }, clean)).state).toBe('current')
   })
 
-  it('a failed deployment while the folder has moved on (uncommitted files, or newer commits): deploy again', () => {
-    expect(next(dev({ deploys: [failed7, ...devDeploys] }, { ...clean, changed_files: ['x'] })).state).toBe('deploy')
+  it('a failed deployment while the folder has moved on (newer commits): deploy again', () => {
     const newer = [{ sha: 'f'.repeat(40), message: 'Fix the migration' }]
     expect(next(dev({ deploys: [failed7, ...devDeploys] }, { ...clean, not_served: newer })).state).toBe('deploy')
     // The only commit the folder has beyond the environment is the one that failed: it is still the failure.
@@ -306,7 +306,16 @@ describe('the next-action card: when two states apply, the first of the order wi
   })
 
   it('a pull request beats the folder when nothing is live, and never when something is', () => {
-    const s: Status = { ...base, deploys: [], check: null, pr }
+    const s: Status = {
+      ...base,
+      deploys: [],
+      check: null,
+      pr,
+      project: {
+        ...base.project!,
+        checkout: { ...base.project!.checkout, not_served: [{ sha: 'a'.repeat(40), message: 'Fix' }] },
+      },
+    }
     expect(nextAction(s, ENV.id, { live: null }).state).toBe('pull-request')
     expect(nextAction(s, ENV.id, { live: { id: 'x', sha: 'a' } }).state).toBe('deploy')
   })

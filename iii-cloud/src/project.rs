@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::cloud::Req;
 use crate::ctx::{Ctx, now};
-use crate::error::{CloudError, Res, cut};
+use crate::error::{CloudError, Res};
 use crate::tool::{self, git};
 use crate::types::*;
 
@@ -745,9 +745,7 @@ pub async fn use_project(ctx: &Arc<Ctx>, request: UseRequest) -> Res<Project> {
                 .clone()
                 .unwrap_or_else(|| "HEAD".into()),
             from_head: None,
-            not_brought: vec![],
             source: None,
-            not_brought_reasons: Default::default(),
             source_sha: None,
         },
         WorkspaceMode::Worktree => {
@@ -923,7 +921,7 @@ pub async fn main_checkout(dir: &Path) -> Res<PathBuf> {
 }
 
 /// A hand-off's own worktree, by the same rules as `use {mode: worktree, from:
-/// checkout, bring_changes: true}` (with `source`, the selection's): the
+/// checkout}` (with `source`, the selection's): the
 /// worker's worktree for `env` when there is one, else a new one. When the
 /// person's commits conflict with the environment's branch, the worktree stays
 /// at the base and `conflict` tells the agent to merge them. Never changes the
@@ -952,7 +950,6 @@ pub async fn handoff_worktree(
         path: top.to_string_lossy().into_owned(),
         environment_id: Some(env.id.clone()),
         mode: WorkspaceMode::Worktree,
-        bring_changes: Some(true),
         cloud_project_id: None,
         from: Some(UseFrom::Checkout),
         source,
@@ -1039,7 +1036,6 @@ async fn prepare_worktree(
     request: &UseRequest,
     ours: &[String],
 ) -> Res<(Workspace, Start)> {
-    let bring = request.bring_changes.unwrap_or(false);
     let from_checkout = request.from == Some(UseFrom::Checkout);
     let source = request.source.as_deref();
     // Forget remote branches that are gone, so an earlier try's branch is not mistaken for this one's.
@@ -1224,7 +1220,6 @@ async fn prepare_worktree(
             (path, Start::Fresh)
         }
     };
-    let mut snapshot: Option<BeforeBring> = None;
     // Never in the person's own checkout, even when it sits on this branch.
     if let Some(head) = &from
         && !same_path(top, &path)
@@ -1234,41 +1229,11 @@ async fn prepare_worktree(
             None => checkout_branch(top).await,
         };
         // All or nothing: what the worktree was on before anything touches it.
-        snapshot = before_bring(&path).await.ok();
+        let before = snapshot(&path).await.ok();
         if let Err(e) = take_checkout(&path, head, &label, &origin, &env.branch).await {
-            return Err(put_back(&path, snapshot.as_ref(), true, e).await);
+            return Err(put_back(&path, before.as_ref(), true, e).await);
         }
     }
-    let mut not_brought = vec![];
-    if bring {
-        // The reuse rules keep the person's checkout out of here; this never undoes in it.
-        if same_path(top, &path) {
-            return Err(CloudError::new(
-                "WORKTREE_PATH_TAKEN",
-                format!("{} is the checkout itself.", path.display()),
-            ));
-        }
-        let before = before_bring(&path).await?;
-        let brought = async {
-            let (files, skipped) = bring_changes(top, &path).await?;
-            if from.is_some() && !files.is_empty() {
-                commit_brought(top, &path, &files).await?;
-            }
-            Ok::<_, CloudError>(skipped)
-        }
-        .await;
-        match brought {
-            Ok(skipped) => not_brought = skipped,
-            Err(e) => {
-                // Back to before the source was taken, when it was.
-                return Err(put_back(&path, snapshot.as_ref().or(Some(&before)), false, e).await);
-            }
-        }
-    }
-    let not_brought_reasons = not_brought
-        .iter()
-        .filter_map(|f| Some((f.clone(), left_out_because(f)?.to_string())))
-        .collect();
     let from_head = match from {
         Some(_) => Some(git(&path, &["rev-parse", "HEAD"]).await?.trim().to_string()),
         None => None,
@@ -1281,8 +1246,6 @@ async fn prepare_worktree(
             path: path.to_string_lossy().into_owned(),
             branch,
             from_head,
-            not_brought,
-            not_brought_reasons,
             source: source.filter(|_| from_checkout).map(str::to_owned),
             source_sha,
         },
@@ -1584,9 +1547,9 @@ async fn take_checkout(
     }
 }
 
-/// The worktree before a bring: its HEAD, its tracked changes as a stash
+/// The worktree before the source is taken: its HEAD, its tracked changes as a stash
 /// commit (`git stash create` moves nothing), and its untracked files.
-struct BeforeBring {
+struct Snapshot {
     head: String,
     branch: String,
     changes: Option<String>,
@@ -1595,7 +1558,7 @@ struct BeforeBring {
     untracked: std::collections::HashSet<String>,
 }
 
-async fn before_bring(wt: &Path) -> Res<BeforeBring> {
+async fn snapshot(wt: &Path) -> Res<Snapshot> {
     let head = git(wt, &["rev-parse", "HEAD"]).await?.trim().to_string();
     let branch = git(wt, &["rev-parse", "--abbrev-ref", "HEAD"])
         .await?
@@ -1615,7 +1578,7 @@ async fn before_bring(wt: &Path) -> Res<BeforeBring> {
     };
     let untracked =
         nul_list(&git(wt, &["ls-files", "-z", "--others", "--exclude-standard"]).await?).collect();
-    Ok(BeforeBring {
+    Ok(Snapshot {
         head,
         branch,
         unsaved: dirty && changes.is_none(),
@@ -1624,9 +1587,9 @@ async fn before_bring(wt: &Path) -> Res<BeforeBring> {
     })
 }
 
-/// Undo a bring that failed half-way: the worktree's HEAD and tracked changes
-/// as they were, and only the untracked files the bring added go.
-async fn undo_bring(wt: &Path, before: &BeforeBring) {
+/// Undo a take that failed half-way: the worktree's HEAD and tracked changes
+/// as they were, and only the untracked files the take added go.
+async fn restore(wt: &Path, before: &Snapshot) {
     // ponytail: without a saved copy of the agent's tracked changes (no git identity for `stash create`), the reset is skipped; a half-applied patch then stays.
     if !before.unsaved {
         let _ = git(wt, &["reset", "-q", "--hard", &before.head]).await;
@@ -1653,7 +1616,7 @@ async fn undo_bring(wt: &Path, before: &BeforeBring) {
 /// (a refusal before anything changed, such as an agent's own merge in progress).
 async fn put_back(
     wt: &Path,
-    before: Option<&BeforeBring>,
+    before: Option<&Snapshot>,
     only_if_moved: bool,
     error: CloudError,
 ) -> CloudError {
@@ -1675,7 +1638,7 @@ async fn put_back(
     if only_if_moved && same {
         return error;
     }
-    undo_bring(wt, before).await;
+    restore(wt, before).await;
     let (head, branch) = at(wt).await;
     if head.as_deref().map(str::trim) == Some(before.head.as_str())
         && branch.as_deref().map(str::trim) == Some(before.branch.as_str())
@@ -1701,202 +1664,8 @@ async fn merging(wt: &Path) -> bool {
         .is_ok()
 }
 
-/// The brought files as one commit of their own, whatever else the worktree
-/// has. Literal pathspecs: a `*` or `[` in a name matches no other file.
-async fn commit_brought(top: &Path, wt: &Path, files: &[String]) -> Res<()> {
-    let message = format!("Uncommitted changes from {}", checkout_branch(top).await);
-    let mut add = vec!["--literal-pathspecs", "add", "-A", "--"];
-    add.extend(files.iter().map(String::as_str));
-    git(wt, &add).await?;
-    // Already in the worktree's HEAD (brought before, or deployed): nothing to commit.
-    let mut staged = vec!["--literal-pathspecs", "diff", "--cached", "--quiet", "--"];
-    staged.extend(files.iter().map(String::as_str));
-    if git(wt, &staged).await.is_ok() {
-        return Ok(());
-    }
-    let mut commit = vec!["--literal-pathspecs", "commit", "-q", "-m", &message, "--"];
-    commit.extend(files.iter().map(String::as_str));
-    git(wt, &commit).await.map(|_| ())
-}
-
-/// A file `bring_changes` never brings, copies or commits: one named `.env*`
-/// anywhere (it holds secrets), and the run's own files, the patterns
-/// `exclude_run_files` writes (keep the two in step).
-pub fn stays_here(path: &str) -> bool {
-    left_out_because(path).is_some()
-}
-
-pub const POSSIBLE_SECRET: &str = "left out as a possible secret: it stays on this machine";
-pub const RUN_FILE: &str = "the run's own file: it stays on this machine";
-
-/// Why `bring_changes` leaves a file behind. Secrets go by name or extension
-/// only, kept narrow: no `secrets*` glob, which would hit code.
-pub fn left_out_because(path: &str) -> Option<&'static str> {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let lower = name.to_ascii_lowercase();
-    let secret = lower.starts_with(".env")
-        || [".pem", ".key", ".p12", ".pfx", ".keystore"]
-            .iter()
-            .any(|ext| lower.ends_with(ext))
-        || ["id_rsa", "id_ed25519", "id_ecdsa"]
-            .iter()
-            .any(|p| lower.starts_with(p))
-        || [".npmrc", ".netrc", ".pypirc", "credentials.json"].contains(&lower.as_str());
-    let run = path.split('/').any(|part| part == ".iii")
-        || name.ends_with(".iii-cloud-run.yaml")
-        || name.ends_with(".iii-cloud-run.lock")
-        || (name.starts_with("iii-cloud-run-") && name.ends_with(".yaml"));
-    match (secret, run) {
-        (true, _) => Some(POSSIBLE_SECRET),
-        (false, true) => Some(RUN_FILE),
-        _ => None,
-    }
-}
-
-/// What is at a path, without following a symlink.
-#[derive(PartialEq)]
-enum Entry {
-    Link(PathBuf),
-    File(Vec<u8>),
-}
-
-fn entry(path: &Path) -> Option<Entry> {
-    if std::fs::symlink_metadata(path)
-        .ok()?
-        .file_type()
-        .is_symlink()
-    {
-        std::fs::read_link(path).ok().map(Entry::Link)
-    } else {
-        std::fs::read(path).ok().map(Entry::File)
-    }
-}
-
-/// A symlink is made again as a symlink: what it points to is never copied.
-fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
-    match std::fs::read_link(from) {
-        #[cfg(unix)]
-        Ok(target) => std::os::unix::fs::symlink(target, to),
-        #[cfg(not(unix))]
-        Ok(_) => Ok(()),
-        Err(_) => std::fs::copy(from, to).map(|_| ()),
-    }
-}
-
 fn nul_list(out: &str) -> impl Iterator<Item = String> + '_ {
     out.split('\0').filter(|f| !f.is_empty()).map(str::to_owned)
-}
-
-/// Copy the checkout's uncommitted changes into the worktree. Returns the
-/// files brought, and the ones left behind because they stay here
-/// ([`stays_here`]). The patch is checked first, so nothing is half-applied.
-async fn bring_changes(top: &Path, wt: &Path) -> Res<(Vec<String>, Vec<String>)> {
-    let changed: Vec<String> =
-        nul_list(&git(top, &["diff", "HEAD", "--name-only", "--no-renames", "-z"]).await?)
-            .collect();
-    let others: Vec<String> =
-        nul_list(&git(top, &["ls-files", "-z", "--others", "--exclude-standard"]).await?).collect();
-    let mut skipped: Vec<String> = changed
-        .iter()
-        .chain(&others)
-        .filter(|f| stays_here(f))
-        .cloned()
-        .collect();
-    skipped.sort();
-    skipped.dedup();
-    let tracked: Vec<String> = changed.into_iter().filter(|f| !stays_here(f)).collect();
-    let untracked: Vec<String> = others.into_iter().filter(|f| !stays_here(f)).collect();
-    let patch = if tracked.is_empty() {
-        String::new()
-    } else {
-        let mut args = vec![
-            "--literal-pathspecs",
-            "diff",
-            "HEAD",
-            "--binary",
-            "--no-renames",
-            "--",
-        ];
-        args.extend(tracked.iter().map(String::as_str));
-        git(top, &args).await?
-    };
-    let mut conflicts: Vec<String> = untracked
-        .iter()
-        .filter(|f| entry(&wt.join(f)).is_some_and(|there| Some(there) != entry(&top.join(f))))
-        .cloned()
-        .collect();
-    if !patch.is_empty() {
-        let check = tool::run(
-            "git",
-            &["apply", "--check", "-"],
-            Some(wt),
-            Some(patch.as_bytes()),
-            "TOOL_MISSING",
-        )
-        .await?;
-        if !check.ok() {
-            let files = tool::run(
-                "git",
-                &["apply", "--numstat", "-"],
-                Some(wt),
-                Some(patch.as_bytes()),
-                "TOOL_MISSING",
-            )
-            .await?;
-            conflicts.extend(
-                files
-                    .stdout
-                    .lines()
-                    .filter_map(|l| l.split('\t').nth(2))
-                    .map(str::to_owned),
-            );
-        }
-    }
-    if !conflicts.is_empty() {
-        return Err(CloudError::new(
-            "BRING_CHANGES_CONFLICT",
-            cut(
-                &format!(
-                    "These files do not apply on the worktree: {}",
-                    conflicts.join(", ")
-                ),
-                2048,
-            ),
-        ));
-    }
-    if !patch.is_empty() {
-        let applied = tool::run(
-            "git",
-            &["apply", "-"],
-            Some(wt),
-            Some(patch.as_bytes()),
-            "TOOL_MISSING",
-        )
-        .await?;
-        if !applied.ok() {
-            return Err(CloudError::new(
-                "BRING_CHANGES_CONFLICT",
-                cut(applied.stderr.trim(), 2048),
-            ));
-        }
-    }
-    for file in &untracked {
-        let to = wt.join(file);
-        // Already there, the same (anything else was refused above).
-        if entry(&to).is_some() {
-            continue;
-        }
-        if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| CloudError::new("GIT_FAILED", e.to_string()))?;
-        }
-        link_or_copy(&top.join(file), &to)
-            .map_err(|e| CloudError::new("GIT_FAILED", e.to_string()))?;
-    }
-    let mut files: Vec<String> = tracked.into_iter().chain(untracked).collect();
-    files.sort();
-    files.dedup();
-    Ok((files, skipped))
 }
 
 /// Hide the run's own files in `info/exclude` (shared with the checkout).

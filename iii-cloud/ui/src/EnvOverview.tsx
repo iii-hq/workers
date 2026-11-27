@@ -88,6 +88,8 @@ export type Next = {
 const sameCommit = (a: string, b: string) => !!a && !!b && (a.startsWith(b) || b.startsWith(a))
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
+const stays = (n: number) => `${plural(n, 'uncommitted change')} ${n === 1 ? 'stays' : 'stay'} in your folder`
+
 /**
  * The one thing to do next in the selected environment `envId`, the first that holds, in this order:
  *  1. held: a deployment iii cloud holds for the person's approval
@@ -97,7 +99,7 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
  *  5. passed: a check passed on a commit the environment does not serve (not one whose deployment just failed)
  *  6. failed: the newest deployment failed (unless the folder has moved past that commit: then 9)
  *  7. pull-request: nothing is live, the environment deploys from a pull request, and one is open
- *  8. deploy: the folder has commits or uncommitted files the environment does not serve
+ *  8. deploy: the folder has commits the environment does not serve
  *  9. empty / current: nothing is live yet, or it serves everything in the folder
  * `live` is what serves the environment (iii cloud's current deployment, else the worker's newest ready one).
  */
@@ -227,7 +229,7 @@ export function nextAction(
   const files = p?.checkout.changed_files.length ?? 0
   const notServed = p?.checkout.not_served ?? []
   const folderMoved =
-    files > 0 || (notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha)))
+    notServed.length > 0 && !(failed && sameCommit(notServed[0].sha, failed.commit.sha))
   if (failed && !folderMoved) {
     const cloud = opts.cloud?.find((d) => d.id === failed.id)
     return {
@@ -253,17 +255,15 @@ export function nextAction(
     }
   }
 
-  if (files > 0 || notServed.length > 0) {
+  if (notServed.length > 0) {
     const top = notServed[0]
-    const rest = files ? `plus ${plural(files, 'uncommitted file')}` : 'nothing uncommitted in your folder'
+    const rest = files ? stays(files) : 'nothing uncommitted in your folder'
     return {
       state: 'deploy',
       wait: true,
       primary: true,
-      title: notServed.length
-        ? `${plural(notServed.length, 'commit')} on ${branch ?? 'your branch'} ${notServed.length === 1 ? "isn't" : "aren't"} on ${name}`
-        : `${plural(files, 'uncommitted file')} in your folder ${files === 1 ? "isn't" : "aren't"} on ${name}`,
-      detail: top ? `${sha7(top.sha)} ${top.message.split('\n')[0]} · ${rest}` : 'Commit them, or deploy as they are.',
+      title: `${plural(notServed.length, 'commit')} on ${branch ?? 'your branch'} ${notServed.length === 1 ? "isn't" : "aren't"} on ${name}`,
+      detail: `${sha7(top.sha)} ${top.message.split('\n')[0]} · ${rest}`,
       action: { label: `Deploy to ${name}`, kind: 'check' },
     }
   }
@@ -286,7 +286,7 @@ export function nextAction(
     wait: false,
     primary: false,
     title: `${name} serves everything in your folder`,
-    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}, nothing uncommitted.`,
+    detail: `${branch ?? 'Your branch'}${p ? ` at ${sha7(p.checkout.head)}` : ''}, ${files ? stays(files) : 'nothing uncommitted'}.`,
   }
 }
 

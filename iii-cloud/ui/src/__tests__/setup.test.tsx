@@ -177,7 +177,7 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
       expect(changeOf(label)?.textContent).toBe('Change')
     }
     expect(text()).toContain(
-      "Your agent works in a separate copy of the repository, so your folder stays as it is. The 4 files you changed on this machine that aren't on GitHub go into the copy too.",
+      'Your agent works in a clean copy of what is committed, so your folder stays as it is. The 4 uncommitted changes in your folder stay there: commit them to include them.',
     )
     expect(el.querySelector('aside')).toBeNull()
   })
@@ -241,7 +241,7 @@ describe('Change: each row opens in place, one at a time', () => {
       '/home/you/workspaces/registry',
     )
     expect(text()).toContain('iii-hq/registry on GitHub')
-    expect(text()).toContain('4 changed files; they go into your agent')
+    expect(text()).toContain('4 uncommitted changes; they stay in your folder')
     expect(text()).toContain('Another folder reads again')
     expect(el.querySelector('[role=alertdialog]')).toBeNull()
     expect(btn('Let your agent edit this folder instead of a copy')).toBeTruthy()
@@ -258,7 +258,7 @@ describe('Change: each row opens in place, one at a time', () => {
     expect(text()).toContain('Put registry on iii cloud')
   })
 
-  it('Folder: letting the agent edit the folder asks first; then the check uses it with no copy and brings nothing', async () => {
+  it('Folder: letting the agent edit the folder asks first; then the check uses it with no copy', async () => {
     const h = await board('setup-existing')
     await click(changeOf('Folder') ?? null)
     await click(btn('Let your agent edit this folder instead of a copy'))
@@ -360,7 +360,6 @@ describe('the button: the calls in order, then the Deploy place', () => {
         cloud_project_id: 'p1',
         environment_id: DEV.id,
         mode: 'worktree',
-        bring_changes: true,
       },
     ])
     expect(of(h, 'iii-cloud::check')).toEqual([{ run: true, manifest: 'api/worker-compose.staging.yaml' }])
@@ -405,7 +404,6 @@ describe('the button: the calls in order, then the Deploy place', () => {
         cloud_project_id: 'p-new',
         environment_id: 'e-new',
         mode: 'worktree',
-        bring_changes: true,
       },
     ])
     expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])
@@ -471,6 +469,13 @@ describe('the button: the calls in order, then the Deploy place', () => {
     await click(btn('Choose another'))
     expect(detail('Project')?.value).toBe('registry-eu')
     expect(detail('Environment')?.value).toBe('dev')
+  })
+
+  it('a folder with nothing uncommitted: the copy sentence has no second part', async () => {
+    const clean = { ...notImported, checkout: { ...notImported.checkout, changed_files: [] } }
+    await mount({ ...base, project: clean, check: null }, ctx({ at: 'setup', step: 'confirm' }))
+    expect(text()).toContain('Your agent works in a clean copy of what is committed, so your folder stays as it is.')
+    expect(text()).not.toContain('uncommitted change')
   })
 
   it('iii cloud cannot see the repository on GitHub: the button waits and says why; the agent imports it', async () => {
@@ -548,7 +553,6 @@ describe('no folder known yet, and adding a project', () => {
         cloud_project_id: 'p-billing',
         environment_id: 'e-b',
         mode: 'worktree',
-        bring_changes: true,
       },
     ])
     expect(of(h, 'iii-cloud::check')).toEqual([{ run: true }])

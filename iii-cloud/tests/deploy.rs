@@ -111,7 +111,6 @@ async fn setup(plan_value: Value) -> Setup {
             path: repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Worktree,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,
@@ -1410,18 +1409,17 @@ async fn a_reused_worktree_whose_pull_request_was_merged_starts_again_from_the_b
     let ahead = git(&s.ws, &["rev-parse", "HEAD"]);
     let main = git(&s.repo.origin, &["rev-parse", "main"]);
     assert_ne!(ahead, main);
-    let again = |bring| UseRequest {
+    let again = || UseRequest {
         path: s.repo.checkout.to_string_lossy().into(),
         environment_id: Some(ENV.into()),
         mode: WorkspaceMode::Worktree,
-        bring_changes: Some(bring),
         cloud_project_id: None,
         from: None,
         source: None,
     };
     // Not merged: the work stays.
     std::fs::write(s.fakegh.join("list.json"), "[]").unwrap();
-    use_project(&s.h.ctx, again(false)).await.unwrap();
+    use_project(&s.h.ctx, again()).await.unwrap();
     assert_eq!(git(&s.ws, &["rev-parse", "HEAD"]), ahead);
     // Merged and clean: it starts again from origin/main.
     // A merged pull request whose head is another commit: local work stays.
@@ -1430,7 +1428,7 @@ async fn a_reused_worktree_whose_pull_request_was_merged_starts_again_from_the_b
         "[{\"number\": 12, \"headRefOid\": \"ffffffffffffffffffffffffffffffffffffffff\"}]",
     )
     .unwrap();
-    use_project(&s.h.ctx, again(false)).await.unwrap();
+    use_project(&s.h.ctx, again()).await.unwrap();
     assert_eq!(
         git(&s.ws, &["rev-parse", "HEAD"]),
         ahead,
@@ -1441,7 +1439,7 @@ async fn a_reused_worktree_whose_pull_request_was_merged_starts_again_from_the_b
         format!("[{{\"number\": 12, \"headRefOid\": \"{ahead}\"}}]"),
     )
     .unwrap();
-    use_project(&s.h.ctx, again(false)).await.unwrap();
+    use_project(&s.h.ctx, again()).await.unwrap();
     assert_eq!(git(&s.ws, &["rev-parse", "HEAD"]), main);
     // Dirty: never reset.
     std::fs::write(s.ws.join("feature2.txt"), "x").unwrap();
@@ -1449,7 +1447,7 @@ async fn a_reused_worktree_whose_pull_request_was_merged_starts_again_from_the_b
     git(&s.ws, &["commit", "-m", "more"]);
     std::fs::write(s.ws.join("dirty.txt"), "x").unwrap();
     let head = git(&s.ws, &["rev-parse", "HEAD"]);
-    use_project(&s.h.ctx, again(false)).await.unwrap();
+    use_project(&s.h.ctx, again()).await.unwrap();
     assert_eq!(git(&s.ws, &["rev-parse", "HEAD"]), head);
 }
 
@@ -1477,7 +1475,6 @@ async fn the_persons_own_checkout_on_the_worktree_branch_gets_a_new_name_and_is_
             path: s.repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Worktree,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,
@@ -3485,7 +3482,6 @@ async fn reuse(s: &Setup) -> Result<Project, iii_cloud::error::CloudError> {
             path: s.repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Worktree,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,

@@ -51,7 +51,6 @@ async fn ready_with(
             path: repo.checkout.to_string_lossy().into(),
             environment_id: Some(ENV.into()),
             mode: WorkspaceMode::Worktree,
-            bring_changes: None,
             cloud_project_id: None,
             from: None,
             source: None,

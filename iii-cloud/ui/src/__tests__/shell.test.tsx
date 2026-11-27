@@ -19,7 +19,15 @@ usePage()
 const main = base
 const dev = { id: 'e-dev', name: 'dev', production: false, branch: 'develop' }
 /** Live once, with a second environment that is not selected. */
-const live: Status = { ...main, project: { ...main.project!, environments: [ENV, dev] }, deploys: [earlierReady] }
+const live: Status = {
+  ...main,
+  project: {
+    ...main.project!,
+    environments: [ENV, dev],
+    checkout: { ...main.project!.checkout, not_served: [{ sha: 'a'.repeat(40), message: 'Fix the migration' }] },
+  },
+  deploys: [earlierReady],
+}
 const rail = (label: string) =>
   [...el.querySelectorAll(`aside[aria-label="${label}"] [role=row]`)].map((r) => r.getAttribute('data-step'))
 const tabs = () => [...el.querySelectorAll('[role=tab]')].map((t) => t.textContent)
@@ -192,7 +200,7 @@ describe('Manage', () => {
   })
 
   it('Deploy to production opens the check and deploy screen of the environment', async () => {
-    // With nothing the check is holding the person for, the folder's changes are the next action.
+    // With nothing the check is holding the person for, the folder's commits are the next action.
     const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
     expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true })
