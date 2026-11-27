@@ -88,13 +88,13 @@ describe('the list', () => {
       'DATABASE_PRIMARY_URL',
       'set by iii cloud',
       'iii cloud makes the database and fills this in. Nothing to do.',
-      '—',
+      '',
     ])
     expect(cells('ASSET_BUCKET_KEY')).toEqual([
       'ASSET_BUCKET_KEY',
       'optional',
       'Not set. Your compose file gives it an empty default, so dev deploys without it.',
-      '—',
+      '',
     ])
     expect(action('STRIPE_SECRET_KEY')?.textContent).toBe('Replace')
     expect(action('GITHUB_CLIENT_SECRET')?.textContent).toBe('Replace')
@@ -156,6 +156,27 @@ describe('the list', () => {
     const reads = h.calls.filter((c) => c.id === 'iii-cloud::api').map((c) => String(c.payload?.path))
     expect(reads).toContain(apiPath('/variables', DEV.id))
     expect(reads.filter((p) => /resources|config|machines|domains/.test(p) || p.endsWith(DEV.id))).toEqual([])
+  })
+})
+
+describe('names iii cloud sets', () => {
+  it('a database binding says the database is made; another built-in says it is filled at each deploy', async () => {
+    const builtin = {
+      name: 'IIICLOUD_GIT_BRANCH',
+      type: 'builtin',
+      value: null,
+      status: 'set',
+      required_by: [],
+      applies: null,
+      updated_at: null,
+    }
+    await open({}, devSecretValues, {
+      [apiPath('/variables', DEV.id)]: { variables: [...devVariables.variables, builtin] },
+    })
+    await settle()
+    expect(cells('IIICLOUD_GIT_BRANCH')[2]).toBe('iii cloud fills this in at each deploy. Nothing to do.')
+    expect(cells('IIICLOUD_GIT_BRANCH')[3]).toBe('')
+    expect(cells('DATABASE_PRIMARY_URL')[2]).toBe('iii cloud makes the database and fills this in. Nothing to do.')
   })
 })
 

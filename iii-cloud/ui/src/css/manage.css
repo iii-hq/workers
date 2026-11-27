@@ -85,13 +85,14 @@
   font-size: 13px;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-table th {
-  height: auto;
-  padding: 6px 12px;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--color-surface);
   font-size: 12px;
   font-weight: 500;
   color: var(--color-ink-faint);
   white-space: normal;
-  vertical-align: bottom;
+  vertical-align: middle;
 }
 [data-iii-ui='iii-cloud'] .iii-cloud-table td {
   padding: 7px 12px;
