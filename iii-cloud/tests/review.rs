@@ -804,3 +804,25 @@ async fn the_record_of_a_worktree_that_is_gone_is_dropped() {
             .read(|s| !s.run_wrote.contains_key("/no/such/worktree"))
     );
 }
+
+#[tokio::test]
+async fn in_the_persons_own_folder_nothing_a_run_overlaps_is_set_aside() {
+    let (h, _s, repo, _ws) = setup().await;
+    // Checkout mode: the workspace is the person's folder.
+    let folder = repo.checkout.clone();
+    h.ctx.store.update(|s| {
+        s.project.as_mut().unwrap().path = folder.to_string_lossy().into_owned();
+    });
+    let before = iii_cloud::run::dirty_snapshot(&folder).await.unwrap();
+    // The person edits a file while the run goes.
+    std::fs::write(folder.join("README.md"), "typed during the run\n").unwrap();
+    assert!(
+        iii_cloud::run::set_aside(&h.ctx, &folder, &before)
+            .await
+            .is_none()
+    );
+    assert!(h.ctx.store.read(|s| s.run_wrote.is_empty()));
+    let dirty = iii_cloud::run::dirty_split(&h.ctx, &folder).await.unwrap();
+    assert_eq!(dirty.0, vec!["README.md".to_string()]);
+    assert!(dirty.1.is_empty());
+}

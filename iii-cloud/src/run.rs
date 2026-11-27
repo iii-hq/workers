@@ -729,6 +729,10 @@ pub async fn set_aside(
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
 ) -> Option<String> {
+    // The person's own folder: every change in it is theirs to judge, none is the run's.
+    if is_persons_folder(ctx, ws) {
+        return None;
+    }
     let after = dirty_entries(ws, true).await?;
     let previous = ctx
         .store
@@ -768,11 +772,18 @@ pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
     dirty_split(ctx, ws).await.map(|(agent, _)| agent)
 }
 
+/// The workspace is the person's own folder (checkout mode), not a worktree of the worker's.
+fn is_persons_folder(ctx: &Ctx, ws: &Path) -> bool {
+    ctx.store
+        .read(|s| s.project.as_ref().is_some_and(|p| Path::new(&p.path) == ws))
+}
+
 /// `(the agent's changed paths, the paths set aside as the last run's)`; None when git can't say.
 pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<String>)> {
     let left = ctx
         .store
-        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned());
+        .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
+        .filter(|_| !is_persons_folder(ctx, ws));
     // A worktree no run has left anything in: every changed path is the agent's, and nothing is read.
     let now = dirty_entries(ws, left.is_some()).await?;
     let left = left.unwrap_or_default();
