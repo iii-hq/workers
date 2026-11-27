@@ -62,6 +62,10 @@ export type AgentRow = z.infer<typeof AgentRowSchema>;
 export type OpenSpec = { args: string[]; cwd: string; copy?: true };
 type OpenRequest = { mode: 'fork'; claude_session_id: string };
 export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenSpec>;
+export type OpenVisibility = {
+  (): number | null;
+  (request: OpenRequest): number | null | Promise<number | null>;
+};
 
 const ListPayloadSchema = z.object({
   all: z
@@ -296,6 +300,7 @@ export function registerAgents(
   replyRow: (id: string) => Promise<{ row: AgentRow; env: Prepared['env'] }>;
   /** How a terminal opens a listed session; throws why one cannot be. */
   resolveOpen: ResolveOpen;
+  openVisibility: OpenVisibility;
   /** Whether a process on the terminal host has a conversation open, or is about to. */
   heldElsewhere: (claudeSessionId: string) => Promise<boolean>;
 } {
@@ -474,6 +479,14 @@ export function registerAgents(
     },
   );
 
+  function openVisibility(): number | null;
+  function openVisibility(request: OpenRequest): Promise<number | null>;
+  function openVisibility(request?: OpenRequest) {
+    // An explicit fork admits itself, even after silent observer replay on a
+    // new connection. Later checks only read the grant picked at admission.
+    return request ? access.confirm() : access.epoch;
+  }
+
   const resolveOpen: ResolveOpen = async (id, request) => {
     const epoch = access.epoch;
     const { merge, detail } = await inventory(true, {
@@ -612,5 +625,5 @@ export function registerAgents(
       ),
     },
   );
-  return { resolveOpen, heldElsewhere, replyRow };
+  return { resolveOpen, openVisibility, heldElsewhere, replyRow };
 }

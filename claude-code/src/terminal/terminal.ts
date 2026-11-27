@@ -9,7 +9,7 @@
 
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import type { OpenSpec, ResolveOpen } from '../agents.js';
+import type { OpenSpec, OpenVisibility, ResolveOpen } from '../agents.js';
 import type { TerminalConfig } from '../config.js';
 import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
@@ -55,7 +55,7 @@ export function registerTerminal(
   host: () => HostPrepared,
   config: () => TerminalConfig,
   resolveOpen: ResolveOpen,
-  visibilityEpoch: () => number | null,
+  visibilityEpoch: OpenVisibility,
 ): void {
   iii.registerFunction(
     'claude::terminal::describe',
@@ -68,13 +68,14 @@ export function registerTerminal(
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
       const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
-      const epoch = session ? visibilityEpoch() : null;
+      const epoch = request ? await visibilityEpoch(request) : session ? visibilityEpoch() : null;
       const verifyVisibility = () => {
         if (session && epoch !== visibilityEpoch()) {
           throw new Error('session visibility changed; refresh the list');
         }
       };
       try {
+        verifyVisibility();
         const open = session
           ? request
             ? await resolveOpen(session, request)

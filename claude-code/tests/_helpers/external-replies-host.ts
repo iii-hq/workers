@@ -13,8 +13,10 @@ import type {
   RemovedHook,
 } from 'iii-sdk';
 import { type CliRow, registerAgents } from '../../src/agents.js';
+import { TerminalConfigSchema } from '../../src/config.js';
 import { observeReplyConfig, ReplyPermission } from '../../src/configuration.js';
 import { registerExternalReplies } from '../../src/external-replies.js';
+import { registerTerminal } from '../../src/terminal/terminal.js';
 
 export const id = '11111111-1111-4111-8111-111111111111';
 export const recordId = (n: number) => `abcdef01-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -75,6 +77,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
     beforeRead: async () => {},
     beforeDelivery: async () => {},
     beforeInventory: async () => {},
+    beforePrepare: async () => {},
     inventoryOK: true,
     socketOpen: true,
     connectionEpoch: 1,
@@ -147,7 +150,16 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
         if (payload.scope === 'claude_turns') return [];
       }
       if (fn === 'shell::pty::sessions') return { sessions: [] };
+      if (fn === 'compose::list') return { projects: [] };
+      if (fn === 'http::status') return { url: 'http://127.0.0.1:3111' };
+      if (fn === 'engine::functions::list') {
+        return { functions: [{ function_id: 'mcp-server::handler' }] };
+      }
       if (fn === 'shell::exec') {
+        if (payload.command === 'pwd' && JSON.stringify(payload.args) === '["-P"]') {
+          await host.beforePrepare();
+          return { exit_code: 0, stdout: `${payload.cwd}\n`, stderr: '' };
+        }
         const env = payload.env as Record<string, string>;
         if (env?.CLAUDE_CONFIG_DIR !== root) {
           throw new Error('missing synthetic configuration directory');
@@ -235,6 +247,13 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
   await observeReplyConfig(iii, permission, (runtime) => {
     external = runtime?.external_sessions ?? true;
   });
+  registerTerminal(
+    iii,
+    () => ({ home: root, executable: 'fixture-cli', env: {}, detail: '', bridge: '' }),
+    () => TerminalConfigSchema.parse({ setup_workspace: false }),
+    agents.resolveOpen,
+    agents.openVisibility,
+  );
   const client = {
     call: (r: Request) => backend.call(r) as Promise<Result>,
     async observe(fn: string, key: string, session: string) {
@@ -269,6 +288,11 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
         function_id: 'claude::agents::list',
         payload: { all: true },
       }) as Promise<ListResult>,
+    fork: () =>
+      backend.call({
+        function_id: 'claude::terminal::describe',
+        payload: { session: id, mode: 'fork', claude_session_id: id },
+      }),
     root,
     project,
     projects,

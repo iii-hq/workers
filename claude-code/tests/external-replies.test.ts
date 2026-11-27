@@ -638,6 +638,74 @@ async function setPermission(s: SyntheticHost, enabled: boolean) {
   await s.refresh();
 }
 
+describe('standalone terminal fork authorization', () => {
+  function reconnect(s: SyntheticHost, answered: boolean) {
+    // Active-to-active replay does not notify the SDK's state listeners.
+    s.host.connectionEpoch++;
+    s.host.configWatchAnswered = answered;
+  }
+
+  it('confirms an authorized fork after replay is acknowledged without another API or config edit', async () => {
+    await withSyntheticHost(async (s) => {
+      reconnect(s, false);
+      const pending = s.host.calls.length;
+      await expect(s.fork()).rejects.toThrow(/^no session with that id is listed$/);
+      expect(s.host.calls.slice(pending).some((c) => c.function_id === 'configuration::get')).toBe(
+        false,
+      );
+
+      s.host.configWatchAnswered = true;
+      const acknowledged = s.host.calls.length;
+      await expect(s.fork()).resolves.toMatchObject({
+        program: 'fixture-cli',
+        args: ['--resume', id, '--fork-session'],
+        cwd: '/fixture',
+        claude_session_id: id,
+        copy: true,
+      });
+      expect(s.host.calls[acknowledged]?.function_id).toBe('claude::terminal::describe');
+      expect(s.host.calls[acknowledged + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.some((c) => c.function_id === 'shell::pty::open')).toBe(false);
+    });
+  });
+
+  it.each([
+    { state: 'unknown', value: null },
+    { state: 'revoked', value: { external_sessions: false } },
+  ])('denies a standalone external fork with $state permission on the new connection', async ({
+    value,
+  }) => {
+    await withSyntheticHost(async (s) => {
+      reconnect(s, true);
+      s.host.config = async () => value;
+      const before = s.host.calls.length;
+      await expect(s.fork()).rejects.toThrow(/^no session with that id is listed$/);
+      expect(s.host.calls[before + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.slice(before).some((c) => c.payload.command === 'pwd')).toBe(false);
+      expect(reads(s)).toEqual([]);
+    });
+  });
+
+  it('does not return a fork prepared under an earlier connection even if the new one allows it', async () => {
+    await withSyntheticHost(async (s) => {
+      const preparation = barrier();
+      s.host.beforePrepare = preparation.wait;
+      const old = expect(s.fork()).rejects.toThrow(
+        /^session visibility changed; refresh the list$/,
+      );
+      await preparation.entered;
+      reconnect(s, true);
+      s.host.beforePrepare = async () => {};
+      try {
+        await expect(s.fork()).resolves.toMatchObject({ copy: true });
+      } finally {
+        preparation.release();
+        await old;
+      }
+    });
+  });
+});
+
 describe('authorization', () => {
   it.each([
     'lookup',
