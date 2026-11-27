@@ -717,7 +717,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
     std::fs::write(ws.join("README.md"), "left by the interrupted run\n").unwrap();
-    // The newest run of the environment ended when the worker restarted.
+    // A run was going when the worker died: it is failed on the next start.
     h.ctx.store.update(|s| {
         let mut c = s.check.clone().unwrap();
         let run = Run {
@@ -725,7 +725,7 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             check_id: c.id.clone(),
             commit: c.commit.clone(),
             engine: "0.27.0".into(),
-            status: RunStatus::Failed,
+            status: RunStatus::Running,
             started_at: "t".into(),
             finished_at: None,
             stages: vec![],
@@ -737,28 +737,36 @@ async fn after_a_restart_mid_run_the_paths_are_not_called_the_agents_own() {
             healthcheck: None,
             not_covered: vec![],
             log_tail: vec![],
-            error: Some(RunError {
-                stage: StageName::Workers,
-                code: "WORKER_RESTARTED".into(),
-                message: "restarted".into(),
-            }),
+            error: None,
             reused: false,
             waiting_on: None,
         };
         c.run = Some(run);
         s.put_check(c);
     });
+    iii_cloud::run::recover(&h.ctx).await;
+    let detail = |c: &Check| {
+        c.problems
+            .iter()
+            .find(|p| p.code == "UNCOMMITTED_CHANGES")
+            .and_then(|p| p.detail.clone())
+    };
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    let p = c
-        .problems
-        .iter()
-        .find(|p| p.code == "UNCOMMITTED_CHANGES")
-        .unwrap();
-    let d = p.detail.as_deref().unwrap();
+    let d = detail(&c).unwrap();
     assert!(
-        d.contains("interrupted by a restart") && d.contains("restore those"),
+        d.contains("Some of these may be what the interrupted local run wrote. Restore only the files you did not edit, one by one;")
+            && !d.contains("checkout -- ."),
         "{d}"
     );
+    // The mark holds while the worktree stays dirty, and a later check still says it.
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(detail(&c).unwrap().contains("interrupted local run"));
+    // Clean again: the mark is gone, and the next dirt is the agent's own.
+    git(&ws, &["checkout", "--", "README.md"]);
+    check(&h.ctx, CheckRequest::default()).await.unwrap();
+    std::fs::write(ws.join("README.md"), "mine\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    assert!(!detail(&c).unwrap().contains("interrupted"));
 }
 
 #[tokio::test]

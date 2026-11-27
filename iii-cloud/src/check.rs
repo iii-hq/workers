@@ -1245,14 +1245,8 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
     let own_changes = split.as_ref().map(|(agent, _)| agent.clone());
     let set_aside = split.map(|(_, aside)| aside).unwrap_or_default();
     let dirty = own_changes.as_ref().is_none_or(|p| !p.is_empty());
-    let interrupted = ctx.store.read(|s| {
-        s.checks
-            .iter()
-            .find(|c| c.environment_id == sel.env.id && c.run.is_some())
-            .and_then(|c| c.run.as_ref())
-            .and_then(|r| r.error.as_ref())
-            .is_some_and(|e| e.code == "WORKER_RESTARTED")
-    });
+    // After the split (which clears the mark once the worktree is clean).
+    let interrupted = crate::run::unrecorded(ctx, &sel.workspace);
     let folder = ctx.store.read(|s| {
         s.project
             .as_ref()
@@ -1294,7 +1288,7 @@ pub async fn check(ctx: &Arc<Ctx>, request: CheckRequest) -> Res<Check> {
                 },
                 // A run cut off by a restart never set its files aside: some of these may be its.
                 if interrupted {
-                    "The local run was interrupted by a restart, so some of these may be what it wrote: restore those (`git checkout -- <file>`, or delete an untracked one) and commit yours (`git add <paths>`), then check and run again."
+                    "Some of these may be what the interrupted local run wrote. Restore only the files you did not edit, one by one; commit yours (`git add <paths>`), then check and run again."
                 } else {
                     "Commit your own changes (`git add <paths>`; the files the local run wrote are not yours: do not commit them), then check and run again."
                 }

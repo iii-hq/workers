@@ -72,6 +72,10 @@ pub struct State {
     /// Failed creates per idempotency key: a retry after a failure is a new key.
     pub create_attempts: std::collections::BTreeMap<String, u32>,
     /// What the last local run left dirty in each worktree (by path).
+    /// Worktrees (by path) where a run ended without its leftovers being recorded (a restart, a
+    /// failed read): some of what is dirty there may be the run's. Cleared when the worktree is clean.
+    #[serde(default)]
+    pub run_unrecorded: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub run_wrote: std::collections::BTreeMap<String, RunWrote>,
     /// The compose file this worker last switched each environment to (by id). It

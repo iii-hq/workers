@@ -565,6 +565,9 @@ pub async fn start_with(
     let commit = workspace_commit(ctx, &sel.workspace).await?;
     // What was dirty before the run: what it changes or adds is the run's, not the agent's.
     let before = dirty_snapshot(&sel.workspace).await;
+    if before.is_none() {
+        mark_unrecorded(ctx, &sel.workspace);
+    }
     let mut exec = prepare(ctx, &id, &check_id, &sel, &commit).await?;
     exec.cancel = cancel_rx;
     exec.wrote_before = before.clone();
@@ -733,7 +736,10 @@ pub async fn set_aside(
     if is_persons_folder(ctx, ws) {
         return None;
     }
-    let after = dirty_entries(ws, true).await?;
+    let Some(after) = dirty_entries(ws, true).await else {
+        mark_unrecorded(ctx, ws);
+        return None;
+    };
     let previous = ctx
         .store
         .read(|s| s.run_wrote.get(&ws.to_string_lossy().into_owned()).cloned())
@@ -772,6 +778,21 @@ pub async fn dirty_paths(ctx: &Ctx, ws: &Path) -> Option<Vec<String>> {
     dirty_split(ctx, ws).await.map(|(agent, _)| agent)
 }
 
+/// A run ended in `ws` without its leftovers recorded: until the worktree is clean, what is
+/// dirty there may be partly the run's.
+fn mark_unrecorded(ctx: &Ctx, ws: &Path) {
+    ctx.store
+        .update(|s| s.run_unrecorded.insert(ws.to_string_lossy().into_owned()));
+}
+
+/// The worktree has a run's unrecorded leftovers (see `mark_unrecorded`).
+pub fn unrecorded(ctx: &Ctx, ws: &Path) -> bool {
+    ctx.store.read(|s| {
+        s.run_unrecorded
+            .contains(&ws.to_string_lossy().into_owned())
+    })
+}
+
 /// The workspace is the person's own folder (checkout mode), not a worktree of the worker's.
 fn is_persons_folder(ctx: &Ctx, ws: &Path) -> bool {
     ctx.store
@@ -786,6 +807,10 @@ pub async fn dirty_split(ctx: &Ctx, ws: &Path) -> Option<(Vec<String>, Vec<Strin
         .filter(|_| !is_persons_folder(ctx, ws));
     // A worktree no run has left anything in: every changed path is the agent's, and nothing is read.
     let now = dirty_entries(ws, left.is_some()).await?;
+    if now.is_empty() && unrecorded(ctx, ws) {
+        ctx.store
+            .update(|s| s.run_unrecorded.remove(&ws.to_string_lossy().into_owned()));
+    }
     let left = left.unwrap_or_default();
     let (aside, agent): (Vec<_>, Vec<_>) = now
         .into_iter()
@@ -2257,6 +2282,26 @@ pub async fn recover_runs(ctx: &Arc<Ctx>) -> Stale {
                 }
             }
         });
+        // Its leftovers were never recorded: the worktrees of that environment may hold some.
+        if let Some(env) = updated.as_ref().map(|c| c.environment_id.clone()) {
+            let paths: Vec<String> = ctx.store.read(|s| {
+                s.handoffs
+                    .iter()
+                    .filter(|h| h.environment_id == env)
+                    .map(|h| h.workspace_path.clone())
+                    .chain(
+                        s.project
+                            .as_ref()
+                            .filter(|p| p.environment.as_ref().is_some_and(|e| e.id == env))
+                            .and_then(|p| p.workspace.as_ref().map(|w| w.path.clone())),
+                    )
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            });
+            for p in paths {
+                mark_unrecorded(ctx, Path::new(&p));
+            }
+        }
         // Whoever waits for this run's end hears it.
         if let Some(run) = updated.and_then(|c| c.run) {
             emit_run(ctx, &run);
