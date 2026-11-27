@@ -3716,3 +3716,27 @@ async fn a_check_made_while_another_environment_was_selected_is_guarded_by_its_c
     let requests = s.server.received_requests().await.unwrap();
     assert!(!requests.iter().any(|r| r.method.as_str() == "PATCH"));
 }
+
+#[tokio::test]
+async fn a_commit_already_on_the_branch_is_deployed_after_a_short_wait_when_no_push_deployment_comes()
+ {
+    let s = setup(plan(false)).await;
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    direct(&s);
+    git(&s.ws, &["push", "-q", "origin", "HEAD:main"]);
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"deployments": [], "next_cursor": null})),
+        )
+        .mount(&s.server)
+        .await;
+    let started = std::time::Instant::now();
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+    assert_eq!(f.log(), vec!["create with worker-compose.yaml"]);
+    // 120 ticks of 10 ms is the old wait; the grace is 10 ticks.
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
+}

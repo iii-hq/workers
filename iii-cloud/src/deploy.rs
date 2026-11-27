@@ -260,6 +260,26 @@ pub async fn list_pages(ctx: &Ctx, base: &str, target: &str, since: Since) -> Re
     Ok(json!({ "deployments": all }))
 }
 
+/// How long an assisted deploy waits for a push deployment that may never come
+/// (the commit was already on the branch, or GitHub delivered before the
+/// environment followed it) before it makes the deployment itself.
+const FIRST_PUSH_GRACE_S: u64 = 10;
+
+/// A push deployment of `target` shows up in the list within the grace.
+async fn push_coming(ctx: &Ctx, base: &str, target: &str, since: Since) -> Res<bool> {
+    let deadline = Instant::now() + ctx.secs(FIRST_PUSH_GRACE_S);
+    loop {
+        let list = list_pages(ctx, base, target, since).await?;
+        if find_push(&list, target, since).is_some() {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(ctx.secs(1)).await;
+    }
+}
+
 pub async fn push_deployment(
     ctx: &Ctx,
     base: &str,
@@ -556,6 +576,8 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     // 2. The target: the merge of the pull request, a waiting deployment, or the checked commit.
     // `landed`: the merge or the push made it the branch's head, so the cloud starts a push deployment.
     let mut landed = false;
+    // `maybe`: an assisted deploy whose commit was already on the branch, so a push deployment may or may not exist.
+    let mut maybe = false;
     let mut since: Since = None;
     let mut waiting: Option<String> = None;
     let target = match (request.pr, &request.deployment_id) {
@@ -814,6 +836,8 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
                 // No `since`: the commit was on no deployment of this environment
                 // (it was not on the branch), and this machine's clock is not the cloud's.
                 landed = true;
+            } else {
+                maybe = crate::project::tracks_other_branch(default.as_deref(), &sel.env.branch);
             }
             check.commit.clone()
         }
@@ -826,7 +850,13 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     }
     let plan = body.get("plan").cloned().unwrap_or(Value::Null);
     if Some(plan_digest(&plan)) != check.plan.digest {
-        if landed && let Some(running) = cancel_push(ctx, &base, &target, since).await {
+        if (landed
+            || (maybe
+                && push_coming(ctx, &base, &target, since)
+                    .await
+                    .unwrap_or(false)))
+            && let Some(running) = cancel_push(ctx, &base, &target, since).await
+        {
             // Not "check again": the merged commit is deploying. Status shows it, followed.
             if let Some(id) = running.get("id").and_then(Value::as_str) {
                 ctx.store.update(|s| {
@@ -896,6 +926,8 @@ pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
     // 5. The push's deployment: adopt it, or confirm it with a new one. A named
     // waiting deployment is confirmed; nothing else is searched.
     let adopted = if waiting.is_some() || late {
+        None
+    } else if maybe && !push_coming(ctx, &base, &target, since).await? {
         None
     } else {
         push_deployment(ctx, &base, &target, need_confirm, since).await?
