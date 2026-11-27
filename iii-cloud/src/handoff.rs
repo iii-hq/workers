@@ -965,13 +965,14 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             .clone()
             .filter(|c| handoff.person_check_told.as_deref() != Some(c.as_str()))
         {
-            let mine = person_check_lines(ctx, &check_id);
-            let sent = if mine.is_empty() {
-                Continue::Spent
-            } else {
-                send_continue(ctx, &handoff, &session, &mine, &secrets, None).await
+            // None: its run still goes; the failure reaches the agent when the run ends.
+            let lines = person_check_lines(ctx, &check_id);
+            let sent = match &lines {
+                None => Continue::Refused,
+                Some(mine) if mine.is_empty() => Continue::Spent,
+                Some(mine) => send_continue(ctx, &handoff, &session, mine, &secrets, None).await,
             };
-            if sent != Continue::Refused {
+            if lines.is_some() && sent != Continue::Refused {
                 ctx.store.update(|s| {
                     if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                         h.person_check_told = Some(check_id.clone());
@@ -1356,19 +1357,35 @@ pub fn person_check_ended(ctx: &Ctx, check: &Check, workspace: &std::path::Path)
 }
 
 /// What the agent owns in that check: its blocking problems, and a failed local run
-/// that is its to fix. Nothing when the check is ready or only the person's things are open.
-fn person_check_lines(ctx: &Ctx, check_id: &str) -> Vec<(String, String)> {
+/// that is its to fix (not while the person has a blocking problem open: a missing value
+/// of theirs makes the run fail too, as in the Done branch). Nothing when the check is ready
+/// or only the person's things are open. None while its run still goes: not yet.
+fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>> {
     ctx.store.read(|s| {
         let Some(c) = s.find_check(check_id).filter(|c| !c.ready) else {
-            return vec![];
+            return Some(vec![]);
         };
+        if c.run
+            .as_ref()
+            .is_some_and(|r| r.status == RunStatus::Running)
+        {
+            return None;
+        }
+        let persons = c
+            .problems
+            .iter()
+            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
         let mut lines: Vec<(String, String)> = c
             .problems
             .iter()
             .filter(|p| p.owner == Owner::Agent && p.severity == Severity::Block)
             .map(|p| (p.code.clone(), p.title.clone()))
             .collect();
-        if let Some(run) = c.run.as_ref().filter(|r| r.status == RunStatus::Failed) {
+        if let Some(run) = c
+            .run
+            .as_ref()
+            .filter(|r| r.status == RunStatus::Failed && !persons)
+        {
             let (code, line) = run_failure_of(run);
             match run_code_owner(&code) {
                 RunOwner::Agent => lines.push((code, line)),
@@ -1379,7 +1396,7 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Vec<(String, String)> {
                 RunOwner::Person => {}
             }
         }
-        lines
+        Some(lines)
     })
 }
 
