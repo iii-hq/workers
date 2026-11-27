@@ -403,6 +403,9 @@ export type HandoffResult = {
 }
 
 export type BriefProblem = {
+  /** The problem's code and owner, as the worker sends them (absent from an older brief). */
+  code?: string | null
+  owner?: 'agent' | 'person' | 'none'
   title: string
   file: string | null
   line: number | null

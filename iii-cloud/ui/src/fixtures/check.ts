@@ -249,7 +249,15 @@ export const passed = devCheck('chk-d4', {
   ready: true,
 })
 
-const brief = (p: Problem) => ({ title: p.title, file: p.file, line: p.line, detail: p.detail, fix: p.fix })
+const brief = (p: Problem) => ({
+  code: p.code,
+  owner: p.owner,
+  title: p.title,
+  file: p.file,
+  line: p.line,
+  detail: p.detail,
+  fix: p.fix,
+})
 export const fixBrief: HandoffBrief = {
   handoff_id: 'ho-d',
   kind: 'ready',

@@ -1119,6 +1119,37 @@ describe('the check follows the canvas', () => {
       expect(text()).not.toContain('The local run stopped at')
     })
 
+    it('a skipped value warning, or one on a ready check, is not "fixed" in a hand-off: the brief\'s own code drops it', async () => {
+      const b = rcFixing.handoff_brief!
+      const warn = (p: (typeof rcVariables)[number]) => ({
+        code: p.code,
+        owner: p.owner,
+        title: p.title,
+        file: p.file,
+        line: p.line,
+        detail: p.detail,
+        fix: p.fix,
+      })
+      const withVars = {
+        ...rcFixing,
+        handoff_brief: { ...b, person_problems: [...b.person_problems, ...rcVariables.map(warn)] },
+      }
+      const base2 = checklist(rcFixing)
+      // Skipped (info), and then gone from the open list altogether: the rows must not turn into "fixed" ones.
+      const skippedAll = {
+        ...withVars,
+        check: {
+          ...withVars.check!,
+          problems: withVars.check!.problems.map((p) =>
+            p.code === 'EMPTY_DEFAULT_VARIABLE' ? { ...p, skipped: true, severity: 'info' as const } : p,
+          ),
+        },
+      }
+      expect(checklist(skippedAll).fixed).toBe(base2.fixed)
+      const ready = { ...withVars, check: { ...withVars.check!, ready: true } }
+      expect(checklist(ready).rows.some((r) => r.title === rcVariables[0].title)).toBe(false)
+    })
+
     it('a mixed check lists the other problems unchanged', async () => {
       const others = base.check!.problems.filter((p) => !rcVariables.some((v) => v.id === p.id))
       await stage({ ...base, check: { ...base.check!, problems: [...others, ...rcVariables] } })
