@@ -766,6 +766,8 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
   const assisted = !env.production
   const way = wayOf(s, env)
   const target = way.way === 'assisted' && way.own ? way.own : env.branch
+  // `taken`: another environment follows the branch this deploy sends to; Deploy refuses it.
+  const follower = p.environments.find((e) => e.name !== env.name && e.branch === target)?.name
   const pr = assisted ? null : usablePr(s)
   const file = appFile(s)
   const { resources, overrides } = c.plan.confirmations
@@ -871,6 +873,14 @@ function Ready({ s, c, host }: { s: Status; c: Check; host: Host }) {
             >
               {ASSISTED}
             </DetailRow>
+            {way.way === 'assisted' && way.taken ? (
+              <DetailRow
+                label="Branch"
+                note={`Deploy will refuse: ${target} cannot be followed by two environments. Change what ${env.name} or ${follower ?? 'the other one'} follows in iii cloud, then check again.`}
+              >
+                {`${follower ?? 'Another environment'} follows ${target}`}
+              </DetailRow>
+            ) : null}
             {way.way === 'assisted' && way.own ? (
               <DetailRow
                 label="Branch"

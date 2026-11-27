@@ -7,13 +7,13 @@ import { describe, expect, it, type Mock, vi } from 'vitest'
 import { LaunchNote } from '../AgentRow'
 import { CheckStage } from '../CheckStage'
 import { findings } from '../findings'
-import { checklist, handoffMessage, openProblems } from '../model'
 import { boards } from '../fixtures'
 import { agent, apiPath, base, pr, ready } from '../fixtures/base'
 import { found, passed, rcFixing, rcFixingHere, rcVariables } from '../fixtures/check'
 import { DEV, live6, serving5 } from '../fixtures/deploy'
 import { rcValues, valueItem } from '../fixtures/values'
 import { hubOf, useStatus } from '../hub'
+import { checklist, handoffMessage, openProblems, wayOf } from '../model'
 import type { Route } from '../route'
 import type { ChangeEvent, Status } from '../types'
 import { fakeHost } from './host'
@@ -942,7 +942,8 @@ describe('the check follows the canvas', () => {
     it('a session that cannot write: the buttons are off, with the sentence', async () => {
       await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 2), { save: 'api_key' }) })
       expect((btn('Set values') as HTMLButtonElement).disabled).toBe(true)
-      expect((btn('Skip for now') as HTMLButtonElement).disabled).toBe(true)
+      // A skip only writes the worker's own store: it stays on for an API key.
+      expect((btn('Skip for now') as HTMLButtonElement).disabled).toBe(false)
       expect(card()?.textContent).toContain("An API key can't write secrets and variables.")
     })
 
@@ -1065,3 +1066,22 @@ describe('the check follows the canvas', () => {
 })
 
 const byLink = (label: string) => [...el.querySelectorAll('a')].find((a) => a.textContent === label)
+
+describe('a branch another environment follows', () => {
+  it('Ready says so before Deploy is pressed', async () => {
+    const r = B('deploy-review')
+    const p0 = r.project as NonNullable<Status['project']>
+    // dev follows the default branch, so a deploy moves it to its own branch; another environment already follows that.
+    const env = { ...p0.environment!, branch: p0.default_branch! }
+    const own = wayOf(r, env)
+    const mine = { ...p0, environment: env, environments: p0.environments.map((e) => (e.id === env.id ? env : e)) }
+    const target = own.way === 'assisted' && own.own ? own.own : 'x'
+    const other = { ...p0.environments[0], id: 'e-other', name: 'staging', branch: target }
+    const p = { ...mine, environments: [...mine.environments, other] }
+    const s = { ...r, project: p }
+    expect(wayOf(s, p.environment!)).toMatchObject({ way: 'assisted', taken: true })
+    await stage(s)
+    expect(region('What this deploy does')?.textContent).toContain('staging follows')
+    expect(region('What this deploy does')?.textContent).toContain('Deploy will refuse')
+  })
+})

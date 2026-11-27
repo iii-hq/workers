@@ -122,7 +122,7 @@ export function ValuesCard({
                 <button
                   type="button"
                   className="iii-cloud-linkbtn iii-cloud-small"
-                  disabled={busy || !!noWrite}
+                  disabled={busy}
                   onClick={() =>
                     void skip(
                       plan.skipped.map((i) => i.name),
@@ -159,7 +159,8 @@ export function ValuesCard({
                   <Button
                     size="sm"
                     variant="secondary"
-                    disabled={!!noWrite || busy}
+                    // A skip only writes the worker's own store: an API key or a role may do it.
+                    disabled={busy}
                     onClick={() =>
                       void skip(
                         skippable.map((i) => i.name),
