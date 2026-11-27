@@ -602,22 +602,6 @@ async fn join_in_order<T>(
     done
 }
 
-#[cfg(test)]
-mod tests {
-    use super::join_in_order;
-
-    #[tokio::test]
-    async fn a_task_that_panics_loses_only_its_own_answer() {
-        let tasks = vec![
-            (0, tokio::spawn(async { "zero" })),
-            (1, tokio::spawn(async { panic!("a write blew up") })),
-            (2, tokio::spawn(async { "two" })),
-        ];
-        let done = join_in_order(tasks, |_| "lost").await;
-        assert_eq!(done, vec!["zero", "lost", "two"]);
-    }
-}
-
 fn failed(code: &str, message: impl Into<String>, status: Option<u16>) -> WorkerError {
     WorkerError {
         code: code.into(),
@@ -979,5 +963,21 @@ fn result(item: &SaveItem, outcome: Result<(), WorkerError>) -> SaveResult {
         name: item.name().to_string(),
         ok: outcome.is_ok(),
         error: outcome.err(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_in_order;
+
+    #[tokio::test]
+    async fn a_task_that_panics_loses_only_its_own_answer() {
+        let tasks = vec![
+            (0, tokio::spawn(async { "zero" })),
+            (1, tokio::spawn(async { panic!("a write blew up") })),
+            (2, tokio::spawn(async { "two" })),
+        ];
+        let done = join_in_order(tasks, |_| "lost").await;
+        assert_eq!(done, vec!["zero", "lost", "two"]);
     }
 }

@@ -173,8 +173,8 @@ export function deployLockReason(
 /**
  * A deployment iii cloud holds for confirmation that is not this page's: the worker's own markers on the record
  * (a `check_id`, or the flag it sets when it approved or created it) say it started it. A matching commit proves
- * nothing: a push by hand of the checked commit makes the check's base the branch head, and the worker refuses
- * that Confirm as MAIN_MOVED. A held one without the markers is "elsewhere": it locks nothing, and deploying from
+ * nothing: a push by hand of the checked commit was planned before this check and may differ from its plan, so it
+ * is not ours to confirm here. A held one without the markers is "elsewhere": it locks nothing, and deploying from
  * the check replaces it. A held one that is ours is confirmed on its own screen.
  */
 export const heldElsewhere = (d: Deploy) =>
