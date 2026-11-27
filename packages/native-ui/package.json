@@ -1,7 +1,13 @@
 {
   "name": "@iii-dev/native-ui",
   "version": "0.1.0",
-  "description": "SDK for a worker's native app in the iii app: TSX on a solid-js/universal renderer that turns into the json-v0 ops the app draws as Jetpack Compose and SwiftUI, the capability object, the bundle build and a QuickJS test harness. Linked by workspace:*, never published.",
+  "description": "SDK for a worker's native app in the iii app: TSX on a solid-js/universal renderer that turns into the json-v0 ops the app draws as Jetpack Compose and SwiftUI, the capability object, the bundle build and a QuickJS test harness. Linked by workspace:* inside this repository and published to npm by .github/workflows/publish-npm-packages.yml.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iii-hq/workers.git",
+    "directory": "packages/native-ui"
+  },
   "type": "module",
   "types": "./src/index.ts",
   "exports": {
