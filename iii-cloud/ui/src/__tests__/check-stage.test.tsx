@@ -1596,6 +1596,10 @@ describe('small things the review found', () => {
     // not when the hand-off is no longer the environment's current one
     await stage({ ...withBrief, agent: { ...withBrief.agent!, handoff_id: 'another' } } as Status, answers)
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    // not when the hand-off has been quiet for more than 30 minutes (days later, its values are not counted again)
+    const quiet31 = new Date(Date.now() - 31 * 60_000).toISOString()
+    await stage({ ...withBrief, agent: { ...withBrief.agent!, last_activity_at: quiet31 } }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
     // not for a check made before the hand-off began
     await stage({ ...withBrief, check: { ...withBrief.check!, checked_at: '2019-01-01T00:00:00.000Z' } }, answers)
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
@@ -2412,6 +2416,19 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await flush()
     expect(h.compose).toHaveBeenCalled()
     expect(stop()?.textContent).not.toContain("Answer your agent's question in the chat first.")
+  })
+
+  it("a hand-off quiet for 31 minutes is not current: no wait for the worker's continue", async () => {
+    const first = () => [...(stop()?.querySelectorAll('button') ?? [])][0] as HTMLButtonElement
+    const old = { ...note, last_activity_at: new Date(Date.now() - 31 * 60_000).toISOString() }
+    const st = release(old as never)
+    const h = await stage(st, {}, { openScreen: vi.fn() })
+    await act(async () => {
+      hubOf(h.host).checking(1)
+      hubOf(h.host).checking(-1, st.check!.environment_id)
+    })
+    expect(first().disabled).toBe(false)
+    expect(stop()?.textContent).not.toContain('Checking whether your agent took it…')
   })
 
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {

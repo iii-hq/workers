@@ -1242,11 +1242,14 @@ export function CheckStage(props: CheckStageProps) {
   // environment's current one. A stopped one is never continued, nor a retired done one. The wait counts from when this
   // page saw the run end (its own clock, not the worker's).
   const ag = s.agent
+  // The environment's current hand-off: not stopped, and active within the worker's bound for reusing it (30 minutes).
+  const currentAgent =
+    !!ag && ag.state !== 'stopped' && !!ag.last_activity_at && now - Date.parse(ag.last_activity_at) < 30 * 60_000
   const idleAgent =
-    !!ag &&
-    (ag.state === 'waiting' ||
-      (ag.state === 'waiting_for_you' && ag.question_source === 'check') ||
-      (ag.state === 'done' && s.handoff_brief?.handoff_id === ag.handoff_id))
+    currentAgent &&
+    (ag?.state === 'waiting' ||
+      (ag?.state === 'waiting_for_you' && ag.question_source === 'check') ||
+      (ag?.state === 'done' && s.handoff_brief?.handoff_id === ag.handoff_id))
   if (run) {
     if (seenRun.current?.id !== run.id) seenRun.current = { id: run.id, running: run.status === 'running', endedAt: 0 }
     else if (seenRun.current.running && run.status !== 'running') {
@@ -1741,6 +1744,10 @@ export function CheckStage(props: CheckStageProps) {
   const briefCheck = brief ? (s.checks ?? []).find((x) => x.id === brief.check_id) : undefined
   const briefNow =
     brief?.kind === 'ready' &&
+    // an old hand-off's values are not counted again days later
+    !!s.agent?.last_activity_at &&
+    now - Date.parse(s.agent.last_activity_at) < 30 * 60_000 &&
+    s.agent.state !== 'stopped' &&
     c &&
     (c.handoff_id === brief.handoff_id ||
       (!c.handoff_id &&
