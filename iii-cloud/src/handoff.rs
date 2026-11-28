@@ -329,20 +329,23 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     };
     // A real ask of the agent's is open on another hand-off of this environment (another kind, or
     // one quiet for long): it is not replaced; the answer says it asks, with its chat.
-    let asking = || {
-        ctx.store.read(|s| {
-            s.handoffs
-                .iter()
-                .find(|h| {
-                    h.environment_id == sel.env.id
-                        && h.agent.session_id.is_some()
-                        && h.agent.state == AgentPhase::WaitingForYou
-                        && h.agent.question_source == Some(QuestionSource::Agent)
-                })
-                .cloned()
-        })
+    let asking = ctx.store.read(|s| {
+        s.handoffs
+            .iter()
+            .find(|h| {
+                h.environment_id == sel.env.id
+                    && h.agent.session_id.is_some()
+                    && h.agent.state == AgentPhase::WaitingForYou
+                    && h.agent.question_source == Some(QuestionSource::Agent)
+            })
+            .cloned()
+    });
+    // Only while its chat answers and its worktree is there, as for `idle`.
+    let asking = match asking {
+        Some(h) if hand_off_alive(ctx, &h).await => Some(h),
+        _ => None,
     };
-    let same = same.or(idle).or_else(asking);
+    let same = same.or(idle).or(asking);
     if let Some(h) = same {
         // A real ask of the agent's is open: deliver nothing (the page's own sentence would read as
         // the answer to it).
@@ -465,21 +468,14 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
     // that chat streams.
     let mut handoff = handoff;
     let mut delivered_to = None;
-    let (previous, ask_open) = ctx.store.read(|s| {
-        let old = s
-            .handoffs
+    // A live ask never gets here (`asking` answered it): an old chat that is gone delivers nothing.
+    let previous = ctx.store.read(|s| {
+        s.handoffs
             .iter()
-            .find(|h| h.environment_id == handoff.environment_id);
-        (
-            old.and_then(|h| h.agent.session_id.clone()),
-            // A real ask of the agent's is open there: the page's sentence would read as its answer.
-            old.is_some_and(|h| {
-                h.agent.state == AgentPhase::WaitingForYou
-                    && h.agent.question_source == Some(QuestionSource::Agent)
-            }),
-        )
+            .find(|h| h.environment_id == handoff.environment_id)
+            .and_then(|h| h.agent.session_id.clone())
     });
-    if let (Some(session), Some(text), false) = (previous, request.text.as_deref(), ask_open)
+    if let (Some(session), Some(text)) = (previous, request.text.as_deref())
         && deliver(ctx, &session, &format!("{marker}\n{text}"), &id).await
     {
         handoff.agent.session_id = Some(session.clone());
@@ -500,7 +496,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         session_id: delivered_to,
         reused: false,
         sent: None,
-        asks: ask_open,
+        asks: false,
     })
 }
 
