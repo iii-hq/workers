@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AgentRow } from './agents.js';
 import { replyLease, type ReplyPermission } from './configuration.js';
 import { jsonSchema } from './run.js';
-import { readTranscript, Reply } from './terminal/external-transcript.js';
+import { type ReadMode, readTranscript, Reply } from './terminal/external-transcript.js';
 
 const Args = z.strictObject({ claude_session_id: z.guid() });
 const Event = z.object({ claude_session_id: z.guid(), reply: Reply });
@@ -38,12 +38,16 @@ function sessionId(args: unknown) {
 }
 
 /** `sent` holds the ids already dispatched from the page that starts at
- * `from`, so a dispatch failure partway through it resumes at the next reply. */
+ * `from`, so a dispatch failure partway through it resumes at the next reply.
+ * `failed` marks a watch whose last dispatch failed: until a page is
+ * dispatched to it in full, its reads never advance past a reply it did not
+ * receive, however far back that reply lies within the search budget. */
 type Watch = {
   epoch: number;
   cursor: string;
   active: boolean;
   sent?: { from: string; ids: Set<string> };
+  failed?: boolean;
 };
 type Recovery = { epoch: number; env: Record<string, string>; cursor?: string };
 type Group = {
@@ -182,8 +186,11 @@ export function registerExternalReplies(
         if (g.recovery !== recovery || !sameEnv(env, recovery.env) || !recovery.cursor) return;
         for (const w of g.watches.values()) {
           if (!needsBaseline(w)) continue;
+          // A new baseline replaces the unread range a failed dispatch held.
           w.cursor = recovery.cursor;
           w.epoch = epoch;
+          w.sent = undefined;
+          w.failed = undefined;
         }
       }).catch(() => {
         // If inventory failed, an authorized poll can still use this checkpoint.
@@ -204,22 +211,25 @@ export function registerExternalReplies(
     const recovery = g.recovery;
     const checkpoint =
       recovery?.epoch === epoch && sameEnv(env, recovery.env) ? recovery.cursor : undefined;
-    const batches = new Map<string, Array<[string, Watch]>>();
+    // Watches share a read when they share its cursor and mode. A watch whose
+    // dispatch failed reads in 'resume' mode, so a watch held back by an
+    // unreachable reply never holds back a healthy one.
+    type Batch = { cursor: string; mode: ReadMode; watches: Array<[string, Watch]> };
+    const batches = new Map<string, Batch>();
     for (const entry of g.watches) {
       const w = entry[1];
       if (!w.active) continue;
       const cursor = w.epoch === epoch ? w.cursor : (checkpoint ?? '');
-      const batch = batches.get(cursor) ?? [];
-      batch.push(entry);
-      batches.set(cursor, batch);
+      const mode: ReadMode = !cursor ? 'baseline' : w.failed ? 'resume' : 'since';
+      const batch = batches.get(`${mode}:${cursor}`) ?? { cursor, mode, watches: [] };
+      batch.watches.push(entry);
+      batches.set(`${mode}:${cursor}`, batch);
     }
-    for (const [cursor, batch] of batches) {
+    for (const { cursor, mode, watches: batch } of batches.values()) {
       if (!batch.some(([key, w]) => g.watches.get(key) === w)) continue;
       let next: Awaited<ReturnType<typeof readTranscript>>;
       try {
-        next = await lease.read(() =>
-          readTranscript(iii, env, id, cursor ? 'since' : 'baseline', cursor),
-        );
+        next = await lease.read(() => readTranscript(iii, env, id, mode, cursor));
       } catch {
         // Retry this cursor without holding up readers at a different boundary.
         lease.check(); // A lost grant, unlike a failed page, ends the whole poll.
@@ -246,6 +256,7 @@ export function registerExternalReplies(
           // A lost grant or a closed socket ends the whole poll. A rejected
           // dispatch keeps only this observer's undelivered replies for its
           // next poll; the other observers of the session still receive theirs.
+          if (g.watches.get(key) === w) w.failed = true;
           lease.check();
           requireOpenSocket();
           continue;
@@ -253,6 +264,7 @@ export function registerExternalReplies(
         w.cursor = next.cursor;
         w.epoch = epoch;
         w.sent = undefined;
+        w.failed = undefined;
       }
     }
   }

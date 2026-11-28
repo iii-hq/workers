@@ -11,7 +11,9 @@ const MAX_STDOUT_BYTES = 4 * Math.ceil((MAX_RESULT_BYTES + TAG_BYTES) / 3);
 // The IDE's pinned Rust SDK redacts env values with `secret` in the key,
 // but records stdout verbatim. Only the one-use pad goes in that field.
 const SECRET_PAD_ENV = 'CLAUDE_REPLY_SECRET_PAD';
-type ReadMode = 'last' | 'baseline' | 'since' | 'recent';
+// 'resume' is a watch read ('since') for an observer whose last dispatch
+// failed: like a pending page, it never acknowledges past an unread reply.
+export type ReadMode = 'last' | 'baseline' | 'since' | 'resume' | 'recent';
 
 // Runs on the *terminal* host. Paths and conversation records never leave it.
 // -I -S excludes user configuration, sitecustomize and PYTHONPATH from startup.
@@ -182,48 +184,73 @@ def cursor_text(identity, observed, offset, digest):
     tag = base64.urlsafe_b64encode(digest.digest()).decode('ascii') if digest else '0' * 44
     return f'{prefix}{tag}:{offset}'
 
-def find_record(fd, key, before, low, sid):
+class Before:
+    # The bytes before the parsed range that one read has fetched, held as
+    # one span starting at lo. Every search of the read shares it, so a byte
+    # is fetched from the file at most once. The span grows downwards by at
+    # least its own size (from 64 KiB), never below floor, the budget's edge.
+    def __init__(self, fd, floor):
+        self.fd, self.floor, self.lo, self.data = fd, floor, None, b''
+    def fetch(self, n, pos):
+        chunk = os.pread(self.fd, n, pos)
+        require(len(chunk) == n)
+        return chunk
+    def cover(self, pos, end):
+        require(self.floor <= pos <= end)
+        if self.lo is None:
+            self.lo = end
+        hi = self.lo + len(self.data)
+        if end > hi:
+            self.data += self.fetch(end - hi, hi)
+        if pos < self.lo:
+            lo = max(self.floor, min(pos, self.lo - max(1 << 16, len(self.data))))
+            self.data = self.fetch(self.lo - lo, lo) + self.data
+            self.lo = lo
+
+def find_record(seen, key, before, low, sid):
     # Searches the bytes before a parsed range backwards for the record whose
     # own uuid field is key, starting at offset low or later: one starting
     # further back is past the search budget. A uuid named only inside another
     # record (a parentUuid, a logicalParentUuid or message text) does not
     # count. The record must pass the checks of a chain record in the range.
+    # before is a line start; seen holds the bytes already fetched.
     needle = b'"' + key.encode('ascii') + b'"'
     # The newline just before low shows that a line starts at low.
     edge = max(0, low - 1)
-    # Parents are usually close: start with small reads and grow them.
-    rest, pos, size = b'', before, 1 << 16
+    # Parents are usually close: start with small steps and grow them. Lines
+    # starting at top or later were searched already.
+    pos, size, top = before, 1 << 16, before
     while pos > edge:
         step = min(size, pos - edge)
         size = min(size * 2, 1 << 20)
         pos -= step
-        chunk = os.pread(fd, step, pos)
-        require(len(chunk) == step)
-        buf = chunk + rest
-        first = buf.find(b'\n')
-        if pos > 0 and first < 0:
-            rest = buf
-            continue
+        seen.cover(pos, before)
+        data, base = seen.data, seen.lo
         # Only lines whose start is known, and not before low, count here.
-        cut = 0 if pos == 0 and low == 0 else first + 1
-        body = buf[cut:]
-        if needle in body:
-            line_end = pos + len(buf)
-            for line in reversed(body.split(b'\n')[:-1]):
-                line_start = line_end - len(line) - 1
-                if needle in line:
-                    row = json.loads(line.decode('utf-8'), parse_constant=reject_constant,
-                                     object_pairs_hook=unique_members)
-                    if isinstance(row, dict) and row.get('uuid') == key:
-                        require(row.get('type') in CHAIN and row.get('isSidechain', False) is False)
-                        require(not row.get('teamName') and row.get('sessionId', sid) == sid)
-                        return row, line_end, line_start
-                line_end = line_start
-        rest = buf[:cut]
+        if pos == 0 and low == 0:
+            first = pos - base
+        else:
+            nl = data.find(b'\n', pos - base, top - base)
+            if nl < 0:
+                continue
+            first = nl + 1
+        hit = data.rfind(needle, first, top - base)
+        while hit >= 0:
+            nl = data.rfind(b'\n', first, hit)
+            line_start = first if nl < 0 else nl + 1
+            line_end = data.index(b'\n', hit)
+            row = json.loads(data[line_start:line_end].decode('utf-8'), parse_constant=reject_constant,
+                             object_pairs_hook=unique_members)
+            if isinstance(row, dict) and row.get('uuid') == key:
+                require(row.get('type') in CHAIN and row.get('isSidechain', False) is False)
+                require(not row.get('teamName') and row.get('sessionId', sid) == sid)
+                return row, base + line_end + 1, base + line_start
+            hit = data.rfind(needle, first, line_start)
+        top = base + first
     raise ValueError()
 
 def scan(sid, mode, previous):
-    require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since', 'recent'))
+    require(UUID.fullmatch(sid) and mode in ('last', 'baseline', 'since', 'resume', 'recent'))
     with ExitStack() as stack:
         f = transcript(sid, stack)
         return read(f.fileno(), sid, mode, previous)
@@ -233,20 +260,23 @@ def read(fd, sid, mode, previous):
     total = info.st_size
     identity = str(info.st_dev) + ':' + str(info.st_ino)
     boundary, pending, known = None, False, None
-    if mode in ('since', 'recent'):
+    watch = mode in ('since', 'resume')
+    if mode in ('since', 'resume', 'recent'):
         fields = previous.split(':')
         # A cursor may end with the uuid and end offset of the chain tip it
         # validated; an older cursor without them still reads.
         saved = fields[-2:] if len(fields) in (6, 7) else None
         base = fields[:-2] if saved else fields
         observed = int(base[2])
-        offset = int(base[4]) if mode == 'since' and len(base) == 5 else observed
+        offset = int(base[4]) if watch and len(base) == 5 else observed
         # A pending page is valid only if the final bytes of the previously
         # observed complete prefix still exist unchanged, not just what was
         # delivered. Rewrites earlier in the file are not detected.
         if 0 <= offset <= observed <= total and cursor_text(
                 identity, observed, offset, tail_digest(fd, observed)) == ':'.join(base):
-            boundary, pending = offset, mode == 'since' and offset < observed
+            # A watch whose dispatch failed is held to its unread replies
+            # like a pending page, even with a cursor for a full page.
+            boundary, pending = offset, (watch and offset < observed) or mode == 'resume'
             if saved and UUID.fullmatch(saved[0]) and re.fullmatch(r'[0-9]+', saved[1]) and int(
                     saved[1]) <= observed:
                 known = (saved[0], int(saved[1]))
@@ -272,6 +302,9 @@ def read(fd, sid, mode, previous):
         boundary = end
     # A historical search reads at most MAX_FILE bytes before the parsed start.
     low = max(0, start - MAX_FILE)
+    # Every search of this read, the compaction traversal included, shares
+    # the bytes already fetched before the parsed range.
+    seen = Before(fd, max(0, low - 1))
     def cursor(observed, offset, sizing=False):
         digest = None if sizing else tail_digest(fd, observed)
         return cursor_text(identity, observed, offset, digest) + ancestry
@@ -313,7 +346,7 @@ def read(fd, sid, mode, previous):
                 row, pos = nodes[key]
                 below = min(start, pos)
             else:
-                row, pos, below = find_record(fd, key, min(start, limit), low, sid)
+                row, pos, below = find_record(seen, key, min(start, limit), low, sid)
             require(pos < limit)
             require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
             if row['type'] in ('assistant', 'user'):
@@ -332,7 +365,7 @@ def read(fd, sid, mode, previous):
                 # Once a reply is found, the walk ends at an ancestor that
                 # exists before the window within the search budget.
                 require(isinstance(parent, str) and UUID.fullmatch(parent))
-                find_record(fd, parent, below, low, sid)
+                find_record(seen, parent, below, low, sid)
                 parent = None
             key, limit = parent, pos
         return found
@@ -359,7 +392,7 @@ def read(fd, sid, mode, previous):
             if known is not None and parent == known[0] and known[1] <= min(floor, boundary):
                 parent = None
             else:
-                found, found_end, found_start = find_record(fd, parent, floor, low, sid)
+                found, found_end, found_start = find_record(seen, parent, floor, low, sid)
                 if pending and found_end > boundary:
                     # A pending page is never acknowledged past an undelivered
                     # reply before the window: keep walking back to it.
@@ -411,13 +444,13 @@ def read(fd, sid, mode, previous):
     ancestry = '' if known is None else f':{known[0]}:{known[1]}'
     parts, size, offset = [], 0, end
     envelope = len(encode({'cursor': '', 'replies': []}))
-    for pos, reply in (reversed(replies) if mode == 'since' else replies):
+    for pos, reply in (reversed(replies) if watch else replies):
         part = encode(reply)
-        candidate = pos if mode == 'since' else end
+        candidate = pos if watch else end
         added = len(part) + bool(parts)
         room = MAX_RESULT - envelope - len(cursor(end, candidate, sizing=True)) - size
         if added > room:
-            require(parts or mode == 'since')  # Only a watch delivers a cut reply.
+            require(parts or watch)  # Only a watch delivers a cut reply.
             if parts:
                 break
             # A reply too large for a page alone is delivered cut, so it never

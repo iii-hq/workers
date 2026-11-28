@@ -98,10 +98,18 @@ type Hooks = {
   deliver?: DeliverHook;
 };
 
+/** The runner's PATH as the probe and the reader both receive it: passed
+ * through unchanged, the empty string included, and left out when the runner
+ * defines none, so both look `python3` up the same way. */
+export function runnerPath(): { PATH?: string } {
+  const path = process.env.PATH;
+  return path === undefined ? {} : { PATH: path };
+}
+
 /** The synthetic host runs the transcript reader with the runner's `python3`.
  * Without one every read fails anonymously, so refuse to start instead. */
 function requirePython3() {
-  const r = spawnSync('python3', ['--version'], { encoding: 'utf8' });
+  const r = spawnSync('python3', ['--version'], { env: runnerPath(), encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     throw new Error('python3 is required on PATH to run the synthetic host');
   }
@@ -228,8 +236,10 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
           return { exit_code: 0, stdout: '', stderr: '' };
         if (payload.command !== 'python3') throw new Error('unexpected host command');
         await host.beforeRead();
+        // PATH comes from the runner alone, as for the probe.
+        const { PATH: _hostPath, ...hostEnv } = env;
         const r = spawnSync('python3', payload.args as string[], {
-          env: { ...env, PATH: process.env.PATH ?? '', HOME: root },
+          env: { ...hostEnv, ...runnerPath(), HOME: root },
           cwd: root,
           encoding: 'utf8',
           timeout: Number(payload.timeout_ms),
