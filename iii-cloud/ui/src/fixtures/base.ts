@@ -1,6 +1,6 @@
 // Builders every board starts from. A board's `status` is what `iii-cloud::status`
-// returns; `ui/fixtures/<board>/state.json` holds the same record as a store file
-// for the visual check (`node fixtures/sync.mjs`).
+// returns; `node fixtures/sync.mjs` writes the same record as a store file
+// (`ui/fixtures/<board>/state.json`, not committed) for the visual check.
 
 import type { Route } from '../route'
 import type {
