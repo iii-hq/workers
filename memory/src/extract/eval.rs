@@ -1280,7 +1280,8 @@ const CASES: &[Case] = &[
                 "Rodei aqui: `make memory-stack` sobe o engine e o worker de memória. O PR continua aguardando revisão.",
             ),
         ],
-        &[without(&["#1902"], fact(&["memory-stack"], false))],
+        // A bare number: `names_work_item` reads "PR 1902" as well as "#1902".
+        &[without(&["1902"], fact(&["memory-stack"], false))],
     ),
     case(
         "pt-behaviour-after-merge",
@@ -1295,7 +1296,7 @@ const CASES: &[Case] = &[
                 "Certo, o card do reenvio pode ir para Concluído.",
             ),
         ],
-        &[without(&["#1910", "merge"], fact(&["reenvi"], false))],
+        &[without(&["1910", "merge"], fact(&["reenvi"], false))],
     ),
     // A work deadline is a dated event: kept, never tagged `transient`.
     case(
@@ -1305,7 +1306,7 @@ const CASES: &[Case] = &[
             ("user", "O KAN-170 tem prazo em 2026-12-20."),
             ("assistant", "Anotado: KAN-170 até 2026-12-20."),
         ],
-        &[fact(&["kan-170"], false)],
+        &[fact(&["kan-170", "2026-12-20"], false)],
     ),
     Case {
         id: "team-switch",
@@ -1849,6 +1850,7 @@ async fn extraction_eval() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(REPEATS);
+    assert!(repeats > 0, "EVAL_REPEATS=0 runs no case");
     let cases: Vec<&Case> = CASES
         .iter()
         .filter(|c| only.is_empty() || only.iter().any(|o| o == c.category))

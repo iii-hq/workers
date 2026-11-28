@@ -740,8 +740,10 @@ pub(crate) async fn injection(
     // would lift a layer's weak match level with the bank's strong hits,
     // in the ranking and against `select`'s relevance cut.
     let mut bm25_max = 0.0_f32;
+    // Expired lines (see `Memory::expired`) are told to no one, so they set no scale either.
+    let now = now_ms();
     for (name, b, layered) in &sources {
-        let keep = |m: &Memory| keeps(name, *layered, m);
+        let keep = |m: &Memory| keeps(name, *layered, m) && !m.expired(now);
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
     let (mut hits, mut held) = (Vec::new(), HashMap::new());
@@ -789,7 +791,6 @@ pub(crate) async fn injection(
     }
     // An expired line (see `Memory::expired`) is never told, but ranks like a pinned one:
     // the older line it supersedes stays hidden, and it takes no slot.
-    let now = now_ms();
     let hidden: HashSet<String> = ranked
         .iter()
         .filter(|(m, _)| m.expired(now))
@@ -1089,15 +1090,11 @@ pub fn select(
     // Every question word `a` matched, `b` matched too.
     let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
     // Evidence: a word of the question, or a meaning above the model's floor.
-    // An expired line (in `pinned`, not pinned) is never told: it sets no bar or subject.
-    let told = |m: &Memory| m.pinned || !pinned.contains(&m.id);
-    // A pinned or expired line takes no place in the quota, so neither crowds
-    // recall out; expired ones up to as many again, so the pool stays bounded.
-    // shortcut: past that, an older line an expired one supersedes can be told;
-    // raise the bound if a bank of stale lines shows it.
+    // A pinned line takes no place in the quota, so pins never crowd recall out.
+    // An expired line (in `pinned`, not pinned) is never told: it stays out of
+    // `pool`, setting no bar or subject, and only hides the older lines it supersedes.
     let mut room = POOL_PER_SLOT.saturating_mul(limit);
-    let mut spare = room;
-    let mut pool: Vec<(Memory, f32)> = Vec::new();
+    let (mut pool, mut expired): (Vec<(Memory, f32)>, Vec<Memory>) = (Vec::new(), Vec::new());
     for (m, s) in hits
         .into_iter()
         .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
@@ -1105,24 +1102,25 @@ pub fn select(
         if room == 0 {
             break;
         }
-        if !told(&m) {
-            if spare == 0 {
-                continue;
-            }
-            spare -= 1;
-        } else if !pinned.contains(&m.id) {
+        if !m.pinned && pinned.contains(&m.id) {
+            expired.push(m);
+            continue;
+        }
+        if !pinned.contains(&m.id) {
             room -= 1;
         }
         pool.push((m, s));
     }
-    // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
+    // `pool`, then the expired lines: an index past `pool` is a line told to no one.
+    let lines: Vec<&Memory> = pool.iter().map(|(m, _)| m).chain(&expired).collect();
+    // Each stale line's newest superseder in `lines` (reversed: a tie goes to the better-ranked).
     let newest: Vec<Option<usize>> = pool
         .iter()
         .map(|(old, _)| {
             if old.pinned {
                 return None;
             }
-            let newer = pool.iter().enumerate().filter(|(_, (new, _))| {
+            let newer = lines.iter().enumerate().filter(|(_, new)| {
                 new.last_stated() > old.last_stated()
                     && !unrelated(old, new)
                     // An older line answering a word the newer lacks stays.
@@ -1131,7 +1129,7 @@ pub fn select(
             });
             newer
                 .rev()
-                .max_by_key(|(_, (new, _))| new.last_stated())
+                .max_by_key(|(_, new)| new.last_stated())
                 .map(|(j, _)| j)
         })
         .collect();
@@ -1140,7 +1138,7 @@ pub fn select(
     let best = pool
         .iter()
         .zip(&newest)
-        .filter(|((m, _), newer)| newer.is_none() && told(m))
+        .filter(|(_, newer)| newer.is_none())
         .map(|((m, _), _)| ev(m).relevance)
         .fold(0.0, f32::max);
     // Holds two of the question's words, or its one; or two of those it uses
@@ -1174,15 +1172,11 @@ pub fn select(
     // one word with each ("great, carry on" beside a "great" and a "carry" memory)
     // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
     // eval (q-id-apelido, q-evt-next-week): revisit when a per-hit signal delivers them.
-    let covered: HashSet<&String> = pool
-        .iter()
-        .filter(|(m, _)| told(m))
-        .flat_map(|(m, _)| &ev(m).matched)
-        .collect();
+    let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
     // The question's term count, the same on every hit.
     let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
     let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
-        || pool.iter().filter(|(m, _)| told(m)).any(|(m, _)| {
+        || pool.iter().any(|(m, _)| {
             let e = ev(m);
             alone(e) || (e.cosine.is_some() && e.z.is_none())
         });
@@ -1190,7 +1184,6 @@ pub fn select(
     // that hit matched.
     let named: HashSet<String> = pool
         .iter()
-        .filter(|(m, _)| told(m))
         .flat_map(|(m, _)| {
             let e = ev(m);
             subjects(m).into_iter().filter(move |s| {
@@ -1220,10 +1213,10 @@ pub fn select(
     let mut order: Vec<usize> = Vec::new();
     for (i, (m, _)) in pool.iter().enumerate() {
         let mut current = i;
-        while let Some(newer) = newest[current] {
+        while let Some(newer) = newest.get(current).copied().flatten() {
             current = newer;
         }
-        if stands(m) && !order.contains(&current) {
+        if current < pool.len() && stands(m) && !order.contains(&current) {
             order.push(current);
         }
     }
@@ -5296,6 +5289,30 @@ Formal."
     }
 
     #[tokio::test]
+    async fn an_expired_line_sets_no_lexical_scale() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        for m in [
+            // On both question words, far above the durable line's one.
+            Memory {
+                stated_at: Some(now_ms() - 8 * 86_400_000),
+                ..memory(
+                    "fp-round",
+                    "KAN-158 nightly backups: nightly backups round, nightly backups retry.",
+                )
+            },
+            memory("fp-key", "Backups are encrypted with the ops key."),
+        ] {
+            bank.commit(m).await.unwrap();
+        }
+        let out = asked_turn(&deps, "expired-scale", "user", "main", "nightly backups?").await;
+        let block = memory_block(&out);
+        assert!(block.contains("ops key"), "{block}");
+        assert!(!block.contains("KAN-158"), "{block}");
+    }
+
+    #[tokio::test]
     async fn an_expired_note_never_joins_a_told_line() {
         let dir = tempfile::tempdir().unwrap();
         let deps = Arc::new(offline_deps(dir.path(), offline_cfg(6)));
@@ -5538,12 +5555,42 @@ Formal."
             .into_iter()
             .map(|(m, _)| m.id)
             .collect();
-        assert_eq!(ids[..2], ["fp-alone", "fp-share"], "{ids:?}");
-        assert_eq!(
-            ids.len() - 2,
-            2 * POOL_PER_SLOT,
-            "the expired ones kept: {ids:?}"
-        );
+        assert_eq!(ids, ["fp-alone", "fp-share"], "never told: {ids:?}");
+    }
+
+    #[test]
+    fn an_expired_line_hides_what_it_supersedes_behind_any_number_of_expired_lines() {
+        let at = |days: u64| Some(now_ms() - days * 86_400_000);
+        // More expired lines ranked first than the pool holds told ones.
+        let mut hits: Vec<(Memory, f32)> = (0..10)
+            .map(|n| {
+                (
+                    memory(&format!("fp-old{n}"), &format!("old status {n}")),
+                    1.0,
+                )
+            })
+            .collect();
+        hits.push((
+            Memory {
+                stated_at: at(8),
+                ..memory("fp-04", "The nightly backup now runs at 04:00.")
+            },
+            0.9,
+        ));
+        hits.push((
+            Memory {
+                stated_at: at(20),
+                ..memory("fp-02", "The nightly backup runs at 02:00.")
+            },
+            0.8,
+        ));
+        let evidence: HashMap<String, Evidence> = hits
+            .iter()
+            .map(|(m, _)| (m.id.clone(), words(3, 3, 1.0)))
+            .collect();
+        let hidden: HashSet<String> = hits[..11].iter().map(|(m, _)| m.id.clone()).collect();
+        let told = select(hits, &evidence, &HashSet::new(), &hidden, 1);
+        assert!(told.is_empty(), "{told:?}");
     }
 
     #[test]
