@@ -182,14 +182,20 @@ def cursor_text(identity, observed, offset, digest):
     tag = base64.urlsafe_b64encode(digest.digest()).decode('ascii') if digest else '0' * 44
     return f'{prefix}{tag}:{offset}'
 
-def find_record(fd, key, before):
+def find_record(fd, key, before, low, sid):
     # Searches the bytes before a parsed range backwards for the record whose
-    # own uuid field is key. A uuid named only inside another record (a
-    # parentUuid, a logicalParentUuid or message text) does not count.
+    # own uuid field is key, starting at offset low or later: one starting
+    # further back is past the search budget. A uuid named only inside another
+    # record (a parentUuid, a logicalParentUuid or message text) does not
+    # count. The record must pass the checks of a chain record in the range.
     needle = b'"' + key.encode('ascii') + b'"'
-    rest, pos = b'', before
-    while pos > 0:
-        step = min(1 << 20, pos)
+    # The newline just before low shows that a line starts at low.
+    edge = max(0, low - 1)
+    # Parents are usually close: start with small reads and grow them.
+    rest, pos, size = b'', before, 1 << 16
+    while pos > edge:
+        step = min(size, pos - edge)
+        size = min(size * 2, 1 << 20)
         pos -= step
         chunk = os.pread(fd, step, pos)
         require(len(chunk) == step)
@@ -197,10 +203,9 @@ def find_record(fd, key, before):
         first = buf.find(b'\n')
         if pos > 0 and first < 0:
             rest = buf
-            require(len(rest) <= MAX_FILE)
             continue
-        # Only lines whose start is known are complete here.
-        cut = 0 if pos == 0 else first + 1
+        # Only lines whose start is known, and not before low, count here.
+        cut = 0 if pos == 0 and low == 0 else first + 1
         body = buf[cut:]
         if needle in body:
             line_end = pos + len(buf)
@@ -210,11 +215,11 @@ def find_record(fd, key, before):
                     row = json.loads(line.decode('utf-8'), parse_constant=reject_constant,
                                      object_pairs_hook=unique_members)
                     if isinstance(row, dict) and row.get('uuid') == key:
-                        require(row.get('type') in CHAIN and isinstance(row.get('isSidechain', False), bool))
+                        require(row.get('type') in CHAIN and row.get('isSidechain', False) is False)
+                        require(not row.get('teamName') and row.get('sessionId', sid) == sid)
                         return row, line_end, line_start
                 line_end = line_start
         rest = buf[:cut]
-        require(len(rest) <= MAX_FILE)
     raise ValueError()
 
 def scan(sid, mode, previous):
@@ -227,18 +232,26 @@ def read(fd, sid, mode, previous):
     info = os.fstat(fd)
     total = info.st_size
     identity = str(info.st_dev) + ':' + str(info.st_ino)
-    boundary, pending = None, False
+    boundary, pending, known = None, False, None
     if mode in ('since', 'recent'):
         fields = previous.split(':')
-        observed = int(fields[2])
-        offset = int(fields[4]) if mode == 'since' and len(fields) == 5 else observed
+        # A cursor may end with the uuid and end offset of the chain tip it
+        # validated; an older cursor without them still reads.
+        saved = fields[-2:] if len(fields) in (6, 7) else None
+        base = fields[:-2] if saved else fields
+        observed = int(base[2])
+        offset = int(base[4]) if mode == 'since' and len(base) == 5 else observed
         # A pending page is valid only if the final bytes of the previously
         # observed complete prefix still exist unchanged, not just what was
         # delivered. Rewrites earlier in the file are not detected.
         if 0 <= offset <= observed <= total and cursor_text(
-                identity, observed, offset, tail_digest(fd, observed)) == previous:
+                identity, observed, offset, tail_digest(fd, observed)) == ':'.join(base):
             boundary, pending = offset, mode == 'since' and offset < observed
-    if boundary is not None and total - boundary <= MAX_FILE:
+            if saved and UUID.fullmatch(saved[0]) and re.fullmatch(r'[0-9]+', saved[1]) and int(
+                    saved[1]) <= observed:
+                known = (saved[0], int(saved[1]))
+    incremental = boundary is not None and total - boundary <= MAX_FILE
+    if incremental:
         # Parse only what changed since the cursor.
         lead = start = boundary
     else:
@@ -257,8 +270,11 @@ def read(fd, sid, mode, previous):
         require(start == 0 or start < end)
     if boundary is None:
         boundary = end
+    # A historical search reads at most MAX_FILE bytes before the parsed start.
+    low = max(0, start - MAX_FILE)
     def cursor(observed, offset, sizing=False):
-        return cursor_text(identity, observed, offset, None if sizing else tail_digest(fd, observed))
+        digest = None if sizing else tail_digest(fd, observed)
+        return cursor_text(identity, observed, offset, digest) + ancestry
     nodes, leaf, i = {}, None, start - lead
     for count in range(65537):
         if i == end - lead:
@@ -289,10 +305,16 @@ def read(fd, sid, mode, previous):
         # Walks the chain a compaction left behind, from the record its
         # boundary names. Only strictly earlier records are followed, so the
         # walk cannot cycle; an earlier compaction is crossed the same way.
+        # Records before the parsed range are found by the bounded search.
         found = None
         while key is not None:
-            require(isinstance(key, str) and key in nodes and nodes[key][1] < limit)
-            row, pos = nodes[key]
+            require(isinstance(key, str) and UUID.fullmatch(key))
+            if key in nodes:
+                row, pos = nodes[key]
+                below = min(start, pos)
+            else:
+                row, pos, below = find_record(fd, key, min(start, limit), low, sid)
+            require(pos < limit)
             require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
             if row['type'] in ('assistant', 'user'):
                 content = message_content(row, row['type'])
@@ -302,23 +324,19 @@ def read(fd, sid, mode, previous):
                 key, limit = row.get('logicalParentUuid'), pos
                 continue
             parent = row['parentUuid']
-            if parent is not None and parent not in nodes:
-                # The walk ends at an ancestor that exists before the window;
-                # an ancestor missing from the whole file fails the read.
-                require(start > 0 and isinstance(parent, str) and UUID.fullmatch(parent))
-                try:
-                    find_record(fd, parent, start)
-                except Exception:
-                    missing.append(parent)
-                    raise
-                parent = None
             if found is None and row['type'] == 'assistant' and not any(row.get(k) for k in HIDDEN):
                 text = visible(content)
                 if text.strip():
                     found = {'id': key, 'text': text}
+            if found is not None and parent is not None and parent not in nodes:
+                # Once a reply is found, the walk ends at an ancestor that
+                # exists before the window within the search budget.
+                require(isinstance(parent, str) and UUID.fullmatch(parent))
+                find_record(fd, parent, below, low, sid)
+                parent = None
             key, limit = parent, pos
         return found
-    replies, crossing, floor, missing = [], None, start, []
+    replies, crossing, floor, tip = [], None, start, leaf
     while leaf is not None:
         row, pos = nodes[leaf]
         require(not row.get('isSidechain') and not row.get('teamName') and row.get('sessionId', sid) == sid)
@@ -335,15 +353,19 @@ def read(fd, sid, mode, previous):
                 crossing = (row.get('logicalParentUuid'), pos)
         elif parent is not None and parent not in nodes:
             # Only an ancestor before the parsed range may be absent, and it
-            # must exist there. Otherwise a missing parent fails closed.
+            # must exist there. The tip a valid cursor already validated ends
+            # the walk without a search; otherwise a bounded search finds it.
             require(floor > 0 and isinstance(parent, str) and UUID.fullmatch(parent))
-            found, found_end, found_start = find_record(fd, parent, floor)
-            if pending and found_end > boundary:
-                # A pending page is never acknowledged past an undelivered
-                # reply before the window: keep walking back to it.
-                nodes[parent], floor = (found, found_end), found_start
-            else:
+            if known is not None and parent == known[0] and known[1] <= min(floor, boundary):
                 parent = None
+            else:
+                found, found_end, found_start = find_record(fd, parent, floor, low, sid)
+                if pending and found_end > boundary:
+                    # A pending page is never acknowledged past an undelivered
+                    # reply before the window: keep walking back to it.
+                    nodes[parent], floor = (found, found_end), found_start
+                else:
+                    parent = None
         elif parent is not None:
             # Parents strictly precede children, so the walk cannot cycle.
             require(nodes[parent][1] < pos)
@@ -355,12 +377,12 @@ def read(fd, sid, mode, previous):
         leaf = parent
     if crossing is not None:
         # History before a compaction is read best effort: any record there
-        # the active chain would reject, or a link that leaves it, shows none.
+        # the active chain would reject, a link that leaves it, or an ancestor
+        # missing or past the search budget shows none and fails nothing.
         try:
             found = before_compaction(*crossing)
         except Exception:
             found = None
-        require(not missing)
         if found is not None:
             replies.append((end, found))
     # Validate the entire chain before selecting a page. Watches start at the
@@ -379,6 +401,14 @@ def read(fd, sid, mode, previous):
             else:
                 high = mid - 1
         return fit(low)
+    # The cursor carries the chain tip it validated, so a later poll whose new
+    # records chain back to it ends there without searching the prefix. With
+    # no new tip in an incremental parse, the previous one is still the tip.
+    if tip is not None:
+        known = (tip, nodes[tip][1])
+    elif not incremental:
+        known = None
+    ancestry = '' if known is None else f':{known[0]}:{known[1]}'
     parts, size, offset = [], 0, end
     envelope = len(encode({'cursor': '', 'replies': []}))
     for pos, reply in (reversed(replies) if mode == 'since' else replies):

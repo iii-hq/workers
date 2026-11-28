@@ -639,7 +639,10 @@ export function registerAgents(
       const { claude_session_id: id, cursor } = followArgs.parse(withoutCaller(payload));
       let boundary: string | undefined;
       if (cursor !== undefined) {
-        const parsed = /^([0-9]+:[0-9]+:[0-9]+:[a-f0-9]{64})[.]([a-f0-9]{64})$/.exec(cursor);
+        const parsed =
+          /^([0-9]+:[0-9]+:[0-9]+:[a-f0-9]{64}(?::[0-9a-fA-F-]{36}:[0-9]+)?)[.]([a-f0-9]{64})$/.exec(
+            cursor,
+          );
         if (
           !parsed ||
           !timingSafeEqual(Buffer.from(parsed[2], 'hex'), sign(id, generation, parsed[1]))
@@ -667,7 +670,10 @@ export function registerAgents(
       lease.check();
       if (!snapshot) throw new Error('transcript unavailable');
       const { since, latest } = snapshot;
-      if (since && since.cursor !== latest.cursor) return { retry: true };
+      // Compare the snapshots only: the validated ancestry a cursor may carry
+      // is absent from a cursor of the older shape.
+      const snapshotOf = (c: string) => c.split(':').slice(0, 4).join(':');
+      if (since && snapshotOf(since.cursor) !== snapshotOf(latest.cursor)) return { retry: true };
       access.offerWatchBoundary?.({ id, epoch: generation, env, cursor: latest.cursor });
       return {
         claude_session_id: id,
