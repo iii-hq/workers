@@ -298,6 +298,44 @@ export const FLOWS = [
       await h.press('chip')
     },
   },
+  {
+    name: 'catalog3',
+    app: 'catalog3',
+    description:
+      'Catalogue 3, the display and data types: Avatar (70) with a status and one with an icon, Timestamp (71, short), Checkbox (26), Card.tone (18), Stat (73) with a sparkline (a null gap), Chart (74, area, two series with hues, labels, a legend, a threshold, axes), Gauge (75, ring and half), Meter (76) with a legend, Steps (77), CodeView (72, ts, line numbers from 10, line 11 marked) and Waveform (78). The person checks the Checkbox (change [true], shown at once), then picks step 1, chart point 2, line 11 and the middle of the waveform (select [value], event 5): the script writes each in the last Text.',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.toggle('todo')
+      await h.select('plan', 1)
+      await h.select('latency', 2)
+      await h.select('code', 11)
+      await h.select('voice', 0.5)
+    },
+  },
+  {
+    name: 'toast-action',
+    app: 'toast-action',
+    description:
+      'Catalogue 3, a toast with an action: Archive sends toast {text, kind, action} as a request (method 20, a reqId that waits for an answer); the host answers {action: true} (the person tapped Undo) and the script sets the state back to inbox.',
+    host: { ns: 'demo', ...HOST },
+    ui: { toast: () => true },
+    async run(h) {
+      await h.mount('root')
+      await h.press('archive')
+    },
+  },
+  {
+    name: 'list-anchor',
+    app: 'list-anchor',
+    description:
+      'Catalogue 3, List.anchor bottom (prop 23, enum listAnchor) with startReached subscribed (event 16): two messages; startReached brings two older ones in at index 0 (one listSplice), and a second startReached the last one older ones (ids 1 and 2 are the first).',
+    host: { ns: 'demo', ...HOST },
+    async run(h) {
+      await h.mount('root')
+      await h.emit('log', 'startReached')
+    },
+  },
 ]
 
 /** JSON as biome formats it: objects expanded, arrays on one line when they fit in 120 columns. */

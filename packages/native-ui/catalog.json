@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 2,
+  "catalogVersion": 3,
   "doc": "The canonical schema of the worker native UI (the iii app's catalogue and wire protocol). Tags, codes and enum indexes are append-only: never renumber, never reuse. The ide repo keeps a byte-identical copy at native/catalog/catalog.json, checked by a unit test. Design: ide/projects/worker-native-ui/design.md sections 5 and 6.",
   "encoding": {"current": "bin-v1", "reserved": [], "text": "json-v0", "doc": "The schema: every message is one array of entries, each entry an array whose first element is its integer code. VM to host: the SDK calls __host_send(entries) with the array itself; on a device the VM encodes it in C as bin-v1 (design §5.8: a generic tagged JSON-value encoding with a per-message string table, header byte 0xB1). json-v0 is the text form of the same schema (UTF-8 JSON, no BOM, no trailing newline): the test harness, the conformance files and debugging use it. Host to VM: json-v0 text through __vm_receive(string)."},
   "features": ["ops.json.v0", "list.splice.v1", "text.handshake.v1", "remote-screen.v1"],
@@ -20,7 +20,14 @@
     "loadBudgetMs": 2000,
     "stepBudgetMs": 250,
     "maxMessageBytes": 8388608,
-    "maxMarkdownChars": 200000
+    "maxMarkdownChars": 200000,
+    "maxCodeChars": 200000,
+    "maxChartPoints": 512,
+    "maxChartSeries": 8,
+    "maxStatPoints": 120,
+    "maxMeterSegments": 16,
+    "maxStepsItems": 64,
+    "maxWaveformPeaks": 1024
   },
   "valueTypes": {
     "bool": "JSON true or false.",
@@ -28,7 +35,7 @@
     "float": "JSON number.",
     "dp": "JSON number, density-independent pixels. For the common width and height props, -1 means fill the parent.",
     "string": "JSON string.",
-    "icon": "JSON string: a Lucide icon name in kebab-case (globe, refresh-cw). An unknown name draws a neutral square and logs once.",
+    "icon": "JSON string: a Lucide icon name in kebab-case (globe, refresh-cw), one of the icons list (catalogue 3 and later). An unknown name draws a neutral square and logs once.",
     "strings": "JSON array of strings.",
     "json": "Any JSON value.",
     "padding": "JSON number (all sides) | [vertical, horizontal] | [top, end, bottom, start], in dp.",
@@ -58,14 +65,20 @@
     "imageFit": ["contain", "cover"],
     "remoteMode": ["interact", "view"],
     "toastKind": ["info", "success", "error"],
-    "hue": ["none", "blue", "purple", "teal", "green", "amber", "rose"]
+    "hue": ["none", "blue", "purple", "teal", "green", "amber", "rose"],
+    "chartKind": ["line", "area", "bar"],
+    "gaugeKind": ["ring", "half"],
+    "avatarShape": ["circle", "rounded"],
+    "timeStyle": ["relative", "short", "elapsed", "date", "time", "dateTime"],
+    "listAnchor": ["top", "bottom"],
+    "stepState": ["pending", "active", "done", "blocked", "failed", "skipped"]
   },
   "events": [
     { "tag": 1, "name": "press", "args": [], "doc": "A tap (or click, or Enter on a focused control)." },
     { "tag": 2, "name": "longPress", "args": [], "argsByType": {"RemoteScreen": ["x", "y"]}, "doc": "A long press, right-click or control-click. RemoteScreen sends [x, y] in page coordinates." },
-    { "tag": 3, "name": "change", "args": ["value"], "doc": "Switch: [checked]. TextField: its edits arrive as text entries (host-to-VM code 4), not as events; subscribing to change turns them on." },
+    { "tag": 3, "name": "change", "args": ["value"], "doc": "Switch, Checkbox: [checked]. TextField: its edits arrive as text entries (host-to-VM code 4), not as events; subscribing to change turns them on." },
     { "tag": 4, "name": "submit", "args": ["text"], "doc": "TextField: the IME action or Enter, with the text at that moment." },
-    { "tag": 5, "name": "select", "args": ["index"], "doc": "Segmented: the option chosen." },
+    { "tag": 5, "name": "select", "args": ["index"], "argsByType": {"CodeView": ["line"], "Waveform": ["fraction"]}, "doc": "Segmented, Lanes: the option or lane chosen. Chart, Stat: the point the person let go on after a tap or a scrub. Steps: the step tapped. CodeView: [line], the line tapped, as numbered (from startLine). Waveform: [fraction], 0..1, where the person let go." },
     { "tag": 6, "name": "focus", "args": ["focused"], "doc": "TextField gained (true) or lost (false) the focus." },
     { "tag": 7, "name": "dismiss", "args": [], "doc": "Sheet closed by the person; ListDetail detail closed on compact (Back, the chevron, the side swipe)." },
     { "tag": 8, "name": "refresh", "args": [], "doc": "Pull to refresh (Scroll, List)." },
@@ -75,7 +88,8 @@
     { "tag": 12, "name": "keyboard", "args": ["open"], "doc": "RemoteScreen: the keyboard bar opened or closed by the person." },
     { "tag": 13, "name": "ready", "args": [], "doc": "RemoteScreen: the first frame of the current session is on screen." },
     { "tag": 14, "name": "link", "args": ["href"], "doc": "Markdown: a link was tapped, with its destination as written (a bare URL the autolinker found, too). The host never opens it: the script decides (iii.openUrl, nav.push)." },
-    { "tag": 15, "name": "drop", "args": ["key", "index", "source"], "doc": "List with a dragGroup: an item was dropped on this List. key = the item's key field; index = where it goes among this List's items once it is out of its old place (0..count); source = the node id of the List it came from (this one for a reorder)." }
+    { "tag": 15, "name": "drop", "args": ["key", "index", "source"], "doc": "List with a dragGroup: an item was dropped on this List. key = the item's key field; index = where it goes among this List's items once it is out of its old place (0..count); source = the node id of the List it came from (this one for a reorder)." },
+    { "tag": 16, "name": "startReached", "args": [], "doc": "List with anchor bottom: the first 5 items came into view (fires once per item count). Load older items and splice them in at index 0: the host keeps the items in view where they are." }
   ],
   "commonProps": [
     { "tag": 1, "name": "visible", "type": "bool", "default": true, "doc": "False: the node takes no space and is not drawn." },
@@ -337,6 +351,18 @@
       "slots": []
     },
     {
+      "tag": 26, "name": "Checkbox", "group": "input", "consoleUi": "Checkbox",
+      "props": [
+        { "tag": 16, "name": "checked", "type": "bool", "default": false },
+        { "tag": 17, "name": "text", "type": "string", "default": "", "doc": "The label after the box; a tap on it toggles too." },
+        { "tag": 18, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 19, "name": "indeterminate", "type": "bool", "default": false, "doc": "A dash instead of the check (some of a group are checked); a tap sends change [true]." },
+        { "tag": 20, "name": "strike", "type": "bool", "default": false, "doc": "While checked, the label is struck through and muted (a done to-do)." }
+      ],
+      "events": ["change"],
+      "slots": []
+    },
+    {
       "tag": 30, "name": "List", "group": "collection", "consoleUi": "List",
       "props": [
         { "tag": 16, "name": "keyField", "type": "string", "default": "key" },
@@ -345,9 +371,10 @@
         { "tag": 19, "name": "dividers", "type": "bool", "default": false },
         { "tag": 20, "name": "refreshing", "type": "bool", "default": false },
         { "tag": 21, "name": "contentPadding", "type": "padding", "default": 0 },
-        { "tag": 22, "name": "dragGroup", "type": "string", "default": null, "doc": "Not null: a long press lifts an item, and it can be dragged to any List with the same group (this one included: a reorder); releasing it fires drop on the List under it. A long press released without moving still fires the item's longPress. Inside Lanes, holding a dragged item over a tab (or near the side in columns) for 400 ms brings that lane; releasing it on a tab drops it at index 0 of the first List in that lane." }
+        { "tag": 22, "name": "dragGroup", "type": "string", "default": null, "doc": "Not null: a long press lifts an item, and it can be dragged to any List with the same group (this one included: a reorder); releasing it fires drop on the List under it. A long press released without moving still fires the item's longPress. Inside Lanes, holding a dragged item over a tab (or near the side in columns) for 400 ms brings that lane; releasing it on a tab drops it at index 0 of the first List in that lane." },
+        { "tag": 23, "name": "anchor", "type": "enum", "enum": "listAnchor", "default": 0, "doc": "bottom: the List opens at its end and stays there as items arrive while the person is at the end (a chat log, a feed of events); scrolled up, it stays put. startReached asks for older items." }
       ],
-      "events": ["refresh", "endReached", "drop"],
+      "events": ["refresh", "endReached", "drop", "startReached"],
       "slots": [
         { "slot": 0, "name": "header", "many": true },
         { "slot": 1, "name": "template0", "many": false, "template": true },
@@ -381,7 +408,8 @@
       "tag": 32, "name": "Card", "group": "collection", "consoleUi": "Card",
       "props": [
         { "tag": 16, "name": "selected", "type": "bool", "default": false },
-        { "tag": 17, "name": "gap", "type": "dp", "default": 8 }
+        { "tag": 17, "name": "gap", "type": "dp", "default": 8 },
+        { "tag": 18, "name": "tone", "type": "enum", "enum": "tone", "default": 0, "doc": "Not default: the border and a faint fill in this tone (attention for a question waiting, danger for a failure, success, accent)." }
       ],
       "events": ["press", "longPress"],
       "slots": [{ "slot": 0, "name": "children", "many": true }]
@@ -396,6 +424,127 @@
       ],
       "events": ["select"],
       "slots": [{ "slot": 0, "name": "lanes", "many": true }]
+    },
+    {
+      "tag": 70, "name": "Avatar", "group": "content", "consoleUi": "Avatar",
+      "props": [
+        { "tag": 16, "name": "name", "type": "string", "default": "", "doc": "Whose avatar: the initials (the first letter of the first and of the last word, uppercased; one letter for one word) and, with hue none, the color. Also what a screen reader says." },
+        { "tag": 17, "name": "image", "type": "string", "default": null, "doc": "A data URI like Image.src, at most limits.maxImageBytes decoded; drawn instead of the initials, cropped to the shape." },
+        { "tag": 18, "name": "icon", "type": "icon", "default": null, "doc": "Drawn instead of the initials when there is no image (bot for an agent)." },
+        { "tag": 19, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "none: picked from the name, hue index 1 + (the sum of its UTF-16 code units mod 6), so every host gives a name the same color; a neutral surface when the name is empty." },
+        { "tag": 20, "name": "size", "type": "dp", "default": 32 },
+        { "tag": 21, "name": "shape", "type": "enum", "enum": "avatarShape", "default": 0 },
+        { "tag": 22, "name": "status", "type": "enum", "enum": "dotTone", "default": null, "doc": "Not null: a status dot of this tone at the bottom end, ringed in the background color." }
+      ],
+      "events": ["press"],
+      "slots": []
+    },
+    {
+      "tag": 71, "name": "Timestamp", "group": "content", "consoleUi": "RelativeTime",
+      "props": [
+        { "tag": 16, "name": "at", "type": "float", "default": null, "doc": "The moment, in epoch milliseconds; null draws nothing." },
+        { "tag": 17, "name": "style", "type": "enum", "enum": "timeStyle", "default": 0, "doc": "relative: just now, 5 min ago, in 3 hours, yesterday, then the date past a week (the platform's relative formatter in env.locale). short: now, 5m, 3h, 2d, then the date. elapsed: the running duration since at (until at when it is ahead), 0:42, 4:05, 1:02:33. date, time, dateTime: the moment in env.locale (the year only when it is not this year; 12 or 24 hours as the device has it). The host redraws on its own while the node is on screen: elapsed every second, relative and short every minute (every 10 s in the first minute)." },
+        { "tag": 18, "name": "role", "type": "enum", "enum": "textRole", "default": 0 },
+        { "tag": 19, "name": "tone", "type": "enum", "enum": "tone", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 72, "name": "CodeView", "group": "content", "consoleUi": "CodeBlock",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": "", "doc": "The code. Past limits.maxCodeChars the host draws the start and a note." },
+        { "tag": 17, "name": "language", "type": "string", "default": null, "doc": "A language name (ts, tsx, js, json, rust, python, go, swift, kotlin, sh, yaml, toml, sql, md, diff…): the host colors what it knows with the app's code theme; diff colors the added, removed and hunk lines. null or unknown = plain." },
+        { "tag": 18, "name": "lineNumbers", "type": "bool", "default": false },
+        { "tag": 19, "name": "startLine", "type": "int", "default": 1, "doc": "The number of the first line (an excerpt of a file)." },
+        { "tag": 20, "name": "highlight", "type": "json", "default": null, "doc": "Lines to mark, numbered as shown (from startLine): [12, [20, 24]] marks 12 and 20 to 24." },
+        { "tag": 21, "name": "wrap", "type": "bool", "default": false, "doc": "false: long lines scroll sideways, the whole block together." },
+        { "tag": 22, "name": "selectable", "type": "bool", "default": false }
+      ],
+      "events": ["select"],
+      "slots": []
+    },
+    {
+      "tag": 73, "name": "Stat", "group": "data", "consoleUi": "StatTile",
+      "props": [
+        { "tag": 16, "name": "label", "type": "string", "default": "" },
+        { "tag": 17, "name": "value", "type": "string", "default": "", "doc": "Formatted by the script (1.2k, 98.5%, 3/5)." },
+        { "tag": 18, "name": "unit", "type": "string", "default": null, "doc": "Smaller, after the value (ms, GB)." },
+        { "tag": 19, "name": "icon", "type": "icon", "default": null },
+        { "tag": 20, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "The icon's and the series' color; none: the icon muted and the series blue." },
+        { "tag": 21, "name": "delta", "type": "string", "default": null, "doc": "A change, formatted (+12%, -3 today)." },
+        { "tag": 22, "name": "deltaTone", "type": "enum", "enum": "tone", "default": 0, "doc": "The delta's color (success, danger); default = secondary." },
+        { "tag": 23, "name": "detail", "type": "string", "default": null, "doc": "One muted line under the value." },
+        { "tag": 24, "name": "series", "type": "json", "default": null, "doc": "Numbers for a sparkline under the value, at most limits.maxStatPoints (the host keeps the last); null entries are gaps." },
+        { "tag": 25, "name": "seriesKind", "type": "enum", "enum": "chartKind", "default": 1 }
+      ],
+      "events": ["press", "select"],
+      "slots": []
+    },
+    {
+      "tag": 74, "name": "Chart", "group": "data", "consoleUi": "Chart",
+      "props": [
+        { "tag": 16, "name": "kind", "type": "enum", "enum": "chartKind", "default": 0 },
+        { "tag": 17, "name": "series", "type": "json", "default": [], "doc": "number[] (one series) or number[][] (one array per series, all the same length), at most limits.maxChartSeries series of limits.maxChartPoints points (the host keeps the last); null entries are gaps. Bars of several series stand side by side." },
+        { "tag": 18, "name": "hues", "type": "strings", "default": null, "doc": "Hue names (enums.hue) per series; null or a missing entry = blue, purple, teal, green, amber, rose in turn." },
+        { "tag": 19, "name": "labels", "type": "strings", "default": null, "doc": "One per point: the x labels (with axes the host shows the first, the last and what fits between) and the readout's title." },
+        { "tag": 20, "name": "min", "type": "float", "default": null, "doc": "The bottom of the y range; null = the data's lowest (0 for bars, and for area and line when no value is negative)." },
+        { "tag": 21, "name": "max", "type": "float", "default": null, "doc": "The top of the y range; null = the data's highest." },
+        { "tag": 22, "name": "thresholds", "type": "json", "default": null, "doc": "Dashed horizontal lines: [{value, tone?, label?}], tone a tone name (warning, danger; default muted)." },
+        { "tag": 23, "name": "axes", "type": "bool", "default": false, "doc": "The y range's labels and the x labels; false = a bare chart." },
+        { "tag": 24, "name": "unit", "type": "string", "default": null, "doc": "After the y labels and the readout's values (ms, %)." },
+        { "tag": 25, "name": "legend", "type": "strings", "default": null, "doc": "Series names: a legend row under the chart, and the readout's names." }
+      ],
+      "events": ["select"],
+      "slots": []
+    },
+    {
+      "tag": 75, "name": "Gauge", "group": "data", "consoleUi": "Gauge",
+      "props": [
+        { "tag": 16, "name": "value", "type": "float", "default": 0, "doc": "0..1, clamped." },
+        { "tag": 17, "name": "kind", "type": "enum", "enum": "gaugeKind", "default": 0 },
+        { "tag": 18, "name": "text", "type": "string", "default": null, "doc": "In the middle; null = the value as a whole percent (72%)." },
+        { "tag": 19, "name": "label", "type": "string", "default": null, "doc": "Small and muted, under the text." },
+        { "tag": 20, "name": "thresholds", "type": "json", "default": null, "doc": "[warn] or [warn, danger], fractions ascending: at or past one the arc takes the warning, then the danger tone." },
+        { "tag": 21, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "The arc's color under the thresholds; none = the accent." },
+        { "tag": 22, "name": "size", "type": "dp", "default": 64, "doc": "The width; a half gauge is about half as tall." }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 76, "name": "Meter", "group": "data", "consoleUi": "Meter",
+      "props": [
+        { "tag": 16, "name": "values", "type": "json", "default": [], "doc": "Numbers >= 0, one per segment, at most limits.maxMeterSegments." },
+        { "tag": 17, "name": "hues", "type": "strings", "default": null, "doc": "Hue names per segment; null or a missing entry = blue, purple, teal, green, amber, rose in turn." },
+        { "tag": 18, "name": "labels", "type": "strings", "default": null, "doc": "One per segment: the legend and what a screen reader says." },
+        { "tag": 19, "name": "max", "type": "float", "default": null, "doc": "The bar's total; null = the sum of the values. What the values leave is the empty track." },
+        { "tag": 20, "name": "legend", "type": "bool", "default": false, "doc": "A row under the bar: a dot, the label and the value of each segment." },
+        { "tag": 21, "name": "thickness", "type": "dp", "default": 8 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 77, "name": "Steps", "group": "data", "consoleUi": "Steps",
+      "props": [
+        { "tag": 16, "name": "items", "type": "json", "default": [], "doc": "[{title, detail?, state?, progress?}], at most limits.maxStepsItems: state a stepState name (default pending); progress 0..1, a thin bar under an active step." },
+        { "tag": 17, "name": "axis", "type": "enum", "enum": "axis", "default": 0, "doc": "vertical: a rail of markers with the title and detail beside each. horizontal: markers joined by a line, the titles under them (scrolls sideways when they do not fit)." },
+        { "tag": 18, "name": "compact", "type": "bool", "default": false, "doc": "Titles only: no details and no progress." }
+      ],
+      "events": ["select"],
+      "slots": []
+    },
+    {
+      "tag": 78, "name": "Waveform", "group": "data", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "peaks", "type": "json", "default": [], "doc": "Numbers 0..1, one per bar, at most limits.maxWaveformPeaks; the host resamples them to the bars that fit its width." },
+        { "tag": 17, "name": "progress", "type": "float", "default": null, "doc": "0..1: the played part in the hue, the rest muted, a playhead between; null = all in the hue, no playhead." },
+        { "tag": 18, "name": "hue", "type": "enum", "enum": "hue", "default": 0, "doc": "none = the accent." },
+        { "tag": 19, "name": "markers", "type": "json", "default": null, "doc": "Fractions 0..1: ticks over the bars (comments, chapters)." }
+      ],
+      "events": ["select"],
+      "slots": []
     },
     {
       "tag": 40, "name": "Page", "group": "chrome", "consoleUi": "PageShell / PageHeader",
@@ -454,6 +603,45 @@
       "slots": []
     }
   ],
+  "icons": {
+    "doc": "The Lucide icons (ISC, lucide.dev) every host of this catalogue bundles, by kebab-case name: what icon props take. Appended to only; an older host may lack the newer names (it draws its neutral square).",
+    "names": [
+      "activity", "anchor", "app-window", "archive", "arrow-big-up", "arrow-down", "arrow-down-right",
+      "arrow-down-wide-narrow", "arrow-left", "arrow-left-right", "arrow-right", "arrow-up", "arrow-up-down",
+      "arrow-up-narrow-wide", "arrow-up-right", "at-sign", "atom", "badge-check", "ban", "bell", "bell-ring",
+      "binary", "bird", "bot", "box", "boxes", "braces", "brain", "bug", "building", "cable", "calendar",
+      "calendar-clock", "camera", "case-sensitive", "cat", "chart-area", "chart-column", "chart-line", "chart-pie",
+      "check", "chevron-down", "chevron-left", "chevron-right", "chevron-up", "chevrons-up-down", "circle",
+      "circle-alert", "circle-check", "circle-dashed", "circle-dot", "circle-minus", "circle-pause", "circle-play",
+      "circle-plus", "circle-question-mark", "circle-stop", "circle-x", "clipboard-paste", "clock", "clock-arrow-up",
+      "cloud", "cloud-upload", "code", "coffee", "columns-2", "columns-3", "command", "container", "contrast",
+      "copy", "corner-down-left", "corner-down-right", "corner-left-up", "cpu", "crown", "database", "database-zap",
+      "dog", "dot", "download", "ellipsis", "ellipsis-vertical", "external-link", "eye", "eye-off", "feather",
+      "file", "file-archive", "file-audio", "file-code", "file-diff", "file-key", "file-plus", "file-text",
+      "file-video", "files", "film", "fish", "flag", "flame", "flask-conical", "folder", "folder-git-2",
+      "folder-open", "folder-plus", "folder-tree", "fullscreen", "funnel", "gallery-horizontal-end", "gamepad-2",
+      "gauge", "gem", "ghost", "git-branch", "git-commit-horizontal", "git-compare", "git-fork", "git-graph",
+      "git-merge", "git-pull-request", "globe", "grip-horizontal", "grip-vertical", "hand", "hard-drive", "hash",
+      "heart", "hexagon", "history", "hourglass", "house", "image", "image-plus", "inbox", "infinity", "info",
+      "kanban", "key", "key-round", "keyboard", "keyboard-off", "laptop", "layers", "layout-dashboard",
+      "layout-grid", "leaf", "link", "link-2", "list", "list-checks", "list-filter", "list-plus", "list-restart",
+      "list-todo", "list-tree", "loader-circle", "lock", "lock-keyhole", "log-in", "log-out", "mail", "maximize",
+      "maximize-2", "message-circle", "message-square", "message-square-more", "messages-square", "milestone",
+      "minimize", "minimize-2", "minus", "monitor", "moon", "mountain", "mouse-pointer-click", "move", "music",
+      "network", "notebook-pen", "option", "orbit", "palette", "panel-bottom", "panel-left", "panel-left-close",
+      "panel-left-open", "panel-right", "panel-right-close", "panels-top-left", "paperclip", "pause", "pencil",
+      "pin", "pin-off", "play", "plug", "plus", "power", "puzzle", "radar", "redo", "refresh-cw", "regex", "reply",
+      "rocket", "rotate-ccw", "rotate-cw", "route", "rows-2", "rows-3", "satellite", "save", "scaling", "scan",
+      "scissors", "scroll-text", "search", "send", "server", "settings", "share", "share-2", "shield",
+      "shield-check", "shield-off", "signal-high", "sliders-horizontal", "sparkles", "sprout", "square",
+      "square-check", "square-plus", "square-split-horizontal", "square-terminal", "star", "sun", "table", "table-2",
+      "table-properties", "tag", "target", "tent", "terminal", "text-cursor-input", "text-wrap", "thumbs-down",
+      "thumbs-up", "ticket", "timer", "toggle-left", "trash", "trash-2", "trees", "trending-down", "trending-up",
+      "triangle", "triangle-alert", "type", "undo", "undo-2", "unlink", "unplug", "upload", "user", "user-plus",
+      "user-round", "users", "users-round", "volume-2", "volume-x", "wand-sparkles", "waves-horizontal", "waypoints",
+      "whole-word", "wifi", "wifi-off", "x", "zap", "zoom-in", "zoom-out"
+    ]
+  },
   "remoteScreen": {
     "doc": "The wire prop: function ids and argument templates. frames is {fn, args}: the host observes fn with those args (deliver output, max_in_flight 1, so a slow view drops frames) and paints each event; the other keys name the functions the host calls. Every fn must be in the app's own namespace. In args, a string value equal to a placeholder is replaced by the typed value; any other value is copied as is; a placeholder whose value is absent drops its key.",
     "wireKeys": ["frames", "seed", "start", "stop", "resize", "input"],
@@ -514,7 +702,7 @@
       { "method": 11, "name": "navPop", "args": { "page": "int", "result": "json?" }, "result": "null" },
       { "method": 12, "name": "navReplace", "args": { "page": "int", "name": "string", "params": "json?" }, "result": "null" },
       { "method": 13, "name": "navPopToRoot", "args": {}, "result": "null" },
-      { "method": 20, "name": "toast", "args": { "text": "string", "kind": "enum toastKind?" }, "result": "null" },
+      { "method": 20, "name": "toast", "args": { "text": "string", "kind": "enum toastKind?", "action": "string? (catalogue 3)" }, "result": "null; with action, {action: bool} when the toast goes", "doc": "With action, the toast shows it as a button and stays up longer (about 6 s); the host answers when the toast goes: {action: true} when the person tapped it, {action: false} when it timed out or was swiped away." },
       { "method": 21, "name": "actionMenu", "args": { "anchor": "int?", "title": "string?", "subtitle": "string?", "actions": "[{label, icon?, destructive?, hint?, checked?}]" }, "result": "{index: int} (-1 when dismissed)" },
       { "method": 22, "name": "confirm", "args": { "title": "string", "message": "string?", "confirm": "string", "destructive": "bool?" }, "result": "{ok: bool}" },
       { "method": 23, "name": "prompt", "args": { "title": "string", "message": "string?", "initial": "string?", "placeholder": "string?", "confirm": "string", "keyboard": "enum keyboardType?", "mono": "bool?" }, "result": "{text: string|null}" },
@@ -534,7 +722,7 @@
     "env": {
       "windowClass": ["compact", "wide"],
       "posture": ["flat", "tabletop", "book"],
-      "platform": ["android", "ios", "ipados", "macos"],
+      "platform": ["android", "ios", "ipados", "macos", "web"],
       "visible": "bool",
       "theme": ["dark", "light"],
       "locale": "string (BCP 47)",

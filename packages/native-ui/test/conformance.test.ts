@@ -214,11 +214,13 @@ describe('conformance files', () => {
     expect(FLOWS.map((f: { name: string }) => f.name).sort()).toEqual(
       [
         'action-menu',
+        'catalog3',
         'counter',
         'env',
         'hue',
         'lanes-select',
         'list',
+        'list-anchor',
         'list-drop',
         'list-fill',
         'list-splice',
@@ -228,6 +230,7 @@ describe('conformance files', () => {
         'requests',
         'text',
         'text-handshake',
+        'toast-action',
       ].sort(),
     )
     const handshake = JSON.parse(read('conformance/text-handshake.json'))

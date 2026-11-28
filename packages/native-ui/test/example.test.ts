@@ -1,4 +1,4 @@
-/** examples/hello and examples/catalog2 build (the known-good bundles for a host) and work in the harness. */
+/** examples/hello, examples/catalog2 and examples/catalog3 build (the known-good bundles for a host) and work in the harness. */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -143,5 +143,108 @@ describe('examples/catalog2', () => {
     }
     expect(h.prop('hue-icon-none', 'hue')).toBeUndefined()
     expect(h.items('hue-list').map((it) => (it as { hue: number }).hue)).toEqual([0, 1, 2, 3, 4, 5, 6])
+  })
+})
+
+describe('examples/catalog3', () => {
+  const out = join(pkg, 'examples/catalog3/dist/catalog3.js')
+  let source = ''
+  beforeAll(async () => {
+    const r = await buildNativeUi({ entry: join(pkg, 'examples/catalog3/src/app.tsx'), outfile: out, ns: 'catalog3' })
+    expect(r.warnings).toEqual([])
+    expect(r.ready?.catalog).toBe(3)
+    source = readFileSync(out, 'utf8')
+  })
+  const open = async (page: string, options: { ui?: { toast?: () => boolean } } = {}) => {
+    const h = await createTestHost({ bundle: source, ns: 'catalog3', ...options })
+    await h.mount('root')
+    await h.press(`open-${page}`)
+    expect(h.deck.at(-1)?.name).toBe(page)
+    return h
+  }
+
+  it('opens every page without a warning or a violation', async () => {
+    for (const page of [
+      'overview',
+      'checkbox',
+      'people',
+      'cards',
+      'charts',
+      'gauges',
+      'steps',
+      'code',
+      'wave',
+      'chat',
+    ]) {
+      const h = await open(page)
+      expect(h.violations, page).toEqual([])
+      expect(
+        h.logs.filter((l) => l.level === 'warn' || l.level === 'error'),
+        page,
+      ).toEqual([])
+    }
+  })
+
+  it('lays the overview out like a dashboard: stats, a question card, a chart, gauges, a meter, milestones', async () => {
+    const h = await open('overview')
+    expect(h.find('ov-agents').props).toMatchObject({ label: 'Agents', value: '6', icon: 'bot', hue: 'purple' })
+    expect(h.prop('ov-cost', 'visible')).toBe(false)
+    expect(h.find('ov-question').props).toMatchObject({ tone: 'attention' })
+    expect(h.find('ov-latency').props).toMatchObject({ kind: 'area', axes: true, legend: ['api', 'db'] })
+    expect(h.find('ov-steps').props?.items).toHaveLength(4)
+    await h.env({ windowClass: 'wide' })
+    expect(h.prop('ov-cost', 'visible')).toBe(true)
+  })
+
+  it('keeps the All checkbox in step with the list', async () => {
+    const h = await open('checkbox')
+    // checked false is the default, so it does not travel.
+    expect(h.find('cb-all').props).toMatchObject({ indeterminate: true })
+    expect(h.prop('cb-all', 'checked')).toBeUndefined()
+    await h.toggle('cb-all')
+    expect(h.prop('cb-count', 'text')).toBe('4 of 4 done')
+    expect(h.find('cb-all').props).toMatchObject({ checked: true, indeterminate: false })
+    await h.toggle('cb-1')
+    expect(h.prop('cb-count', 'text')).toBe('3 of 4 done')
+    expect(h.find('cb-all').props).toMatchObject({ checked: false, indeterminate: true })
+    await h.toggle('cb-stubborn')
+    expect(h.prop('cb-stubborn', 'checked')).toBe(false)
+  })
+
+  it('reports the point, the step and the line picked, and seeks the waveform', async () => {
+    let h = await open('charts')
+    await h.select('chart-bar', 4)
+    expect(h.prop('chart-picked', 'text')).toBe('bar 4 Fri 30')
+    await h.select('chart-line', 0)
+    expect(h.prop('chart-picked', 'text')).toBe('line 0 04:00')
+    await h.select('stat-p95', 19)
+    expect(h.prop('chart-picked', 'text')).toBe('stat 19 228')
+    h = await open('steps')
+    await h.select('steps-vertical', 3)
+    expect(h.prop('steps-picked', 'text')).toBe('3 Apple host')
+    h = await open('code')
+    await h.select('code-ts', 44)
+    expect(h.prop('code-picked', 'text')).toBe('line 44')
+    await expect(h.select('code-ts', 39)).rejects.toThrow(/not a line/)
+    expect(String(h.prop('code-long', 'text')).length).toBeGreaterThan(200_000)
+    h = await open('wave')
+    await h.select('wave-voice', 0.75)
+    expect(h.prop('wave-progress', 'text')).toBe('75%')
+    expect(h.prop('wave-voice', 'progress')).toBe(0.75)
+  })
+
+  it('loads older messages at the top and undoes a delete from the toast', async () => {
+    const h = await open('chat', { ui: { toast: () => true } })
+    expect(h.find('chat-log').props).toMatchObject({ anchor: 'bottom', events: ['startReached'] })
+    expect(h.keys('chat-log')).toHaveLength(30)
+    await h.emit('chat-log', 'startReached')
+    expect(h.keys('chat-log')).toHaveLength(50)
+    expect(h.keys('chat-log')[0]).toBe(51)
+    await h.press('chat-send')
+    expect(h.keys('chat-log').at(-1)).toBe(101)
+    await h.press('chat-delete')
+    expect(h.toasts.at(-1)).toEqual({ text: 'Deleted message 101', kind: 'info', action: 'Undo' })
+    expect(h.prop('chat-state', 'text')).toBe('restored 101')
+    expect(h.keys('chat-log').at(-1)).toBe(101)
   })
 })

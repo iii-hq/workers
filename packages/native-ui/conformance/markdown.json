@@ -6,7 +6,7 @@
   "app": "conformance/apps/markdown.tsx",
   "ns": "demo",
   "toVm": [
-    "[[1,{\"catalog\":2,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[1,{\"catalog\":3,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
     "[[2,3,14,[\"kan:KAN-12\"]]]",
     "[[2,3,14,[\"https://example.com\"]]]"
   ],

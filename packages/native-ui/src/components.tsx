@@ -9,14 +9,19 @@
 import { createRenderEffect, type JSX, untrack } from 'solid-js'
 import { EVENTS } from './generated/events'
 import type {
+  AvatarProps,
   BadgeProps,
   BoxProps,
   ButtonProps,
   CardProps,
+  ChartProps,
+  CheckboxProps,
   ChipProps,
+  CodeViewProps,
   ColumnProps,
   DividerProps,
   EmptyStateProps,
+  GaugeProps,
   IconButtonProps,
   IconProps,
   ImageProps,
@@ -24,6 +29,7 @@ import type {
   ListDetailProps,
   ListRowProps,
   MarkdownProps,
+  MeterProps,
   PageProps,
   ProgressProps,
   RemoteScreenProps,
@@ -33,11 +39,15 @@ import type {
   SheetProps,
   SpacerProps,
   SpinnerProps,
+  StatProps,
   StatusDotProps,
   StatusPanelProps,
+  StepsProps,
   SwitchProps,
   TextFieldProps,
   TextProps,
+  TimestampProps,
+  WaveformProps,
 } from './generated/props'
 import { insert } from './renderer'
 import {
@@ -187,6 +197,28 @@ export const StatusPanel = make<StatusPanelProps>('StatusPanel')
  */
 export const Markdown = makeText<MarkdownProps>('Markdown')
 
+/**
+ * A person or an agent: the initials of `name` (in a color picked from it,
+ * the same on every host), an `image` (a data URI) or an `icon`, with an
+ * optional status dot.
+ */
+export const Avatar = make<AvatarProps>('Avatar')
+
+/**
+ * A moment (`at`, epoch ms) formatted by the host in the person's locale:
+ * relative ("5 min ago"), short ("5m"), elapsed ("4:05", a running timer),
+ * or a date and time. The host redraws it as time passes; the script sends
+ * nothing more.
+ */
+export const Timestamp = make<TimestampProps>('Timestamp')
+
+/**
+ * Code in the app's code theme: `language` colors what the host knows
+ * (`diff` colors added and removed lines), with optional line numbers and
+ * marked lines. `onSelect(line)` gets the line tapped.
+ */
+export const CodeView = makeText<CodeViewProps>('CodeView')
+
 // ── Inputs ──────────────────────────────────────────────────────────────────
 
 export const Button = makeText<ButtonProps>('Button')
@@ -252,6 +284,24 @@ export function Switch(props: SwitchProps): JSX.Element {
   return node as unknown as JSX.Element
 }
 
+/**
+ * A check box with its label (`text`, or the JSX children). Like Switch,
+ * the host shows the new state at once and sends `onChange(checked)`; keep
+ * `checked` in a signal the handler updates, or the host goes back to it.
+ */
+export function Checkbox(props: CheckboxProps): JSX.Element {
+  const p = props as AnyProps
+  const node = createNode('Checkbox')
+  applyProps(node, p, TEXT_PROP)
+  if ('text' in p || 'children' in p) {
+    createRenderEffect(() =>
+      setNamedProp(node, 'text', p.text !== undefined ? p.text : childText(p.children, 'Checkbox')),
+    )
+  }
+  resyncAfter(node, EVENTS.change, 16, (v) => v === true)
+  return node as unknown as JSX.Element
+}
+
 export function Segmented(props: SegmentedProps): JSX.Element {
   const node = createNode('Segmented')
   applyProps(node, props as AnyProps)
@@ -278,6 +328,34 @@ export function Lanes(props: LanesProps): JSX.Element {
   resyncAfter(node, EVENTS.select, 18, (v) => (typeof v === 'number' ? Math.trunc(v) : 0))
   return node as unknown as JSX.Element
 }
+
+// ── Data ────────────────────────────────────────────────────────────────────
+
+/**
+ * A figure with its label (the value formatted by the script), an optional
+ * change (`delta`), a detail line and a sparkline of `series`. A tile for
+ * a dashboard row.
+ */
+export const Stat = make<StatProps>('Stat')
+
+/**
+ * Line, area or bar chart of one or several series, drawn by the host (no
+ * per-point nodes): optional axes, thresholds and a legend; a tap or a
+ * scrub shows a readout, and `onSelect(index)` gets the point let go on.
+ */
+export const Chart = make<ChartProps>('Chart')
+
+/** A ring or a half ring filled to `value` (0..1), turning warning and danger past its thresholds. */
+export const Gauge = make<GaugeProps>('Gauge')
+
+/** One bar split into colored segments (`values` out of `max`), with an optional legend. */
+export const Meter = make<MeterProps>('Meter')
+
+/** Steps or milestones with a state each (pending, active, done, blocked, failed, skipped), down a rail or across. */
+export const Steps = make<StepsProps>('Steps')
+
+/** The bars of a recording's loudness (`peaks`), with the played part and markers; `onSelect(fraction)` gets a seek. */
+export const Waveform = make<WaveformProps>('Waveform')
 
 // ── Page chrome, overlays, high level ───────────────────────────────────────
 

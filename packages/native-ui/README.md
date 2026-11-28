@@ -80,7 +80,9 @@ slightly larger app (a list, a text field, buttons, a menu, storage) and the
 known-good bundle to load in a host: `pnpm -F @iii-dev/native-ui build:example`
 writes `examples/hello/dist/native.js`. [`examples/catalog2`](examples/catalog2)
 does the same for catalogue 2 (`build:catalog2`, `dist/catalog2.js`), one
-page per new piece, with the testTags a host's instrumented tests use.
+page per new piece, with the testTags a host's instrumented tests use, and
+[`examples/catalog3`](examples/catalog3) for catalogue 3 (`build:catalog3`,
+`dist/catalog3.js`: a dashboard-like overview, then a page per piece).
 
 ### Pages
 
@@ -98,8 +100,11 @@ after Back. `usePage()` gives the instance (`inst`, `name`, `params`) with
 in `ready`, and an iii app with an older catalogue shows "Needs a newer iii
 app" instead of running it. Declare `catalog: 2` to use what catalogue 2
 added (`Markdown`, `Lanes`, `hue`, `List.dragGroup`/`onDrop`,
-`ListDetail.listFill`), and give the worker's descriptor the same
-(`NativeUi::catalog(2)`, which the hub reads before it loads anything). The
+`ListDetail.listFill`), `catalog: 3` for catalogue 3 (`Checkbox`, `Avatar`,
+`Timestamp`, `CodeView`, `Stat`, `Chart`, `Gauge`, `Meter`, `Steps`,
+`Waveform`, `Card.tone`, `List.anchor`/`onStartReached`, a toast with an
+action), and give the worker's descriptor the same
+(`NativeUi::catalog(n)`, which the hub reads before it loads anything). The
 SDK warns once when an app uses a piece newer than it declared (the
 generated `SINCE` table says which version added what); an app that needs
 none of it keeps 1, as the browser does, and runs on older apps too.
@@ -115,7 +120,8 @@ One component per catalogue type, with the catalogue's names: `Column`,
 `StatusDot`, `Spinner`, `Progress`, `EmptyState`, `Image`, `StatusPanel`,
 `Markdown`, `Button`, `IconButton`, `TextField`, `Switch`, `Segmented`,
 `Chip`, `List`, `ListRow`, `Card`, `Lanes`, `Page`, `ListDetail`, `Sheet`,
-`RemoteScreen`.
+`RemoteScreen`; catalogue 3 adds `Checkbox`, `Avatar`, `Timestamp`,
+`CodeView`, `Stat`, `Chart`, `Gauge`, `Meter`, `Steps` and `Waveform`.
 
 - **Props** are typed from the catalogue (`src/generated/props.ts`). Enums
   take their names (`role="title"`, `kind="primary"`); `null`/`undefined`
@@ -127,7 +133,7 @@ One component per catalogue type, with the catalogue's names: `Column`,
 - **Events** are `on<Event>` props (`onPress`, `onLongPress`, `onChange`,
   `onSubmit`, `onSelect`, `onFocus`, `onDismiss`, `onRefresh`,
   `onEndReached`, `onFrame`, `onError`, `onKeyboard`, `onReady`, `onLink`,
-  `onDrop`). A handler
+  `onDrop`, `onStartReached`). A handler
   subscribes the node; the host only sends subscribed events and only arms
   the gestures behind them (no long-press haptic without `onLongPress`).
 - **Slots**: `children` is slot 0; the other slots are props named after
@@ -135,10 +141,14 @@ One component per catalogue type, with the catalogue's names: `Column`,
   `emptyDetail`, `header`, `empty`, `footer`). Where slot 0 has another name
   (`EmptyState.actions`, `StatusPanel.action`, `Page.body`,
   `Sheet.content`, `Lanes.lanes`), that prop works too.
-- **Text**: the JSX children of `Text`, `Button`, `Badge`, `Chip` and
-  `Markdown` become their `text` (`<Text>Count {n()}</Text>`). Text
-  anywhere else is not shown (a warning in the log).
-- `Switch`, `Segmented` and `Lanes` show the person's change at once; if the
+- **Text**: the JSX children of `Text`, `Button`, `Badge`, `Chip`,
+  `Markdown`, `Checkbox` and `CodeView` become their `text`
+  (`<Text>Count {n()}</Text>`). Text anywhere else is not shown (a warning
+  in the log).
+- **Icons**: an `icon` prop takes a Lucide name; `ICONS` (and the type
+  `KnownIcon`, which the editor offers) is the list every catalogue 3 host
+  bundles (`catalog.json` › `icons`). Another name draws a neutral square.
+- `Switch`, `Checkbox`, `Segmented` and `Lanes` show the person's change at once; if the
   app does not take it (the `checked`/`selected` prop stays), the SDK sends
   the app's value back.
 - `RemoteScreen` is only configured from the script (`session`, `wire`,
@@ -229,6 +239,86 @@ the narrowed board shows the card's lane:
 
 ```tsx
 const open = (lane: number) => (item: Ticket) => batch(() => { setLane(lane); setOpen(item.id) })
+```
+
+### Catalogue 3: dashboards, people, code and progress
+
+All of these need `defineApp({ catalog: 3, … })`. The host draws each one
+whole (no node per point, per line or per bar), formats and redraws what
+changes with time, and sends one event when the person picks something.
+How each host draws them: the ide repo's
+`projects/native-ui-catalog-3/design.md`.
+
+**`Checkbox`** is a box and its label (`text` or the children), optimistic
+like `Switch`: `onChange(checked)`; `indeterminate` draws a dash (and a tap
+sends `true`); `strike` crosses a checked label out (a to-do).
+
+```tsx
+<Checkbox checked={done()} strike onChange={setDone}>Write the tests</Checkbox>
+```
+
+**`Avatar`** shows the initials of `name`, an `image` (a data URI) or an
+`icon`, in a circle or a rounded square, with an optional `status` dot. With
+`hue` none its colour comes from the name, the same on every host.
+
+**`Timestamp`** shows a moment (`at`, epoch ms) in the person's locale:
+`relative` (5 min ago), `short` (5m), `elapsed` (a running 4:05), `date`,
+`time`, `dateTime`. The host keeps it current; the script sends `at` once.
+
+```tsx
+<Timestamp at={run.started_at} style="elapsed" role="code" />
+```
+
+**`CodeView`** shows code (the children or `text`) in the app's code theme:
+`language` colours what the host knows, `diff` colours added and removed
+lines; `lineNumbers` from `startLine`, `highlight` marks lines or ranges
+(`[12, [20, 24]]`), `wrap` or a sideways scroll; `onSelect(line)` gets a tap
+on a line. Past `limits.maxCodeChars` the host draws the start and a note.
+
+**`Stat`** is a dashboard tile: `label`, `value` (formatted by the script)
+with a `unit`, an `icon` in a `hue`, a `delta` in a `deltaTone`, a `detail`
+line and a sparkline of `series` (`seriesKind`).
+
+**`Chart`** draws a `line`, `area` or `bar` chart of one series (`number[]`)
+or several (`number[][]`, with `hues` and `legend`); `null` is a gap.
+`labels` name the points, `axes` adds the range and x labels, `thresholds`
+dashed lines (`[{ value, tone?, label? }]`), `min`/`max` and `unit` the
+scale. A press or a scrub shows a readout on the host; `onSelect(index)` is
+the point let go on.
+
+```tsx
+<Chart kind="area" height={160} series={[api, db]} legend={['api', 'db']} labels={hours}
+  thresholds={[{ value: 250, tone: 'danger', label: 'SLO' }]} axes unit="ms" />
+```
+
+**`Gauge`** fills a ring (or a `half` ring) to `value` (0..1), with the
+percent or `text` inside and a `label`; past `thresholds` (`[warn, danger]`)
+it turns warning, then danger. **`Meter`** is one bar split into `values`
+(out of `max`, or their sum), with `hues`, `labels` and a `legend`.
+
+**`Steps`** lists steps or milestones (`items: [{ title, detail?, state?,
+progress? }]`, state `pending`, `active`, `done`, `blocked`, `failed` or
+`skipped`), down a rail or across (`axis="horizontal"`), `compact` for
+titles only; `onSelect(index)` gets a tap.
+
+**`Waveform`** draws a recording's loudness (`peaks`, 0..1), the played part
+(`progress`), `markers`, and `onSelect(fraction)` for a seek.
+
+**`Card.tone`** gives a card the border and a faint fill of a tone
+(`attention` for a question waiting, `danger` for a failure).
+
+**`List.anchor="bottom"`** opens a List at its end and follows new items
+while the person is at the end (a chat log); `onStartReached()` asks for
+older items when the first ones come into view, and items spliced in at
+index 0 keep the screen where it was.
+
+**A toast with an action**: `iii.ui.toast(text, { action: 'Undo', kind? })`
+resolves `true` when the person tapped the action, `false` when the toast
+went away (at once on an older host).
+
+```tsx
+const undo = await iii.ui.toast('Message deleted', { action: 'Undo' })
+if (undo) restore(message)
 ```
 
 ### TextField: the text belongs to the host
@@ -503,7 +593,7 @@ state `ready` (the bundle's `ready` info), `roots`, `failed` (a `VmFailure`'s
 kind and message once the VM stopped: `watchdog`, `memory`, `reported`,
 `load`, `protocol`, `catalog`), `envState`, `clock`, `initInfo()`.
 
-The catalogue 2 events, as the device host sends them:
+The catalogue 2 and 3 events, as the device host sends them:
 
 ```ts
 await host.link('description', 'kan:KAN-12')      // a Markdown: link [href]; the href must be in its text
@@ -514,7 +604,15 @@ await host.itemLongPress('lane-todo', 'KAN-1')     // a lifted card released wit
 host.keys('lane-doing')                            // ['KAN-3', …]: the List's keys, in order
 host.items('lane-doing')                           // its items as the host holds them (enum fields as indexes)
 host.lanes('board')                                // { titles, counts, selected, lanes: NodeView[] }
+await host.toggle('todo')                          // a Switch or a Checkbox (indeterminate turns checked)
+await host.select('chart', 3)                      // a Chart's or a Stat's point, a Steps' step: select [index]
+await host.select('code', 42)                      // a CodeView's line, numbered from startLine
+await host.select('voice', 0.5)                    // a Waveform's fraction
+await host.emit('log', 'startReached')             // a List anchored at the bottom asks for older items
 ```
+
+A toast with an action waits for `ui.toast(args)` (default: `false`, the
+toast went away); `host.toasts` records it with its `action`.
 
 `drop` checks what the host guarantees: both Lists share a `dragGroup`, the
 key is in the source, the index is in range (`0..count`, one less for a
@@ -537,8 +635,8 @@ at the end, `host` what else the host did (`droppedWrites`, `toasts`,
 Every string of design §5.7 comes out of a flow byte for byte;
 `conformance/design-examples.json` lists them (`id`, `dir`, `message`,
 `decoded`, `flow`). Those flows run on a catalogue 1 host (their `init`
-says `"catalog":1`, as the design writes it); the catalogue 2 flows run on
-the SDK's.
+says `"catalog":1`, as the design writes it); the catalogue 2 and 3 flows
+run on the SDK's (their `init` says its version, 3).
 
 The ide repo copies these files into
 `android/app/src/test/resources/workerui/conformance/`, replays each flow
@@ -564,6 +662,9 @@ piece of work (`ide/native/README.md` › Conformance fixtures).
 | `list-drop.json` | Catalogue 2: a reorder, a drop across lanes, a drop into an empty lane, each spliced by the script |
 | `list-fill.json` | Catalogue 2: a card opened (`selected` and `showDetail` in one message), then dismissed |
 | `hue.json` | Catalogue 2: Icon, Badge and StatusDot in every hue, a Chip whose hue changes |
+| `catalog3.json` | Catalogue 3: every new display and data type; a Checkbox checked, then a step, a chart point, a code line and a waveform seek |
+| `toast-action.json` | Catalogue 3: a toast with Undo as a request, answered `{action: true}` |
+| `list-anchor.json` | Catalogue 3: a List anchored at the bottom; startReached brings older items in at index 0 |
 
 ## The wire, as this SDK writes it
 
