@@ -85,6 +85,10 @@ const missingForkDirectory = new URLSearchParams(window.location.search).has(
   'missing-fork-directory',
 );
 const forkFails = new URLSearchParams(window.location.search).has('fork-fails');
+// Access off with host sessions the worker left out: every host row hidden and
+// none listed (all), hidden below a worker row (worker), or no host session (none).
+const hiddenHost = new URLSearchParams(window.location.search).get('hidden-host');
+if (hiddenHost) allowed = false;
 // After the first snapshot shows 'First reply', a second reply is written and
 // the next cursor read is rejected once.
 const retryFollowOnce = new URLSearchParams(window.location.search).has('retry-follow-once');
@@ -192,6 +196,18 @@ const host = {
         if (holdVisibilityList) {
           document.getElementById('root')?.setAttribute('data-inventory-waiting', 'true');
           await holdVisibilityList;
+        }
+        if (hiddenHost) {
+          return {
+            inventory_status: 'available',
+            agents: hiddenHost === 'worker' ? [workerRow] : [],
+            ...(hiddenHost === 'none'
+              ? {}
+              : {
+                  detail: `${rows.length} sessions on the terminal host are hidden; set external_sessions: true to list them`,
+                }),
+            ...(p.include_config_id ? { config_id: configId, external_visibility: null } : {}),
+          };
         }
         const unavailable = listing === 'partial' || listing === 'unavailable';
         return {

@@ -113,6 +113,7 @@ async function testSessionActions(code) {
       refuseConfigWatch = false,
       retryFollowOnce = false,
       forkFails = false,
+      hiddenHost,
     } = {},
   ) {
     const url = new URL('http://127.0.0.1/');
@@ -121,6 +122,7 @@ async function testSessionActions(code) {
     if (refuseConfigWatch) url.searchParams.set('refuse-config-watch', '');
     if (retryFollowOnce) url.searchParams.set('retry-follow-once', '');
     if (forkFails) url.searchParams.set('fork-fails', '');
+    if (hiddenHost) url.searchParams.set('hidden-host', hiddenHost);
     const { window } = new JSDOM('<div id="root"></div>', {
       url: url.href,
       pretendToBeVisual: true,
@@ -832,6 +834,59 @@ async function testSessionActions(code) {
     await text('Separate fork terminal · copy-1');
     await settle(document);
     assert.equal(box(document, 'Draft B')?.value, 'other draft');
+  });
+
+  await test("a completed fork keeps the original row's draft", async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, text } = ui;
+    await text('Draft A');
+    await draft(ui, 'Draft A', 'still here');
+    await confirmFork(ui, 'Draft A');
+    (await dialogButton(ui, 'Create fork')).click();
+    await text('Opened a fork of Draft A');
+    await settle(document);
+    assert.equal(openCalls(document), '1');
+    assert.equal(box(document, 'Draft A')?.value, 'still here');
+  });
+
+  await test('a fork whose row left the rail during describe does not open', async (t) => {
+    const ui = setup(t, { heartbeat: false });
+    const { document, shortcut, until } = ui;
+    await pendingFork(ui, 'Design review');
+    shortcut('KeyO');
+    // The rail has committed the list without the row before describe settles.
+    await until(() => !document.querySelector('[aria-label="Fork Design review"]'));
+    shortcut('KeyE');
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|Opened a fork/);
+  });
+
+  const HINT = /sessions on the terminal host are hidden; set external_sessions: true to list them/;
+
+  await test('shows the external sessions hint when every host row is hidden', async (t) => {
+    const { document, text } = setup(t, { hiddenHost: 'all' });
+    await text('set external_sessions: true to list them');
+    assert.match(document.body.textContent, HINT);
+    assert.doesNotMatch(document.body.textContent, /No sessions listed/);
+  });
+
+  await test('shows the hint below worker rows when host rows are hidden', async (t) => {
+    const { document, text, until } = setup(t, { hiddenHost: 'worker' });
+    await text('Worker run');
+    await text('set external_sessions: true to list them');
+    assert.doesNotMatch(document.body.textContent, /No sessions listed/);
+    const row = await until(() => document.querySelector('[aria-label="Message Worker run"]'));
+    const hint = Array.from(document.querySelectorAll('p')).find((p) => HINT.test(p.textContent));
+    assert.ok(hint);
+    // The hint follows the listed rows in document order.
+    assert.ok(row.compareDocumentPosition(hint) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  await test('keeps No sessions listed when no host row is hidden', async (t) => {
+    const { document, text } = setup(t, { hiddenHost: 'none' });
+    await text('No sessions listed');
+    assert.doesNotMatch(document.body.textContent, /external_sessions|External sessions are off/);
   });
 
   const workerRun = async (t) => {

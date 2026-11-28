@@ -3,19 +3,23 @@ import {
   appendFile,
   link,
   mkdir,
+  mkdtemp,
   open,
   readFile,
   rename,
+  rm,
   stat,
   symlink,
   truncate,
   unlink,
   writeFile,
 } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { context, trace } from '@opentelemetry/api';
-import { registerWorker } from 'iii-sdk';
+import { type IIIClient, registerWorker } from 'iii-sdk';
 import { describe, expect, it, vi } from 'vitest';
+import { readTranscript } from '../src/terminal/external-transcript.js';
 import {
   compactBoundary,
   compactSummary,
@@ -2227,5 +2231,335 @@ describe('authorization', () => {
       expect(seen(s, 'A')).toEqual(both);
       expect(seen(s, 'B')).toEqual(both);
     });
+  });
+});
+
+describe('validated ancestry and the historical search budget', () => {
+  const other = '22222222-2222-4222-8222-222222222222';
+  async function addSession(s: SyntheticHost) {
+    s.host.cli.push({
+      kind: 'interactive',
+      sessionId: other,
+      status: 'idle',
+      name: 'other',
+      cwd: '/fixture',
+    });
+    const file = join(s.project, `${other}.jsonl`);
+    await writeFile(file, lines(answer(1, null, 'other fixture')));
+    return file;
+  }
+  const client = (s: SyntheticHost) =>
+    ({
+      call: (r: Parameters<SyntheticHost['client']['call']>[0]) => s.client.call(r),
+    }) as unknown as IIIClient;
+  const read = (s: SyntheticHost, mode: 'baseline' | 'since', cursor?: string) =>
+    readTranscript(client(s), { CLAUDE_CONFIG_DIR: s.root }, id, mode, cursor);
+  /** The cursor without the validated chain tip it carries: the older shape. */
+  const withoutAncestry = (cursor: string) => {
+    const fields = cursor.split(':');
+    expect([6, 7]).toContain(fields.length);
+    return fields.slice(0, -2).join(':');
+  };
+  /** Annotation records of exactly `bytes` bytes in total (at least 128 KiB). */
+  const exact = (bytes: number) => {
+    const n = Math.floor(bytes / (64 * 1024)) - 1;
+    return summaryLine(64 * 1024).repeat(n) + summaryLine(bytes - n * 64 * 1024);
+  };
+  const cursorsOf = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[5] === id && args[6] === 'since')
+      .map((args) => args[7]);
+
+  it('an ordinary poll after a long annotation run does not search the prefix', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(record(2, 1, 'user', 'prompt before the run')));
+      await s.poll();
+      // Polls of annotations only: the prompt ends up more than the search
+      // budget before the parsed start, so only the cursor's tip can end the walk.
+      await appendFile(s.file, filler(7 * MiB));
+      await s.poll();
+      await appendFile(s.file, filler(7 * MiB));
+      await s.poll();
+      await appendFile(s.file, lines(answer(3, 2, 'after the run')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after the run' }]);
+    });
+  });
+
+  it('a cursor without validated ancestry falls back to the bounded search', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, lines(record(1, null, 'user', 'old cursor prompt')));
+      const base = await read(s, 'baseline');
+      await appendFile(s.file, filler(MiB) + lines(answer(2, 1, 'after old cursor')));
+      const next = await read(s, 'since', withoutAncestry(base.cursor));
+      expect(next.replies).toEqual([{ id: recordId(2), text: 'after old cursor' }]);
+    });
+  });
+
+  it('a parent at the search budget is found', async () => {
+    await withSyntheticHost(async (s) => {
+      const parent = lines(record(2, null, 'user', 'budget prompt'));
+      await writeFile(s.file, parent + exact(8 * MiB - Buffer.byteLength(parent)));
+      expect((await stat(s.file)).size).toBe(8 * MiB);
+      const base = await read(s, 'baseline');
+      await appendFile(s.file, lines(answer(3, 2, 'at the budget')));
+      const next = await read(s, 'since', withoutAncestry(base.cursor));
+      expect(next.replies).toEqual([{ id: recordId(3), text: 'at the budget' }]);
+    });
+  });
+
+  it('a historical search past its budget makes only that read unavailable', async () => {
+    await withSyntheticHost(async (s) => {
+      const otherFile = await addSession(s);
+      const parent = lines(record(2, null, 'user', 'past the budget'));
+      // The parent starts one byte further back than the budget allows.
+      await writeFile(s.file, parent + exact(8 * MiB + 1 - Buffer.byteLength(parent)));
+      await observe(s, 'A');
+      await observe(s, 'B', other);
+      await appendFile(s.file, lines(answer(3, 2, 'unreachable parent')));
+      await appendFile(otherFile, lines(answer(2, 1, 'other reply')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([{ id: recordId(2), text: 'other reply' }]);
+      const cursors = cursorsOf(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).toBe(cursors.at(-2));
+    });
+  });
+
+  it('a lookup past the search budget fails for that session', async () => {
+    await withSyntheticHost(async (s) => {
+      await addSession(s);
+      await writeFile(
+        s.file,
+        lines(record(2, null, 'user', 'far prompt')) +
+          filler(17 * MiB) +
+          lines(answer(3, 2, 'far answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect((await lookup(s, other)).last_reply).toEqual({
+        id: recordId(1),
+        text: 'other fixture',
+      });
+    });
+  });
+
+  const compactedAfter = (bytes: number) =>
+    lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'before the window')) +
+    filler(bytes) +
+    lines(compactBoundary(3, 2), compactSummary(4, 3));
+
+  it('a compaction finds its logical parent before the window', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compactedAfter(9 * MiB));
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(2),
+        text: 'before the window',
+      });
+    });
+  });
+
+  it('a logical parent past the search budget gives a null reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compactedAfter(17 * MiB));
+      expect((await lookup(s)).last_reply).toBeNull();
+    });
+  });
+
+  it('a failed crossing in a windowed file gives a null reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        filler(9 * MiB) +
+          lines(
+            record(2, 99, 'user', 'prompt with a missing parent'),
+            compactBoundary(3, 2),
+            compactSummary(4, 3),
+          ),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(8 * MiB);
+      expect((await lookup(s)).last_reply).toBeNull();
+    });
+  });
+
+  // The parent is before the parsed range of the incremental read and off the
+  // chain the baseline validated (a later root is the tip there).
+  async function parentBeforeWindow(s: SyntheticHost, fields: Record<string, unknown>) {
+    await writeFile(
+      s.file,
+      lines(
+        { ...record(2, null, 'user', 'parent before the window'), ...fields },
+        record(5, null, 'user', 'later root'),
+      ),
+    );
+    const base = await read(s, 'baseline');
+    await appendFile(s.file, lines(answer(3, 2, 'main reply')));
+    return read(s, 'since', base.cursor);
+  }
+
+  it('a sidechain parent before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      // The same layout with an ordinary parent is read.
+      expect((await parentBeforeWindow(s, {})).replies).toEqual([
+        { id: recordId(3), text: 'main reply' },
+      ]);
+      await expect(parentBeforeWindow(s, { isSidechain: true })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+
+  it('a team parent before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      await expect(parentBeforeWindow(s, { teamName: 'synthetic-team' })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+
+  it('a parent of another session before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      await expect(parentBeforeWindow(s, { sessionId: other })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+});
+
+describe('per-observer dispatch failures', () => {
+  /** Rejects dispatch to `observer` while `failing(reply id)` holds. */
+  function failFor(s: SyntheticHost, observer: string, failing: (reply: string) => boolean) {
+    s.host.beforeDelivery = async () => {
+      const call = s.host.calls.findLast((c) => c.function_id === ON);
+      const reply = (call?.payload.reply as { id?: string } | undefined)?.id;
+      if (call?.metadata?.for_observer === observer && reply && failing(reply)) {
+        throw new Error('dispatch failed');
+      }
+    };
+  }
+  const dispatchedTo = (s: SyntheticHost, observer: string, from = 0) =>
+    s.host.calls
+      .slice(from)
+      .filter((c) => c.function_id === ON && c.metadata?.for_observer === observer);
+  const first = { id: recordId(2), text: 'first' };
+  const second = { id: recordId(3), text: 'second' };
+
+  it('a failing observer does not block another observer of the same session', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first]);
+    });
+  });
+
+  it('a failing observer receives its reply once the failure clears', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      failing = false;
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      expect(seen(s, 'B')).toEqual([first]);
+    });
+  });
+
+  it('a partly failed page is delivered exactly once to each observer', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      let failing = true;
+      failFor(s, 'A', (reply) => failing && reply === recordId(3));
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+      failing = false;
+      const retry = s.host.calls.length;
+      await s.poll();
+      await s.poll();
+      expect(
+        dispatchedTo(s, 'A', retry).map((c) => (c.payload.reply as { id: string }).id),
+      ).toEqual([recordId(3)]);
+      expect(dispatchedTo(s, 'B', retry)).toEqual([]);
+      expect(seen(s, 'A')).toEqual([first, second]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+    });
+  });
+
+  it('a lost grant during a failing dispatch ends the poll', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      s.host.beforeDelivery = async () => {
+        if (s.host.calls.findLast((c) => c.function_id === ON)?.metadata?.for_observer === 'A') {
+          // The socket closes while this dispatch fails.
+          s.host.socketOpen = false;
+          throw new Error('dispatch failed');
+        }
+      };
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([]);
+      // The poll ended at the failure: the other observer was never dispatched to.
+      expect(dispatchedTo(s, 'A')).toHaveLength(1);
+      expect(dispatchedTo(s, 'B')).toEqual([]);
+      // A reconnect starts a new grant, which rebaselines both watches by design:
+      // only replies written after it are delivered, to both observers alike.
+      s.host.beforeDelivery = async () => {};
+      s.host.socketOpen = true;
+      s.host.connectionEpoch++;
+      await s.refresh();
+      await s.poll();
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([second]);
+      expect(seen(s, 'B')).toEqual([second]);
+    });
+  });
+
+  it('unobserving a failing observer drops only its backlog', async () => {
+    await withSyntheticHost(async (s) => {
+      const stopA = await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'B')).toEqual([first]);
+      await stopA();
+      s.host.beforeDelivery = async () => {};
+      const after = s.host.calls.length;
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(dispatchedTo(s, 'A', after)).toEqual([]);
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+    });
+  });
+
+  it('the host tests name python3 when it is missing', async () => {
+    const path = process.env.PATH;
+    const empty = await mkdtemp(join(tmpdir(), 'no-python-'));
+    process.env.PATH = empty;
+    try {
+      await expect(withSyntheticHost(async () => 'ran')).rejects.toThrow(/python3/);
+    } finally {
+      process.env.PATH = path;
+      await rm(empty, { recursive: true, force: true });
+    }
   });
 });
