@@ -110,6 +110,10 @@ pub struct StopOutput {
     pub ok: bool,
     /// False when the session was already gone.
     pub was_running: bool,
+    /// Present when the session record was removed but closing the owned
+    /// Chromium target failed or timed out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Scheme allowlist check shared by `sessions::start` and `navigate`.

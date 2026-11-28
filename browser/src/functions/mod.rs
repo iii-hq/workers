@@ -732,10 +732,11 @@ fn register_sessions_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: sessions::StopInput| {
             let sx = sx.clone();
             async move {
-                let was_running = sx.stop(&req.session_id, "stopped").await;
+                let outcome = sx.stop(&req.session_id, "stopped").await;
                 Ok::<_, Error>(sessions::StopOutput {
-                    ok: true,
-                    was_running,
+                    ok: outcome.ok,
+                    was_running: outcome.was_running,
+                    error: outcome.error,
                 })
             }
         })

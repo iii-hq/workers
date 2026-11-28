@@ -1549,14 +1549,21 @@ impl Session {
             }
             let _ = recording.writer.await;
         }
-        for task in self
+        let tasks: Vec<_> = self
             .tasks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .drain(..)
-        {
+            .collect();
+        for task in &tasks {
             task.abort();
         }
+        let _ = tokio::time::timeout(TASK_DRAIN_TIMEOUT, async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        })
+        .await;
         for dir in self
             .upload_dirs
             .lock()
@@ -1573,41 +1580,84 @@ impl Session {
     /// user tab is released untouched, and the user's browser process is
     /// never closed. Idempotent at the caller level: `Sessions` removes the
     /// session from the live map first, so a second stop never reaches here.
-    pub async fn shutdown(&self) {
-        self.close_page().await;
+    pub async fn shutdown(&self) -> Result<(), String> {
+        let close_result = self.close_page().await;
         self.detach().await;
+        close_result
     }
 
-    async fn close_page(&self) {
+    async fn close_page(&self) -> Result<(), String> {
         match (&self.backing, self.kind) {
             (Backing::Shared(shared), SessionKind::Launched) => {
-                let browser = shared.browser.lock().await;
                 let target = self.page.target_id().clone();
-                if let Err(e) = browser
-                    .execute(cdp_target::CloseTargetParams::new(target))
-                    .await
+                let context = self.context_id.clone();
+                match tokio::time::timeout(CLOSE_PAGE_TIMEOUT, async {
+                    let browser = shared.browser.lock().await;
+                    let close_res = browser
+                        .execute(cdp_target::CloseTargetParams::new(target.clone()))
+                        .await;
+                    let close_outcome = match close_res {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(format!("failed to close target {target:?}: {e}")),
+                    };
+                    if let Some(context) = context {
+                        let _ = browser.dispose_browser_context(context).await;
+                    }
+                    close_outcome
+                })
+                .await
                 {
-                    tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
-                }
-                if let Some(context) = &self.context_id {
-                    let _ = browser.dispose_browser_context(context.clone()).await;
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(msg)) => {
+                        tracing::warn!(session_id = %self.id, target_id = ?target, "{msg}");
+                        Err(msg)
+                    }
+                    Err(_) => {
+                        let msg = format!(
+                            "timed out after {}s closing page target {target:?}",
+                            CLOSE_PAGE_TIMEOUT.as_secs()
+                        );
+                        tracing::warn!(session_id = %self.id, target_id = ?target, "{msg}");
+                        Err(msg)
+                    }
                 }
             }
             (Backing::Own(browser), SessionKind::Attached { owns_page: true }) => {
                 let target = self.page.target_id().clone();
-                if let Err(e) = browser
-                    .lock()
-                    .await
-                    .execute(cdp_target::CloseTargetParams::new(target))
-                    .await
+                match tokio::time::timeout(CLOSE_PAGE_TIMEOUT, async {
+                    let browser = browser.lock().await;
+                    match browser
+                        .execute(cdp_target::CloseTargetParams::new(target.clone()))
+                        .await
+                    {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(format!("failed to close target {target:?}: {e}")),
+                    }
+                })
+                .await
                 {
-                    tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(msg)) => {
+                        tracing::warn!(session_id = %self.id, target_id = ?target, "{msg}");
+                        Err(msg)
+                    }
+                    Err(_) => {
+                        let msg = format!(
+                            "timed out after {}s closing owned attached target {target:?}",
+                            CLOSE_PAGE_TIMEOUT.as_secs()
+                        );
+                        tracing::warn!(session_id = %self.id, target_id = ?target, "{msg}");
+                        Err(msg)
+                    }
                 }
             }
-            _ => {}
+            _ => Ok(()),
         }
     }
 }
+
+const CLOSE_PAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const TASK_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A paused handoff waiting for confirmation: the sender resolves the
 /// `browser::handoff` call that parked on it. `session_id` lets a confirm
@@ -1615,6 +1665,15 @@ impl Session {
 pub struct PendingHandoff {
     pub session_id: String,
     pub confirm: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Outcome of `Sessions::stop`: separates whether the session record existed
+/// (`was_running`) from whether closing its owned Chromium target succeeded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopOutcome {
+    pub was_running: bool,
+    pub ok: bool,
+    pub error: Option<String>,
 }
 
 /// What `Sessions::open` takes to make a tab.
@@ -2127,7 +2186,7 @@ impl Sessions {
             match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
                 Ok(pumps) => pumps,
                 Err(error) => {
-                    session.shutdown().await;
+                    let _ = session.shutdown().await;
                     return Err(error);
                 }
             };
@@ -2378,7 +2437,7 @@ impl Sessions {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
-        session.shutdown().await;
+        let _ = session.shutdown().await;
         self.emit_updated(&session.tab, false).await;
         if close_browser {
             self.shutdown_browser_if_idle().await;
@@ -2523,7 +2582,7 @@ impl Sessions {
                 Ok(pumps) => pumps,
                 Err(error) => {
                     self.release_adopted_page(&session);
-                    session.shutdown().await;
+                    let _ = session.shutdown().await;
                     return Err(error);
                 }
             };
@@ -2539,11 +2598,11 @@ impl Sessions {
                 let navigation = session.navigate(url).await;
                 let policy_error = session.take_navigation_error();
                 if let Some(error) = policy_error {
-                    session.shutdown().await;
+                    let _ = session.shutdown().await;
                     return Err(error);
                 }
                 if let Err(error) = navigation {
-                    session.shutdown().await;
+                    let _ = session.shutdown().await;
                     return Err(format!("failed to open tab: {error}"));
                 }
             }
@@ -2652,21 +2711,26 @@ impl Sessions {
         }
     }
 
-    /// Close a tab for good: its page (if open), its record, its downloads.
-    /// Returns whether the tab existed — closing an unknown id succeeds
-    /// (delete semantics: the caller wants it gone, and it is).
-    pub async fn stop(self: &Arc<Self>, id: &str, reason: &str) -> bool {
+    /// Outcome of stopping a session: distinguishes whether the session
+    /// record existed (`was_running`) from whether closing its owned target
+    /// succeeded (`ok` / `error`).
+    pub async fn stop(self: &Arc<Self>, id: &str, reason: &str) -> StopOutcome {
         self.stop_inner(id, reason, true).await
     }
 
-    async fn stop_inner(self: &Arc<Self>, id: &str, reason: &str, close_browser: bool) -> bool {
+    async fn stop_inner(
+        self: &Arc<Self>,
+        id: &str,
+        reason: &str,
+        close_browser: bool,
+    ) -> StopOutcome {
         let session = self
             .live
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         let tab = self.remove_tab(id);
-        if let Some(session) = &session {
+        let close_result = if let Some(session) = &session {
             self.release_adopted_page(session);
             // Drop any handoff parked on this session so its call unblocks
             // (its receiver errors) instead of waiting for the full timeout
@@ -2675,10 +2739,16 @@ impl Sessions {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .retain(|_, h| h.session_id != id);
-            session.shutdown().await;
-        }
+            session.shutdown().await
+        } else {
+            Ok(())
+        };
         let Some(tab) = tab else {
-            return false;
+            return StopOutcome {
+                was_running: false,
+                ok: true,
+                error: None,
+            };
         };
         tab.remove_download_files();
         if tab.persists() {
@@ -2688,7 +2758,18 @@ impl Sessions {
         if close_browser {
             self.shutdown_browser_if_idle().await;
         }
-        true
+        match close_result {
+            Ok(()) => StopOutcome {
+                was_running: true,
+                ok: true,
+                error: None,
+            },
+            Err(err) => StopOutcome {
+                was_running: true,
+                ok: false,
+                error: Some(err),
+            },
+        }
     }
 
     /// Register a paused handoff and return its id plus the receiver the
