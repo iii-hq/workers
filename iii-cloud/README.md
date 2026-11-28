@@ -80,7 +80,7 @@ and deploy one environment. It cannot import a project or change settings.
 The entry is `iii-cloud`. Changes apply without a restart.
 
 ```yaml
-cloud_url: https://cloud.iii.dev   # the console; the API is <cloud_url>/api/v1. A change signs you out
+cloud_url: https://cloud.iii.dev   # the console; calls go to its functions at <cloud_url>/_iii/ws (<cloud_url>/api/v1 while that socket is down). A change signs you out
 iii_bin: iii                       # the iii the run here uses; it must match the cloud's engine
 merge_method: squash               # merge, squash or rebase: the gh pr merge flag
 postgres_image: pgvector/pgvector:pg17        # the local Postgres for a database resource
