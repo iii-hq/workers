@@ -3199,7 +3199,7 @@ pub fn redact_named(text: &str, secrets: &[(Option<&str>, &str)]) -> String {
             forms.extend(
                 value
                     .lines()
-                    .map(|l| l.trim_end_matches('\r'))
+                    .map(str::trim)
                     .filter(|l| l.len() >= 8)
                     .map(str::to_string),
             );
@@ -3313,7 +3313,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn a_blank_line_of_a_multi_line_value_is_no_needle() {
         let value = "{\n        \n  \"key\": \"abcdefgh\"\n}";
         let out = redact_named("services:\n        api:\n", &[(None, value)]);
