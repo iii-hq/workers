@@ -2403,6 +2403,17 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     ).toBe(true)
   })
 
+  it('asks without a session (the older answer): the launch path runs, so the hand-off is not left without a chat', async () => {
+    const reply = {
+      'iii-cloud::handoff': { id: 'ho-new', marker: '[m]', asks: true, delivered: false, session_id: null },
+    }
+    const h = await stage({ ...release(note), agent: null, handoff_brief: null }, reply, { openScreen: vi.fn() })
+    await click([...(stop()?.querySelectorAll('button') ?? [])][0])
+    await flush()
+    expect(h.compose).toHaveBeenCalled()
+    expect(stop()?.textContent).not.toContain("Answer your agent's question in the chat first.")
+  })
+
   it('the "sent" sentence belongs to the check it was pressed for: a newer failure shows nothing stale', async () => {
     const reused = {
       'iii-cloud::handoff': { id: 'ho-d', marker: '[m]', reused: true, sent: true, session_id: 'sess-1' },
