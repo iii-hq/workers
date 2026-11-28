@@ -1782,7 +1782,7 @@ describe('ended interactive sessions from transcripts', () => {
     await expect(fake.replyRow(uuid(1))).rejects.toThrow('session not listed');
   });
 
-  it('refuses with OPEN_ELSEWHERE an ended id running again', async () => {
+  it('refuses with OPEN_ELSEWHERE a resume when ended running again', async () => {
     await session(uuid(1));
     let rows: CliRow[] = [];
     const fake = endedHost(() => rows);
