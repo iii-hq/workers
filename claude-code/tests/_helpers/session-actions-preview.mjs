@@ -880,7 +880,9 @@ async function testSessionActions(code) {
     const hint = Array.from(document.querySelectorAll('p')).find((p) => HINT.test(p.textContent));
     assert.ok(hint);
     // The hint follows the listed rows in document order.
-    assert.ok(row.compareDocumentPosition(hint) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING);
+    assert.ok(
+      row.compareDocumentPosition(hint) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   await test('keeps No sessions listed when no host row is hidden', async (t) => {

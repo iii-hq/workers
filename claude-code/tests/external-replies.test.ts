@@ -476,8 +476,10 @@ describe('large transcripts and new CLI records', () => {
         s.file,
         lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
           filler(40 * MiB) +
+          // The active chain starts inside the window: a parent 40 MiB back is
+          // past the historical search budget and would make the read unavailable.
           lines(
-            record(3, 2, 'user', 'late prompt'),
+            record(3, null, 'user', 'late prompt'),
             answer(4, 3, 'abandoned answer'),
             answer(5, 3, 'latest answer'),
           ),
@@ -2216,18 +2218,17 @@ describe('authorization', () => {
       await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
       failSecondDispatchOnce(s);
       await s.poll();
-      const retry = s.host.calls.length;
-      await s.poll();
-      expect(dispatched(s, retry)).toEqual([
-        ['A', recordId(3)],
-        ['B', recordId(2)],
-        ['B', recordId(3)],
-      ]);
-      await s.poll();
       const both = [
         { id: recordId(2), text: 'first' },
         { id: recordId(3), text: 'second' },
       ];
+      // A's failure does not hold B back: B gets the whole page on the same poll.
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'first' }]);
+      expect(seen(s, 'B')).toEqual(both);
+      const retry = s.host.calls.length;
+      await s.poll();
+      expect(dispatched(s, retry)).toEqual([['A', recordId(3)]]);
+      await s.poll();
       expect(seen(s, 'A')).toEqual(both);
       expect(seen(s, 'B')).toEqual(both);
     });
