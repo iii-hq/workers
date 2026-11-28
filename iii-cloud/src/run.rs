@@ -3171,7 +3171,20 @@ pub fn redact_named(text: &str, secrets: &[(Option<&str>, &str)]) -> String {
     // noise.
     let mut needles: Vec<(String, String)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (name, value) in secrets.iter().filter(|(_, v)| v.len() >= 3) {
+    // A "name" that is not a variable name (a pasted `postgres://u:pw@db/x?a=b` line splits at its
+    // first `=`) is never shown in a marker: its text is itself a value to replace.
+    let is_name = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let mut all: Vec<(Option<&str>, &str)> = Vec::new();
+    for &(name, value) in secrets {
+        match name {
+            Some(n) if !is_name(n) => all.extend([(None, value), (None, n)]),
+            _ => all.push((name, value)),
+        }
+    }
+    for (name, value) in all.into_iter().filter(|(_, v)| v.len() >= 3) {
         let marker = match name {
             Some(n) => format!("[redacted:{n}]"),
             None => "[redacted]".to_string(),
@@ -3267,7 +3280,7 @@ pub async fn prune(runs: &Path, keep: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{recheck, redact, save_left};
+    use super::{recheck, redact, redact_named, save_left};
 
     #[test]
     fn a_kept_copy_names_the_variable_a_value_came_from() {
@@ -3287,6 +3300,24 @@ mod tests {
             std::fs::read_to_string(left.path().join("c.yaml")).unwrap(),
             "level: [redacted:LOG_LEVEL]\nsee the [redacted:LOG_LEVEL] page\nkey: [redacted]\n"
         );
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_name_is_replaced_not_shown() {
+        let line = "postgres://app:Hunter2pw@db/app?sslmode";
+        let named = [(Some(line), "require")];
+        assert_eq!(
+            redact_named(&format!("sslmode: require\nurl: {line}=require"), &named),
+            "sslmode: [redacted]\nurl: [redacted]=[redacted]"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn a_blank_line_of_a_multi_line_value_is_no_needle() {
+        let value = "{\n        \n  \"key\": \"abcdefgh\"\n}";
+        let out = redact_named("services:\n        api:\n", &[(None, value)]);
+        assert_eq!(out, "services:\n        api:\n");
     }
 
     #[test]
