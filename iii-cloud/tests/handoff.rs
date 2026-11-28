@@ -3886,4 +3886,13 @@ async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_ch
     assert_eq!(stored[0].id, made.id);
     assert_eq!(made.session_id, stored[0].agent.session_id);
     assert!(made.session_id.is_some());
+
+    // The chat of the ask is gone: it blocks nothing, a new hand-off is made.
+    let old_id = stored[0].id.clone();
+    h.fake.on("session::get", |_| Ok(json!({"meta": null})));
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(
+        !again.reused && !again.asks && again.id != old_id,
+        "{again:?}"
+    );
 }
