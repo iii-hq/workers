@@ -46,6 +46,15 @@ pub struct WorkerConfig {
     #[serde(default = "default_true")]
     pub inject_memories: bool,
 
+    /// Recall memories for sessions of kind `automation` too (workflow nodes,
+    /// kanban dispatches, sentinel investigations and the like, and their
+    /// sub-agents).
+    /// Off, their turns get the rules and the pinned memories only, and each
+    /// opening step is annotated `memory_recall: skipped` with
+    /// `memory_recall_skip_reason: automation`.
+    #[serde(default)]
+    pub recall_in_automation: bool,
+
     /// Memories injected per turn on rank alone. A list question goes past
     /// it only for "what do you remember about me?" (every user fact) or for
     /// siblings: lines on the same two or more question words, each leading

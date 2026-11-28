@@ -1,5 +1,8 @@
 //! Core record shapes shared by the store, the functions, and the events.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -112,7 +115,54 @@ impl Memory {
     pub fn last_stated(&self) -> u64 {
         self.stated_at.unwrap_or(self.updated_at)
     }
+
+    /// A live, unpinned memory tagged [`TRANSIENT_TAG`], or naming a work
+    /// item ([`names_work_item`]), whose fact was last
+    /// stated over [`TRANSIENT_MAX_AGE_DAYS`] before `now`: a turn is no
+    /// longer given it. Hidden, not retired: list and get still return it.
+    pub fn expired(&self, now: u64) -> bool {
+        self.is_live()
+            && !self.pinned
+            && (self.tags.iter().any(|t| t == TRANSIENT_TAG) || names_work_item(&self.text))
+            && now.saturating_sub(self.last_stated()) > TRANSIENT_MAX_AGE_DAYS * 86_400_000
+    }
 }
+
+/// The tag that marks a fact that stops being true when the current work
+/// ends (a time-boxed status); a person or an agent sets it.
+pub const TRANSIENT_TAG: &str = "transient";
+
+/// Whether a text names a work item, whose state ends with the work: a ticket
+/// key (`KAN-158`), a pull request (`PR 12`, `#1895`) or a commit hash.
+// shortcut: a denylist keeps standards and zones (UTF-8, UTC-3) apart from
+// ticket keys, and `#` takes 2-5 digits so colours pass; a project key in the
+// list is missed, and a 3-digit colour ("#333") reads as a pull request.
+pub fn names_work_item(text: &str) -> bool {
+    static KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Z]{2,10})-\d+\b").unwrap());
+    static PR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(?:pr|pull request)\s*#?\d+\b|#\d{2,5}\b").unwrap());
+    static HASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[0-9a-f]{7,40}\b").unwrap());
+    const STANDARDS: [&str; 34] = [
+        "ADR", "AES", "BR", "COVID", "CRC", "CVE", "CWE", "ECMA", "EIP", "ERC", "ES", "FIPS",
+        "GHSA", "GLM", "GMT", "GPT", "HTTP", "IE", "IEEE", "IPV", "ISO", "MD", "PEP", "PG", "RFC",
+        "RSA", "RUSTSEC", "SHA", "SQL", "SSL", "TLS", "UTC", "UTF", "WCAG",
+    ];
+    let bytes = text.as_bytes();
+    KEY.captures_iter(text).any(|c| !STANDARDS.contains(&&c[1]))
+        || PR.is_match(text)
+        || HASH.find_iter(text).any(|m| {
+            let h = m.as_str();
+            // A colour (`#1e1e1e`) or a UUID's group is no commit.
+            let before = m.start().checked_sub(1).map(|i| bytes[i]);
+            let after = bytes.get(m.end()).copied();
+            !matches!(before, Some(b'#' | b'-'))
+                && after != Some(b'-')
+                && h.bytes().any(|b| b.is_ascii_digit())
+                && h.bytes().any(|b| b.is_ascii_alphabetic())
+        })
+}
+// shortcut: a fixed 7 days, make it a config field if users need to tune it.
+pub const TRANSIENT_MAX_AGE_DAYS: u64 = 7;
 
 /// One markdown rule: always injected whole into the system prompt for
 /// sessions using its bank. Stored as `rules/<name>.md` — open it in any
@@ -188,6 +238,34 @@ pub fn fingerprint(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ticket_pull_request_or_commit_names_a_work_item() {
+        for named in [
+            "A rodada 14 do KAN-158 teve veredito reprovado.",
+            "MOT-5934 is merged.",
+            "O PR #1895 foi aberto sem merge.",
+            "PR 12 made refunds retry three times.",
+            "The fix landed in #1944.",
+            "Verified at commit fffd3d0a63482a142a9f3671ac7db12c7aba2e6d.",
+            "The stack runs the build of aa67ce3.",
+        ] {
+            assert!(names_work_item(named), "{named}");
+        }
+        for durable in [
+            "Files are UTF-8 and hashed with SHA-256 (ISO-8601 dates).",
+            "The tests need Docker running.",
+            "Use pnpm --filter <package> add <dep>.",
+            "Port 49334 is the engine; deadbeef is not a hash without a digit.",
+            "Colour #fff, step #1, HTTP-2 and CVE-2024-1234 are not work items.",
+            "O usuário mora em São Paulo (UTC-3), fuso GMT-3.",
+            "Body text is #333333 on #1e1e1eff; keys are RSA-4096, IEEE-754, PEP-8.",
+            "The user prefers GLM-4.6, DeepSeek-R1-0528 and Kimi-K2-0905.",
+            "Session b036d262-5ee0-424e-a78d-a9647f9e1c4d is the default one.",
+        ] {
+            assert!(!names_work_item(durable), "{durable}");
+        }
+    }
 
     #[test]
     fn stated_now_ms_never_repeats() {

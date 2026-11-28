@@ -27,7 +27,11 @@ and the `# Memory` header says which case applies to yours:
   what a later session would need with it.
 - **Scripted** (an automation or e2e run): nothing is saved automatically, and
   the header does not ask you to save. A scripted run does not write into the
-  user's memory: its saves, updates and deletes are refused.
+  user's memory: its saves, updates and deletes are refused. An automation run
+  (a workflow node, a kanban dispatch, a sentinel investigation and the like,
+  or a sub-agent of one) is given the rules and pinned memories only, nothing
+  recalled, unless `recall_in_automation` is on; its header says so. Call
+  `memory::recall` when the task needs a memory.
 
 **Rules** are markdown documents injected whole into the system prompt on every
 turn (`memory::rule::*`, on disk under the bank's `rules/` folder). **Memories**
@@ -120,7 +124,10 @@ rule; point-in-time information belongs in memories.
   in the step's `memory_pinned_skipped`; read one with `memory::get`.
 - Recalled memories are dated by when their fact was last stated; trust a
   newer memory over an older one that contradicts it. Dated events are stored
-  with absolute dates.
+  with absolute dates. A memory that names a ticket, a pull request or a
+  commit, or is tagged `transient`, stops being given to turns 7 days after it
+  was stated (a pinned one never); `memory::list` and `memory::get` still
+  return it.
 
 ## Functions
 
