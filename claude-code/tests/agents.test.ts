@@ -576,6 +576,7 @@ describe('claude::agents::list', () => {
     fake.state.set('claude_turns/hooked', { id: 'hooked', source: 'hook', status: 'completed' });
     fake.state.set('claude_turns/ran', { id: 'ran', source: 'run', status: 'completed' });
     fake.state.set('claude_sessions/h', record('h', 'done'));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: false });
     const res = await list(fake);
     expect(res.agents.map((a) => a.id)).toEqual(['h', 'tracked', 'hooked']);
     expect(res.detail).toBe(
@@ -597,6 +598,26 @@ describe('claude::agents::list', () => {
     const res = (await list(fake)) as { agents: unknown[]; hidden_reason?: string };
     expect(res.agents).toEqual([]);
     expect(res.hidden_reason).toBe('off');
+  });
+
+  it('the session list reads the setting alongside the inventory', async () => {
+    let settingReadFirst: boolean | undefined;
+    const fake: FakeIii = host(() => {
+      // The inventory has not finished: its host command is only now running.
+      settingReadFirst = fake.calls.some((c) => c.function_id === 'configuration::get');
+      return { stdout: JSON.stringify([]), stderr: '', exit_code: 0 };
+    });
+    await list(fake);
+    expect(settingReadFirst).toBe(true);
+  });
+
+  it('an unconfirmed list detail does not ask to enable the setting', async () => {
+    const fake = host(ok([interactive('stranger', 'idle'), interactive('other', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: true });
+    const res = (await list(fake)) as { detail?: string; hidden_reason?: string };
+    expect(res.hidden_reason).toBe('unconfirmed');
+    expect(res.detail).toContain('2 sessions on the terminal host are hidden');
+    expect(res.detail).not.toContain('set external_sessions: true');
   });
 
   it('keeps external names and directories hidden until live permission is confirmed', async () => {

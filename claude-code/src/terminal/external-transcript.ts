@@ -408,9 +408,10 @@ def read(fd, sid, mode, previous):
                 if mode != 'last' or not replies:
                     replies.append((pos, {'id': leaf, 'text': text}))
         leaf = parent
-    # A failed observer's unread replies may lie before a window that holds no
+    # A pending page's unread replies may lie before a window that holds no
     # chain record to walk back from: fail rather than acknowledge past them.
-    require(not (mode == 'resume' and pending and not incremental and tip is None))
+    # A full-page cursor has nothing unread there and keeps the gap rule.
+    require(not (pending and not incremental and tip is None))
     if crossing is not None:
         # History before a compaction is read best effort: any record there
         # the active chain would reject, a link that leaves it, or an ancestor

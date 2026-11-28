@@ -444,6 +444,9 @@ export function registerAgents(
       const { all, include_config_id } = ListPayloadSchema.parse(payload ?? {});
       // The ordinary worker listing needs inventory even with external access off.
       // Read it alongside confirmation, but authorize external rows only at publication.
+      // The setting read starts with them: it tells an off setting from an
+      // unconfirmed one when host rows are hidden, and is otherwise unused.
+      const setting = fetchRuntime(iii);
       const [epoch, { merge, detail }] = await Promise.all([
         access.confirm({ waitForWatchCheckpoint: !include_config_id }),
         inventory(all === true, {
@@ -466,10 +469,13 @@ export function registerAgents(
       // An unreadable setting is not known to be off.
       let hiddenReason: 'off' | 'unconfirmed' | undefined;
       if (hidden > 0 && !capturing) {
-        const runtime = await fetchRuntime(iii);
+        const runtime = await setting;
         hiddenReason = runtime && runtime.external_sessions !== true ? 'off' : 'unconfirmed';
+        const count = `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden`;
         details.push(
-          `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
+          hiddenReason === 'off'
+            ? `${count}; set external_sessions: true to list them`
+            : `${count} while access is being confirmed`,
         );
       }
       return {

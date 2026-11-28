@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import {
   appendFile,
   link,
@@ -2662,6 +2662,59 @@ describe('per-observer dispatch failures', () => {
     });
   });
 
+  /** The cursors of this session's healthy watch reads, oldest first. */
+  const sinceCursors = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[6] === 'since')
+      .map((args) => args[7]);
+
+  it('a healthy pending page waits for a tip instead of skipping', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      await observe(s, 'A');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, large), answer(3, 2, large), answer(4, 3, large)),
+      );
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: large }]);
+      // The page left two replies unread; the final window then holds no chain record.
+      await appendFile(s.file, filler(9 * MiB));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: large }]);
+      const held = sinceCursors(s);
+      expect(held.length).toBeGreaterThanOrEqual(3);
+      expect(held.at(-1)).toBe(held.at(-2));
+      await appendFile(s.file, lines(answer(5, 4, 'after the gap')));
+      for (let i = 0; i < 5; i++) await s.poll();
+      expect(seen(s, 'A')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(3), text: large },
+        { id: recordId(4), text: large },
+        { id: recordId(5), text: 'after the gap' },
+      ]);
+    });
+  });
+
+  it('a healthy full-page cursor still accepts a gap over 8 MiB with no tip', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      await appendFile(s.file, filler(9 * MiB));
+      await s.poll();
+      await s.poll();
+      // The gap read succeeded: the next read starts from the cursor it returned.
+      const cursors = sinceCursors(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).not.toBe(cursors.at(-2));
+      expect(seen(s, 'A')).toEqual([first]);
+    });
+  });
+
   it('a failed read keeps the gap rule', async () => {
     await withSyntheticHost(async (s) => {
       await observe(s, 'A');
@@ -2756,7 +2809,9 @@ describe('per-observer dispatch failures', () => {
     delete process.env.PATH;
     try {
       expect(runnerPath()).toEqual({});
-      const defaultPython = ['/usr/bin/python3', '/bin/python3'].some((p) => existsSync(p));
+      // The same probe the host helper runs: python3 looked up with the runner's PATH.
+      const probe = spawnSync('python3', ['--version'], { env: runnerPath(), encoding: 'utf8' });
+      const defaultPython = !probe.error && probe.status === 0;
       const run = withSyntheticHost(async (s) => (await lookup(s)).last_reply);
       if (defaultPython) {
         await expect(run).resolves.toEqual({ id: recordId(1), text: 'fixture answer' });

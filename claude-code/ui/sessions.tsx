@@ -651,13 +651,19 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     ) : null;
 
   const hostUnavailable = sessions.data?.inventory_status === 'unavailable';
-  // With access off, the worker counts the host sessions it left out and says how to list them.
-  const hiddenHint =
+  // The worker counts the host sessions it left out. Only with the setting off
+  // does the hint say how to list them; while access is being confirmed it
+  // keeps the count in a neutral line. A worker that gives no reason is off.
+  const hiddenCount =
     sessions.data?.inventory_status === 'available' && !sessions.data.external_visibility
-      ? sessions.data.detail?.match(
-          /\d+ sessions? on the terminal host (?:is|are) hidden; set external_sessions: true to list them/,
-        )?.[0]
+      ? sessions.data.detail?.match(/\d+ sessions? on the terminal host (?:is|are) hidden/)?.[0]
       : undefined;
+  const hiddenUnconfirmed = sessions.data?.hidden_reason === 'unconfirmed';
+  const hiddenHint = hiddenCount
+    ? hiddenUnconfirmed
+      ? `${hiddenCount} while access is being confirmed`
+      : `${hiddenCount}; set external_sessions: true to list them`
+    : undefined;
   let body: React.ReactNode;
   if (sessions.error && !sessions.data) {
     body = (
@@ -699,11 +705,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       <EmptyState
         compact
         icon={EyeOff}
-        title={
-          sessions.data?.hidden_reason === 'unconfirmed'
-            ? 'Host sessions are hidden'
-            : 'External sessions are off'
-        }
+        title={hiddenUnconfirmed ? 'Host sessions are hidden' : 'External sessions are off'}
         description={hiddenHint}
       />
     );

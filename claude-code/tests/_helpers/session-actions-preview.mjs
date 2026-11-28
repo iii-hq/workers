@@ -887,17 +887,38 @@ async function testSessionActions(code) {
     );
   });
 
-  await test('shows a neutral heading while access is unconfirmed', async (t) => {
-    const { document, text } = setup(t, { hiddenHost: 'all', hiddenReason: 'unconfirmed' });
-    await text('Host sessions are hidden');
-    assert.match(document.body.textContent, HINT);
-    assert.doesNotMatch(document.body.textContent, /External sessions are off/);
+  const NEUTRAL = /\d+ sessions on the terminal host are hidden while access is being confirmed/;
+
+  await test('an unconfirmed rail shows a neutral line instead of the enable hint', async (t) => {
+    const empty = setup(t, { hiddenHost: 'all', hiddenReason: 'unconfirmed' });
+    await empty.text('Host sessions are hidden');
+    assert.match(empty.document.body.textContent, NEUTRAL);
+    assert.doesNotMatch(
+      empty.document.body.textContent,
+      /External sessions are off|set external_sessions: true/,
+    );
+    // The note below worker rows follows the same detail.
+    const rows = setup(t, { hiddenHost: 'worker', hiddenReason: 'unconfirmed' });
+    await rows.text('Worker run');
+    const note = await rows.until(() =>
+      Array.from(rows.document.querySelectorAll('p')).find((p) => NEUTRAL.test(p.textContent)),
+    );
+    assert.ok(note);
+    assert.doesNotMatch(rows.document.body.textContent, /set external_sessions: true/);
   });
 
-  await test('shows External sessions are off when the setting is off', async (t) => {
+  await test('the enable hint shows when external sessions are off', async (t) => {
     const { document, text } = setup(t, { hiddenHost: 'all', hiddenReason: 'off' });
     await text('External sessions are off');
+    assert.match(document.body.textContent, HINT);
     assert.doesNotMatch(document.body.textContent, /Host sessions are hidden/);
+  });
+
+  await test('a list without hidden_reason keeps the off heading and hint', async (t) => {
+    const { document, text } = setup(t, { hiddenHost: 'all' });
+    await text('External sessions are off');
+    assert.match(document.body.textContent, HINT);
+    assert.doesNotMatch(document.body.textContent, /Host sessions are hidden|being confirmed/);
   });
 
   await test('keeps No sessions listed when no host row is hidden', async (t) => {

@@ -204,10 +204,14 @@ const host = {
             inventory_status: 'available',
             agents: hiddenHost === 'worker' ? [workerRow] : [],
             ...(hiddenReason ? { hidden_reason: hiddenReason } : {}),
+            // The worker's own detail: the enable sentence only when the setting is off.
             ...(hiddenHost === 'none'
               ? {}
               : {
-                  detail: `${rows.length} sessions on the terminal host are hidden; set external_sessions: true to list them`,
+                  detail:
+                    hiddenReason === 'unconfirmed'
+                      ? `${rows.length} sessions on the terminal host are hidden while access is being confirmed`
+                      : `${rows.length} sessions on the terminal host are hidden; set external_sessions: true to list them`,
                 }),
             ...(p.include_config_id ? { config_id: configId, external_visibility: null } : {}),
           };
