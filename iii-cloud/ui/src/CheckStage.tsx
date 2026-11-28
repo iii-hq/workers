@@ -1400,7 +1400,7 @@ export function CheckStage(props: CheckStageProps) {
             {agentRun && launch?.kind === 'sent' && launch.check === c?.id ? " Sent to your agent's chat." : ''}
             {agentRun && launch?.kind === 'told' && launch.check === c?.id ? ' Tell it in the chat.' : ''}
             {agentRun && (agentAsks(s) || (launch?.kind === 'asks' && launch.check === c?.id))
-              ? " Answer your agent's question in the chat first."
+              ? " Answer your agent's question in the chat first, then press this again."
               : ''}
             {tail.length ? <TerminalStream ansi label="Last lines of the local run" text={tail.join('\n')} /> : null}
             {tail.length ? <LogPath path={run?.log_path} /> : null}
@@ -1742,16 +1742,28 @@ export function CheckStage(props: CheckStageProps) {
   // check the hand-off began with, while that hand-off is still the environment's current one.
   const brief = s.handoff_brief
   const briefCheck = brief ? (s.checks ?? []).find((x) => x.id === brief.check_id) : undefined
+  // Counted once: on the first ready check after the brief's check (no other ready check of this environment between
+  // the two), and never for a stopped hand-off. How long the person took does not matter.
+  const firstReady =
+    !!c &&
+    !!briefCheck &&
+    !(s.checks ?? []).some(
+      (x) =>
+        x.environment_id === c.environment_id &&
+        x.ready &&
+        x.id !== c.id &&
+        Date.parse(x.checked_at) > Date.parse(briefCheck.checked_at) &&
+        Date.parse(x.checked_at) < Date.parse(c.checked_at),
+    )
   const briefNow =
     brief?.kind === 'ready' &&
-    // an old hand-off's values are not counted again days later
-    !!s.agent?.last_activity_at &&
-    now - Date.parse(s.agent.last_activity_at) < 30 * 60_000 &&
+    !!s.agent &&
     s.agent.state !== 'stopped' &&
     c &&
+    firstReady &&
     (c.handoff_id === brief.handoff_id ||
       (!c.handoff_id &&
-        s.agent?.handoff_id === brief.handoff_id &&
+        s.agent.handoff_id === brief.handoff_id &&
         briefCheck?.environment_id === c.environment_id &&
         Date.parse(c.checked_at) > Date.parse(briefCheck.checked_at)))
       ? brief
