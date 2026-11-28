@@ -390,7 +390,9 @@ fn provider_error(reply: Value, model: &str) -> Result<Value, String> {
     ))
 }
 
-/// The assistant text of a `router::complete` reply.
+/// The assistant text of a `router::complete` reply. A reasoning model's
+/// `thinking` blocks also carry `text`; kept, a brace in them would start the
+/// JSON every judge parses.
 pub(crate) fn reply_text(reply: &Value) -> String {
     reply
         .pointer("/message/content")
@@ -398,7 +400,8 @@ pub(crate) fn reply_text(reply: &Value) -> String {
         .map(|parts| {
             parts
                 .iter()
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .filter(|p| p["type"] == "text")
+                .filter_map(|p| p["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -475,6 +478,24 @@ mod tests {
             crate::semantic::classify(&provider_error(reply("error"), "a::x")),
             crate::semantic::Outcome::Transport(_)
         ));
+    }
+
+    #[test]
+    fn a_reasoning_block_never_reaches_the_judge_parsers() {
+        // A deepseek reply: the draft in `thinking` holds braces of its own.
+        let reply = json!({"message": {"stop_reason": "stop", "content": [
+            {"type": "thinking", "text": "Output {\"actions\": [...]} with n1 and {n2}."},
+            {"type": "text", "text": "{\"actions\": [], \"merge_groups\": [1]}"},
+        ]}});
+        assert_eq!(
+            reply_text(&reply),
+            "{\"actions\": [], \"merge_groups\": [1]}"
+        );
+        let crate::semantic::Outcome::Reply(text) = crate::semantic::classify(&Ok(reply)) else {
+            panic!("a stop reply is a reply");
+        };
+        assert_eq!(crate::semantic::parse_actions(&text).unwrap().len(), 0);
+        assert_eq!(parse_reply(&text).merge_groups, vec![1]);
     }
 
     #[test]
