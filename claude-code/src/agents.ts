@@ -9,7 +9,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import { CONFIG_ID, type ReplyAccess, replyLease } from './configuration.js';
+import { CONFIG_ID, fetchRuntime, type ReplyAccess, replyLease } from './configuration.js';
 import { withoutCaller } from './external-replies.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
@@ -461,7 +461,13 @@ export function registerAgents(
       const authorized = epoch !== null && epoch === currentEpoch && !capturing;
       const { agents, hidden } = merge(authorized);
       const details = detail ? [authorized ? detail : INVENTORY_UNAVAILABLE] : [];
+      // Access is null both when the setting is off and while an enabled setting is
+      // not yet confirmed (a reload); the setting's live value tells them apart.
+      // An unreadable setting is not known to be off.
+      let hiddenReason: 'off' | 'unconfirmed' | undefined;
       if (hidden > 0 && !capturing) {
+        const runtime = await fetchRuntime(iii);
+        hiddenReason = runtime && runtime.external_sessions !== true ? 'off' : 'unconfirmed';
         details.push(
           `${hidden} session${hidden === 1 ? ' on the terminal host is' : 's on the terminal host are'} hidden; set external_sessions: true to list them`,
         );
@@ -469,6 +475,7 @@ export function registerAgents(
       return {
         agents,
         inventory_status: detail ? 'unavailable' : 'available',
+        ...(hiddenReason ? { hidden_reason: hiddenReason } : {}),
         ...(include_config_id
           ? {
               config_id: CONFIG_ID,
@@ -486,6 +493,12 @@ export function registerAgents(
         z.object({
           agents: z.array(AgentRowSchema),
           inventory_status: z.enum(['available', 'unavailable']),
+          hidden_reason: z
+            .enum(['off', 'unconfirmed'])
+            .optional()
+            .describe(
+              'Why host sessions were left out: external_sessions is off, or it is on but live access is not yet confirmed',
+            ),
           config_id: z.string().optional(),
           external_visibility: visibilitySchema.optional(),
           detail: z.string().optional(),

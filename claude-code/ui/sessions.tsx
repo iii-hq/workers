@@ -76,6 +76,8 @@ type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation:
 interface AgentList {
   agents: AgentRow[];
   inventory_status?: 'available' | 'unavailable';
+  /** Why host sessions were left out: the setting is off, or access is not yet confirmed. */
+  hidden_reason?: 'off' | 'unconfirmed';
   config_id?: string;
   external_visibility?: string | null;
   detail?: string;
@@ -697,7 +699,11 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       <EmptyState
         compact
         icon={EyeOff}
-        title="External sessions are off"
+        title={
+          sessions.data?.hidden_reason === 'unconfirmed'
+            ? 'Host sessions are hidden'
+            : 'External sessions are off'
+        }
         description={hiddenHint}
       />
     );
