@@ -3878,6 +3878,12 @@ async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_ch
     )
     .await
     .unwrap();
-    assert!(!made.reused && made.asks && !made.delivered, "{made:?}");
+    assert!(made.reused && made.asks && !made.delivered, "{made:?}");
     assert_eq!(sent(&h).len(), before, "nothing went into the old chat");
+    // The asking hand-off stays, none is made, and the answer carries its chat.
+    let stored = h.ctx.store.read(|s| s.handoffs.clone());
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, made.id);
+    assert_eq!(made.session_id, stored[0].agent.session_id);
+    assert!(made.session_id.is_some());
 }
