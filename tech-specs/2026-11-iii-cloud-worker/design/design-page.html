@@ -1,0 +1,382 @@
+<title>Worker iii-cloud</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; console, chat and cloud screens sit inside it as framed mockups, one per step. */
+:root {
+  --bg: #f5f6f8; --surface: #ffffff; --sunk: #eef0f3; --ink: #15171c; --muted: #5b626e; --edge: #dfe3e8;
+  --accent: #2b55e0; --accent-soft: #2b55e01a; --ok: #2f6f3a; --ok-soft: #2f6f3a1c; --warn: #946b00; --warn-soft: #a87a001f;
+  --alert: #c03221; --alert-soft: #c032211a; --info: #6b4fd8; --info-soft: #6b4fd81a;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1013; --surface: #161a1f; --sunk: #1d2228; --ink: #e7e9ed; --muted: #9ba2ad; --edge: #2a3038;
+  --accent: #86a0ff; --accent-soft: #86a0ff1f; --ok: #43c98e; --ok-soft: #43c98e1f; --warn: #f2a93b; --warn-soft: #f2a93b1f;
+  --alert: #ff7564; --alert-soft: #ff75641f; --info: #b39cff; --info-soft: #b39cff1f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1013; --surface: #161a1f; --sunk: #1d2228; --ink: #e7e9ed; --muted: #9ba2ad; --edge: #2a3038;
+  --accent: #86a0ff; --accent-soft: #86a0ff1f; --ok: #43c98e; --ok-soft: #43c98e1f; --warn: #f2a93b; --warn-soft: #f2a93b1f;
+  --alert: #ff7564; --alert-soft: #ff75641f; --info: #b39cff; --info-soft: #b39cff1f; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); }
+.wrap { max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 72px; display: grid; gap: 56px; }
+h1, h2, h3 { text-wrap: balance; letter-spacing: -0.02em; line-height: 1.2; margin: 0; }
+h1 { font-size: 2.1rem; font-weight: 700; }
+h2 { font-size: 1.4rem; font-weight: 650; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--sunk); padding: 0.1em 0.35em; border-radius: 5px; }
+a { color: var(--accent); }
+.eyebrow { font: 500 0.75rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.stack { display: grid; gap: 14px; }
+.stack-lg { display: grid; gap: 24px; }
+.lead { font-size: 1.08rem; }
+.muted { color: var(--muted); }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 68ch; }
+
+.promise { border: 1px solid var(--edge); background: var(--surface); border-radius: var(--radius); padding: 18px 20px; display: grid; gap: 12px; }
+.labels { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.label { border: 1px solid var(--edge); border-radius: 10px; padding: 12px 14px; display: grid; gap: 6px; align-content: start; }
+.label b { font-weight: 600; }
+
+.step { display: grid; gap: 16px; }
+.step-head { display: flex; gap: 12px; align-items: baseline; }
+.step-num { font: 500 0.8rem/1 var(--mono); color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 5px 9px; flex: none; }
+.caption { font-size: 0.8rem; color: var(--muted); max-width: 72ch; }
+
+.frame { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--surface); overflow: hidden; min-width: 0; }
+.bar { display: flex; justify-content: space-between; gap: 12px; padding: 9px 14px; background: var(--sunk); border-bottom: 1px solid var(--edge); font: 0.75rem/1.3 var(--mono); color: var(--muted); }
+.bar span:last-child { text-align: right; }
+.screen { padding: 18px; display: grid; gap: 14px; font-size: 0.875rem; }
+.screen h4 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+.row2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.opt { border: 1px solid var(--edge); border-radius: 10px; padding: 14px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.opt.pick { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: 500 0.82rem/1 var(--sans); border-radius: 8px; padding: 8px 12px; border: 1px solid var(--edge); background: var(--surface); color: var(--ink); white-space: nowrap; }
+.btn.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.field { display: grid; gap: 4px; }
+.field label { font-size: 0.75rem; color: var(--muted); }
+.input { border: 1px solid var(--edge); border-radius: 8px; padding: 7px 10px; font: 0.82rem/1.3 var(--mono); color: var(--muted); background: var(--bg); }
+.code-big { font: 500 1.7rem/1 var(--mono); letter-spacing: 0.12em; padding: 14px; text-align: center; border: 1px dashed var(--edge); border-radius: 10px; }
+
+.chip { display: inline-flex; align-items: center; gap: 5px; font: 500 0.72rem/1 var(--mono); padding: 4px 8px; border-radius: 999px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+.chip.warn { color: var(--warn); background: var(--warn-soft); }
+.chip.alert { color: var(--alert); background: var(--alert-soft); }
+.chip.info { color: var(--info); background: var(--info-soft); }
+.chip.idle { color: var(--muted); background: var(--sunk); }
+.chip.accent { color: var(--accent); background: var(--accent-soft); }
+
+.ladder { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.rung { border: 1px solid var(--edge); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; min-width: 0; }
+.rung b { font-weight: 600; font-size: 0.82rem; }
+.banner { border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; }
+.banner.alert { background: var(--alert-soft); }
+.banner.ok { background: var(--ok-soft); }
+.banner b { font-weight: 600; }
+
+.issues { display: grid; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; }
+.issue { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 10px 12px; border-top: 1px solid var(--edge); align-items: start; }
+.issue:first-child { border-top: 0; }
+.issue .what { min-width: 0; display: grid; gap: 2px; }
+.issue .what b { font-weight: 600; font-size: 0.84rem; }
+.issue .what span { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+
+.chat { display: grid; gap: 10px; }
+.msg { border-radius: 10px; padding: 10px 12px; max-width: 94%; }
+.msg.user { background: var(--sunk); justify-self: end; }
+.msg.agent { border: 1px solid var(--edge); display: grid; gap: 8px; }
+.todo { display: grid; border: 1px solid var(--edge); border-radius: 8px; overflow: hidden; }
+.todo div { display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--edge); align-items: start; }
+.todo div:first-child { border-top: 0; }
+.todo .mark { font: 0.8rem/1.4 var(--mono); color: var(--muted); }
+.todo .mark.ok { color: var(--ok); }
+.todo .mark.live { color: var(--accent); }
+.choices { display: grid; gap: 6px; }
+.choice { border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; display: grid; gap: 2px; }
+.choice.rec { border-color: var(--accent); }
+.choice b { font-weight: 600; }
+.choice span { color: var(--muted); font-size: 0.8rem; }
+
+.stages { display: grid; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; }
+.stage { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--edge); align-items: center; }
+.stage:first-child { border-top: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; justify-self: center; }
+.dot.ok { background: var(--ok); } .dot.live { background: var(--accent); } .dot.idle { background: var(--edge); }
+.stage .t { font: 0.75rem/1 var(--mono); color: var(--muted); text-align: right; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--edge); border-radius: var(--radius); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; min-width: 640px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--edge); }
+thead th { border-top: 0; font: 500 0.72rem/1.2 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: var(--sunk); }
+td:first-child { font-weight: 600; }
+
+.changes { display: grid; gap: 10px; }
+.change { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; padding: 12px 14px; border: 1px solid var(--edge); border-radius: 10px; background: var(--surface); }
+.change .size { grid-row: span 2; align-self: start; }
+.change b { font-weight: 600; }
+.change span { color: var(--muted); font-size: 0.88rem; }
+
+.phases { display: grid; border-left: 2px solid var(--edge); margin-left: 6px; }
+.phase { position: relative; padding: 0 0 20px 20px; display: grid; gap: 4px; }
+.phase::before { content: ""; position: absolute; left: -7px; top: 5px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+.phase:last-child { padding-bottom: 0; }
+.phase b { font-weight: 600; }
+
+footer { font-size: 0.8rem; color: var(--muted); display: grid; gap: 6px; border-top: 1px solid var(--edge); padding-top: 18px; }
+footer code { font-size: 0.78rem; }
+@media (max-width: 520px) { h1 { font-size: 1.7rem; } .issue { grid-template-columns: 1fr; } .stage { grid-template-columns: 22px 1fr; } .stage .t { grid-column: 2; text-align: left; } .todo div { grid-template-columns: 18px 1fr; } .todo div > :last-child { grid-column: 2; } }
+@media (prefers-reduced-motion: no-preference) { .dot.live { animation: pulse 1.6s ease-in-out infinite; } @keyframes pulse { 50% { opacity: 0.35; } } }
+</style>
+
+<div class="wrap">
+
+<header class="stack-lg">
+  <div class="stack">
+    <div class="eyebrow">Desenho · v4 · 25/11/2026 · workers + iii-cloud</div>
+    <h1>Worker iii-cloud</h1>
+    <p class="lead">Um worker que a pessoa adiciona ao projeto para fazer, junto com o agente dela, todo o caminho até o iii cloud: entrar, importar o repositório, deixar o app pronto, configurar a parte web e fazer o deploy. Quem quer garantia de que vai funcionar a consegue por esse caminho: o agente roda o app na máquina do jeito que o cloud vai rodar.</p>
+  </div>
+  <div class="promise">
+    <div class="eyebrow">O que "pronto" quer dizer</div>
+    <div class="labels">
+      <div class="label"><span class="chip ok">plan is clean</span><b>O cloud aceita</b><span class="muted">O plano do cloud para este commit não tem bloqueio, e cada aviso foi decidido pela pessoa.</span></div>
+      <div class="label"><span class="chip ok">ran here like the cloud</span><b>Funcionou na máquina como vai rodar no cloud</b><span class="muted">O compose de produção, a versão do engine do cloud, o install congelado, o build command, o release command, todos os workers registrados, o http servindo rotas e o healthcheck respondendo.</span></div>
+    </div>
+    <p class="muted">Não cobre o container em que o cloud constrói, os valores dos segredos de produção, o tamanho da máquina e o tráfego real. Para isso, o worker acompanha o deploy e, se ele falhar, traz a evidência para o agente corrigir na máquina.</p>
+  </div>
+</header>
+
+<section class="stack">
+  <h2>O que mudou desde a v3</h2>
+  <ul class="plain">
+    <li><b>O agente trabalha num worktree a partir da <code>origin/main</code>.</b> O checkout da pessoa fica como está. Mudanças sem commit ficam de fora, e o worker pergunta se é para levá-las.</li>
+    <li><b>O agente escreve o bloco <code>cloud:</code> no compose.</b> Isso pede iii 0.27.0 na máquina, porque o 0.26 recusa o bloco.</li>
+    <li><b>As correções viram um pull request</b>, aberto com a conta GitHub da própria pessoa.</li>
+    <li><b>O deploy começa no worker.</b> O botão Deploy faz o merge e aprova o que o cloud segura. O ambiente segue a <code>main</code>, sem branch de validação.</li>
+    <li><b>O cloud local (kind) sai da experiência.</b> Ele só existe na máquina do dono, para os nossos testes.</li>
+  </ul>
+  <p class="muted">Da v3 continua: a garantia sai do agente, sem infraestrutura nova; a parte web é uma conversa guiada; build local e envio da imagem ficam para depois.</p>
+</section>
+
+<section class="stack-lg">
+  <div class="stack">
+    <h2>A experiência, com o registry</h2>
+    <p>As telas são ilustrativas. Os problemas do registry são reais: três vêm do plano do cloud de produção de 25/11 (<code>can_deploy: false</code>) e os outros, do código do cloud e do repositório.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">1</span><h3>Instalar e entrar</h3></div>
+    <p>A pessoa roda <code>iii call compose::add worker=iii-cloud</code> no harness dela, não no projeto que vai para o cloud. O console do harness ganha a página <b>iii cloud</b>, e o projeto (o registry) é escolhido no passo 2. Entrar pelo navegador é o caminho principal. A API key fica para CI ou para quem só quer checar e fazer deploy de um ambiente.</p>
+    <div class="frame" role="img" aria-label="Console local com as duas formas de entrar">
+      <div class="bar"><span>localhost:3113 · iii console</span><span>iii cloud</span></div>
+      <div class="screen">
+        <h4>Connect to iii cloud</h4>
+        <div class="row2">
+          <div class="opt pick">
+            <b>Sign in with the browser</b>
+            <span class="muted">Type this code at <span class="mono">cloud.iii.dev/device</span>. The worker and your agent can then do in iii cloud what you can do.</span>
+            <div class="code-big">WXYZ-1234</div>
+            <span class="chip accent">waiting for approval · 9:41</span>
+          </div>
+          <div class="opt">
+            <b>Use an API key</b>
+            <span class="muted">One environment, read or deploy. Enough to check and deploy; not enough to import a repository or change settings.</span>
+            <div class="field"><label for="k">API key</label><div class="input" id="k">iii_••••••••••••••••_••••</div></div>
+            <div class="btns"><span class="btn">Save to the secrets vault</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="frame" role="img" aria-label="Aprovação no iii cloud">
+      <div class="bar"><span>cloud.iii.dev/device</span><span>signed in · 2FA</span></div>
+      <div class="screen">
+        <h4>Connect a device</h4>
+        <div class="field"><label for="c">Code shown on your device</label><div class="input" id="c">WXYZ-1234</div></div>
+        <p><b>iii-cloud worker</b> on <span class="mono">ana-laptop</span>, from <span class="mono">203.0.113.24</span>, wants to act as you on <b>iii</b>.</p>
+        <span class="muted">It can do what your role allows: projects, environments, settings, variables, resources and deployments. It can't change your account's security, members, API keys or billing, or delete the team. It lasts 90 days and shows in Account → Devices, where you can sign it out.</span>
+        <div class="btns"><span class="btn primary">Approve</span><span class="btn">Deny</span></div>
+      </div>
+    </div>
+    <p class="caption">O código é sempre digitado, nunca vem num link: o início do fluxo não pede login, e um link pronto seria um convite a phishing. O token fica no vault do worker. O agente chama as funções do worker e nunca recebe o token.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">2</span><h3>Projeto, repositório e onboarding</h3></div>
+    <p>A pessoa diz qual projeto (a pasta local). O worker lê o repositório pelo <code>git remote</code> e acha o projeto e o ambiente no cloud. Se o repositório ainda não foi importado, o agente importa. Ele trabalha num worktree a partir da branch que o ambiente segue, para não mexer no checkout da pessoa. A pessoa pede no chat. O agente tem todas as ferramentas, monta o plano, faz cada passo e só a chama em dois momentos de navegador: a aprovação acima e a autorização no GitHub.</p>
+    <div class="frame" role="img" aria-label="Chat com o agente conduzindo o onboarding">
+      <div class="bar"><span>localhost:3113 · chat</span><span>agent · all tools</span></div>
+      <div class="screen">
+        <div class="chat">
+          <div class="msg user">Put the registry on iii cloud. Validate everything, don't publish.</div>
+          <div class="msg agent">
+            <span>Here's the plan. I'll do each step and tell you when I need you.</span>
+            <div class="todo">
+              <div><span class="mark ok">✓</span><span>Signed in as you on team <b>iii</b></span><span class="chip ok">done</span></div>
+              <div><span class="mark live">◐</span><span>Let iii cloud read <span class="mono">iii-hq/registry</span>. I opened GitHub in your browser and I'll continue when you approve.</span><span class="chip warn">you · browser</span></div>
+              <div><span class="mark">○</span><span>Import <span class="mono">api/worker-compose-prod.yaml</span> as project <b>registry</b>; production follows main. I work in a worktree from origin/main, so your checkout stays as it is</span><span class="chip idle">agent</span></div>
+              <div><span class="mark">○</span><span>Fix what the cloud plan and the checks here find</span><span class="chip idle">agent</span></div>
+              <div><span class="mark">○</span><span>Web: I'll walk you through what answers at the URL</span><span class="chip idle">you choose</span></div>
+              <div><span class="mark">○</span><span>Run it here the way the cloud runs it</span><span class="chip idle">agent</span></div>
+              <div><span class="mark">○</span><span>Open a pull request with the fixes; you deploy from the worker</span><span class="chip idle">agent, then you</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">3</span><h3>Verificar e corrigir</h3></div>
+    <p>O agente chama <code>iii-cloud::check</code>, que junta o plano do cloud para o commit e as checagens rápidas na máquina. Na primeira rodada do registry, o resultado é este:</p>
+    <div class="frame" role="img" aria-label="Plano do cloud e checagens na máquina para o registry">
+      <div class="bar"><span>localhost:3113 · iii cloud</span><span>registry · commit 3c4d2e0</span></div>
+      <div class="screen">
+        <div class="ladder">
+          <div class="rung"><b>Cloud plan</b><span class="chip alert">3 blocking, at least</span></div>
+          <div class="rung"><b>Checks here</b><span class="chip alert">4 problems</span></div>
+          <div class="rung"><b>Ran here like the cloud</b><span class="chip idle">not yet</span></div>
+        </div>
+        <div class="banner alert"><b>Not ready</b><span>The cloud plan stops at its first blocking step, so more can show up. The agent checks again after each round.</span></div>
+        <div class="issues">
+          <div class="issue"><div class="what"><b>Lock missing</b><span>LOCK_MISSING · api/worker-compose-prod.lock</span></div><span class="chip info">agent</span></div>
+          <div class="issue"><div class="what"><b>http and storage point at folders only the Dockerfile downloads</b><span>MISSING_WORKER_DIRECTORY · lines 21 and 32</span></div><span class="chip warn">you decide</span></div>
+          <div class="issue"><div class="what"><b>iii-sdk 0.24.4 is older than 0.26</b><span>The deploy would go green and the http group would serve no route.</span></div><span class="chip info">agent</span></div>
+          <div class="issue"><div class="what"><b>Runs with bun, but the repository has only a pnpm lock</b><span>The cloud installs bun projects from bun.lock: nothing would be installed and dist/ would not exist.</span></div><span class="chip warn">you decide</span></div>
+          <div class="issue"><div class="what"><b>Migrations run in your CD, not in the cloud</b><span>.github/workflows/cd.yml runs db:migrate before each deploy. Without cloud.release, new code meets the old schema.</span></div><span class="chip info">agent</span></div>
+          <div class="issue"><div class="what"><b>No healthcheck</b><span>Without one, a deploy is Ready even when nothing answers.</span></div><span class="chip info">agent</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="caption">O agente resolve os itens dele e traz as decisões no chat, com uma recomendação. Para o registry, a recomendação é manter <code>path://</code>, versionando as duas pastas e baixando cada binário por sha256 no build, como o Dockerfile já faz. Com <code>package://</code>, publicar uma correção do registry dependeria do registry no ar.</p>
+    <p class="caption">Nesse passo o agente também escreve o bloco <code>cloud:</code> (web, build, release, healthcheck) no compose de produção. Isso pede iii 0.27.0 na máquina: o 0.26 recusa o bloco e o <code>iii compose</code> local quebraria. Nada na máquina confere o conteúdo do bloco. Quem confere é o plano do cloud para o commit da branch, por isso o plano precisa aceitar qualquer commit.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">4</span><h3>A parte web, guiada</h3></div>
+    <p>O agente lê os candidatos que o próprio plano lista para a raiz da URL e o que o ambiente já tem, e explica cada opção em uma frase. A pessoa escolhe. Ele escreve <code>cloud.web</code> e <code>cloud.healthcheck</code> no compose, para ficarem versionados com o código, e testa na máquina.</p>
+    <div class="frame" role="img" aria-label="Conversa guiada sobre a parte web">
+      <div class="bar"><span>localhost:3113 · chat</span><span>web</span></div>
+      <div class="screen">
+        <div class="chat">
+          <div class="msg agent">
+            <span>What should answer at the environment's URL? These are the options the cloud's plan found for this repository:</span>
+            <div class="choices">
+              <div class="choice rec"><b>Only the API, under /api</b><span>Nothing at /. Right for the registry today: the site lives elsewhere and clients call the API. I recommend this one.</span></div>
+              <div class="choice"><b>A static site, built from its build script</b><span>The cloud serves the built files at / and the API under /api.</span></div>
+              <div class="choice"><b>A container of yours, on its port</b><span>For a server that renders pages itself.</span></div>
+            </div>
+            <span>Also: public or team only, and the health path. I'd use <span class="mono">GET /api/health</span>, which already answers.</span>
+          </div>
+          <div class="msg user">Only the API, public.</div>
+          <div class="msg agent"><span>Wrote <span class="mono">cloud.web</span> and <span class="mono">cloud.healthcheck</span> in api/worker-compose-prod.yaml. The plan accepts them. Here, <span class="mono">/api/health</span> answers 200 and the routes sit under <span class="mono">/api</span>. Custom domains come at the deploy, with the DNS records to create.</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="caption">Os bloqueios web do plano (container desconhecido ou fora do grupo http, porta reservada, console público, site sem pasta, mais de um grupo http, rota fora do grupo http) aparecem nessa conversa. A resposta é dada pela pessoa, não pelo agente.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">5</span><h3>Rodar na máquina como o cloud roda</h3></div>
+    <p>É aqui que sai a garantia. O agente sobe o compose de produção com a versão do engine do cloud e faz os mesmos passos, na mesma ordem. Recursos viram serviços locais (um Postgres para o <code>DATABASE_URL</code>). Segredos que faltam, a pessoa digita na página e eles nunca entram no contexto do agente.</p>
+    <div class="frame" role="img" aria-label="Execução local na ordem do cloud">
+      <div class="bar"><span>localhost:3113 · iii cloud</span><span>run like the cloud · engine 0.27.0</span></div>
+      <div class="screen">
+        <div class="stages">
+          <div class="stage"><span class="dot ok"></span><span>Frozen install, as the cloud's build does: pnpm install --frozen-lockfile</span><span class="t">21 s</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Build command: cloud.build</span><span class="t">9 s</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Release command against a local Postgres: db:migrate</span><span class="t">4 s</span></div>
+          <div class="stage"><span class="dot ok"></span><span>api/worker-compose-prod.yaml up: registry, http, storage</span><span class="t">12 s</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Every worker registered its functions</span><span class="t">3 of 3</span></div>
+          <div class="stage"><span class="dot ok"></span><span>http serves routes under /api · healthcheck 200</span><span class="t">14 routes</span></div>
+        </div>
+        <div class="banner ok"><b>Ready</b><span>The cloud plan for commit 3c4d2e0 is clean, and it ran here the way the cloud runs it. Not covered: the cloud's build container, production's secret values, its machine size and real traffic.</span></div>
+        <div class="btns"><span class="btn">See the changes</span><span class="btn primary">Open the pull request</span></div>
+      </div>
+    </div>
+    <p class="caption">Para o registry, por ora, a validação para aqui: nada é publicado. Para um app que vai ao ar, segue o passo 6.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-head"><span class="step-num">6</span><h3>Pull request e deploy pelo worker</h3></div>
+    <p>O agente faz o commit no worktree, sobe a branch <code>iii-cloud/ready-production</code> e abre o pull request com a conta GitHub da pessoa. O app do cloud no GitHub continua só com leitura. O corpo do pull request leva o relatório de prontidão. Se a <code>main</code> andar antes do merge, o worker confere de novo.</p>
+    <div class="frame" role="img" aria-label="Confirmação do deploy: merge e aprovações">
+      <div class="bar"><span>localhost:3113 · iii cloud</span><span>pull request #12 · ready</span></div>
+      <div class="screen">
+        <h4>Deploy registry to production?</h4>
+        <div class="stages">
+          <div class="stage"><span class="dot ok"></span><span>Merges iii-cloud/ready-production into main. That push starts the deploy in iii cloud.</span><span class="t">merge</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Creates a shared Postgres for DATABASE_URL. In production, approving resources takes Owner or Admin.</span><span class="t">resources</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Changes 3 settings the console had: web, healthcheck and release now come from the compose file.</span><span class="t">settings</span></div>
+          <div class="stage"><span class="dot ok"></span><span>Pinned to the plan you saw. If the merged commit plans differently, nothing is deployed.</span><span class="t">plan</span></div>
+        </div>
+        <div class="btns"><span class="btn">Cancel</span><span class="btn primary">Merge and deploy</span></div>
+      </div>
+    </div>
+    <p class="caption">Todo push na branch do ambiente já inicia um deploy, e isso não se desliga. Quando o plano cria recursos ou muda valores do console, o cloud segura esse deploy em "Needs your action": um push nunca aprova sozinho. Por isso o botão faz as duas coisas, o merge e o deploy com as confirmações, preso ao plano que a pessoa viu. Se alguém fizer o merge direto no GitHub, o worker vê o push e acompanha do mesmo jeito. O worker segue até o Ready, e um http sem rota conta como falha, mesmo que o cloud só registre isso no log. Se falhar, a evidência volta para o agente, que corrige no worktree e abre outro pull request. O rollback fica a um clique no console.</p>
+  </div>
+</section>
+
+<section class="stack-lg">
+  <div class="stack">
+    <h2>O worker</h2>
+    <p>Fica no repositório workers, é genérico para qualquer projeto e entra no compose do harness, nunca no do projeto que vai para o cloud. Roda na máquina da pessoa ou num computer do iii cloud. O worker é fino: quem sabe o caminho é o agente, pelo perfil <code>cloud-ready</code> e pela skill que descreve o onboarding, os códigos do plano, a conversa da parte web e a execução na ordem do cloud.</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Função</th><th>O que faz</th></tr></thead>
+      <tbody>
+        <tr><td><code>iii-cloud::connect</code></td><td>Entrar pelo navegador (código digitado) ou registrar uma API key pelo nome do segredo. Nunca recebe nem devolve um valor, e não aparece nos traces.</td></tr>
+        <tr><td><code>iii-cloud::api</code></td><td>Chama qualquer rota do cloud como a pessoa (ou como a key). O token fica no worker. O agente usa para o onboarding, a parte web, as variáveis, os recursos e o deploy.</td></tr>
+        <tr><td><code>iii-cloud::check</code></td><td>O plano do cloud para um commit, mais as checagens rápidas na máquina (lock do compose, lock do gerenciador para o runtime, iii-sdk mínimo, healthcheck, variáveis sem valor). Cada problema volta como <code>{code, file, line, excerpt, owner}</code>.</td></tr>
+        <tr><td><code>iii-cloud::secret</code></td><td>Pede um valor à pessoa na página e grava no ambiente, ou no <code>.env</code> local para a execução na máquina. O agente só vê se foi gravado.</td></tr>
+        <tr><td><code>iii-cloud::watch</code></td><td>Acompanha um deploy até o Ready. Na falha, junta eventos, logs e saúde para o agente corrigir.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">O <code>approval-gate</code> do harness pode segurar só o deploy em produção até um clique. Ele vem desligado.</p>
+</section>
+
+<section class="stack-lg">
+  <div class="stack">
+    <h2>O que muda no cloud</h2>
+    <p>Duas mudanças. O deploy em si não muda: o merge do pull request é o push que já dispara o deploy, e as aprovações usam o <code>POST</code> de deploy que já existe.</p>
+  </div>
+  <div class="changes">
+    <div class="change"><span class="chip warn size">média</span><b>Entrar pelo navegador como a pessoa</b><span>O device flow do app passa a aceitar a plataforma <code>worker</code>, com o código sempre digitado. A sessão alcança o que o papel da pessoa permite, menos segurança da conta, membros, API keys, billing e apagar o time. Ela aparece em Devices e sai pelo sign-out que já existe. Sem isso, o worker não importa repositório nem muda configuração, porque no cloud essas escritas exigem uma sessão de pessoa.</span></div>
+    <div class="change"><span class="chip ok size">pequena</span><b>O plano aceita qualquer commit do repositório</b><span>Hoje <code>GET /plan</code> só planeja a branch do ambiente. O worker precisa do plano do commit da branch do pull request, antes do merge, porque só o plano confere o bloco <code>cloud:</code>. A leitura já resolve qualquer revisão; basta tirar a trava do plano e manter a do deploy.</span></div>
+  </div>
+  <div class="stack">
+    <h3>Para depois, se os números pedirem</h3>
+    <p class="muted">Ambiente de teste efêmero, build-check pelo cloud, build local com a receita do cloud e envio da imagem, check obrigatório no GitHub. O worker vê cada deploy depois do "Ready", então conta quantos falham mesmo assim e por quê. Se a causa for o container de build ou algo que só existe no cloud, aí vale a pena pagar por um desses.</p>
+  </div>
+</section>
+
+<section class="stack-lg">
+  <h2>Fases</h2>
+  <div class="phases">
+    <div class="phase"><b>1. O worker, a skill e as duas mudanças no cloud</b><span class="muted">Prova: o registry vai da importação ao "Ready" com o agente, numa cópia do repositório, e o primeiro deploy fica Ready sem nenhuma correção depois. Nada vai para o <code>iii-hq/registry</code>. O cloud local (kind) serve só para iterarmos rápido na máquina do dono; a prova que vale é no iii cloud de verdade, num projeto de teste, como um usuário faria. Depois, a mesma prova com um app do template Node.</span></div>
+    <div class="phase"><b>2. O que os números pedirem</b><span class="muted">Medido pelos deploys que falham depois do "Ready".</span></div>
+  </div>
+</section>
+
+<section class="stack">
+  <h2>Decisões que faltam</h2>
+  <ul class="plain">
+    <li><b>A prova final roda no iii cloud de produção?</b> Recomendo que sim, num projeto de teste com uma cópia do registry, depois que as duas mudanças estiverem no ar. É um deploy em produção, então só com o seu OK.</li>
+    <li><b>O worker vem no template harness?</b> Recomendo que sim, depois da prova da fase 1, para "coloca isso no iii cloud" funcionar desde o primeiro chat.</li>
+  </ul>
+</section>
+
+<footer>
+  <span>Fontes (iii-cloud em origin/main 7e0b0553): escritas só por sessão e app session só em computers <code>contracts/openapi/cloud-v1.yaml:2-27</code>, <code>crates/access/src/http.rs:156-196</code> · device flow <code>crates/identity/src/http/device.rs:129-191</code> · plano só na branch do ambiente <code>crates/deploy/src/api.rs:689-692</code> · push dispara deploy <code>docs/guides/support-matrix.md:11</code> · ambiente aceita outra branch <code>cloud-v1.yaml:3750</code> (EnvironmentUpdate) · plano para no primeiro bloqueio <code>crates/plan/src/lib.rs:156-184</code> · install congelado por gerenciador <code>crates/build/src/lib.rs:412-430</code> · web <code>crates/plan/src/rules.rs:270-306</code>, <code>crates/core/src/error.rs:77-83</code> · http sem rota só é registrado <code>crates/control-plane/src/workers.rs:104-116</code> · healthcheck só se configurado <code>crates/control-plane/src/routes_tls.rs:178</code> · SDK mínimo 0.26 <code>crates/plan/src/matrix.rs:183</code> · push na branch do ambiente inicia deploy <code>crates/github/src/webhook.rs:1-2</code> · push sempre espera as confirmações <code>cloud-v1.yaml:4956</code>, aprovar via <code>confirm_overrides</code> <code>docs/guides/compose-file.md:104-106</code> · o 0.26 recusa o bloco <code>cloud:</code> <code>docs/guides/compose-file.md:194-198</code>, o iii 0.27.0 aceita (iii <code>b6d44e2b6</code>).</span>
+  <span>Registry (<code>iii-hq/registry</code> em e3d145b): runtime bun <code>api/worker-compose-prod.yaml:81</code>, só <code>pnpm-lock.yaml</code> na raiz, migrações no CD <code>.github/workflows/cd.yml:28-29</code>. A v1 foi revisada pelo Fable 5.2.</span>
+</footer>
+
+</div>

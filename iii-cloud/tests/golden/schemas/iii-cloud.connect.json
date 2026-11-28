@@ -1,0 +1,273 @@
+{
+  "description": "Sign in with the browser (the person types a code) or with an API key saved in the vault. A key connects with the secret's name alone.",
+  "function_id": "iii-cloud::connect",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::connect` input.",
+    "oneOf": [
+      {
+        "description": "Sign in with a code typed in the browser (the main path).",
+        "properties": {
+          "method": {
+            "enum": [
+              "browser"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "description": "Use an environment-scoped API key saved in the vault.",
+        "properties": {
+          "environment_id": {
+            "default": null,
+            "description": "Only for an older cloud without `GET /keys/self`: the key's environment.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "enum": [
+              "api_key"
+            ],
+            "type": "string"
+          },
+          "secret": {
+            "description": "The vault secret that holds the key. Never the key itself.",
+            "type": "string"
+          },
+          "team_id": {
+            "default": null,
+            "description": "Only for an older cloud without `GET /keys/self`: the key's team.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "method",
+          "secret"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "ConnectRequest"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ApiKeyRef": {
+        "properties": {
+          "environment_id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "environment_id",
+          "secret",
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "ConnStatus": {
+        "enum": [
+          "signed_out",
+          "waiting",
+          "connected",
+          "expired",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Device": {
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "user_code",
+          "verification_uri"
+        ],
+        "type": "object"
+      },
+      "Method": {
+        "enum": [
+          "browser",
+          "api_key"
+        ],
+        "type": "string"
+      },
+      "TeamRole": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "User": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "email",
+          "id"
+        ],
+        "type": "object"
+      },
+      "WorkerError": {
+        "description": "`{code, message, status?, fix?}` inside records.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "api_key": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ApiKeyRef"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "cloud_url": {
+        "type": "string"
+      },
+      "device": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Device"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/WorkerError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "expires_at": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "method": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Method"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/ConnStatus"
+      },
+      "teams": {
+        "items": {
+          "$ref": "#/definitions/TeamRole"
+        },
+        "type": "array"
+      },
+      "user": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/User"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "cloud_url",
+      "status",
+      "teams"
+    ],
+    "title": "Connection",
+    "type": "object"
+  }
+}

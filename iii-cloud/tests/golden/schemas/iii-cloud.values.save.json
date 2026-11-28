@@ -1,0 +1,239 @@
+{
+  "description": "The page's own: write the values the person chose to iii cloud, one by one, and the run's .env where the compose file reads `${NAME}`. Agents never call it.",
+  "function_id": "iii-cloud::values::save",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SaveItem": {
+        "description": "One value `iii-cloud::values::save` writes. No `Debug`: it can hold a value.",
+        "oneOf": [
+          {
+            "properties": {
+              "from": {
+                "enum": [
+                  "typed"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "$ref": "#/definitions/ValueKind"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "name",
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Read again from the file at save time.",
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "from": {
+                "enum": [
+                  "env_file"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "$ref": "#/definitions/ValueKind"
+              }
+            },
+            "required": [
+              "file",
+              "from",
+              "name",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The environment's address, as a variable.",
+            "properties": {
+              "from": {
+                "enum": [
+                  "env_url"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The variable `\"\"`.",
+            "properties": {
+              "from": {
+                "enum": [
+                  "leave_empty"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Copied by iii cloud from another environment of the project; never overwrites.",
+            "properties": {
+              "environment_id": {
+                "type": "string"
+              },
+              "from": {
+                "enum": [
+                  "copy"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "environment_id",
+              "from",
+              "name"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ValueKind": {
+        "enum": [
+          "secret",
+          "variable"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::values::save` input: the page's own. No `Debug`.",
+    "properties": {
+      "environment_id": {
+        "description": "The selected environment, as a guard (`ENVIRONMENT_CHANGED`).",
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "$ref": "#/definitions/SaveItem"
+        },
+        "type": "array"
+      },
+      "manifest": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "environment_id",
+      "items"
+    ],
+    "title": "ValuesSave",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SaveResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorkerError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "WorkerError": {
+        "description": "`{code, message, status?, fix?}` inside records.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "`iii-cloud::values::save` answer, per item in order.",
+    "properties": {
+      "environment_id": {
+        "type": "string"
+      },
+      "results": {
+        "items": {
+          "$ref": "#/definitions/SaveResult"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "environment_id",
+      "results"
+    ],
+    "title": "ValuesSaved",
+    "type": "object"
+  }
+}

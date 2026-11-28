@@ -1,0 +1,71 @@
+{
+  "cloud": {
+    "build": {
+      "command": "pnpm build"
+    },
+    "healthcheck": {
+      "path": "/api/health"
+    },
+    "release": {
+      "command": "pnpm migrate",
+      "worker": "api"
+    },
+    "web": {
+      "api": {
+        "prefix": "/api"
+      },
+      "container": "api"
+    }
+  },
+  "containers": {
+    "ade": {
+      "config_override": {
+        "http_port": 40002
+      },
+      "worker": "package://ade"
+    },
+    "api": {
+      "environment": {
+        "DATABASE_URL": "${DATABASE_PRIMARY_URL}",
+        "SESSION_SECRET": "${SESSION_SECRET}"
+      },
+      "worker": "path://./workers/api"
+    },
+    "database": {
+      "config_override": {
+        "databases": {
+          "analytics": {
+            "url": "postgres://postgres:pw2@127.0.0.1:5002/app"
+          },
+          "primary": {
+            "url": "postgres://postgres:pw@127.0.0.1:5001/app"
+          }
+        }
+      },
+      "worker": "package://database"
+    },
+    "http": {
+      "config_override": {
+        "host": "127.0.0.1",
+        "port": 42000
+      },
+      "version": "0.22.7",
+      "worker": "package://http"
+    }
+  },
+  "engine": {
+    "url": "ws://127.0.0.1:41000",
+    "workers": {
+      "iii-stream": {
+        "host": "127.0.0.1",
+        "port": 40001
+      },
+      "iii-worker-manager": {
+        "host": "127.0.0.1",
+        "port": 41000
+      }
+    }
+  },
+  "namespace": "demo",
+  "startup_timeout": "2m"
+}

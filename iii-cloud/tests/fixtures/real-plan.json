@@ -1,0 +1,109 @@
+{
+ "can_deploy": false,
+ "fingerprint": "fp-real",
+ "plan": {
+  "issues": [
+   {
+    "code": "LOCK_MISSING",
+    "kind": "fix_in_repo",
+    "location": {
+     "file": "api/worker-compose-prod.lock"
+    },
+    "severity": "block"
+   },
+   {
+    "code": "INVALID_COMPOSE_FILE",
+    "context": {
+     "iii_code": "MISSING_WORKER_DIRECTORY",
+     "message": "container 'http': worker directory api/workers/http does not exist"
+    },
+    "excerpt": {
+     "lines": [
+      "    # A package:// worker asks api.workers.iii.dev for its digest at every boot,",
+      "    # and this image is that registry, so an outage could never boot itself.",
+      "    worker: path://./workers/http",
+      "    # Keeps the entry config/http.yaml; see api/worker-compose.yaml.",
+      "    config_name: http"
+     ],
+     "start_line": 19
+    },
+    "kind": "fix_in_repo",
+    "location": {
+     "file": "api/worker-compose-prod.yaml",
+     "line": 21,
+     "path": "containers.http.worker"
+    },
+    "severity": "block"
+   },
+   {
+    "code": "INVALID_COMPOSE_FILE",
+    "context": {
+     "iii_code": "MISSING_WORKER_DIRECTORY",
+     "message": "container 'storage': worker directory api/workers/storage does not exist"
+    },
+    "excerpt": {
+     "lines": [
+      "  # environment by the configuration worker. see docs/ASSET_UPLOADS.md",
+      "  storage:",
+      "    worker: path://./workers/storage",
+      "    config_name: storage",
+      "    scripts:"
+     ],
+     "start_line": 30
+    },
+    "kind": "fix_in_repo",
+    "location": {
+     "file": "api/worker-compose-prod.yaml",
+     "line": 32,
+     "path": "containers.storage.worker"
+    },
+    "severity": "block"
+   }
+  ],
+  "deploy_issues": [],
+  "resources": [],
+  "settings": {
+   "build": null,
+   "healthcheck": null,
+   "release": null,
+   "web_candidates": {
+    "containers": [
+     {
+      "console": false,
+      "name": "http",
+      "own": true,
+      "port": null
+     },
+     {
+      "console": false,
+      "name": "storage",
+      "own": true,
+      "port": null
+     },
+     {
+      "console": false,
+      "name": "registry",
+      "own": true,
+      "port": null
+     }
+    ],
+    "http": false,
+    "sites": []
+   }
+  },
+  "workers": [],
+  "groups": [],
+  "variables": [],
+  "source": {
+   "branch": "main",
+   "commit": "e3d145bd5d8fe2561ab3b2e80b74adc5834edb0b",
+   "detected_manifests": [
+    "api/worker-compose-prod.yaml",
+    "api/worker-compose.yaml"
+   ],
+   "manifest": "api/worker-compose-prod.yaml",
+   "manifest_sha256": "4595226462d9d086f31af11754e49dffa4b3ac7f4ff4a3ce78c4905a1d607541"
+  },
+  "environment": "production"
+ }
+}

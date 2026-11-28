@@ -1,0 +1,120 @@
+{
+  "description": "The page's own: hand work to the agent. Returns a marker for the top of the prompt; the worker finds the agent's session by it and publishes what the agent is doing as status.agent.",
+  "function_id": "iii-cloud::handoff",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "HandoffKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "ready",
+              "deploy_fix",
+              "pull_request"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The project is not in iii cloud yet.",
+            "enum": [
+              "import"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`iii-cloud::handoff` input: the page hands work to the agent.",
+    "properties": {
+      "candidate": {
+        "default": null,
+        "description": "true when sent from the add-project steps: brief the folder being added.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "check_id": {
+        "default": null,
+        "description": "Required for every kind but `import`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "deployment_id": {
+        "default": null,
+        "description": "For `deploy_fix`: the deployment that failed.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "kind": {
+        "$ref": "#/definitions/HandoffKind"
+      },
+      "text": {
+        "default": null,
+        "description": "The plain chat text the page would post. With it, a follow-up goes into the agent's existing chat: the worker sends it itself.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "kind"
+    ],
+    "title": "HandoffRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::handoff` output.",
+    "properties": {
+      "asks": {
+        "default": false,
+        "description": "With `reused`: the agent has a real ask of its own open. Nothing was delivered, not even the page's `text` (it would read as the answer): the person answers in the chat.",
+        "type": "boolean"
+      },
+      "delivered": {
+        "description": "False: nothing was sent; the page starts a new chat with the marker.",
+        "type": "boolean"
+      },
+      "id": {
+        "type": "string"
+      },
+      "marker": {
+        "description": "A short line the page puts at the top of the prompt; the worker finds the agent's session by it.",
+        "type": "string"
+      },
+      "reused": {
+        "default": false,
+        "description": "True: an equal hand-off was already open (a double click), and this is it.",
+        "type": "boolean"
+      },
+      "sent": {
+        "default": null,
+        "description": "With `reused`: the worker sent the open hand-off's agent on (the same \"continue\" as after a person's check: the newest check's blocking problems of the agent's, and its failed run). False: nothing was sent (it works, asks the person something, or has nothing open). Absent for a new hand-off.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "description": "The existing chat the worker sent the hand-off into.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "delivered",
+      "id",
+      "marker"
+    ],
+    "title": "HandoffResponse",
+    "type": "object"
+  }
+}

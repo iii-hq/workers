@@ -1,0 +1,39 @@
+namespace: demo
+startup_timeout: 2m
+engine:
+  url: ws://127.0.0.1:49134
+  workers:
+    iii-worker-manager:
+      host: 0.0.0.0
+      port: 49134
+    iii-stream:
+      host: 0.0.0.0
+      port: 3112
+containers:
+  http:
+    worker: package://http
+    version: "0.22.7"
+  database:
+    worker: package://database
+    config_override:
+      databases:
+        primary: {}
+        analytics: {}
+  ade:
+    worker: package://ade
+  api:
+    worker: path://./workers/api
+    environment:
+      DATABASE_URL: ${DATABASE_PRIMARY_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+cloud:
+  build:
+    command: pnpm build
+  release:
+    worker: api
+    command: pnpm migrate
+  healthcheck:
+    path: /api/health
+  web:
+    container: api
+    api: { prefix: /api }

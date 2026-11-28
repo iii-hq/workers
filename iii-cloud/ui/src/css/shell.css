@@ -1,0 +1,233 @@
+/* The shell (U1): the page body, the Manage sidebar, panel headers and the env header. */
+[data-iii-ui='iii-cloud'] .iii-cloud-pagebody {
+  flex: 1;
+  min-height: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 12px 10px;
+}
+/* The project at the top of its sidebar: the name, then repository and team (faint). */
+[data-iii-ui='iii-cloud'] .iii-cloud-side-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+/* The link to the console: its icon stays on the text's line. */
+[data-iii-ui='iii-cloud'] .iii-cloud-side > .iii-cloud-linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side > .iii-cloud-linkbtn > svg {
+  flex-shrink: 0;
+}
+/* Environment rows are 44 px (the board's), the name 13 px and 500 once selected. */
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item {
+  min-height: 44px;
+  padding-block: 4px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item__title {
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side .iii-ui-list-item[aria-current='page'] .iii-ui-list-item__title {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+  padding: 10px 10px 0;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-side-foot > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Every panel's header, in every area: 40 px on surface at 13/600, a 32 px action fits; the end note is faint. */
+[data-iii-ui='iii-cloud'] .iii-cloud-panel-head {
+  justify-content: space-between;
+  min-height: 40px;
+  padding-block: 0;
+  background: var(--color-surface);
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-panel-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+  text-align: right;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-envhead {
+  min-width: 0;
+}
+/* StatePill: a status word, ink 12/500 on its status tint; the dot stays. Out of date (data-stale) greys it out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-state {
+  border-color: transparent;
+  border-radius: var(--radius-full);
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='ok'] {
+  background: var(--color-ok-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='alert'] {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-state[data-tint='warn'] {
+  background: var(--color-warn-muted);
+}
+[data-iii-ui='iii-cloud'] [data-stale] .iii-cloud-state {
+  opacity: 0.5;
+}
+/* DetailRow: label, value with its note, and the action at the end; rows share a card and divide by a hairline. */
+[data-iii-ui='iii-cloud'] .iii-cloud-detail {
+  display: grid;
+  grid-template-columns: minmax(96px, 120px) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 12px 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail + .iii-cloud-detail {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-label {
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-value {
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-note {
+  display: block;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+@container iii-cloud (max-width: 640px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-detail {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-detail-label {
+    grid-column: 1 / -1;
+  }
+}
+/* SectionCard's count: a grey 20 px pill next to the title (the header is grey, the pill is the edge tone). */
+[data-iii-ui='iii-cloud'] .iii-cloud-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-edge);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+/* The primary action of a page header: sits at the end of the title's line, full width on a phone. */
+[data-iii-ui='iii-cloud'] .iii-cloud-pageaction {
+  flex-shrink: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-pageaction {
+  width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+/* The path bar's place on a phone: the only name in the bar, 16/600, cut short when long. */
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-head-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 16px;
+  font-weight: 600;
+}
+/* A step's header (StepHeader): title and chip, then Back and the forward action on the title's line; the sub and
+   the faint note under the title. A narrow pane: the action full width right under the title. */
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    'title back fwd'
+    'sub sub sub'
+    'reason reason reason';
+  align-items: center;
+  column-gap: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-title {
+  grid-area: title;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-back {
+  grid-area: back;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-fwd {
+  grid-area: fwd;
+  display: flex;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-sub {
+  grid-area: sub;
+  margin-top: 4px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-sub p {
+  margin: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stephead-reason {
+  grid-area: reason;
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+@container iii-cloud (max-width: 640px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-stephead {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'title back'
+      'fwd fwd'
+      'sub sub'
+      'reason reason';
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-stephead-fwd {
+    flex-direction: column;
+    margin-top: 12px;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-stephead-fwd > * {
+    width: 100%;
+  }
+}

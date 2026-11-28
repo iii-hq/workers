@@ -1,0 +1,60 @@
+{
+  "description": "Tell the person which problems you start on: call it before each group of fixes with the problem ids or codes (a code stands for every open problem of it) and a short plain note. Clears itself when those problems leave a newer check or the hand-off ends.",
+  "function_id": "iii-cloud::handoff::progress",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::handoff::progress` input: the agent says what it starts on.",
+    "properties": {
+      "handoff_id": {
+        "default": null,
+        "description": "The hand-off this progress is for, by its id or the 8 characters of the marker (default: the selected environment's open one).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "note": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "working_on": {
+        "description": "Problem ids, or codes (a code stands for every open problem of that code).",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "working_on"
+    ],
+    "title": "HandoffProgressRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "note": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "working_on": {
+        "description": "The problem ids the names resolved to in the newest check.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "working_on"
+    ],
+    "title": "HandoffProgressResponse",
+    "type": "object"
+  }
+}

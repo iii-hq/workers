@@ -1,0 +1,419 @@
+/* The values editor (ValuesEditor): the Values step, the dialogs of Deploy step 1 and the check, and Settings.
+   A row is one line where there is room (name · source · value · kind), else two (name and kind; source and
+   value), and on a phone a card (the name; its tags and kind; the source; the value). */
+
+[data-iii-ui='iii-cloud'] .iii-cloud-val {
+  container-type: inline-size;
+  container-name: iii-cloud-val;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-dhead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-count {
+  flex: 1 1 260px;
+  min-width: 0;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-lead {
+  margin: 0;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-n {
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-skel {
+  height: 160px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-lg);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-area {
+  width: 100%;
+  font-family: var(--font-code);
+  font-size: 12px;
+}
+/* A secret typed on several lines stays dots until the person presses Show. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val-area[data-masked] {
+  -webkit-text-security: disc;
+}
+/* All set: the fold is a 36 px line until it opens on the list. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val-all {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-all > .iii-cloud-val-list {
+  margin-bottom: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-fold[aria-expanded='true'] .iii-cloud-cs-chev {
+  transform: rotate(90deg);
+}
+
+/* ── the rows ── */
+
+[data-iii-ui='iii-cloud'] .iii-cloud-val-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-ghead {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+}
+/* Two lines: the name, its tags and its kind; then the source and the value. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val-row {
+  display: grid;
+  grid-template-columns: 212px minmax(0, 1fr) auto;
+  grid-template-areas:
+    'name name kind'
+    'pick field field'
+    'extra extra extra';
+  align-items: center;
+  /* No row gap: an empty line (no value, no note) would still take one; the parts below say their own. */
+  gap: 0 12px;
+  padding: 10px 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-pick,
+[data-iii-ui='iii-cloud'] .iii-cloud-val-field,
+[data-iii-ui='iii-cloud'] .iii-cloud-val-wide {
+  margin-top: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-extra {
+  margin-top: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-row + .iii-cloud-val-row {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-name {
+  grid-area: name;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* The name shrinks to its longest part and wraps after an underscore (<wbr>), so its tags keep its line when they
+   fit; it never grows past its own width, so the tags stay beside it. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val-key {
+  flex: 1 1 0;
+  max-width: max-content;
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: break-word;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-need {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  white-space: nowrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-state {
+  white-space: nowrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-pick {
+  grid-area: pick;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-select {
+  width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-paste-btn {
+  margin-left: auto;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-field {
+  grid-area: field;
+  display: flex;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-kindcell {
+  grid-area: kind;
+  display: flex;
+  justify-content: flex-end;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-wide {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-db {
+  font-size: 12px;
+  line-height: 1.5;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-one {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-one > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-multi {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-url {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-note,
+[data-iii-ui='iii-cloud'] .iii-cloud-val-fixed {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-note > svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-extra {
+  grid-area: extra;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-err > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-err b {
+  font-weight: 500;
+}
+
+/* One line where there is room (the step page): name · source · value · kind. */
+@container iii-cloud-val (min-width: 860px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-val-row {
+    grid-template-columns: minmax(0, 330px) 212px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name pick field kind'
+      '. extra extra extra';
+    padding: 8px 14px;
+    min-height: 48px;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-val-pick,
+  [data-iii-ui='iii-cloud'] .iii-cloud-val-field,
+  [data-iii-ui='iii-cloud'] .iii-cloud-val-wide {
+    margin-top: 0;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-val-wide {
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+}
+
+/* ── Save stays in reach while the list scrolls ── */
+
+[data-iii-ui='iii-cloud'] .iii-cloud-val-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-bg);
+}
+/* All set: nothing to save, so the foot is a line under the fold (Check at its end), not a bar. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-allset]:not([data-mode='dialog']) .iii-cloud-val-foot {
+  position: static;
+  padding: 0;
+  border-top: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-sum {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val-roacts {
+  margin-top: 8px;
+}
+
+/* ── the dialog: about 720 wide, at most 80% high, its footer on a band; a phone gets the whole screen ── */
+
+[data-iii-ui='iii-cloud'] .iii-cloud-vdialog {
+  width: min(720px, calc(100vw - 32px));
+  max-width: min(720px, calc(100vw - 32px));
+  max-height: 80vh;
+  padding-bottom: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-vdialog .iii-cloud-val-foot {
+  margin: 0 -24px;
+  padding: 14px 24px;
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-vdialog[data-narrow] {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+}
+
+/* ── phone, the step and Settings: the filter and Paste full width, each name a card, Save on top of the bar ── */
+
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-count,
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-filter,
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-paste-btn {
+  flex: 1 1 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-filter-item {
+  flex: 1 1 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+/* A phone: the name has the whole first line; its tags and its kind share the next, then the source and the value. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'key key'
+    'tags kind'
+    'pick pick'
+    'field field'
+    'extra extra';
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-name {
+  display: contents;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-key {
+  grid-area: key;
+  max-width: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-tags,
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-kindcell {
+  margin-top: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-tags {
+  grid-area: tags;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-row {
+  padding: 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow] .iii-cloud-val-wide {
+  grid-column: 1 / -1;
+  grid-row: 3;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-key {
+  font-size: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow]:not([data-mode='dialog']) .iii-cloud-val-acts {
+  flex: 1 1 100%;
+  flex-direction: column-reverse;
+}
+/* The phone dialog: the summary and Cancel on a line, Save under them. */
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow][data-mode='dialog'] .iii-cloud-val-acts {
+  display: contents;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-val[data-narrow][data-mode='dialog'] .iii-cloud-val-sum {
+  flex: 1 1 120px;
+}

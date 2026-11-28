@@ -1,0 +1,21 @@
+iii: v1
+name: iii-cloud
+language: rust
+deploy: binary
+iii_engine_version: ">=0.26.0"
+manifest: Cargo.toml
+license: Apache-2.0
+bin: iii-cloud
+tags: [cloud, deploy, iii-cloud, readiness, onboarding]
+description: Take any project to iii cloud from your harness — sign in, check the cloud plan and run the app here the way the cloud runs it, keep secret values out of the agent's context, merge and deploy pinned to the plan you saw, and follow the deploy to Ready.
+dependencies:
+  configuration: "latest"
+  secrets: "latest"
+config:
+  cloud_url: https://cloud.iii.dev
+  iii_bin: iii
+  merge_method: squash
+  postgres_image: pgvector/pgvector:pg17
+  run_timeout_s: 900
+  data_dir: data/iii-cloud
+  auto_fix: true

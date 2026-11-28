@@ -1,0 +1,36 @@
+{
+  "description": "The page's own: stop the agent's running turn for a hand-off, with the harness's own stop. Agents never call it.",
+  "function_id": "iii-cloud::handoff::stop",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::handoff::stop` input.",
+    "properties": {
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "title": "HandoffStopRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "stopping": {
+        "description": "The harness accepted the stop of the session's running turn.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "id",
+      "stopping"
+    ],
+    "title": "HandoffStopResponse",
+    "type": "object"
+  }
+}

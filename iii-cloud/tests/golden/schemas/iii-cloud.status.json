@@ -1,0 +1,2932 @@
+{
+  "description": "The stored state: connection, project, latest check, run, secrets, pull request and deploy. refresh re-reads the checkout, the pull request, the variables and the deployments.",
+  "function_id": "iii-cloud::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::status` input.",
+    "properties": {
+      "refresh": {
+        "default": null,
+        "description": "Re-read the checkout, the pull request, the variables and the deployments first.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AgentPhase": {
+        "oneOf": [
+          {
+            "enum": [
+              "starting",
+              "working",
+              "waiting_for_you",
+              "stalled",
+              "done",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The turn ended on a wake the agent armed (an observer that notifies its chat, unfired and unexpired): it waits on an event, not on the person.",
+            "enum": [
+              "waiting"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "AgentState": {
+        "description": "What the agent is doing for a hand-off, as the worker sees it. Descriptions only: no message body, tool input or result is ever copied here.",
+        "properties": {
+          "current": {
+            "description": "The last call's description, plain text, at most 120 characters.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handoff_id": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/HandoffKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What the hand-off is for, so the page can place its row."
+          },
+          "last_activity_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "default": null,
+            "description": "One plain line from the agent about what it is doing, at most 120 characters.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question": {
+            "description": "The open question's text, when the agent waits for an answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "question_source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/QuestionSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Where `question` comes from: a real ask from the agent's session, or text this worker made from the check's open problems. Absent when there is no question."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/definitions/AgentPhase"
+          },
+          "steps": {
+            "description": "Function calls the session has made.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "waiting_for": {
+            "default": null,
+            "description": "What the agent waits for when `state` is `waiting` (\"the run here to end\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "working_on": {
+            "default": [],
+            "description": "Ids of the newest check's problems the agent is working on now (the page shows a spinner on them). Cleared when they leave a newer check or the hand-off ends.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "handoff_id",
+          "started_at",
+          "state",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "ApiKeyRef": {
+        "properties": {
+          "environment_id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "environment_id",
+          "secret",
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "BranchRef": {
+        "description": "A branch `project::use {from: checkout, source: name}` can take.",
+        "properties": {
+          "ahead": {
+            "description": "Commits the selected environment's branch (`origin/<branch>`) does not have; null when that branch is not on origin.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "committed_at": {
+            "type": "string"
+          },
+          "is_env_branch": {
+            "description": "The selected environment deploys this branch.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "`main`, or `origin/feature-x` for a branch only on origin.",
+            "type": "string"
+          },
+          "remote": {
+            "type": "boolean"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "committed_at",
+          "is_env_branch",
+          "name",
+          "remote",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "BriefBase": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "BriefDeploy": {
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "log_tail": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "release_command": {
+            "default": null,
+            "description": "The release command from the manifest, when the failure is the release's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "silent": {
+            "default": false,
+            "type": "boolean"
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "log_tail"
+        ],
+        "type": "object"
+      },
+      "BriefProblem": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner": {
+            "$ref": "#/definitions/Owner"
+          },
+          "severity": {
+            "$ref": "#/definitions/Severity"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "id",
+          "owner",
+          "severity",
+          "title"
+        ],
+        "type": "object"
+      },
+      "BriefWorkspace": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "path"
+        ],
+        "type": "object"
+      },
+      "Check": {
+        "properties": {
+          "base": {
+            "description": "The environment branch's head when checked.",
+            "type": "string"
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "commits": {
+            "default": [],
+            "description": "The commits of `base..commit`, newest first, at most 50. Empty when the base was not read or the commit is not on this machine.",
+            "items": {
+              "$ref": "#/definitions/CommitLine"
+            },
+            "type": "array"
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "handoff_id": {
+            "default": null,
+            "description": "The hand-off whose agent asked for it; null for the page's own checks.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "here": {
+            "$ref": "#/definitions/HerePart"
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "default": null,
+            "description": "The compose file it was checked with, from the repository root. When it is not the environment's, deploying this check switches the environment to it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan": {
+            "$ref": "#/definitions/PlanPart"
+          },
+          "problems": {
+            "description": "Cloud plan first, then the checks here.",
+            "items": {
+              "$ref": "#/definitions/Problem"
+            },
+            "type": "array"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "report": {
+            "type": "string"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Run"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "base",
+          "checked_at",
+          "commit",
+          "duration_ms",
+          "environment_id",
+          "here",
+          "id",
+          "plan",
+          "problems",
+          "ready",
+          "report"
+        ],
+        "type": "object"
+      },
+      "CheckSummary": {
+        "description": "A check in short, for the page's history (`Status.checks`); the whole record is `iii-cloud::check::get {id}`.",
+        "properties": {
+          "checked_at": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "description": "The plan and the checks here; a run's time is in its stages.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "handoff_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "problems": {
+            "description": "The problems someone acts on (owner `agent` or `person`).",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checked_at",
+          "commit",
+          "duration_ms",
+          "environment_id",
+          "id",
+          "problems",
+          "ready"
+        ],
+        "type": "object"
+      },
+      "Checkout": {
+        "properties": {
+          "ahead": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branches": {
+            "default": [],
+            "description": "Local branches and origin's, newest commit first, at most 30; a local branch hides its origin twin. Read on refresh, from the refs as they are.",
+            "items": {
+              "$ref": "#/definitions/BranchRef"
+            },
+            "type": "array"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "head": {
+            "type": "string"
+          },
+          "not_served": {
+            "default": null,
+            "description": "The checkout's commits the selected environment does not serve (`<served>..HEAD`, newest first, at most 50), read on refresh. Null when nothing is served yet or the served commit could not be fetched.",
+            "items": {
+              "$ref": "#/definitions/CommitLine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ahead",
+          "changed_files",
+          "head"
+        ],
+        "type": "object"
+      },
+      "CloudOutcome": {
+        "enum": [
+          "set",
+          "skipped",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "CloudProject": {
+        "properties": {
+          "created_at": {
+            "default": null,
+            "description": "When the project was made (for choosing between several).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_deployment_at": {
+            "default": null,
+            "description": "Its newest deployment, when more than one project uses the repository.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "default": "",
+            "description": "The console's `$project` URL segment (`endpoint_slug`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CloudProjectInfo": {
+        "description": "A cloud project of the repository, for the page's project and environment selectors.",
+        "properties": {
+          "created_at": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environments": {
+            "items": {
+              "$ref": "#/definitions/EnvironmentFull"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_deployment_at": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "default": "",
+            "type": "string"
+          },
+          "team": {
+            "$ref": "#/definitions/TeamName"
+          }
+        },
+        "required": [
+          "environments",
+          "id",
+          "name",
+          "team"
+        ],
+        "type": "object"
+      },
+      "CommitLine": {
+        "properties": {
+          "message": {
+            "description": "The subject line.",
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "Confirmations": {
+        "properties": {
+          "overrides": {
+            "items": {
+              "$ref": "#/definitions/OverrideConfirmation"
+            },
+            "type": "array"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/definitions/ResourceConfirmation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "overrides",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "ConnStatus": {
+        "enum": [
+          "signed_out",
+          "waiting",
+          "connected",
+          "expired",
+          "error"
+        ],
+        "type": "string"
+      },
+      "Connection": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ApiKeyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cloud_url": {
+            "type": "string"
+          },
+          "device": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Device"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorkerError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "method": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Method"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/ConnStatus"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/definitions/TeamRole"
+            },
+            "type": "array"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/User"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cloud_url",
+          "status",
+          "teams"
+        ],
+        "type": "object"
+      },
+      "Deploy": {
+        "properties": {
+          "approved_by_worker": {
+            "type": "boolean"
+          },
+          "check_id": {
+            "default": null,
+            "description": "The check this worker deployed (`deploy {check_id}`); null for a deployment made elsewhere.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked_ready": {
+            "type": "boolean"
+          },
+          "commit": {
+            "$ref": "#/definitions/DeployCommit"
+          },
+          "console_url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DeployError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DeployFailure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For a failed deploy: what failed, in plain words, with the failing stage's log."
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_console": {
+            "default": false,
+            "description": "This worker did not create it: made in the console (the cloud's `type` is `manual` for both).",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "log_tail": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/definitions/Outcome"
+          },
+          "pr": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "release_row": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReleaseRow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "replaced_by": {
+            "default": null,
+            "description": "The deployment that replaced this one, when it is `replaced`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/definitions/DeployStage"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approved_by_worker",
+          "checked_ready",
+          "commit",
+          "console_url",
+          "created_at",
+          "environment_id",
+          "id",
+          "log_tail",
+          "number",
+          "outcome",
+          "stages",
+          "status",
+          "type"
+        ],
+        "type": "object"
+      },
+      "DeployCommit": {
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha"
+        ],
+        "type": "object"
+      },
+      "DeployError": {
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hint",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "DeployFailure": {
+        "description": "A failed deploy in plain words (spec: readable failures).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          },
+          "log_tail": {
+            "description": "The last ~40 lines of the failing stage's log, oldest first, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "release_command": {
+            "default": null,
+            "description": "The release command from the manifest, for a release failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "silent": {
+            "default": false,
+            "description": "The log shows an exit status but no error text.",
+            "type": "boolean"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "title": {
+            "description": "Plain, per code: \"The release command failed: `pnpm migrate`\".",
+            "type": "string"
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "hint",
+          "log_tail",
+          "stage",
+          "title"
+        ],
+        "type": "object"
+      },
+      "DeployStage": {
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "Device": {
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "user_code",
+          "verification_uri"
+        ],
+        "type": "object"
+      },
+      "EnvironmentBrief": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "EnvironmentFull": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "head": {
+            "default": null,
+            "description": "Its branch's head on origin, read on refresh. Null before the first refresh, or when origin did not answer or has no such branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "EnvironmentInfo": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "Excerpt": {
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "start_line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lines",
+          "start_line"
+        ],
+        "type": "object"
+      },
+      "HandoffBrief": {
+        "description": "Everything the agent needs for a hand-off, so the prompt can be one plain sentence plus the marker. No secret value is in it.",
+        "properties": {
+          "agent_problems": {
+            "description": "The problems that are the agent's to fix.",
+            "items": {
+              "$ref": "#/definitions/BriefProblem"
+            },
+            "type": "array"
+          },
+          "base": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BriefBase"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The base branch and its sha when the worktree was made: reset to it to start again (`OLD_ATTEMPT_COMMITS`)."
+          },
+          "check_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_path": {
+            "description": "The person's own checkout: do not touch it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deploy": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BriefDeploy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "handoff_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/HandoffKind"
+          },
+          "manifest": {
+            "description": "The compose file checked and deployed, relative to the worktree: the hand-off's, else the environment's.",
+            "type": "string"
+          },
+          "next_step": {
+            "type": "string"
+          },
+          "other_compose_files": {
+            "description": "Other compose files tracked in the worktree that declare `containers:` (at most 10). They are not checked or deployed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "person_problems": {
+            "description": "The ones the person decides: bring each with a recommendation.",
+            "items": {
+              "$ref": "#/definitions/BriefProblem"
+            },
+            "type": "array"
+          },
+          "project": {
+            "description": "`<project> · <environment>`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pushes_directly": {
+            "default": false,
+            "description": "The environment is not production: it gets an assisted deploy, no pull request. Push only your fix branch; the person's deploy on the page sends the checked commit to the environment's own branch.",
+            "type": "boolean"
+          },
+          "remote_branch_note": {
+            "default": null,
+            "description": "One line when an earlier try left the fix branch on origin: the first push replaces it with `--force-with-lease`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/BriefWorkspace"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where to work."
+          }
+        },
+        "required": [
+          "agent_problems",
+          "handoff_id",
+          "kind",
+          "manifest",
+          "next_step",
+          "other_compose_files",
+          "person_problems"
+        ],
+        "type": "object"
+      },
+      "HandoffKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "ready",
+              "deploy_fix",
+              "pull_request"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The project is not in iii cloud yet.",
+            "enum": [
+              "import"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "HealthResult": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "HerePart": {
+        "properties": {
+          "accepts_cloud_block": {
+            "type": "boolean"
+          },
+          "iii_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "problems": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepts_cloud_block",
+          "problems"
+        ],
+        "type": "object"
+      },
+      "Importable": {
+        "properties": {
+          "manifests": {
+            "items": {
+              "$ref": "#/definitions/ImportableManifest"
+            },
+            "type": "array"
+          },
+          "repository_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifests",
+          "repository_id",
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "ImportableManifest": {
+        "properties": {
+          "choosable": {
+            "type": "boolean"
+          },
+          "has_cloud_block": {
+            "default": false,
+            "description": "The file on this machine has a `cloud:` section.",
+            "type": "boolean"
+          },
+          "issue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "suggested_environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workers": {
+            "default": null,
+            "description": "Its containers, as the file on this machine says (else as iii cloud lists them); null when neither knows.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "choosable",
+          "path"
+        ],
+        "type": "object"
+      },
+      "LocalOutcome": {
+        "enum": [
+          "set",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "Method": {
+        "enum": [
+          "browser",
+          "api_key"
+        ],
+        "type": "string"
+      },
+      "OtherCloudProject": {
+        "description": "A live cloud project of the person's teams that deploys another repository: it can't be used with this folder.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "team": {
+            "$ref": "#/definitions/TeamName"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repository",
+          "team"
+        ],
+        "type": "object"
+      },
+      "Outcome": {
+        "enum": [
+          "running",
+          "ready",
+          "failed",
+          "no_route",
+          "canceled",
+          "replaced"
+        ],
+        "type": "string"
+      },
+      "OverrideChoice": {
+        "description": "Which value of a console override the person keeps.",
+        "oneOf": [
+          {
+            "description": "The file's value wins at deploy (what the deploy does already).",
+            "enum": [
+              "file"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The console's value is kept, which takes a change to the file.",
+            "enum": [
+              "console"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "OverrideConfirmation": {
+        "properties": {
+          "console": true,
+          "file": true,
+          "setting": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "console",
+          "file",
+          "setting"
+        ],
+        "type": "object"
+      },
+      "Owner": {
+        "oneOf": [
+          {
+            "enum": [
+              "agent",
+              "person"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Info only: nothing to do.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PlanPart": {
+        "properties": {
+          "at_least": {
+            "description": "The plan stops at its first blocking step: more may follow.",
+            "type": "boolean"
+          },
+          "blocking": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "confirmations": {
+            "$ref": "#/definitions/Confirmations"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorkerError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/PlanStatus"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PlanSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "What the plan runs: its workers and machine groups. Null without a plan."
+          },
+          "warnings": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "web_candidates": true
+        },
+        "required": [
+          "at_least",
+          "blocking",
+          "confirmations",
+          "status",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "PlanStatus": {
+        "enum": [
+          "clean",
+          "blocked",
+          "not_pushed",
+          "commit_not_planned",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "PlanSummary": {
+        "properties": {
+          "groups": {
+            "description": "The groups' names, in the plan's order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "workers": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "groups",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "PrChecks": {
+        "enum": [
+          "none",
+          "pending",
+          "passing",
+          "failing"
+        ],
+        "type": "string"
+      },
+      "PrState": {
+        "enum": [
+          "OPEN",
+          "MERGED",
+          "CLOSED"
+        ],
+        "type": "string"
+      },
+      "Problem": {
+        "properties": {
+          "cloud_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Excerpt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "sha1(source, code, file, line), stable across checks.",
+            "type": "string"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner": {
+            "$ref": "#/definitions/Owner"
+          },
+          "severity": {
+            "$ref": "#/definitions/Severity"
+          },
+          "skipped": {
+            "description": "The person skipped its name for now (`values::skip`). `EMPTY_DEFAULT_VARIABLE` then has severity `info`; `SECRET_MISSING` stays `block`.",
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/definitions/Source"
+          },
+          "title": {
+            "type": "string"
+          },
+          "variable": {
+            "description": "The variable a value problem is about (`SECRET_MISSING`, `EMPTY_DEFAULT_VARIABLE`, `LOCAL_VARIABLE_UNSET`), as the problem itself knows it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "id",
+          "owner",
+          "severity",
+          "source",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Project": {
+        "properties": {
+          "checkout": {
+            "$ref": "#/definitions/Checkout"
+          },
+          "cloud_project": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CloudProject"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cloud_projects": {
+            "default": [],
+            "description": "Every cloud project that uses this repository, across the person's teams, with its environments. The chosen one is `cloud_project`; `project::use {cloud_project_id}` picks another.",
+            "items": {
+              "$ref": "#/definitions/CloudProjectInfo"
+            },
+            "type": "array"
+          },
+          "default_branch": {
+            "default": null,
+            "description": "The repository's default branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EnvironmentInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "environments": {
+            "items": {
+              "$ref": "#/definitions/EnvironmentBrief"
+            },
+            "type": "array"
+          },
+          "fell_back_from": {
+            "description": "Only in `project::use`'s answer: the `environment_id` asked for, which the cloud project no longer lists, so its default environment was taken.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github_access": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "importable": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Importable"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "other_cloud_projects": {
+            "default": [],
+            "description": "Live projects of the person's teams that deploy another repository.",
+            "items": {
+              "$ref": "#/definitions/OtherCloudProject"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "repository": {
+            "description": "`owner/name`.",
+            "type": "string"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/TeamRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/definitions/TeamRef"
+            },
+            "type": "array"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Workspace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "checkout",
+          "environments",
+          "path",
+          "repository",
+          "teams"
+        ],
+        "type": "object"
+      },
+      "PullRequest": {
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "checks": {
+            "$ref": "#/definitions/PrChecks"
+          },
+          "head": {
+            "type": "string"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "main_moved": {
+            "type": "boolean"
+          },
+          "mergeable": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/definitions/PrState"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "base",
+          "body",
+          "checks",
+          "head",
+          "head_sha",
+          "main_moved",
+          "number",
+          "state",
+          "title",
+          "url"
+        ],
+        "type": "object"
+      },
+      "QuestionSource": {
+        "oneOf": [
+          {
+            "description": "An ask the agent made in its session.",
+            "enum": [
+              "agent"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The worker's own words about what the check leaves open.",
+            "enum": [
+              "check"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "RecentProject": {
+        "description": "A project the person used before, to switch back with `project::use {path, cloud_project_id, environment_id, mode}` (no `resolve` needed first).",
+        "properties": {
+          "cloud_project_id": {
+            "type": "string"
+          },
+          "cloud_project_name": {
+            "type": "string"
+          },
+          "environment_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/WorkspaceMode"
+          },
+          "path": {
+            "description": "The repository's root on this machine.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "`owner/name`.",
+            "type": "string"
+          },
+          "team_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "team_name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "used_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cloud_project_id",
+          "cloud_project_name",
+          "mode",
+          "path",
+          "repository",
+          "used_at"
+        ],
+        "type": "object"
+      },
+      "ReleaseRow": {
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/ReleaseRowStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReleaseRowStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "passed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ResourceConfirmation": {
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "binding": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "alias",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "RouteCount": {
+        "properties": {
+          "count": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "prefix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "type": "object"
+      },
+      "Run": {
+        "properties": {
+          "check_id": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "healthcheck": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/HealthResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "left_redacted": {
+            "default": false,
+            "description": "The copies under this run's `left/` were written with the run's secret values replaced. Absent (an older run): `check::read` refuses its kept files.",
+            "type": "boolean"
+          },
+          "log_path": {
+            "default": null,
+            "description": "The run's whole redacted log, an absolute path (`log_tail` is only its last 40 lines).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log_tail": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "moved": {
+            "default": [],
+            "description": "The untracked files the run created, moved out of the copy into the run's `left/` folder when it ended (at most 500).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "not_covered": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "restored": {
+            "default": [],
+            "description": "The tracked files the run rewrote and the worker put back as committed when it ended (at most 500; their rewritten versions are kept in the run's `left/` folder).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reused": {
+            "default": false,
+            "description": "A passed run of an earlier check answered this one: nothing ran again.",
+            "type": "boolean"
+          },
+          "routes": {
+            "$ref": "#/definitions/RouteCount"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/definitions/Stage"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/RunStatus"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WaitingOn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The workers stage has gone a minute with no new worker: who it waits for. The run is still `running`; null otherwise."
+          },
+          "workers": {
+            "$ref": "#/definitions/WorkerCount"
+          }
+        },
+        "required": [
+          "check_id",
+          "commit",
+          "engine",
+          "id",
+          "log_tail",
+          "not_covered",
+          "routes",
+          "stages",
+          "started_at",
+          "status",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "RunError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunOwner"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whose the failure is (`run_code_owner`): the agent fixes it, the person must, or the run was cut short. Set whenever the check is stored."
+          },
+          "stage": {
+            "$ref": "#/definitions/StageName"
+          },
+          "withheld": {
+            "default": false,
+            "description": "The worker would not send this failure to the agent now: the person has a blocking problem open (a missing value fails the run too), so it is theirs first.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "RunOwner": {
+        "description": "Who a failed local run's code belongs to.",
+        "oneOf": [
+          {
+            "description": "A newer run of the workspace replaced this one: nothing to fix and nothing to send (the newer run is judged in its turn).",
+            "enum": [
+              "replaced"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The agent fixes it in the worktree.",
+            "enum": [
+              "agent"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The person's: Docker, a tool, the iii binary, or a decision about the routes.",
+            "enum": [
+              "person"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Nobody's fault: the run was cut short; run it again.",
+            "enum": [
+              "interrupted"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "RunStatus": {
+        "enum": [
+          "running",
+          "passed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "RunningDeploy": {
+        "description": "A deploy still moving, with where it was made from. A field is null when the worker never knew it.",
+        "properties": {
+          "cloud_project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deploy": {
+            "$ref": "#/definitions/Deploy"
+          },
+          "environment_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "The local folder it was made from: `project::use {path}` goes back to it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deploy"
+        ],
+        "type": "object"
+      },
+      "SecretMode": {
+        "enum": [
+          "ask",
+          "not_needed",
+          "decide"
+        ],
+        "type": "string"
+      },
+      "SecretRequest": {
+        "properties": {
+          "asked_at": {
+            "type": "string"
+          },
+          "cloud": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CloudOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/WorkerError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "external": {
+            "default": false,
+            "description": "Asked for a database URL the person chose to keep outside iii cloud.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "local": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/LocalOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/SecretMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/definitions/SecretState"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Selected"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the value goes: the team, worktree and environment the request was asked for, whatever the page has selected when the value is saved."
+          }
+        },
+        "required": [
+          "asked_at",
+          "description",
+          "environment_id",
+          "id",
+          "mode",
+          "name",
+          "state"
+        ],
+        "type": "object"
+      },
+      "SecretState": {
+        "enum": [
+          "waiting",
+          "set",
+          "left_empty",
+          "noted",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "Selected": {
+        "properties": {
+          "env": {
+            "$ref": "#/definitions/EnvironmentInfo"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "workspace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "env",
+          "team_id",
+          "workspace"
+        ],
+        "type": "object"
+      },
+      "Severity": {
+        "enum": [
+          "block",
+          "warn",
+          "info"
+        ],
+        "type": "string"
+      },
+      "Source": {
+        "enum": [
+          "cloud_plan",
+          "check_here"
+        ],
+        "type": "string"
+      },
+      "Stage": {
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "$ref": "#/definitions/StageName"
+          },
+          "status": {
+            "$ref": "#/definitions/StageStatus"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "StageName": {
+        "enum": [
+          "install",
+          "build",
+          "release",
+          "compose_up",
+          "workers",
+          "routes",
+          "healthcheck"
+        ],
+        "type": "string"
+      },
+      "StageStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "passed",
+          "failed",
+          "skipped"
+        ],
+        "type": "string"
+      },
+      "TeamName": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "TeamRef": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "TeamRole": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "User": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "email",
+          "id"
+        ],
+        "type": "object"
+      },
+      "VariableRow": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "required_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "required_by",
+          "status",
+          "type"
+        ],
+        "type": "object"
+      },
+      "WaitingOn": {
+        "properties": {
+          "containers": {
+            "description": "The containers that have not connected.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "since": {
+            "description": "When the wait was noticed (RFC 3339).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "containers",
+          "since"
+        ],
+        "type": "object"
+      },
+      "WorkerCount": {
+        "properties": {
+          "ready": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ready",
+          "total"
+        ],
+        "type": "object"
+      },
+      "WorkerError": {
+        "description": "`{code, message, status?, fix?}` inside records.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "WorkerInfo": {
+        "properties": {
+          "cloud_engine": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iii_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "Workspace": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "from_head": {
+            "default": null,
+            "description": "The last commit the worktree took from the person's checkout (`from: checkout`): commits after it are the agent's. Null for a worktree made from the environment's branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/WorkspaceMode"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "default": null,
+            "description": "The branch `use {from: checkout, source}` took; null: the checkout's HEAD.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_sha": {
+            "default": null,
+            "description": "The commit `source` (else the checkout's HEAD) pointed at when the worktree was prepared: \"moved since\" compares the source's tip with it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "branch",
+          "mode",
+          "path"
+        ],
+        "type": "object"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "worktree",
+          "checkout"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "agent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AgentState"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The agent's work on the selected environment's open hand-off."
+      },
+      "auto_fix": {
+        "description": "The worker's `auto_fix` setting: a person's check hands the agent its problems.",
+        "type": "boolean"
+      },
+      "candidate": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Project"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "A folder `project::resolve` read while another project is selected: Setup's add-project steps show it. `project::use` selects it and clears this."
+      },
+      "check": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Check"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The selected environment's latest check."
+      },
+      "checks": {
+        "default": [],
+        "description": "Every kept check in short, of every environment, newest first (the latest 20, and the ones a merge, hand-off, pull request or deploy points at).",
+        "items": {
+          "$ref": "#/definitions/CheckSummary"
+        },
+        "type": "array"
+      },
+      "compose_files": {
+        "default": [],
+        "description": "The worktree's tracked compose files that declare `containers:`, for the page's app file picker. `choosable` is false for a file iii cloud can't plan by its name (`issue`: `NOT_WORKER_COMPOSE`).",
+        "items": {
+          "$ref": "#/definitions/ImportableManifest"
+        },
+        "type": "array"
+      },
+      "connection": {
+        "$ref": "#/definitions/Connection"
+      },
+      "deploys": {
+        "description": "Newest first, at most 20.",
+        "items": {
+          "$ref": "#/definitions/Deploy"
+        },
+        "type": "array"
+      },
+      "handoff_brief": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/HandoffBrief"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What the agent needs for the open hand-off, in one place."
+      },
+      "override_choices": {
+        "additionalProperties": {
+          "$ref": "#/definitions/OverrideChoice"
+        },
+        "default": {},
+        "description": "The person's choice per console override of the selected environment (`override::choose`), by setting: only choices made for the newest check's console and file values.",
+        "type": "object"
+      },
+      "pr": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PullRequest"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "pr_error": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/WorkerError"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "problems": {
+        "default": [],
+        "description": "What is wrong with the selection itself: `PROJECT_DELETED`, `ENVIRONMENT_DELETED`.",
+        "items": {
+          "$ref": "#/definitions/WorkerError"
+        },
+        "type": "array"
+      },
+      "project": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Project"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "recent_projects": {
+        "default": [],
+        "description": "Projects used before, newest first: not the current one, nor a folder that is gone.",
+        "items": {
+          "$ref": "#/definitions/RecentProject"
+        },
+        "type": "array"
+      },
+      "refreshed_at": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "running_deploys": {
+        "default": [],
+        "description": "Every deploy still moving, of every project and environment, newest first (`deploys` has the selected environment's only).",
+        "items": {
+          "$ref": "#/definitions/RunningDeploy"
+        },
+        "type": "array"
+      },
+      "secrets": {
+        "description": "Open first, then the latest 20 resolved.",
+        "items": {
+          "$ref": "#/definitions/SecretRequest"
+        },
+        "type": "array"
+      },
+      "skipped_problems": {
+        "default": [],
+        "description": "The warning codes the person skipped for now (`problem::skip`) in the selected environment, sorted.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "skipped_values": {
+        "default": [],
+        "description": "The names the person skipped for now (`values::skip`) in the selected environment, sorted.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "variables": {
+        "items": {
+          "$ref": "#/definitions/VariableRow"
+        },
+        "type": "array"
+      },
+      "work_file": {
+        "default": null,
+        "description": "The compose file the selected environment's work is on when it is not the environment's own (`State::work_file`): the newest check's, unless the environment's file changed since. Null: the environment's file.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "worker": {
+        "$ref": "#/definitions/WorkerInfo"
+      }
+    },
+    "required": [
+      "auto_fix",
+      "connection",
+      "deploys",
+      "secrets",
+      "variables",
+      "worker"
+    ],
+    "title": "Status",
+    "type": "object"
+  }
+}

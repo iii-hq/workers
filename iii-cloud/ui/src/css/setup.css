@@ -1,0 +1,154 @@
+/* First time: sign in, then the four rows of the confirmation. Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-setup {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 800px;
+  min-width: 0;
+  margin: 0 auto;
+  padding: 48px 40px;
+}
+/* The sign-in is one narrow column, as the board. */
+[data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='signin'] {
+  max-width: 600px;
+  padding-top: 72px;
+}
+@container iii-cloud (max-width: 640px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-setup,
+  [data-iii-ui='iii-cloud'] .iii-cloud-setup[data-step='signin'] {
+    padding: 16px;
+  }
+}
+
+/* Headings and copy */
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-skel {
+  display: block;
+  height: 160px;
+}
+
+/* The sign-in: the code in a card, the wait, then the note and the API key */
+[data-iii-ui='iii-cloud'] .iii-cloud-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-device {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-device .iii-cloud-code {
+  background: transparent;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-device .iii-cloud-code-value {
+  font-size: 28px;
+  letter-spacing: 0.12em;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-device-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-signin-key {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-signin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+/* The confirmation: one card of rows; an open row is drawn in place of its row */
+[data-iii-ui='iii-cloud'] .iii-cloud-detailcard {
+  border-radius: var(--radius-lg);
+  background: var(--color-panel-raised);
+  box-shadow: 0 0 0 1px var(--color-edge);
+  overflow: hidden;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detailcard > * + * {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-open {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-detail-openhead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-setup-choices {
+  padding: 0;
+}
+
+/* The copy source's choices: framed cards, an ink border when chosen */
+[data-iii-ui='iii-cloud'] .iii-cloud-ne-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-form.iii-cloud-ne-form {
+  gap: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-choice {
+  min-height: 44px;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-choice[aria-checked='true'] {
+  border-color: var(--color-ink);
+  background: var(--color-panel);
+}
+
+/* Add a project: the ways in and the project list are framed choices, one per row, stacked on a phone too. */
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-cloud-choice {
+  min-height: 56px;
+  border-radius: var(--radius-lg);
+  white-space: normal;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-ui-list-item__title,
+[data-iii-ui='iii-cloud'] .iii-cloud-add-choices .iii-ui-list-item__description {
+  white-space: normal;
+}

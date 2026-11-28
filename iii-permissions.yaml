@@ -776,3 +776,35 @@ rules:
   - '!*::shell::config-status'
   - '!*::shell::kill-session-jobs'
   - '!*::shell::on-config-change'
+
+  # iii-cloud: the agent is not restricted (owner decision, 26/11), except
+  # for what only the person does, on the page: deploy, approve a deployment,
+  # merge the pull request, rollback, and write variables, secrets or
+  # settings. iii-cloud::api only reads; its writes are iii-cloud::api::write.
+  # A deny blocks only the agent: the page calls the worker directly.
+  - '!iii-cloud::deploy'
+  - '!iii-cloud::api::write'
+  # secret::provide takes a secret value: the person types it on the page
+  # (a console call bypasses this gate). The agent only sees that it was saved.
+  - '!iii-cloud::secret::provide'
+  # Stops the agent's turn for a hand-off: the page's button, never the agent's call
+  # (it could stop another session's work).
+  - '!iii-cloud::handoff::stop'
+  # Making a project or an environment is the person's explicit choice, on the page.
+  - '!iii-cloud::project::create'
+  - '!iii-cloud::project::create_environment'
+  # Private and internal: the worker calls on-change, observers read it.
+  - '!iii-cloud::on-change'
+  - '!iii-cloud::on-config-change'
+  - '!iii-cloud::ui-content'
+  # values::save writes the values the person chose (secrets too): the page's.
+  - '!iii-cloud::values::save'
+  # values::skip is the person's "skip for now", on the page.
+  - '!iii-cloud::values::skip'
+  # problem::skip is the person's "skip for now" of a cloud warning, on the page.
+  - '!iii-cloud::problem::skip'
+  # config::import copies the person's local config folder into iii cloud: the page's.
+  - '!iii-cloud::config::import'
+  # override::choose is the person's pick for a console override, on the page.
+  - '!iii-cloud::override::choose'
+  - 'iii-cloud::*'

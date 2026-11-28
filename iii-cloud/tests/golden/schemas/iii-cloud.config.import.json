@@ -1,0 +1,186 @@
+{
+  "description": "The page's own: copy the compose file's local config folder (engine.workers.configuration, fs adapter, from the person's folder) into the selected environment's console config in iii cloud, one entry per container. dry_run previews it and writes nothing; applying needs the dry run's version as expected_version. Secret-looking keys and values are left out, by name. Agents never call it.",
+  "function_id": "iii-cloud::config::import",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::config::import` input: the page's own.",
+    "properties": {
+      "dry_run": {
+        "description": "Preview only: nothing is written.",
+        "type": "boolean"
+      },
+      "environment_id": {
+        "description": "The selected environment, as a guard (`ENVIRONMENT_CHANGED`).",
+        "type": "string"
+      },
+      "expected_version": {
+        "default": null,
+        "description": "The `version` the dry run returned. Needed to apply.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "dry_run",
+      "environment_id"
+    ],
+    "title": "ConfigImport",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ConfigImportField": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": true
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "ConfigImportWorker": {
+        "properties": {
+          "fields": {
+            "description": "The fields copied, as dotted keys; lists stay JSON values. `value` is null once applied.",
+            "items": {
+              "$ref": "#/definitions/ConfigImportField"
+            },
+            "type": "array"
+          },
+          "file": {
+            "description": "The file, from the repository root.",
+            "type": "string"
+          },
+          "left_out": {
+            "description": "Secret-looking keys or credential-looking values, by key only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "set_elsewhere": {
+            "description": "Keys iii cloud or the compose file set, which the console can't change.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "worker": {
+            "description": "The container key iii cloud keeps the config by.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fields",
+          "file",
+          "left_out",
+          "set_elsewhere",
+          "worker"
+        ],
+        "type": "object"
+      },
+      "ConfigSkipReason": {
+        "oneOf": [
+          {
+            "description": "No container iii cloud runs has that config entry.",
+            "enum": [
+              "not_a_worker"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A link, or outside the repository.",
+            "enum": [
+              "not_a_plain_file"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Over 1 MiB.",
+            "enum": [
+              "too_large"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Not a configuration entry (`id`, `name`, `description`, `value`).",
+            "enum": [
+              "unreadable"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "ConfigSkippedFile": {
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/definitions/ConfigSkipReason"
+          }
+        },
+        "required": [
+          "file",
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "What `iii-cloud::config::import` copies. Values only in a dry run's preview, never a secret-looking one: no `Debug`, so they never reach a log.",
+    "properties": {
+      "applied": {
+        "description": "False for a dry run.",
+        "type": "boolean"
+      },
+      "directory": {
+        "description": "The config folder, from the repository root (`api/config`).",
+        "type": "string"
+      },
+      "draft_changed": {
+        "description": "iii cloud has unapplied console edits for this environment: applying is refused until they're applied or dropped there.",
+        "type": "boolean"
+      },
+      "environment_id": {
+        "type": "string"
+      },
+      "skipped": {
+        "description": "Files of the folder not copied, and why.",
+        "items": {
+          "$ref": "#/definitions/ConfigSkippedFile"
+        },
+        "type": "array"
+      },
+      "version": {
+        "description": "The config version the dry run read, or the one the apply made.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "workers": {
+        "items": {
+          "$ref": "#/definitions/ConfigImportWorker"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "applied",
+      "directory",
+      "draft_changed",
+      "environment_id",
+      "skipped",
+      "version",
+      "workers"
+    ],
+    "title": "ConfigImported",
+    "type": "object"
+  }
+}

@@ -1,0 +1,148 @@
+/* Deployments (the list on the environment page) and a deployment's record (FailureCard).
+   Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-deps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* "#6", its word, then the title and its line; Open at the end of a failed one. */
+[data-iii-ui='iii-cloud'] .iii-cloud-dep {
+  display: grid;
+  grid-template-columns: 28px 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep + .iii-cloud-dep {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-title {
+  font-size: 13px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-text {
+  gap: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-text > .iii-cloud-desc {
+  line-height: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dnum {
+  font-size: 12px;
+  color: var(--color-ink);
+}
+/* The number leads the title only on a phone, where its own column is gone. */
+[data-iii-ui='iii-cloud'] .iii-cloud-dep-num {
+  display: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-dep .iii-cloud-state {
+  justify-self: start;
+}
+@container iii-cloud-mng (max-width: 639px) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'text pill'
+      'text open';
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep {
+    min-height: 64px;
+    box-sizing: border-box;
+    padding: 8px 14px;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-dnum {
+    display: none;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep-num {
+    display: inline;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep-title {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-dep-text {
+    grid-area: text;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-state {
+    grid-area: pill;
+  }
+  [data-iii-ui='iii-cloud'] .iii-cloud-dep > .iii-cloud-linkbtn {
+    grid-area: open;
+    justify-self: end;
+  }
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-link {
+  color: var(--color-ink);
+  text-decoration: underline;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* A deployment's record: the cause as the title with the action beside it, the three cells, where it stopped. */
+/* Centred in the pane, as the board (the body's own rule only caps the width). */
+[data-iii-ui='iii-cloud'] .iii-cloud-failure {
+  gap: 14px;
+  margin-inline: auto;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-failure .iii-cloud-h {
+  line-height: 1.4;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rec-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rec-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-rec-head > :not(.iii-cloud-rec-title) {
+  flex-shrink: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stopped {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stopped-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stopped-foot > .iii-cloud-desc {
+  flex: 1 1 280px;
+}
+/* A phone: the record's action is a bar at the bottom of the pane, over the scrolling page. */
+[data-iii-ui='iii-cloud'] .iii-cloud-recbar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 -12px -12px;
+  padding: 12px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel);
+  text-align: center;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-recbar > button {
+  width: 100%;
+}

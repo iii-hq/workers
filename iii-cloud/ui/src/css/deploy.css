@@ -1,0 +1,10 @@
+/* The Deploy screen's column. Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-depcol {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 860px;
+  min-width: 0;
+  margin: 0 auto;
+}

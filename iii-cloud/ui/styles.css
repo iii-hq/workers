@@ -1,0 +1,13 @@
+/* iii cloud page, renderers and form: layout only; chrome comes from the shared components.
+   One sheet per area under src/css (inside src so the Rust build sees a change); every rule
+   starts with [data-iii-ui='iii-cloud']. Only this index lists them. */
+@import './src/css/legacy.css';
+@import './src/css/shell.css';
+@import './src/css/setup.css';
+@import './src/css/check.css';
+@import './src/css/deploy.css';
+@import './src/css/manage.css';
+@import './src/css/deploys.css';
+@import './src/css/settings.css';
+@import './src/css/start.css';
+@import './src/css/values.css';

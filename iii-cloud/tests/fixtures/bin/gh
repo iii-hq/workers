@@ -1,0 +1,11 @@
+#!/bin/sh
+# A fake `gh` for the deploy tests. Each test keeps its state in
+# <repo root>/fakegh/, found from the workspace (cwd = <root>/work/<dir>-iii-cloud).
+D="$(cd "$PWD/../.." && pwd)/fakegh"
+echo "$@" >> "$D/argv.log"
+case "$1 $2" in
+  "pr view") cat "$D/view.json" ;;
+  "pr merge") sh "$D/merge.sh" "$@" ;;
+  "pr list") cat "$D/list.json" 2>/dev/null || echo '[]' ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac

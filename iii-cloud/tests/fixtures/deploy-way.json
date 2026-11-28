@@ -1,0 +1,13 @@
+[
+  {"case": "production on the default branch", "default": "main", "env": {"name": "prod", "production": true, "branch": "main"}, "others": [], "way": "pull_request", "own": null, "taken": false},
+  {"case": "production on another branch", "default": "main", "env": {"name": "prod", "production": true, "branch": "release"}, "others": [], "way": "pull_request", "own": null, "taken": false},
+  {"case": "production with the default unknown", "default": null, "env": {"name": "prod", "production": true, "branch": "main"}, "others": [], "way": "pull_request", "own": null, "taken": false},
+  {"case": "not production on the default branch", "default": "main", "env": {"name": "test", "production": false, "branch": "main"}, "others": [], "way": "assisted", "own": "iii-cloud/test", "taken": false},
+  {"case": "not production on a branch of its own", "default": "main", "env": {"name": "staging", "production": false, "branch": "staging"}, "others": ["main"], "way": "assisted", "own": null, "taken": false},
+  {"case": "not production on a branch another environment follows", "default": "main", "env": {"name": "staging", "production": false, "branch": "staging"}, "others": ["staging"], "way": "assisted", "own": "iii-cloud/staging", "taken": false},
+  {"case": "not production, the default unknown", "default": null, "env": {"name": "test", "production": false, "branch": "dev"}, "others": [], "way": "assisted", "own": "iii-cloud/test", "taken": false},
+  {"case": "not production, already on its own branch, default unknown", "default": null, "env": {"name": "test", "production": false, "branch": "iii-cloud/test"}, "others": [], "way": "assisted", "own": null, "taken": false},
+  {"case": "its own branch is followed by another environment (it was renamed)", "default": "main", "env": {"name": "test", "production": false, "branch": "main"}, "others": ["iii-cloud/test"], "way": "assisted", "own": "iii-cloud/test", "taken": true},
+  {"case": "already on its own branch, which another environment follows too", "default": "main", "env": {"name": "test", "production": false, "branch": "iii-cloud/test"}, "others": ["iii-cloud/test"], "way": "assisted", "own": null, "taken": true},
+  {"case": "on a branch of its own that another environment follows", "default": "main", "env": {"name": "staging", "production": false, "branch": "staging"}, "others": ["staging", "iii-cloud/staging"], "way": "assisted", "own": "iii-cloud/staging", "taken": true}
+]

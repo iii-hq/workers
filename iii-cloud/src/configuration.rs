@@ -1,0 +1,237 @@
+//! Integration with the `configuration` worker — register the iii-cloud config
+//! schema, fetch the live value, and hot-reload it on change. Every field is a
+//! runtime knob (cloud URL, iii binary, merge method, Postgres image,
+//! run timeout, data directory), so a change hot-swaps the whole snapshot.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use iii_sdk::errors::Error;
+use iii_sdk::{CallRequest, Capture, IIIClient, RegisterFunction, Source};
+use serde_json::{Value, json};
+use tokio::sync::RwLock;
+
+use crate::config::Config;
+
+/// Hot-swappable config snapshot shared with every handler. A handler takes a
+/// `read().await` and clones the inner `Arc` out (a cheap refcount bump) so it
+/// never holds the lock across a turn; `apply_config` whole-snapshot replaces
+/// the inner `Arc` under the write lock.
+pub type ConfigCell = Arc<RwLock<Arc<Config>>>;
+
+pub const DEFAULT_CONFIG_ID: &str = "iii-cloud";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
+const CONFIG_FN_ID: &str = "iii-cloud::on-config-change";
+/// The configuration worker's change event.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
+const CONFIG_TIMEOUT_MS: u64 = 5_000;
+const CONFIG_RETRIES: u32 = 3;
+
+/// Register the schema. The optional seed or built-in default is installed
+/// only when no stored value exists; live configuration always takes precedence.
+pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(), String> {
+    let mut payload = json!({
+        "id": config_id(),
+        "name": "iii cloud",
+        "description": "iii cloud worker: the cloud URL, the iii binary the run here uses, the pull request merge method, the local Postgres image, the run timeout, where records and run logs live, and whether a check hands the agent its problems (auto_fix).",
+        "schema": Config::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
+    });
+    // A seed initializes an absent entry; it never replaces a Compose override.
+    payload["initial_value"] = seed
+        .map(|value| value.to_json())
+        .unwrap_or_else(|| Config::default().to_json());
+    ensure_configuration(iii, payload).await
+}
+
+/// Read the live `iii-cloud` configuration; built-in default when none stored.
+pub async fn fetch_config(iii: &IIIClient) -> Result<Config, String> {
+    match try_get_value(iii).await? {
+        Some(v) if !v.is_null() => Config::from_json(&v).map_err(|e| e.to_string()),
+        _ => {
+            tracing::info!("no iii-cloud configuration value found; using built-in defaults");
+            Ok(Config::default())
+        }
+    }
+}
+
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        call_configuration_with_retry(iii, function, payload)
+    })
+    .await
+}
+
+/// `Ok(None)` when the entry does not exist (`NOT_FOUND`).
+async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
+        Ok(resp) => Ok(resp.get("value").cloned()),
+        Err(e) if is_not_found(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub async fn apply_config(cell: &ConfigCell, cfg: Config) {
+    *cell.write().await = Arc::new(cfg);
+}
+
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it: filters on this worker's entry id and
+/// on `configuration:updated`, the event delivered as output. The observer
+/// stays `pending` until the configuration worker registers the function.
+pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell) {
+    let engine = iii.clone();
+    iii.register_function(
+        CONFIG_FN_ID,
+        RegisterFunction::new_async(move |_payload: Value| {
+            let cell = cell.clone();
+            let engine = engine.clone();
+            async move {
+                on_config_change(&engine, &cell).await;
+                Ok::<Value, Error>(json!({ "ok": true }))
+            }
+        })
+        .request_format(json!({ "type": "object", "properties": {} }))
+        .response_format(json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+        }))
+        .description("Internal: reload iii-cloud configuration when it changes.")
+        .metadata(json!({ "internal": true })),
+    );
+
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .capture([Capture::Output]),
+        CONFIG_FN_ID,
+    );
+}
+
+/// Re-fetch the authoritative value after observing to close the boot race
+/// (an update that landed between the initial fetch and the observer becoming
+/// active reached no one).
+pub async fn reconcile(iii: &IIIClient, cell: &ConfigCell) {
+    on_config_change(iii, cell).await;
+}
+
+/// The event payload is intentionally ignored — `iii-cloud::on-config-change` is
+/// a discoverable bus function, so trusting `payload.new_value` would let any
+/// caller inject config without updating persisted state. Re-fetch the stored
+/// value instead. The previous snapshot is kept on any failure.
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
+    match fetch_config(iii).await {
+        Ok(cfg) => {
+            apply_config(cell, cfg).await;
+            tracing::info!("iii-cloud configuration reloaded");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "config-change: fetch failed; keeping previous config");
+        }
+    }
+}
+
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
+async fn call_configuration_with_retry(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=CONFIG_RETRIES {
+        match iii
+            .call(
+                CallRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
+            .await
+        {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
+                if attempt < CONFIG_RETRIES {
+                    let backoff = 250u64 << (attempt - 1);
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+                }
+            }
+        }
+    }
+    Err(format!(
+        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+}

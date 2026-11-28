@@ -1,0 +1,88 @@
+/* Start (§3): the account row and the projects on this machine. Every rule starts with [data-iii-ui='iii-cloud']. */
+/* One column, centred (960 at most, from the shared body rule). */
+[data-iii-ui='iii-cloud'] .iii-cloud-start {
+  align-items: center;
+}
+/* The API key's line: what it reaches, and the way to sign in with the browser. */
+[data-iii-ui='iii-cloud'] .iii-cloud-start-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  font-size: 13px;
+}
+/* A project row (the board): 14 px padding, the name 14/500 with its chip, the state line 13 px ink, the folder
+   faint in mono; a hairline between rows. */
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row {
+  align-items: center;
+  padding: 14px;
+  border-radius: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row + .iii-cloud-start-row {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row .iii-ui-list-item__title,
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row .iii-ui-list-item__description {
+  white-space: normal;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row .iii-ui-list-item__title {
+  font-size: 14px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-row .iii-ui-list-item__description {
+  font-size: 13px;
+  color: var(--color-ink);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-name {
+  font-weight: inherit;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-state .iii-cloud-mono {
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-path {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-lines .iii-cloud-skeleton-row {
+  width: 40%;
+}
+/* Phone: one bordered card of rows, each 76 px at least; the name 16/600 with its chip at the end of its line. */
+[data-iii-ui='iii-cloud'] .iii-cloud-start-card {
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-start-row {
+  min-height: 76px;
+  padding: 12px 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-start-row .iii-ui-list-item__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-start-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-shell[data-narrow] .iii-cloud-start-row .iii-cloud-start-name {
+  width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-adds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-start-adds > * {
+  width: 100%;
+  min-height: 44px;
+}

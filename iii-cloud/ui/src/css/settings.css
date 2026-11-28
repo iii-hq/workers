@@ -1,0 +1,123 @@
+/* Secrets and variables (the secrets page), and ConfigImport's dialog. Every rule starts with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-set {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 900px;
+  min-width: 0;
+  margin: 0 auto;
+}
+/* The kind menu shows on row hover, keyboard focus or an open menu; always on a touch screen. */
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button {
+  opacity: 0;
+}
+[data-iii-ui='iii-cloud'] tr:hover .iii-cloud-kind button,
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button:focus-visible,
+[data-iii-ui='iii-cloud'] .iii-cloud-kind button[aria-expanded='true'] {
+  opacity: 1;
+}
+@media (hover: none) {
+  [data-iii-ui='iii-cloud'] .iii-cloud-kind button {
+    opacity: 1;
+  }
+}
+/* The title and what the file reads on the left, Paste a .env and Add on the right. */
+[data-iii-ui='iii-cloud'] .iii-cloud-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-form {
+  padding: 12px;
+}
+/* The choices above a row's input (env files, this environment's address). */
+[data-iii-ui='iii-cloud'] .iii-cloud-set-offers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 0 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-skel {
+  display: block;
+  height: 120px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-set-note {
+  max-width: 720px;
+  line-height: 1.6;
+}
+/* The kind word with its menu. */
+[data-iii-ui='iii-cloud'] .iii-cloud-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* ConfigImport's dialog (the check opens it): which compose file, and what is copied. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cf {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cf-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cf-foot > p {
+  flex: 1 1 240px;
+}
+/* O2/O4: the workers' config, per worker: file → worker, its fields, what is left out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-fields {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-out,
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-skipped {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ci-skipped {
+  padding: 0;
+  list-style: none;
+}

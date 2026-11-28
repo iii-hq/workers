@@ -1,0 +1,388 @@
+{
+  "description": "Your brief, and only it: where to work, the base, the compose file, the problems (id, code, owner, severity, title, detail, file, line, fix) split into yours and the person's, the deploy failure when there is one, the next step, and run_failure ({stage, code, message, log_tail}) when your hand-off's latest local run failed. handoff_id is the id or the 8 characters of the marker line.",
+  "function_id": "iii-cloud::handoff::brief",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`iii-cloud::handoff::brief` input.",
+    "properties": {
+      "handoff_id": {
+        "description": "The hand-off's id, or the 8 characters of its marker line.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "handoff_id"
+    ],
+    "title": "HandoffBriefRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BriefBase": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "BriefDeploy": {
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "log_tail": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "release_command": {
+            "default": null,
+            "description": "The release command from the manifest, when the failure is the release's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "silent": {
+            "default": false,
+            "type": "boolean"
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "log_tail"
+        ],
+        "type": "object"
+      },
+      "BriefProblem": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner": {
+            "$ref": "#/definitions/Owner"
+          },
+          "severity": {
+            "$ref": "#/definitions/Severity"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "id",
+          "owner",
+          "severity",
+          "title"
+        ],
+        "type": "object"
+      },
+      "BriefWorkspace": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "path"
+        ],
+        "type": "object"
+      },
+      "HandoffKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "ready",
+              "deploy_fix",
+              "pull_request"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The project is not in iii cloud yet.",
+            "enum": [
+              "import"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Owner": {
+        "oneOf": [
+          {
+            "enum": [
+              "agent",
+              "person"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Info only: nothing to do.",
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "RunFailure": {
+        "description": "Why the hand-off's latest local run failed.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "log_tail": {
+            "description": "The run's last lines, oldest first, redacted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/definitions/StageName"
+          }
+        },
+        "required": [
+          "code",
+          "log_tail",
+          "message",
+          "stage"
+        ],
+        "type": "object"
+      },
+      "Severity": {
+        "enum": [
+          "block",
+          "warn",
+          "info"
+        ],
+        "type": "string"
+      },
+      "StageName": {
+        "enum": [
+          "install",
+          "build",
+          "release",
+          "compose_up",
+          "workers",
+          "routes",
+          "healthcheck"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::handoff::brief` output: the brief, and the failed run when there is one.",
+    "properties": {
+      "agent_problems": {
+        "description": "The problems that are the agent's to fix.",
+        "items": {
+          "$ref": "#/definitions/BriefProblem"
+        },
+        "type": "array"
+      },
+      "base": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BriefBase"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The base branch and its sha when the worktree was made: reset to it to start again (`OLD_ATTEMPT_COMMITS`)."
+      },
+      "check_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "checkout_path": {
+        "description": "The person's own checkout: do not touch it.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "commit": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "deploy": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BriefDeploy"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "handoff_id": {
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/definitions/HandoffKind"
+      },
+      "manifest": {
+        "description": "The compose file checked and deployed, relative to the worktree: the hand-off's, else the environment's.",
+        "type": "string"
+      },
+      "next_step": {
+        "type": "string"
+      },
+      "other_compose_files": {
+        "description": "Other compose files tracked in the worktree that declare `containers:` (at most 10). They are not checked or deployed.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "person_problems": {
+        "description": "The ones the person decides: bring each with a recommendation.",
+        "items": {
+          "$ref": "#/definitions/BriefProblem"
+        },
+        "type": "array"
+      },
+      "project": {
+        "description": "`<project> · <environment>`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "pushes_directly": {
+        "default": false,
+        "description": "The environment is not production: it gets an assisted deploy, no pull request. Push only your fix branch; the person's deploy on the page sends the checked commit to the environment's own branch.",
+        "type": "boolean"
+      },
+      "remote_branch_note": {
+        "default": null,
+        "description": "One line when an earlier try left the fix branch on origin: the first push replaces it with `--force-with-lease`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repository": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "run_failure": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RunFailure"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "worktree": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BriefWorkspace"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where to work."
+      }
+    },
+    "required": [
+      "agent_problems",
+      "handoff_id",
+      "kind",
+      "manifest",
+      "next_step",
+      "other_compose_files",
+      "person_problems"
+    ],
+    "title": "HandoffBriefResponse",
+    "type": "object"
+  }
+}

@@ -1,0 +1,444 @@
+{
+  "description": "The names the compose file reads (`${NAME}`, `${NAME:-}`, `${NAME:-default}` in containers) for the selected environment: whether each is set in iii cloud, secret or variable, and where its value can come from (a .env file of the person's folder, the environment's address, a copy from another environment). Names, file names and flags only: never a secret's value. manifest: another worker-compose*.yaml; from: checkout reads the person's folder.",
+  "function_id": "iii-cloud::values",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ValuesFrom": {
+        "description": "Where `iii-cloud::values` reads the compose file.",
+        "oneOf": [
+          {
+            "description": "The selected workspace (the worktree, or the checkout in \"edits this folder\").",
+            "enum": [
+              "workspace"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The person's checkout.",
+            "enum": [
+              "checkout"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`iii-cloud::values` input.",
+    "properties": {
+      "from": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ValuesFrom"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Default `workspace`."
+      },
+      "manifest": {
+        "default": null,
+        "description": "A `worker-compose*.yaml` from the repository root. Default: the newest check's file when it is of this environment, else the environment's.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ValuesRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CloudRead": {
+        "oneOf": [
+          {
+            "enum": [
+              "read"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "iii cloud's variables could not be read: every `in_cloud` is `unknown`.",
+            "enum": [
+              "unreadable"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Here": {
+        "description": "Whether the run here has a value for a name.",
+        "oneOf": [
+          {
+            "description": "In the run's `.env`.",
+            "enum": [
+              "set"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Taken from an env file of the person's folder, into the run's environment only.",
+            "enum": [
+              "from_file"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Nowhere here: `LOCAL_VARIABLE_UNSET`.",
+            "enum": [
+              "unset"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "It has a default (or the compose file doesn't read it).",
+            "enum": [
+              "not_needed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InCloud": {
+        "enum": [
+          "set",
+          "unset",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "Need": {
+        "oneOf": [
+          {
+            "description": "`${X}`",
+            "enum": [
+              "required"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`${X:-}`",
+            "enum": [
+              "optional"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`${X:-v}`",
+            "enum": [
+              "has_default"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SaveAllowed": {
+        "oneOf": [
+          {
+            "enum": [
+              "ok"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An API key can't write values.",
+            "enum": [
+              "api_key"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Production's values take Owner or Admin.",
+            "enum": [
+              "role"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Suggestion": {
+        "description": "Where a value can come from. Never the value itself.",
+        "oneOf": [
+          {
+            "description": "A `.env*` file of the person's folder has the name.",
+            "properties": {
+              "file": {
+                "description": "From the repository root, such as `api/.env.test`.",
+                "type": "string"
+              },
+              "local": {
+                "description": "The value points at this machine (`localhost`, `127.0.0.1`, ...).",
+                "type": "boolean"
+              },
+              "preselect": {
+                "type": "boolean"
+              },
+              "source": {
+                "enum": [
+                  "env_file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "file",
+              "local",
+              "preselect",
+              "source"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The environment's own address.",
+            "properties": {
+              "preselect": {
+                "type": "boolean"
+              },
+              "source": {
+                "enum": [
+                  "env_url"
+                ],
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "preselect",
+              "source",
+              "url"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Another environment of the project has it set (copied by iii cloud).",
+            "properties": {
+              "environment": {
+                "type": "string"
+              },
+              "environment_id": {
+                "type": "string"
+              },
+              "preselect": {
+                "type": "boolean"
+              },
+              "source": {
+                "enum": [
+                  "copy"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "environment",
+              "environment_id",
+              "preselect",
+              "source"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ValueAsked": {
+        "description": "An open `iii-cloud::secret` ask for the name.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "ValueItem": {
+        "description": "One name the compose file reads (or an agent asked for).",
+        "properties": {
+          "asked": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ValueAsked"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "containers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "database": {
+            "description": "Shaped like a database URL: iii cloud makes the database.",
+            "type": "boolean"
+          },
+          "default": {
+            "description": "The file's literal default; `\"\"` for `${X:-}`; null for `${X}`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "here": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Here"
+              }
+            ],
+            "description": "Whether the run here has a value for it."
+          },
+          "here_file": {
+            "description": "With `here: from_file`: the person's env file it comes from, such as `api/.env.test`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_cloud": {
+            "$ref": "#/definitions/InCloud"
+          },
+          "invalid_name": {
+            "description": "Why iii cloud can't store this name (lower case, say): nothing is preselected and `values::save` refuses the row.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "need": {
+            "$ref": "#/definitions/Need"
+          },
+          "skipped": {
+            "description": "The person skipped it for now (`values::skip`).",
+            "type": "boolean"
+          },
+          "suggestions": {
+            "description": "In preselect order: the page takes the first with `preselect: true`.",
+            "items": {
+              "$ref": "#/definitions/Suggestion"
+            },
+            "type": "array"
+          },
+          "type": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ValueKind"
+              }
+            ],
+            "description": "Secret unless iii cloud stores it as a variable or it is the environment's address."
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "description": "Only a set variable's value in iii cloud; never a secret's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "containers",
+          "database",
+          "here",
+          "in_cloud",
+          "name",
+          "need",
+          "skipped",
+          "suggestions",
+          "type"
+        ],
+        "type": "object"
+      },
+      "ValueKind": {
+        "enum": [
+          "secret",
+          "variable"
+        ],
+        "type": "string"
+      },
+      "ValuesFrom": {
+        "description": "Where `iii-cloud::values` reads the compose file.",
+        "oneOf": [
+          {
+            "description": "The selected workspace (the worktree, or the checkout in \"edits this folder\").",
+            "enum": [
+              "workspace"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The person's checkout.",
+            "enum": [
+              "checkout"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`iii-cloud::values` answer: names, sources and flags, never a secret's value.",
+    "properties": {
+      "cloud": {
+        "$ref": "#/definitions/CloudRead"
+      },
+      "environment": {
+        "type": "string"
+      },
+      "environment_id": {
+        "type": "string"
+      },
+      "items": {
+        "items": {
+          "$ref": "#/definitions/ValueItem"
+        },
+        "type": "array"
+      },
+      "manifest": {
+        "type": "string"
+      },
+      "read_from": {
+        "$ref": "#/definitions/ValuesFrom"
+      },
+      "save": {
+        "$ref": "#/definitions/SaveAllowed"
+      }
+    },
+    "required": [
+      "cloud",
+      "environment",
+      "environment_id",
+      "items",
+      "manifest",
+      "read_from",
+      "save"
+    ],
+    "title": "Values",
+    "type": "object"
+  }
+}

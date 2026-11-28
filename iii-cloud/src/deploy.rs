@@ -1,0 +1,1454 @@
+//! The pull request read (spec §7) and `iii-cloud::deploy` (spec §8): merge,
+//! pin to the plan the person saw, create the deployment with the
+//! confirmations, and follow it.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+use crate::check::{Selected, differing_keys, fetch_plan, plan_digest, remote_head};
+use crate::cloud::{Req, cloud_error};
+use crate::ctx::Ctx;
+use crate::error::{CloudError, Res, cut};
+use crate::project::{Way, deploy_way};
+use crate::tool::{self, gh};
+use crate::types::*;
+use crate::watch::{finish, follow, is_terminal, record, to_deploy};
+
+const PR_FIELDS: &str = "number,url,title,state,body,headRefName,headRefOid,baseRefName,mergeable,statusCheckRollup,createdAt";
+
+/// The rollup of a pull request's checks.
+pub fn rollup(checks: &Value) -> PrChecks {
+    let Some(items) = checks.as_array().filter(|a| !a.is_empty()) else {
+        return PrChecks::None;
+    };
+    let text = |c: &Value, k: &str| {
+        c.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let failing = items.iter().any(|c| {
+        matches!(
+            text(c, "conclusion").as_str(),
+            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED"
+        ) || matches!(text(c, "state").as_str(), "FAILURE" | "ERROR")
+    });
+    if failing {
+        return PrChecks::Failing;
+    }
+    let pending = items.iter().any(|c| {
+        matches!(
+            text(c, "status").as_str(),
+            "IN_PROGRESS" | "QUEUED" | "PENDING" | "WAITING"
+        ) || text(c, "state") == "PENDING"
+    });
+    if pending {
+        PrChecks::Pending
+    } else {
+        PrChecks::Passing
+    }
+}
+
+/// `gh pr view` of the workspace branch. No pull request is `None`.
+/// Only the pull request of this try counts: open, from the fix branch, whose
+/// head is the worktree's HEAD or a commit of its history, made after the
+/// worktree began. A closed one an earlier try left is nothing; a merged one is
+/// history (it shows in the deploys).
+pub async fn read_pr(
+    ws: &Path,
+    repo: &str,
+    branch: &str,
+    env_branch: &str,
+    check_base: Option<&str>,
+    worktree_started: Option<&str>,
+) -> Res<Option<PullRequest>> {
+    let out = tool::run(
+        "gh",
+        &["pr", "view", branch, "--repo", repo, "--json", PR_FIELDS],
+        Some(ws),
+        None,
+        "GH_FAILED",
+    )
+    .await?;
+    if !out.ok() {
+        if out.stderr.contains("no pull requests found") {
+            return Ok(None);
+        }
+        return Err(CloudError::new("GH_FAILED", cut(out.stderr.trim(), 2048)));
+    }
+    let v: Value = serde_json::from_str(&out.stdout)
+        .map_err(|_| CloudError::new("GH_FAILED", "gh printed no JSON."))?;
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    if s("state") != "OPEN" || s("headRefName") != branch {
+        return Ok(None);
+    }
+    let head_sha = s("headRefOid");
+    let in_history = tool::run(
+        "git",
+        &["merge-base", "--is-ancestor", &head_sha, "HEAD"],
+        Some(ws),
+        None,
+        "TOOL_MISSING",
+    )
+    .await?
+    .ok();
+    if !in_history {
+        return Ok(None);
+    }
+    let (made, began) = (
+        parse_time(v.get("createdAt").and_then(Value::as_str)),
+        parse_time(worktree_started),
+    );
+    if let (Some(made), Some(began)) = (made, began)
+        && made < began
+    {
+        return Ok(None);
+    }
+    let main_moved = match (check_base, remote_head(ws, env_branch).await) {
+        (Some(base), Ok(head)) if !base.is_empty() => head != base,
+        _ => false,
+    };
+    Ok(Some(PullRequest {
+        number: v.get("number").and_then(Value::as_u64).unwrap_or(0),
+        url: s("url"),
+        title: s("title"),
+        state: match s("state").as_str() {
+            "MERGED" => PrState::Merged,
+            "CLOSED" => PrState::Closed,
+            _ => PrState::Open,
+        },
+        head: s("headRefName"),
+        head_sha: s("headRefOid"),
+        base: s("baseRefName"),
+        body: s("body"),
+        checks: rollup(v.get("statusCheckRollup").unwrap_or(&Value::Null)),
+        mergeable: v
+            .get("mergeable")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        main_moved,
+    }))
+}
+
+fn same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+pub fn plan_file(ctx: &Ctx, check_id: &str) -> std::path::PathBuf {
+    ctx.store
+        .dir()
+        .join("plans")
+        .join(format!("{check_id}.json"))
+}
+
+/// Keep the plan a check saw, to name what changed if it changes.
+pub fn save_plan(ctx: &Ctx, check_id: &str, plan: &Value) {
+    let path = plan_file(ctx, check_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, plan.to_string());
+}
+
+pub type Since = Option<chrono::DateTime<chrono::Utc>>;
+
+fn parse_time(text: Option<&str>) -> Since {
+    text.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// The push's deployment for `target`, from the list: not a replaced one (its
+/// successor is the one), not one made before the merge (`since`), and not one
+/// that existed before this deploy began (`old`).
+fn find_push(list: &Value, target: &str, since: Since, old: Option<&[String]>) -> Option<Value> {
+    list.get("deployments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|d| d.get("status").and_then(Value::as_str) != Some("replaced"))
+        // In an assisted deploy only a push deployment is the push's: a teammate's
+        // console redeploy of the same commit, made after the list was read, is not.
+        // (After a merge the worker's own manual deployment is followed too.)
+        .filter(|d| {
+            old.is_none()
+                || d.get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|t| t == "push")
+        })
+        .filter(|d| {
+            let id = d.get("id").and_then(Value::as_str).unwrap_or_default();
+            !old.is_some_and(|o| o.iter().any(|o| o == id))
+        })
+        .filter(|d| {
+            let created = parse_time(d.get("created_at").and_then(Value::as_str));
+            match (since, created) {
+                (Some(since), Some(created)) => created >= since,
+                _ => true,
+            }
+        })
+        .find(|d| {
+            d.pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .is_some_and(|s| same_commit(s, target))
+        })
+        .cloned()
+}
+
+/// After a landed merge or push whose pin failed: wait for the push deployment
+/// (the same 120 s as the adoption) and cancel it while it is queued, in
+/// progress or waiting for action, so "nothing is deployed" holds. `None`:
+/// nothing carries the commit (canceled, failed, or no deployment showed up).
+/// `Some`: a deployment still carries it, the new file included: one already
+/// `ready`, or one whose cancel the cloud refused (409, once Routes and TLS has
+/// begun). Any other answer (a 404 because it ended meanwhile, a network error)
+/// reads the list again; at the deadline the one last seen is returned.
+async fn cancel_push(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: Option<&[String]>,
+) -> Option<Value> {
+    let deadline = Instant::now() + ctx.secs(120);
+    let mut running = None;
+    loop {
+        if let Ok(list) = ctx.call(&Req::get(base)).await
+            && let Some(d) = find_push(&list, target, since, old)
+        {
+            match (
+                d.get("status").and_then(Value::as_str),
+                d.get("id").and_then(Value::as_str),
+            ) {
+                (Some("failed" | "canceled"), _) => return None,
+                (Some("queued" | "in_progress" | "needs_action"), Some(id)) => {
+                    match ctx
+                        .raw(&Req::post(format!("{base}/{id}/cancel"), json!({})))
+                        .await
+                    {
+                        Ok((200..=299, _)) => return None,
+                        Ok((409, _)) => return Some(d),
+                        _ => running = Some(d),
+                    }
+                }
+                _ => return Some(d),
+            }
+        }
+        if Instant::now() >= deadline {
+            return running;
+        }
+        tokio::time::sleep(ctx.secs(5)).await;
+    }
+}
+
+/// With a merge the cloud makes a push deployment: when the target plan needs
+/// no confirmation, adopt it; when it does, wait until it is `needs_action`.
+/// `Ok(None)` means: create the confirmed deployment.
+/// The environment's deployments, following `next_cursor` (at most 5 pages)
+/// until the commit's own push shows up: a busy environment can have more than
+/// one page of newer ones.
+pub async fn list_pages(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: Option<&[String]>,
+) -> Res<Value> {
+    let mut all: Vec<Value> = vec![];
+    let mut cursor: Option<String> = None;
+    for _ in 0..5 {
+        let mut req = Req::get(base);
+        if let Some(c) = &cursor {
+            req = req.query("cursor", c.as_str());
+        }
+        let page = ctx.call(&req).await?;
+        all.extend(
+            page.get("deployments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        cursor = page
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let merged = json!({ "deployments": all });
+        if cursor.is_none() || find_push(&merged, target, since, old).is_some() {
+            return Ok(merged);
+        }
+    }
+    Ok(json!({ "deployments": all }))
+}
+
+/// A live read before a push failed: say so, and "Try again" only for what a
+/// retry can fix. A session or permission answer keeps its own words.
+fn live_read_error(e: CloudError) -> CloudError {
+    match e.status {
+        Some(404) => CloudError::new(
+            "PROJECT_DELETED",
+            "This project is gone from iii cloud, so nothing was pushed.",
+        ),
+        Some(401 | 403) => e,
+        _ if matches!(
+            e.code.as_str(),
+            "NEEDS_BROWSER_SIGN_IN" | "NOT_CONNECTED" | "KEY_REJECTED" | "SIGN_IN_REQUIRED"
+        ) =>
+        {
+            e
+        }
+        _ => CloudError::new(
+            "CLOUD_ERROR",
+            "Could not read the project's environments from iii cloud, so nothing was pushed. Try again.",
+        ),
+    }
+}
+
+/// The ids of every deployment of `commit` the environment already has (five
+/// pages at most), read before an assisted deploy pushes or moves anything:
+/// none of them is the deployment this deploy makes or waits for.
+async fn commit_deployments(ctx: &Ctx, base: &str, commit: &str) -> Res<Vec<String>> {
+    let mut ids = vec![];
+    let mut cursor: Option<String> = None;
+    for _ in 0..5 {
+        let mut req = Req::get(base);
+        if let Some(c) = &cursor {
+            req = req.query("cursor", c.as_str());
+        }
+        let page = ctx.call(&req).await?;
+        for d in page
+            .get("deployments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if d.pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .is_some_and(|s| same_commit(s, commit))
+                && let Some(id) = d.get("id").and_then(Value::as_str)
+            {
+                ids.push(id.to_string());
+            }
+        }
+        cursor = page
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(ids)
+}
+
+/// How long an assisted deploy waits for a push deployment that may never come
+/// (the commit was already on the branch, or GitHub delivered before the
+/// environment followed it) before it makes the deployment itself.
+const FIRST_PUSH_GRACE_S: u64 = 10;
+
+/// A push deployment of `target` shows up in the list within the grace.
+async fn push_coming(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    since: Since,
+    old: Option<&[String]>,
+) -> Res<bool> {
+    let deadline = Instant::now() + ctx.secs(FIRST_PUSH_GRACE_S);
+    loop {
+        let list = list_pages(ctx, base, target, since, old).await?;
+        if find_push(&list, target, since, old).is_some() {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(ctx.secs(1)).await;
+    }
+}
+
+pub async fn push_deployment(
+    ctx: &Ctx,
+    base: &str,
+    target: &str,
+    need_confirm: bool,
+    since: Since,
+    old: Option<&[String]>,
+) -> Res<Option<Value>> {
+    let deadline = Instant::now() + ctx.secs(120);
+    loop {
+        let list = list_pages(ctx, base, target, since, old).await?;
+        if let Some(d) = find_push(&list, target, since, old) {
+            let status = d.get("status").and_then(Value::as_str).unwrap_or_default();
+            // One that already failed is history, not this deploy: start a new one.
+            if matches!(status, "failed" | "canceled" | "gone") {
+                return Ok(None);
+            }
+            // One waiting for a person was planned earlier (its validation may have
+            // failed, its plan may differ from the check's): never approved here by
+            // adoption. A new deployment carries the check's own fingerprint.
+            if status == "needs_action" {
+                return Ok(None);
+            }
+            if !need_confirm {
+                return Ok(Some(d));
+            }
+            if status == "needs_action" {
+                return Ok(None);
+            }
+            if is_terminal(status) {
+                return Ok(Some(d));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(CloudError::new(
+                "CLOUD_ERROR",
+                format!(
+                    "iii cloud has no deployment of {} waiting for you after 120 s. Call deploy again, or redeploy it from the console.",
+                    crate::ctx::short(target)
+                ),
+            ));
+        }
+        tokio::time::sleep(ctx.secs(5)).await;
+    }
+}
+
+/// What landed must be what was checked: the merge commit's first parent is
+/// the base the check saw (a rebase merge only needs the base in its history),
+/// and its tree is the checked commit's tree.
+async fn verify_merge(
+    ws: &Path,
+    branch: &str,
+    target: &str,
+    base: &str,
+    commit: &str,
+    rebase: bool,
+) -> Res<()> {
+    crate::tool::git(ws, &["fetch", "origin", branch]).await?;
+    let ok = if rebase {
+        tool::run(
+            "git",
+            &["merge-base", "--is-ancestor", base, target],
+            Some(ws),
+            None,
+            "TOOL_MISSING",
+        )
+        .await?
+        .ok()
+    } else {
+        crate::tool::git(ws, &["rev-parse", &format!("{target}^1")])
+            .await
+            .map(|p| p.trim() == base)
+            .unwrap_or(false)
+    };
+    if !ok {
+        return Err(CloudError::new(
+            "MAIN_MOVED",
+            format!("Something else landed on {branch} before the merge. Check again."),
+        ));
+    }
+    let tree = |c: String| async move {
+        crate::tool::git(ws, &["rev-parse", &format!("{c}^{{tree}}")])
+            .await
+            .map(|t| t.trim().to_string())
+    };
+    match (
+        tree(target.to_string()).await,
+        tree(commit.to_string()).await,
+    ) {
+        (Ok(a), Ok(b)) if a == b => Ok(()),
+        _ => Err(CloudError::new(
+            "MAIN_MOVED",
+            "The merged commit is not the commit that was checked. Check again.",
+        )),
+    }
+}
+
+/// The environment's compose file as iii cloud has it now.
+async fn env_manifest(ctx: &Ctx, sel: &Selected) -> Res<Option<String>> {
+    let body = ctx
+        .call(&Req::get(format!(
+            "/teams/{}/environments/{}",
+            sel.team_id, sel.env.id
+        )))
+        .await?;
+    Ok(body
+        .get("manifest")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+/// Switch the environment to `manifest` (`environments.update`) and keep the
+/// fresh environment record.
+async fn set_manifest(ctx: &Arc<Ctx>, sel: &Selected, manifest: &str) -> Res<()> {
+    let (status, body) = ctx
+        .raw(&Req::patch(
+            format!("/teams/{}/environments/{}", sel.team_id, sel.env.id),
+            json!({ "manifest": manifest }),
+        ))
+        .await?;
+    if !(200..=299).contains(&status) {
+        let mut e = cloud_error(status, &body);
+        if status == 403 {
+            e.code = "FORBIDDEN".into();
+        }
+        e.message = format!(
+            "{} could not switch to {manifest}: {}",
+            sel.env.name, e.message
+        );
+        return Err(e);
+    }
+    ctx.store.update(|s| s.env_file_is(&sel.env.id, manifest));
+    crate::status::refresh_environment(ctx, sel).await;
+    Ok(())
+}
+
+/// The deploy failed after the environment switched to `to` and before any
+/// deployment carries it: `from` goes back, best effort, and the error says so.
+async fn switch_back(
+    ctx: &Arc<Ctx>,
+    sel: &Selected,
+    from: Option<&str>,
+    to: &str,
+    mut e: CloudError,
+) -> CloudError {
+    let env = &sel.env.name;
+    let note = match from {
+        Some(from) => match set_manifest(ctx, sel, from).await {
+            Ok(()) => format!("{env} is back on {from}."),
+            Err(_) => format!(
+                "{env} still runs {to}: putting {from} back failed, so change it back in iii cloud."
+            ),
+        },
+        None => format!("{env} runs {to} now: it had no compose file set before."),
+    };
+    e.message = format!("{} {note}", e.message);
+    e
+}
+
+/// The confirmed deployment of `target`, pinned to the fingerprint of the
+/// plan that was seen.
+async fn create_deployment(
+    ctx: &Ctx,
+    base: &str,
+    check_id: &str,
+    target: &str,
+    confirmations: &Confirmations,
+    fingerprint: String,
+) -> Res<Value> {
+    let attempt = ctx.store.read(|s| {
+        s.deploys
+            .iter()
+            .filter(|d| {
+                same_commit(&d.commit.sha, target)
+                    && matches!(d.status.as_str(), "failed" | "canceled")
+            })
+            .count()
+    });
+    let mut post = Req::post(
+        base,
+        json!({
+            "commit": target,
+            "confirm_resources": !confirmations.resources.is_empty(),
+            "confirm_overrides": !confirmations.overrides.is_empty(),
+        }),
+    );
+    post.if_match = Some(fingerprint);
+    // A retry after a failure is a new key; the same attempt replays the same deployment.
+    post.idempotency_key = Some(format!("iii-cloud:{check_id}:{target}:{attempt}"));
+    let (status, body) = ctx.raw(&post).await?;
+    match status {
+        200..=299 => Ok(body),
+        // Only the cloud's own "reviewed plan changed" is PLAN_CHANGED
+        // (iii-cloud `crates/deploy/src/api.rs:555`); other 409s keep their code.
+        409 if body
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("plan changed since it was reviewed")) =>
+        {
+            Err(CloudError::new(
+                "PLAN_CHANGED",
+                "The plan changed between the read and the deploy. Check again.",
+            )
+            .with_status(409))
+        }
+        403 => {
+            let mut e = cloud_error(status, &body);
+            e.code = "FORBIDDEN".into();
+            Err(e)
+        }
+        _ => Err(cloud_error(status, &body)),
+    }
+}
+
+pub async fn deploy(ctx: &Arc<Ctx>, request: DeployRequest) -> Res<Deploy> {
+    let mut sel = crate::check::selected_for(ctx, request.handoff_id.as_deref()).await?;
+    let cfg = ctx.config().await;
+    ctx.credential().await?;
+    // 1. The check.
+    let check = ctx.store.read(|s| s.find_check(&request.check_id).cloned());
+    let check = check
+        .filter(|c| c.environment_id == sel.env.id && c.ready)
+        .ok_or_else(|| {
+            CloudError::new(
+                "NOT_READY",
+                "The check does not exist, is of another environment, or is not ready.",
+            )
+        })?;
+    // The source or compose file the check was made for is still the workspace's.
+    if !ctx.store.read(|s| s.source_unchanged(&check.id)) {
+        return Err(CloudError::new(
+            "SOURCE_CHANGED",
+            format!(
+                "{}'s source or compose file changed after this check. Check again.",
+                sel.env.name
+            ),
+        ));
+    }
+    // The pin holds at deploy time too: the base is still in the checked commit's history.
+    if !check.base.is_empty()
+        && !crate::check::base_is_ancestor(
+            &sel.workspace,
+            &sel.env.branch,
+            &check.base,
+            &check.commit,
+        )
+        .await
+    {
+        return Err(CloudError::new(
+            "NOT_READY",
+            "The checked commit does not contain the base it was checked against. Check again.",
+        ));
+    }
+    let repo = ctx
+        .store
+        .read(|s| s.project.as_ref().map(|p| p.repository.clone()))
+        .ok_or_else(CloudError::no_project)?;
+    let base = format!(
+        "/teams/{}/environments/{}/deployments",
+        sel.team_id, sel.env.id
+    );
+    let rebase = cfg.merge_method == crate::config::MergeMethod::Rebase;
+    // The file. A check of another compose file than the environment's runs
+    // now: the person's deploy is the confirmation, so the environment
+    // switches here (never in `check`), before anything makes the deployment.
+    let current = match &check.manifest {
+        Some(_) => env_manifest(ctx, &sel).await?,
+        None => None,
+    };
+    // The check did not ask for another file than the environment's own, and the
+    // cloud's file is not the check's any more (changed in the console): deploying
+    // would switch it back. Check again.
+    let recorded = ctx.store.read(|s| {
+        s.check_sources
+            .get(&check.id)
+            .and_then(|r| r.compose.clone())
+    });
+    if let (Some(m), Some(rec)) = (&check.manifest, &recorded)
+        && m == rec
+        && current.as_deref() != Some(m.as_str())
+    {
+        return Err(CloudError::new(
+            "SOURCE_CHANGED",
+            format!(
+                "{}'s source or compose file changed after this check. Check again.",
+                sel.env.name
+            ),
+        ));
+    }
+    let switch = check
+        .manifest
+        .clone()
+        .filter(|m| current.as_deref() != Some(m.as_str()));
+    let mut switched = false;
+
+    // 2. The target: the merge of the pull request, a waiting deployment, or the checked commit.
+    // `landed`: the merge or the push made it the branch's head, so the cloud starts a push deployment.
+    let mut landed = false;
+    // `maybe`: an assisted deploy whose commit was already on the branch, so a push deployment may or may not exist.
+    let mut maybe = false;
+    // The first assisted deploy's move: (own branch, the branch it left).
+    let mut moved: Option<(String, String)> = None;
+    // The commit's deployments that existed before this deploy (assisted only).
+    let mut old: Option<Vec<String>> = None;
+    let mut since: Since = None;
+    let mut waiting: Option<String> = None;
+    let target = match (request.pr, &request.deployment_id) {
+        (Some(_), _) if !sel.env.production => {
+            return Err(CloudError::new(
+                "NO_PULL_REQUEST",
+                format!(
+                    "{} is not production: it gets an assisted deploy, with no pull request to merge. Deploy it without one.",
+                    sel.env.name
+                ),
+            ));
+        }
+        (Some(number), _) => {
+            let n = number.to_string();
+            let view = gh(
+                &sel.workspace,
+                &[
+                    "pr",
+                    "view",
+                    &n,
+                    "--repo",
+                    &repo,
+                    "--json",
+                    "state,headRefOid,baseRefName,mergeable,mergeCommit,mergedAt",
+                ],
+            )
+            .await
+            .map_err(|e| CloudError::new("GH_FAILED", e.message))?;
+            let v: Value = serde_json::from_str(&view)
+                .map_err(|_| CloudError::new("GH_FAILED", "gh printed no JSON."))?;
+            let state = v.get("state").and_then(Value::as_str).unwrap_or_default();
+            let head = v
+                .get("headRefOid")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            match state {
+                // Resume after a merge (ours, or one done on GitHub): from the pin.
+                "MERGED" => {
+                    let saved = ctx.store.read(|s| {
+                        s.merges
+                            .iter()
+                            .find(|m| m.check_id == check.id && m.pr == number)
+                            .cloned()
+                    });
+                    // A pull request merged on GitHub must be the commit that was checked.
+                    if saved.is_none() && !same_commit(&head, &check.commit) {
+                        return Err(CloudError::new(
+                            "PR_HEAD_CHANGED",
+                            "The pull request was merged with a head that is not the commit that was checked.",
+                        ));
+                    }
+                    let target = saved
+                        .as_ref()
+                        .map(|m| m.target.clone())
+                        .or_else(|| {
+                            v.pointer("/mergeCommit/oid")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .ok_or_else(|| {
+                            CloudError::new(
+                                "PR_NOT_MERGEABLE",
+                                "The pull request is merged but GitHub reports no merge commit.",
+                            )
+                        })?;
+                    verify_merge(
+                        &sel.workspace,
+                        &sel.env.branch,
+                        &target,
+                        &check.base,
+                        &check.commit,
+                        rebase,
+                    )
+                    .await?;
+                    since = parse_time(
+                        saved
+                            .as_ref()
+                            .and_then(|m| m.merged_at.as_deref())
+                            .or(v.get("mergedAt").and_then(Value::as_str)),
+                    );
+                    landed = true;
+                    target
+                }
+                "OPEN" => {
+                    if !same_commit(&head, &check.commit) {
+                        return Err(CloudError::new(
+                            "PR_HEAD_CHANGED",
+                            "The pull request's head is not the commit that was checked.",
+                        ));
+                    }
+                    if v.get("baseRefName").and_then(Value::as_str) != Some(sel.env.branch.as_str())
+                    {
+                        return Err(CloudError::new(
+                            "PR_NOT_MERGEABLE",
+                            format!("The pull request does not target {}.", sel.env.branch),
+                        ));
+                    }
+                    if remote_head(&sel.workspace, &sel.env.branch).await? != check.base {
+                        return Err(CloudError::new(
+                            "MAIN_MOVED",
+                            format!("{} moved since the check. Check again.", sel.env.branch),
+                        ));
+                    }
+                    // Before the merge: the push it starts plans and deploys the new file.
+                    if let Some(to) = &switch {
+                        set_manifest(ctx, &sel, to).await?;
+                        switched = true;
+                    }
+                    let refused = match tool::run(
+                        "gh",
+                        &[
+                            "pr",
+                            "merge",
+                            &n,
+                            "--repo",
+                            &repo,
+                            cfg.merge_method.flag(),
+                            "--match-head-commit",
+                            &head,
+                        ],
+                        Some(&sel.workspace),
+                        None,
+                        "GH_FAILED",
+                    )
+                    .await
+                    {
+                        Ok(out) if out.ok() => None,
+                        Ok(out) => Some(CloudError::new(
+                            "PR_NOT_MERGEABLE",
+                            cut(out.stderr.trim(), 2048),
+                        )),
+                        Err(e) => Some(e),
+                    };
+                    if let Some(e) = refused {
+                        return Err(match &switch {
+                            Some(to) => switch_back(ctx, &sel, current.as_deref(), to, e).await,
+                            None => e,
+                        });
+                    }
+                    let (target, merged_at) = merge_commit(&sel.workspace, &repo, &n).await?;
+                    landed = true;
+                    since = parse_time(merged_at.as_deref());
+                    // Saved right after the merge: a second deploy resumes from the pin.
+                    let pending = crate::store::PendingMerge {
+                        check_id: check.id.clone(),
+                        pr: number,
+                        target: target.clone(),
+                        merged_at,
+                    };
+                    ctx.store.update(|s| {
+                        s.merges
+                            .retain(|m| !(m.check_id == pending.check_id && m.pr == pending.pr));
+                        s.merges.push(pending);
+                    });
+                    verify_merge(
+                        &sel.workspace,
+                        &sel.env.branch,
+                        &target,
+                        &check.base,
+                        &check.commit,
+                        rebase,
+                    )
+                    .await?;
+                    target
+                }
+                _ => {
+                    return Err(CloudError::new(
+                        "PR_NOT_MERGEABLE",
+                        "The pull request is closed.",
+                    ));
+                }
+            }
+        }
+        (None, Some(id)) => {
+            uuid::Uuid::parse_str(id)
+                .map_err(|_| CloudError::invalid("deployment_id must be a UUID"))?;
+            let d = ctx.call(&Req::get(format!("{base}/{id}"))).await?;
+            if d.get("status").and_then(Value::as_str) != Some("needs_action") {
+                return Err(CloudError::new(
+                    "NOT_READY",
+                    "The deployment is not waiting for action.",
+                ));
+            }
+            let target = d
+                .pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    CloudError::new(
+                        "CLOUD_ERROR",
+                        "iii cloud sent a deployment without a commit.",
+                    )
+                })?;
+            // A merge made on GitHub: what landed must be what was checked. A push
+            // deployment of the checked commit itself (an assisted environment's) is
+            // not a merge: it is the checked commit already.
+            if !same_commit(&target, &check.commit) {
+                verify_merge(
+                    &sel.workspace,
+                    &sel.env.branch,
+                    &target,
+                    &check.base,
+                    &check.commit,
+                    rebase,
+                )
+                .await?;
+            }
+            waiting = Some(id.clone());
+            target
+        }
+        (None, None) => {
+            let mut default_now: Option<String> = None;
+            // Production deploys by pull request; any other environment gets an
+            // assisted deploy. The environment is read live first: its branch may
+            // have moved since the page last looked (a first deploy that failed
+            // after the switch, say).
+            let way = if sel.env.production {
+                Way::PullRequest
+            } else {
+                let (fresh, project_id) = crate::status::refresh_environment_of_project(ctx, &sel)
+                    .await
+                    .ok_or_else(|| {
+                        CloudError::new(
+                            "CLOUD_ERROR",
+                            format!("Could not read {} from iii cloud. Try again.", sel.env.name),
+                        )
+                    })?;
+                sel.env = fresh;
+                // Read live, not from the store: an environment made in the console
+                // or a renamed default branch after the folder was read changes
+                // where a push is safe.
+                let project_id = project_id.ok_or_else(|| {
+                    CloudError::new(
+                        "CLOUD_ERROR",
+                        "iii cloud sent an environment without its project, so nothing was pushed. Try again.",
+                    )
+                })?;
+                let envs = crate::project::live_environments(ctx, &sel.team_id, &project_id)
+                    .await
+                    .map_err(live_read_error)?;
+                // An origin whose HEAD names no branch (or that did not answer) falls back
+                // to the stored default only for an environment that already follows a
+                // branch of its own that no other environment follows: that needs no
+                // decision about the default branch.
+                let (default, live) = match crate::project::live_default_branch(&sel.workspace)
+                    .await
+                {
+                    Ok(d) => (Some(d), true),
+                    Err(_) => (
+                        ctx.store
+                            .read(|s| s.project.as_ref().and_then(|p| p.default_branch.clone())),
+                        false,
+                    ),
+                };
+                default_now = default.clone();
+                let others: Vec<(String, String)> = envs
+                    .iter()
+                    .filter(|e| e.id != sel.env.id)
+                    .map(|e| (e.name.clone(), e.branch.clone()))
+                    .collect();
+                let branches: Vec<String> = others.iter().map(|(_, b)| b.clone()).collect();
+                let way = deploy_way(default.as_deref(), &sel.env, &branches);
+                // Without the live default, only the environment's own `iii-cloud/<name>` branch
+                // (which is never a default) is safe to keep: any other branch could be the
+                // default under a new name.
+                if !live
+                    && (sel.env.branch != crate::project::own_branch(&sel.env.name)
+                        || !matches!(
+                            way,
+                            Way::Assisted {
+                                own: None,
+                                taken: false
+                            }
+                        ))
+                {
+                    return Err(CloudError::new(
+                        "GIT_FAILED",
+                        "Could not read the default branch from GitHub, so nothing was pushed. Try again.",
+                    ));
+                }
+                // Another environment follows the branch this one would push: a push
+                // there would deploy an unchecked commit to it.
+                if let Way::Assisted { own, taken: true } = &way {
+                    let target = own.as_deref().unwrap_or(&sel.env.branch);
+                    let who = others
+                        .iter()
+                        .find(|(_, b)| b == target)
+                        .map_or("another environment", |(n, _)| n.as_str());
+                    return Err(CloudError::new(
+                        "OWN_BRANCH_TAKEN",
+                        format!(
+                            "{target} is followed by {who}, so {} can't push it. Set {}'s branch (or {who}'s) in iii cloud. Nothing changed.",
+                            sel.env.name, sel.env.name
+                        ),
+                    ));
+                }
+                way
+            };
+            if way != Way::PullRequest {
+                old = Some(commit_deployments(ctx, &base, &check.commit).await?);
+            }
+            match way {
+                // The first assisted deploy of an environment on a branch it must
+                // not push: the checked commit goes to its own new branch, the
+                // environment follows it, and only then is anything deployed.
+                Way::Assisted { own: Some(own), .. } => {
+                    let from = sel.env.branch.clone();
+                    if ctx.conn().await.method == Some(Method::ApiKey) {
+                        return Err(CloudError::new(
+                            "NEEDS_BROWSER_SIGN_IN",
+                            format!(
+                                "An API key can't move {} to its own branch. Sign in with the browser, then deploy again.",
+                                sel.env.name
+                            ),
+                        ));
+                    }
+                    if remote_head(&sel.workspace, &from).await? != check.base {
+                        return Err(CloudError::new(
+                            "MAIN_MOVED",
+                            format!("{from} moved since the check. Check again."),
+                        ));
+                    }
+                    // An earlier try may have pushed it: the same commit is kept, an
+                    // older checked one is fast-forwarded, anything else is not ours.
+                    let old = crate::check::remote_ref(&sel.workspace, &own).await?;
+                    if old.as_deref() != Some(check.commit.as_str()) {
+                        if old.is_some() {
+                            // A fetch that failed is not "other commits": say so and stop.
+                            crate::tool::git(&sel.workspace, &["fetch", "origin", &own])
+                                .await
+                                .map_err(|_| {
+                                    CloudError::new(
+                                        "GIT_FAILED",
+                                        format!("Could not fetch {own} from GitHub, so nothing was pushed. Try again."),
+                                    )
+                                })?;
+                        }
+                        if let Some(head) = &old
+                            && !is_ancestor(&sel.workspace, &own, head, &check.commit).await?
+                        {
+                            return Err(CloudError::new(
+                                "OWN_BRANCH_TAKEN",
+                                format!(
+                                    "GitHub already has a branch {own} with other commits. Delete it, or set {}'s branch in iii cloud. Nothing changed.",
+                                    sel.env.name
+                                ),
+                            ));
+                        }
+                        push_env_branch(&sel.workspace, &own, &check.commit, old.as_deref())
+                            .await?;
+                    }
+                    // One write: the branch, and the compose file when this deploy switches it.
+                    sel.env = set_branch(ctx, &sel, &own, switch.as_deref()).await?;
+                    switched = switch.is_some();
+                    moved = Some((own, from));
+                    maybe = true;
+                }
+                // Its own branch (or a pull request into one): the checked commit is on it, or goes to it.
+                way => {
+                    // Deploy takes commits of the environment's branch only: the plan of any
+                    // commit is readable, the deploy is not (the cloud answers 422).
+                    // An environment's own branch that GitHub deleted (a head branch
+                    // removed after a merge) is gone: the check took the default branch
+                    // as the base, and the push creates the branch again.
+                    let gone = way != Way::PullRequest
+                        && sel.env.branch == crate::project::own_branch(&sel.env.name)
+                        && matches!(
+                            crate::check::remote_ref(&sel.workspace, &sel.env.branch).await,
+                            Ok(None)
+                        );
+                    let on_branch = !gone
+                        && is_ancestor(
+                            &sel.workspace,
+                            &sel.env.branch,
+                            &check.commit,
+                            &format!("origin/{}", sel.env.branch),
+                        )
+                        .await?;
+                    if way == Way::PullRequest && !on_branch {
+                        return Err(CloudError::new(
+                            "MERGE_FIRST",
+                            "Merge the pull request first: Deploy… merges it and deploys the merged commit.",
+                        ));
+                    }
+                    if !on_branch {
+                        // An environment on its own branch has no pull request: this deploy
+                        // pushes the checked commit to it, on top of the base it was checked on.
+                        let was_on = if gone {
+                            default_now.as_deref().unwrap_or_default()
+                        } else {
+                            &sel.env.branch
+                        };
+                        if remote_head(&sel.workspace, was_on).await? != check.base {
+                            return Err(CloudError::new(
+                                "MAIN_MOVED",
+                                format!("{was_on} moved since the check. Check again."),
+                            ));
+                        }
+                        // Before the push: the push deployment it starts plans the new file.
+                        if let Some(to) = &switch {
+                            set_manifest(ctx, &sel, to).await?;
+                            switched = true;
+                        }
+                        if let Err(mut e) = push_env_branch(
+                            &sel.workspace,
+                            &sel.env.branch,
+                            &check.commit,
+                            (!gone).then_some(check.base.as_str()),
+                        )
+                        .await
+                        {
+                            return Err(match &switch {
+                                // It may have landed: its push deployment would carry the new file.
+                                Some(to) if e.code == "PUSH_UNKNOWN" => {
+                                    e.message =
+                                        format!("{} {} stays on {to}.", e.message, sel.env.name);
+                                    e
+                                }
+                                Some(to) => switch_back(ctx, &sel, current.as_deref(), to, e).await,
+                                None => e,
+                            });
+                        }
+                        // No `since`: the commit was on no deployment of this environment
+                        // (it was not on the branch), and this machine's clock is not the cloud's.
+                        landed = true;
+                    } else {
+                        maybe = way != Way::PullRequest;
+                    }
+                }
+            }
+            check.commit.clone()
+        }
+    };
+
+    // What a failure after the move says: the environment follows its own branch now.
+    let after_move = |mut e: CloudError| {
+        if let Some((own, from)) = &moved {
+            e.message = format!(
+                "{} {} now follows {own}; {from} was not pushed.",
+                e.message, sel.env.name
+            );
+        }
+        e
+    };
+    // 4. Pin: the plan of the target must be the plan that was seen, with the checked file.
+    let (status, body) = fetch_plan(ctx, &sel, &target, switch.as_deref())
+        .await
+        .map_err(&after_move)?;
+    if status != 200 {
+        return Err(after_move(cloud_error(status, &body)));
+    }
+    let plan = body.get("plan").cloned().unwrap_or(Value::Null);
+    if Some(plan_digest(&plan)) != check.plan.digest {
+        if (landed
+            || (maybe
+                && push_coming(ctx, &base, &target, since, old.as_deref())
+                    .await
+                    .unwrap_or(false)))
+            && let Some(running) = cancel_push(ctx, &base, &target, since, old.as_deref()).await
+        {
+            // Not "check again": the merged commit is deploying. Status shows it, followed.
+            if let Some(id) = running.get("id").and_then(Value::as_str) {
+                ctx.store.update(|s| {
+                    if !s.worker_deploys.iter().any(|d| d == id) {
+                        s.worker_deploys.push(id.to_string());
+                    }
+                });
+            }
+            crate::watch::refresh_recent(ctx, &sel.team_id, &sel.env.id, &sel.env.name).await;
+            // That push carries the new file: the switch stays.
+            let kept = match (&switch, switched) {
+                (Some(to), true) => format!(" {} now uses {to}.", sel.env.name),
+                _ => String::new(),
+            };
+            return Err(after_move(CloudError::new(
+                "PUSH_STILL_RUNNING",
+                format!(
+                    "The plan changed since the check, and the deployment of {} was not cancelled (it is {}). Follow it in Deploys.{kept}",
+                    crate::ctx::short(&target),
+                    running
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("running")
+                        .replace('_', " ")
+                ),
+            )));
+        }
+        let keys = std::fs::read_to_string(plan_file(ctx, &check.id))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .map(|old| differing_keys(&old, &plan))
+            .unwrap_or_default();
+        let e = CloudError::new(
+            "PLAN_CHANGED",
+            format!(
+                "The plan changed since the check{}. Check again.",
+                if keys.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", keys.join(", "))
+                }
+            ),
+        );
+        // The push was canceled (or never showed): nothing carries the new file.
+        return Err(after_move(match &switch {
+            Some(to) if switched => switch_back(ctx, &sel, current.as_deref(), to, e).await,
+            _ => e,
+        }));
+    }
+    let fingerprint = body
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let confirmations = crate::check::confirmations(&plan);
+    let need_confirm = !confirmations.resources.is_empty() || !confirmations.overrides.is_empty();
+
+    // A switch not made before a merge is made now, right before the deployment that
+    // carries it. The push of this commit, or the named waiting deployment, was
+    // made with the old file: never adopted; the new deployment replaces a
+    // waiting one.
+    let late = switch.is_some() && !switched;
+    if let (true, Some(to)) = (late, &switch) {
+        set_manifest(ctx, &sel, to).await?;
+    }
+
+    // 5. The push's deployment: adopt it, or confirm it with a new one. A named
+    // waiting deployment is confirmed; nothing else is searched.
+    let adopted = if waiting.is_some()
+        || late
+        || (maybe && !push_coming(ctx, &base, &target, since, old.as_deref()).await?)
+    {
+        None
+    } else {
+        push_deployment(ctx, &base, &target, need_confirm, since, old.as_deref())
+            .await
+            .map_err(&after_move)?
+    };
+    let (created, approved) = match adopted {
+        Some(adopted) => (adopted, false),
+        None => {
+            match create_deployment(ctx, &base, &check.id, &target, &confirmations, fingerprint)
+                .await
+            {
+                Ok(body) => (body, true),
+                Err(mut e) => {
+                    // A refusal the cloud answered (a 4xx) made nothing: the old file goes
+                    // back. With no answer (a transport error has no status) or a 5xx (a
+                    // gateway that timed out, say) the deployment may exist.
+                    let answered = e.status.is_some_and(|s| (400..500).contains(&s))
+                        || matches!(e.code.as_str(), "NOT_CONNECTED" | "KEY_REJECTED");
+                    return Err(after_move(match &switch {
+                        Some(to) if late && answered => {
+                            switch_back(ctx, &sel, current.as_deref(), to, e).await
+                        }
+                        Some(to) if late => {
+                            e.message = format!(
+                                "{} The answer was lost: {} stays on {to}; see Deploys.",
+                                e.message, sel.env.name
+                            );
+                            e
+                        }
+                        _ => e,
+                    }));
+                }
+            }
+        }
+    };
+
+    // 7. Record and follow.
+    let release = !plan.pointer("/settings/release").is_none_or(Value::is_null);
+    let (team, project) = ctx.store.read(|s| {
+        let p = s.project.as_ref();
+        (
+            p.and_then(|p| p.team.as_ref()).map(|t| t.slug.clone()),
+            p.and_then(|p| p.cloud_project.as_ref())
+                .map(|c| c.slug.clone()),
+        )
+    });
+    let mut record_ = to_deploy(
+        &cfg.cloud_url,
+        (team.as_deref(), project.as_deref(), &sel.env.name),
+        &created,
+        None,
+        release,
+    )
+    .ok_or_else(|| {
+        CloudError::new(
+            "CLOUD_ERROR",
+            "iii cloud sent a deployment this worker can't read.",
+        )
+    })?;
+    record_.pr = request.pr;
+    record_.approved_by_worker = approved;
+    record_.checked_ready = true;
+    record_.check_id = Some(check.id.clone());
+    if record_.environment_id.is_empty() {
+        record_.environment_id = sel.env.id.clone();
+    }
+    if is_terminal(&record_.status) {
+        record_ = finish(ctx, &sel.team_id, &sel.env.id, record_).await;
+    }
+    // This worker made it (or adopted the push of its own merge): not a console deploy.
+    ctx.store.update(|s| {
+        if !s.worker_deploys.contains(&record_.id) {
+            s.worker_deploys.push(record_.id.clone());
+        }
+    });
+    record(ctx, &record_);
+    ctx.store
+        .update(|s| s.merges.retain(|m| m.check_id != check.id));
+    if !is_terminal(&record_.status) {
+        follow(ctx, record_.id.clone());
+    }
+    Ok(record_)
+}
+
+/// `a` is an ancestor of `b`, after fetching `branch` (so `origin/<branch>` and its head are here).
+async fn is_ancestor(ws: &Path, branch: &str, a: &str, b: &str) -> Res<bool> {
+    let _ = crate::tool::git(ws, &["fetch", "origin", branch]).await;
+    Ok(tool::run(
+        "git",
+        &["merge-base", "--is-ancestor", a, b],
+        Some(ws),
+        None,
+        "TOOL_MISSING",
+    )
+    .await?
+    .ok())
+}
+
+/// Push the checked commit to an environment's branch, never forced. `expected`
+/// is the head the branch has now (`None`: it may not exist yet). A refusal is
+/// `MAIN_MOVED` when the branch moved meanwhile, else `PUSH_REFUSED`;
+/// `PUSH_UNKNOWN` when origin can't be read after a failed push either.
+async fn push_env_branch(ws: &Path, branch: &str, commit: &str, expected: Option<&str>) -> Res<()> {
+    let refspec = format!("{commit}:refs/heads/{branch}");
+    let out = tool::run(
+        "git",
+        &["push", "origin", &refspec],
+        Some(ws),
+        None,
+        "TOOL_MISSING",
+    )
+    .await?;
+    if out.ok() {
+        return Ok(());
+    }
+    let refused = || {
+        CloudError::new(
+            "PUSH_REFUSED",
+            cut(
+                &format!("GitHub refused the push to {branch}: {}", out.stderr.trim()),
+                2048,
+            ),
+        )
+    };
+    match crate::check::remote_ref(ws, branch).await {
+        // The answer was lost, but the push landed.
+        Ok(Some(head)) if head == commit => Ok(()),
+        Ok(head) if head.as_deref() == expected => Err(refused()),
+        // Someone created the branch between the read and the push.
+        Ok(Some(_)) if expected.is_none() => Err(CloudError::new(
+            "OWN_BRANCH_TAKEN",
+            format!(
+                "GitHub got a branch {branch} with other commits while this deploy was pushing. Nothing was deployed. Delete it or set the environment's branch in iii cloud, then deploy again."
+            ),
+        )),
+        Ok(_) => Err(CloudError::new(
+            "MAIN_MOVED",
+            format!("{branch} moved since the check. Check again."),
+        )),
+        Err(_) => Err(CloudError::new(
+            "PUSH_UNKNOWN",
+            cut(
+                &format!(
+                    "Could not tell whether {} reached {branch}: the push failed and origin did not answer after. See Deploys before deploying again. Git said: {}",
+                    crate::ctx::short(commit),
+                    out.stderr.trim()
+                ),
+                2048,
+            ),
+        )),
+    }
+}
+
+/// Point the environment at its own branch (and the compose file, when this
+/// deploy switches it) with one write; the environment as iii cloud has it now.
+async fn set_branch(
+    ctx: &Arc<Ctx>,
+    sel: &Selected,
+    own: &str,
+    manifest: Option<&str>,
+) -> Res<EnvironmentInfo> {
+    let mut body = json!({ "branch": own });
+    if let Some(m) = manifest {
+        body["manifest"] = json!(m);
+    }
+    let answered = match ctx
+        .raw(&Req::patch(
+            format!("/teams/{}/environments/{}", sel.team_id, sel.env.id),
+            body,
+        ))
+        .await
+    {
+        Ok((200..=299, _)) => None,
+        Ok((status, _)) => Some((format!("answered {status}"), Some(status))),
+        Err(_) => Some(("did not answer".to_string(), None)),
+    };
+    if let Some((what, status)) = answered {
+        // A retry helps only when the answer may be a passing failure.
+        let next = match status {
+            Some(401) => "Sign in again, then deploy.",
+            Some(403) => "Ask an Owner or Admin to change it, or set the branch in iii cloud.",
+            Some(409) => "iii cloud is changing it: look at the environment there, then deploy.",
+            Some(422) => "iii cloud does not take that branch name: set the branch in iii cloud.",
+            _ => "Deploy again to retry.",
+        };
+        return Err(CloudError::new(
+            "BRANCH_NOT_MOVED",
+            format!(
+                "{} could not move to its own branch {own} (iii cloud {what}). Nothing was deployed. {next}",
+                sel.env.name
+            ),
+        ));
+    }
+    if let Some(m) = manifest {
+        ctx.store.update(|s| s.env_file_is(&sel.env.id, m));
+    }
+    Ok(match crate::status::refresh_environment(ctx, sel).await {
+        Some(fresh) => fresh,
+        None => EnvironmentInfo {
+            branch: own.to_string(),
+            manifest: manifest
+                .map(str::to_owned)
+                .or_else(|| sel.env.manifest.clone()),
+            ..sel.env.clone()
+        },
+    })
+}
+
+/// The merge commit and the time of the merge, read until they appear (30 s).
+async fn merge_commit(ws: &Path, repo: &str, number: &str) -> Res<(String, Option<String>)> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = gh(
+            ws,
+            &[
+                "pr",
+                "view",
+                number,
+                "--repo",
+                repo,
+                "--json",
+                "mergeCommit,mergedAt",
+            ],
+        )
+        .await?;
+        let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+        if let Some(oid) = v.pointer("/mergeCommit/oid").and_then(Value::as_str) {
+            return Ok((
+                oid.to_string(),
+                v.get("mergedAt").and_then(Value::as_str).map(str::to_owned),
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(CloudError::new(
+                "GH_FAILED",
+                "GitHub did not report the merge commit in 30 s.",
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}

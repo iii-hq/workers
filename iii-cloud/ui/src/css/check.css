@@ -1,0 +1,745 @@
+/* Check and deploy: the lists, the check's two parts, what the deploy does, the Change panel. Every rule starts
+   with [data-iii-ui='iii-cloud']. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-sub {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-foot {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-foot {
+  padding: 4px 14px 12px;
+}
+
+/* A row of a part: mark, what, its state; then the detail and the log under the words. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-rows {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 6px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row[data-mark='work'] .iii-cloud-cs-label {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-label {
+  font-weight: 400;
+}
+/* The check's card: a row is 24 px (the canvas's 16 px line and 8 px between), the part's name 13/500. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-rows {
+  padding: 8px 0 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-cs-row {
+  min-height: 24px;
+  padding: 4px 14px;
+  row-gap: 2px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part .iii-cloud-mark[data-mark='bad'] {
+  color: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-state {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+  text-align: right;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-detail {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-detail,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-row .iii-cloud-cs-log {
+  grid-column: 2 / -1;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-log {
+  min-width: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-log summary {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-log summary:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-log pre {
+  margin: 0;
+  padding: 0 12px 10px;
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark[data-mark='ok'] {
+  color: var(--color-ok);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark[data-mark='bad'] {
+  color: var(--color-warn);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark[data-mark='work'] {
+  color: var(--color-ink);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark[data-mark='wait'] {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-mark[data-mark='note'] {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-skel {
+  display: block;
+  width: 100%;
+  height: 16px;
+}
+
+/* The check: the plan and the local run side by side, one under the other in a narrow pane. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-parts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part {
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-part h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 14px 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* You: one item each, the action in the item. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-needs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need + .iii-cloud-cs-need,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-need + .iii-cloud-cs-filled,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-agentnote + .iii-cloud-cs-rows {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-err {
+  font-size: 12px;
+  color: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-loc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-filled {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-filled > span:not(.iii-cloud-mark) {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A decision: the two ways on, side by side; the recommended one has the ink frame. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt[data-best] {
+  box-shadow: inset 0 0 0 1px var(--color-ink);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt b {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-opt span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-ink-faint);
+}
+
+/* Your agent: the note, then a line each. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-agentnote {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 10px;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-item > .iii-cloud-mark {
+  margin-top: 2px;
+}
+/* The agent's items: a ring for the one it works on now, a dashed one for those next (no spinner). */
+[data-iii-ui='iii-cloud'] .iii-cloud-ring {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  margin: 4px 2px 0;
+  border: 2px solid var(--color-ink);
+  border-radius: 50%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-ring[data-mark='wait'] {
+  border-style: dashed;
+  border-color: var(--color-ink-ghost);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-item[data-mark='wait'] .iii-cloud-cs-label {
+  font-weight: 400;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+/* A warning panel's actions: they wrap in the panel's width, never run off its edge. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts, > .iii-cloud-cs-decide) {
+  max-width: 100%;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop > :has(> .iii-cloud-cs-acts, > .iii-cloud-cs-decide) {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-acts > * {
+  flex: 0 1 auto;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-acts-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* Details: one closed fold; its three lists. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-panel {
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-head .iii-cloud-cs-title {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-chev {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui='iii-cloud'] [aria-expanded='true'] > .iii-cloud-cs-chev {
+  transform: rotate(90deg);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-group h3 {
+  margin: 0;
+  padding: 10px 14px 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-hist {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-line {
+  display: block;
+}
+
+/* What this deploy does: the value is 13/500 (14 on a phone), its note under it 12/400. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs .iii-cloud-detail-value {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs .iii-cloud-detail-note {
+  font-weight: 400;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-detail-value {
+  font-size: 14px;
+}
+
+/* The deployment that failed: the cause in a sentence, the explanation, the log lines. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause > .iii-cloud-cs-sub {
+  font-size: 12px;
+}
+/* The foot of that card: what the agent gets, and the log link. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot .iii-cloud-cs-sub {
+  flex: 1 1 240px;
+  font-size: 12px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-causefoot a {
+  white-space: nowrap;
+}
+
+/* The deployment's stages: a dot, what it did, its time. The one that failed is tinted; one not run has a dashed ring. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stages {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 40px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] {
+  background: var(--color-alert-muted);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] .iii-cloud-cs-slabel {
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='edge'] {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-stagedot {
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--color-ok);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='alert'] .iii-cloud-stagedot {
+  background: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='live'] .iii-cloud-stagedot {
+  border: 2px solid var(--color-ink);
+  background: transparent;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='warn'] .iii-cloud-stagedot {
+  background: var(--color-warn);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-stage[data-tone='edge'] .iii-cloud-stagedot {
+  border: 2px dashed var(--color-ink-ghost);
+  background: transparent;
+}
+
+/* After the deploy: the address in mono with Open and Copy, then what was proven. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-url {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-addr {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-facts {
+  margin: 0;
+  padding: 0 14px 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-facts li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 10px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-cause p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Change: a label column and the choices, one row each (Code, Compose file, Environment), then the buttons. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-change {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: start;
+  padding: 14px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow + .iii-cloud-cs-crow {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-clabel {
+  padding-top: 10px;
+  font-size: 13px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-crow > .iii-cloud-cs-sub {
+  align-self: center;
+  color: var(--color-ink);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+/* The choices are framed; the one chosen has the ink frame. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices [role='radio'] {
+  min-height: 40px;
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choices [role='radio'][data-selected] {
+  box-shadow: inset 0 0 0 1px var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-changefoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-changefoot .iii-cloud-cs-sub {
+  flex: 1 1 220px;
+  font-size: 12px;
+  text-align: right;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-typed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-dialogfoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* A phone: one column; the primary action sits in a bar at the bottom of the pane. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  /* Across the pane (the body's 12 px gutters too) with a hairline on top, and past its bottom edge: nothing of the
+     page shows beside it or under its note. */
+  margin: 8px -12px 0;
+  padding: 12px 12px 4px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+  background: var(--color-panel);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > button,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > .iii-cloud-row {
+  width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-bar > .iii-cloud-row > button {
+  flex: 1;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-barnote {
+  font-size: 12px;
+  text-align: center;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-opts,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-item,
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-head {
+  min-height: 44px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row {
+  grid-template-columns: 16px minmax(0, 1fr);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state {
+  grid-column: 2;
+  text-align: left;
+  white-space: normal;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-row .iii-cloud-cs-state:empty {
+  display: none;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-stop {
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+/* A decision in a panel: each choice is its action with one line under it, then the links. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-decide {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-choice .iii-cloud-cs-sub {
+  font-size: 12px;
+}
+/* A stage that failed says why, under its words. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-sreason {
+  grid-column: 2 / -1;
+  padding-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-ink-faint);
+}
+
+/* The values card: a line per fact (counts, never a list of twenty names), then the person's ways out. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vfact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+  font-weight: 500;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vline[data-tone='alert'] {
+  justify-content: flex-start;
+  color: var(--color-alert);
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vnames {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-vals .iii-cloud-cs-sub {
+  font-size: 12px;
+}
+
+/* A phone: the Change panel's label sits over its choices, and a compose file's path wraps instead of being cut. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-crow {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 6px;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-clabel {
+  padding-top: 0;
+}
+[data-iii-ui='iii-cloud'] .iii-cloud-cs[data-narrow] .iii-cloud-cs-choices [role='radio'] {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The agent is not working and the next step is its chat: the line, and the button beside it. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-nudge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+/* The run's log path: a long path with no spaces wraps instead of running past the panel. */
+[data-iii-ui='iii-cloud'] .iii-cloud-cs-logpath {
+  overflow-wrap: anywhere;
+}

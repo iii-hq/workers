@@ -331,6 +331,29 @@ fn forbidden_unprefixed_step(
              worker authority, which would bypass the agent-level deny on them",
         );
     }
+    // What only the person does on iii cloud's page: deploy, write values and
+    // secrets, make a project or an environment, stop a hand-off. The policy
+    // denies them to the agent; the rest of iii-cloud::* stays open.
+    if matches!(
+        function_id,
+        "iii-cloud::deploy"
+            | "iii-cloud::api::write"
+            | "iii-cloud::secret::provide"
+            | "iii-cloud::handoff::stop"
+            | "iii-cloud::project::create"
+            | "iii-cloud::project::create_environment"
+            | "iii-cloud::values::save"
+            | "iii-cloud::values::skip"
+            | "iii-cloud::problem::skip"
+            | "iii-cloud::config::import"
+            | "iii-cloud::override::choose"
+    ) {
+        return Some(
+            "iii cloud's page actions (deploy, values, secrets, a new project or environment) \
+             are not supported in a pipe — steps run with worker authority, which would bypass \
+             the agent-level deny on them",
+        );
+    }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
     // surface operator paths), kill-session-jobs is the harness::stop sweep

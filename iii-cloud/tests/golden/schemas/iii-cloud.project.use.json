@@ -1,0 +1,657 @@
+{
+  "description": "Select the environment and prepare a worktree for you to work in.",
+  "function_id": "iii-cloud::project::use",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "UseFrom": {
+        "enum": [
+          "environment",
+          "checkout"
+        ],
+        "type": "string"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "worktree",
+          "checkout"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`iii-cloud::project::use` input.",
+    "properties": {
+      "cloud_project_id": {
+        "default": null,
+        "description": "Several cloud projects use the repository: take this one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "environment_id": {
+        "default": null,
+        "description": "The environment; or only `cloud_project_id`, for that project's default one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "from": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/UseFrom"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Where the worktree's commits come from. `environment` (default): the environment's branch. `checkout`: the person's own HEAD with the environment's head: a fast-forward when one contains the other, else a merge commit made in the worktree (never in the checkout); a conflict leaves the worktree as it was (`MERGE_CONFLICT`, the files in the message). Only commits move: nothing uncommitted is copied. Never for production, which goes through a pull request."
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/WorkspaceMode"
+          }
+        ],
+        "description": "`worktree` (recommended) or `checkout`."
+      },
+      "path": {
+        "type": "string"
+      },
+      "source": {
+        "default": null,
+        "description": "With `from: checkout`: take this branch (`main`, `origin/feature-x`, one of `checkout.branches`) instead of the checkout's HEAD, by the same rule.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "mode",
+      "path"
+    ],
+    "title": "UseRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BranchRef": {
+        "description": "A branch `project::use {from: checkout, source: name}` can take.",
+        "properties": {
+          "ahead": {
+            "description": "Commits the selected environment's branch (`origin/<branch>`) does not have; null when that branch is not on origin.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "committed_at": {
+            "type": "string"
+          },
+          "is_env_branch": {
+            "description": "The selected environment deploys this branch.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "`main`, or `origin/feature-x` for a branch only on origin.",
+            "type": "string"
+          },
+          "remote": {
+            "type": "boolean"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "committed_at",
+          "is_env_branch",
+          "name",
+          "remote",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "Checkout": {
+        "properties": {
+          "ahead": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branches": {
+            "default": [],
+            "description": "Local branches and origin's, newest commit first, at most 30; a local branch hides its origin twin. Read on refresh, from the refs as they are.",
+            "items": {
+              "$ref": "#/definitions/BranchRef"
+            },
+            "type": "array"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "head": {
+            "type": "string"
+          },
+          "not_served": {
+            "default": null,
+            "description": "The checkout's commits the selected environment does not serve (`<served>..HEAD`, newest first, at most 50), read on refresh. Null when nothing is served yet or the served commit could not be fetched.",
+            "items": {
+              "$ref": "#/definitions/CommitLine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ahead",
+          "changed_files",
+          "head"
+        ],
+        "type": "object"
+      },
+      "CloudProject": {
+        "properties": {
+          "created_at": {
+            "default": null,
+            "description": "When the project was made (for choosing between several).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_deployment_at": {
+            "default": null,
+            "description": "Its newest deployment, when more than one project uses the repository.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "default": "",
+            "description": "The console's `$project` URL segment (`endpoint_slug`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CloudProjectInfo": {
+        "description": "A cloud project of the repository, for the page's project and environment selectors.",
+        "properties": {
+          "created_at": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environments": {
+            "items": {
+              "$ref": "#/definitions/EnvironmentFull"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_deployment_at": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "default": "",
+            "type": "string"
+          },
+          "team": {
+            "$ref": "#/definitions/TeamName"
+          }
+        },
+        "required": [
+          "environments",
+          "id",
+          "name",
+          "team"
+        ],
+        "type": "object"
+      },
+      "CommitLine": {
+        "properties": {
+          "message": {
+            "description": "The subject line.",
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "sha"
+        ],
+        "type": "object"
+      },
+      "EnvironmentBrief": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "EnvironmentFull": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "head": {
+            "default": null,
+            "description": "Its branch's head on origin, read on refresh. Null before the first refresh, or when origin did not answer or has no such branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "EnvironmentInfo": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "production": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "branch",
+          "id",
+          "name",
+          "production"
+        ],
+        "type": "object"
+      },
+      "Importable": {
+        "properties": {
+          "manifests": {
+            "items": {
+              "$ref": "#/definitions/ImportableManifest"
+            },
+            "type": "array"
+          },
+          "repository_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifests",
+          "repository_id",
+          "team_id"
+        ],
+        "type": "object"
+      },
+      "ImportableManifest": {
+        "properties": {
+          "choosable": {
+            "type": "boolean"
+          },
+          "has_cloud_block": {
+            "default": false,
+            "description": "The file on this machine has a `cloud:` section.",
+            "type": "boolean"
+          },
+          "issue": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "suggested_environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workers": {
+            "default": null,
+            "description": "Its containers, as the file on this machine says (else as iii cloud lists them); null when neither knows.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "choosable",
+          "path"
+        ],
+        "type": "object"
+      },
+      "OtherCloudProject": {
+        "description": "A live cloud project of the person's teams that deploys another repository: it can't be used with this folder.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string"
+          },
+          "team": {
+            "$ref": "#/definitions/TeamName"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repository",
+          "team"
+        ],
+        "type": "object"
+      },
+      "TeamName": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "TeamRef": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug"
+        ],
+        "type": "object"
+      },
+      "Workspace": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "from_head": {
+            "default": null,
+            "description": "The last commit the worktree took from the person's checkout (`from: checkout`): commits after it are the agent's. Null for a worktree made from the environment's branch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/WorkspaceMode"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "default": null,
+            "description": "The branch `use {from: checkout, source}` took; null: the checkout's HEAD.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_sha": {
+            "default": null,
+            "description": "The commit `source` (else the checkout's HEAD) pointed at when the worktree was prepared: \"moved since\" compares the source's tip with it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "branch",
+          "mode",
+          "path"
+        ],
+        "type": "object"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "worktree",
+          "checkout"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "checkout": {
+        "$ref": "#/definitions/Checkout"
+      },
+      "cloud_project": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CloudProject"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "cloud_projects": {
+        "default": [],
+        "description": "Every cloud project that uses this repository, across the person's teams, with its environments. The chosen one is `cloud_project`; `project::use {cloud_project_id}` picks another.",
+        "items": {
+          "$ref": "#/definitions/CloudProjectInfo"
+        },
+        "type": "array"
+      },
+      "default_branch": {
+        "default": null,
+        "description": "The repository's default branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "environment": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EnvironmentInfo"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "environments": {
+        "items": {
+          "$ref": "#/definitions/EnvironmentBrief"
+        },
+        "type": "array"
+      },
+      "fell_back_from": {
+        "description": "Only in `project::use`'s answer: the `environment_id` asked for, which the cloud project no longer lists, so its default environment was taken.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "github_access": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "importable": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Importable"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "other_cloud_projects": {
+        "default": [],
+        "description": "Live projects of the person's teams that deploy another repository.",
+        "items": {
+          "$ref": "#/definitions/OtherCloudProject"
+        },
+        "type": "array"
+      },
+      "path": {
+        "type": "string"
+      },
+      "repository": {
+        "description": "`owner/name`.",
+        "type": "string"
+      },
+      "team": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/TeamRef"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "teams": {
+        "items": {
+          "$ref": "#/definitions/TeamRef"
+        },
+        "type": "array"
+      },
+      "workspace": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Workspace"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "checkout",
+      "environments",
+      "path",
+      "repository",
+      "teams"
+    ],
+    "title": "Project",
+    "type": "object"
+  }
+}

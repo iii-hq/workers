@@ -1,0 +1,116 @@
+[
+  {
+    "text": "A=1\nB = two\n# a comment\n\nexport C=3\n",
+    "expected": [
+      {
+        "name": "A",
+        "value": "1"
+      },
+      {
+        "name": "B",
+        "value": "two"
+      },
+      {
+        "name": "C",
+        "value": "3"
+      }
+    ]
+  },
+  {
+    "text": "D=\"quoted # not a comment\"\nE='single \\n stays'\nF=\"line1\\nline2\"\nG=\"say \\\"hi\\\"\"\n",
+    "expected": [
+      {
+        "name": "D",
+        "value": "quoted # not a comment"
+      },
+      {
+        "name": "E",
+        "value": "single \\n stays"
+      },
+      {
+        "name": "F",
+        "value": "line1\nline2"
+      },
+      {
+        "name": "G",
+        "value": "say \"hi\""
+      }
+    ]
+  },
+  {
+    "text": "H=plain # trailing comment\nI=a#b\nJ=\nK=  spaced  \n",
+    "expected": [
+      {
+        "name": "H",
+        "value": "plain"
+      },
+      {
+        "name": "I",
+        "value": "a#b"
+      },
+      {
+        "name": "J",
+        "value": ""
+      },
+      {
+        "name": "K",
+        "value": "spaced"
+      }
+    ]
+  },
+  {
+    "text": "L=first\nM=m\nL=last\r\nnot a line\n=nameless\nN O=bad\nexport=word\n",
+    "expected": [
+      {
+        "name": "M",
+        "value": "m"
+      },
+      {
+        "name": "L",
+        "value": "last"
+      },
+      {
+        "name": "export",
+        "value": "word"
+      }
+    ]
+  },
+  {
+    "text": "P=\"unclosed\nQ='\n",
+    "expected": [
+      {
+        "name": "P",
+        "value": "\"unclosed"
+      },
+      {
+        "name": "Q",
+        "value": "'"
+      }
+    ]
+  },
+  {
+    "text": "API_KEY=\"abc\" # use \"prod\" key\nS='a' # 'b'\nU=\"abc\\\"\nE=\"\"\nW=' a '\n",
+    "expected": [
+      {
+        "name": "API_KEY",
+        "value": "abc"
+      },
+      {
+        "name": "S",
+        "value": "a"
+      },
+      {
+        "name": "U",
+        "value": "\"abc\\\""
+      },
+      {
+        "name": "E",
+        "value": ""
+      },
+      {
+        "name": "W",
+        "value": " a "
+      }
+    ]
+  }
+]

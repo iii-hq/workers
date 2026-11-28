@@ -1,0 +1,51 @@
+# Agent permissions for the iii-cloud worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# The agent is not restricted (owner decision, 26/11, replacing 25/11's), except
+# for four actions only the person does, from the page: confirming or approving
+# a deploy, merging a pull request, rollback, and writing variables, secrets or
+# environment settings. So iii-cloud::deploy (new deploys, approving a
+# deployment_id, the merge) and iii-cloud::api::write (every POST, PUT, PATCH
+# and DELETE) are denied; iii-cloud::api itself only reads.
+# iii-cloud::secret::provide takes a secret value: the person types it on the
+# page, and the agent only sees that it was saved. The other denied ids are
+# private or internal.
+#
+# A deny here blocks only the agent: the gate is the harness's pre-call hook
+# on agent tool calls, and the page calls the worker directly.
+#
+# NOTE: the policy the checked-in harness actually loads is the repo-root
+# iii-permissions.yaml, which carries these same rules. This per-worker copy
+# documents the worker's intended posture for other deployments.
+version: 1
+
+rules:
+  # Takes a secret value: the person types it on the page (a console call
+  # bypasses this gate). The agent only sees that it was saved.
+  - '!iii-cloud::secret::provide'
+  # Stops the agent's turn for a hand-off: the page's button, never the agent's call
+  # (it could stop another session's work).
+  - '!iii-cloud::handoff::stop'
+  # Making a project or an environment is the person's explicit choice, on the page.
+  - '!iii-cloud::project::create'
+  - '!iii-cloud::project::create_environment'
+  # Private and internal: the worker calls on-change, observers read it.
+  - '!iii-cloud::on-change'
+  - '!iii-cloud::on-config-change'
+  - '!iii-cloud::ui-content'
+  # Person-only (owner decision, 26/11): deploy, approve, merge, and every
+  # write to iii cloud (variables, secrets, settings, rollback).
+  - '!iii-cloud::deploy'
+  - '!iii-cloud::api::write'
+  # Writes the values the person chose on the page, secrets too: the page's.
+  - '!iii-cloud::values::save'
+  # The person's "skip for now", on the page.
+  - '!iii-cloud::values::skip'
+  # The person's "skip for now" of a cloud warning, on the page.
+  - '!iii-cloud::problem::skip'
+  # Copies the person's local config folder into iii cloud: the page's.
+  - '!iii-cloud::config::import'
+  # The person's pick for a console override, on the page.
+  - '!iii-cloud::override::choose'
+  # Everything else is open to the agent.
+  - 'iii-cloud::*'
