@@ -92,6 +92,19 @@ const ACTION_TIMEOUT_MS = 30_000;
 /** Above what claude::agents::stop may take: its listing plus `claude stop`. */
 const HOST_STOP_TIMEOUT_MS = 50_000;
 
+/** The CLI's 8-hex background id, the only one `claude attach` is handed. */
+const SHORT_ID = /^[0-9a-f]{8}$/;
+
+/** Read by assistive technology, not drawn: why a shown action cannot run. */
+const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+} as const;
+
 const SOURCES = [
   {
     function_id: 'state::on-changed',
@@ -418,25 +431,27 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     opener.current?.focus();
   };
 
+  // Whether the row is still listed under the same conversation, and, for an external
+  // row, still shown by the permission that showed it when the action started.
+  const stillShown = (row: AgentRow, requireListed: boolean) => {
+    const now = latest.current;
+    const listedNow = now.listed.some(
+      (listedRow) =>
+        listedRow.id === row.id && listedRow.claude_session_id === row.claude_session_id,
+    );
+    if (!row.external_only) return !requireListed || listedNow;
+    return (
+      now.visible && now.visibility === visibility && visibility === generation.current && listedNow
+    );
+  };
+
   const forkRow = async (row: AgentRow) => {
     if (openingFork || !row.claude_session_id) return;
     const name = nameOf(row);
     setFailure(null);
     setOpening(row.id);
     // An external row forks only while the permission that showed it holds and it is still listed.
-    const stillCurrent = () => {
-      if (!row.external_only) return true;
-      const now = latest.current;
-      return (
-        now.visible &&
-        now.visibility === visibility &&
-        visibility === generation.current &&
-        now.listed.some(
-          (listedRow) =>
-            listedRow.id === row.id && listedRow.claude_session_id === row.claude_session_id,
-        )
-      );
-    };
+    const stillCurrent = () => stillShown(row, false);
     try {
       const spec = await host.iii.call(
         'claude::terminal::describe',
@@ -466,6 +481,53 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     } finally {
       setOpening(null);
       // After a refusal too: the row was probably out of date.
+      refresh();
+    }
+  };
+
+  // Reopens the original conversation, never a copy: the worker refuses while another
+  // process has it, and only a resume or attach of this conversation is opened.
+  const resumeRow = async (row: AgentRow) => {
+    const claudeId = row.claude_session_id;
+    if (openingFork || !claudeId) return;
+    const name = nameOf(row);
+    setFailure(null);
+    // Every row: a resume writes to the original, so it must still be the listed one.
+    const stillCurrent = () => stillShown(row, true);
+    if (!stillCurrent()) return;
+    setOpening(row.id);
+    try {
+      const spec = await host.iii.call(
+        'claude::terminal::describe',
+        { session: row.id, mode: 'resume', claude_session_id: claudeId },
+        { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      );
+      if (!stillCurrent()) return;
+      const args: unknown[] = Array.isArray(spec?.args) ? spec.args : [];
+      const resumes =
+        args.at(-2) === '--resume' && args.at(-1) === claudeId && !args.includes('--fork-session');
+      const attaches =
+        row.kind === 'background' &&
+        args.length === 2 &&
+        args[0] === 'attach' &&
+        args[1] === row.short_id;
+      if (
+        spec?.claude_session_id !== claudeId ||
+        spec.copy !== undefined ||
+        !spec.program ||
+        !(resumes || attaches)
+      )
+        throw new Error('The resume could not be verified. Refresh the list and try again.');
+      const key = `resume:${claudeId}`;
+      if (!stillCurrent()) return;
+      if (!(await terminal.open({ key, spec })))
+        throw new Error('This terminal is no longer available. Refresh the list and try again.');
+      setFollow(null);
+      announce(row, `Resumed ${name}`);
+    } catch (err) {
+      reportFailure(row, errorMessage(err));
+    } finally {
+      setOpening(null);
       refresh();
     }
   };
@@ -547,6 +609,20 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     const name = nameOf(row);
     const openLabel = `Open original: ${name}`;
     const canFork = !!row.claude_session_id;
+    // Never on a row already in this console's terminal: that terminal is its writer.
+    const canResume =
+      (row.kind === 'interactive' || row.kind === 'background') &&
+      !!row.claude_session_id &&
+      !row.pty_session_id &&
+      !inTerminal;
+    const attachable = row.kind === 'background' && SHORT_ID.test(row.short_id ?? '');
+    const resumeBlocked =
+      !row.alive || attachable
+        ? undefined
+        : row.kind === 'background'
+          ? 'This background session has no short id to attach by.'
+          : 'This session is open in another terminal. Close it there to resume it.';
+    const resumeReasonId = `${groupId}-resume-${row.id}`;
     return (
       // biome-ignore lint/a11y/useSemanticElements: ListGroup is the console's div, so its rows are too
       <div key={`${row.kind}:${row.id}`} role="listitem">
@@ -587,8 +663,35 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           }
           description={opening === row.id ? 'Opening…' : isStopping ? 'Stopping…' : describe(row)}
           trailing={
-            canMessage || canStop || canFork ? (
+            canMessage || canStop || canFork || canResume ? (
               <span className="claude-sessions-actions">
+                {canResume ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Resume ${name}`}
+                    aria-disabled={!!opening || !!resumeBlocked}
+                    aria-describedby={resumeBlocked ? resumeReasonId : undefined}
+                    title={resumeBlocked ?? `Reopen ${name} here, with input`}
+                    style={resumeBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                    onClick={() => {
+                      if (opening) return;
+                      if (resumeBlocked) {
+                        reportFailure(row, resumeBlocked);
+                        return;
+                      }
+                      void resumeRow(row);
+                    }}
+                  >
+                    Resume
+                  </Button>
+                ) : null}
+                {canResume && resumeBlocked ? (
+                  <span id={resumeReasonId} style={VISUALLY_HIDDEN}>
+                    {resumeBlocked}
+                  </span>
+                ) : null}
                 {canFork ? (
                   <Button
                     type="button"

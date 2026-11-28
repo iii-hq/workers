@@ -5,12 +5,21 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, registerAgents, type ResolveOpen } from '../../src/agents.js';
 import { TerminalConfigSchema } from '../../src/config.js';
 import { registerTerminal } from '../../src/terminal/terminal.js';
 import type { HostPrepared } from '../../src/terminal/workspace.js';
+import type { SessionRecord } from '../../src/types.js';
 import { CLAUDE, fakeClaude } from '../_helpers/fake-claude.js';
+
+// The worker's own runs in flight, by iii session id.
+const live = new Set<string>();
+vi.mock('../../src/run.js', async (original) => ({
+  ...(await original<typeof import('../../src/run.js')>()),
+  isLive: (id: string) => live.has(id),
+}));
+beforeEach(() => live.clear());
 
 type Handler = (payload: unknown) => Promise<Record<string, unknown>>;
 
@@ -18,6 +27,7 @@ function setup(
   hostOver: Partial<HostPrepared> = {},
   inventory?: () => CliRow[],
   visibilityEpoch: () => number | null = () => 1,
+  records: SessionRecord[] = [],
 ) {
   const claude = fakeClaude();
   const handlers = new Map<string, { handler: Handler; options: Record<string, unknown> }>();
@@ -36,7 +46,7 @@ function setup(
           }
           return { stdout: '', stderr: '', exit_code: 1 };
         case 'state::list':
-          return [];
+          return p.scope === 'claude_sessions' ? records : [];
         case 'shell::pty::sessions':
           return { sessions: [] };
         case 'http::status':
@@ -101,7 +111,7 @@ describe('claude::terminal::describe', () => {
   it('takes the folder per session, in its request schema', () => {
     const { describeFn } = setup();
     const schema = describeFn.options.request_format as { properties: Record<string, unknown> };
-    expect(schema.properties.mode).toMatchObject({ const: 'fork' });
+    expect(schema.properties.mode).toMatchObject({ enum: ['fork', 'resume'] });
     expect(Object.keys(schema.properties)).toEqual(
       expect.arrayContaining(['cwd', 'session', 'mode', 'claude_session_id']),
     );
@@ -205,7 +215,7 @@ describe('claude::terminal::describe', () => {
     const { describeFn, resolveOpen, claude } = setup();
     resolveOpen.mockResolvedValueOnce({ args: ['--resume', id], cwd: '/fixture' });
     await expect(describeFn.handler({ ...fork, mode: 'original' })).rejects.toThrow(
-      /invalid input/i,
+      /invalid option/i,
     );
     expect(resolveOpen).not.toHaveBeenCalled();
     expect(claude.installs).toEqual([]);
@@ -309,12 +319,126 @@ describe('claude::terminal::describe', () => {
   it.each([
     { mode: 'fork', session: id },
     { ...fork, claude_session_id: 'bad' },
-    { ...fork, mode: 'resume' },
+    { ...fork, mode: 'original' },
+    { mode: 'resume', session: id },
   ])('rejects incomplete or unrecognized mode requests: %j', async (payload) => {
     const { describeFn, resolveOpen, claude } = setup();
     await expect(describeFn.handler(payload)).rejects.toThrow();
     expect(resolveOpen).not.toHaveBeenCalled();
     expect(claude.installs).toEqual([]);
+  });
+
+  describe('resume mode', () => {
+    const resume = { ...legacy, mode: 'resume', claude_session_id: id };
+    const elsewhere = /^This session is open in another terminal\. Close it there to resume it\.$/;
+    const background: CliRow = {
+      id: 'abcd1234',
+      sessionId: id,
+      kind: 'background',
+      cwd: '/fixture',
+      pid: 41,
+      state: 'working',
+    };
+
+    it('resume mode returns --resume for a session no process runs', async () => {
+      const row: CliRow = { sessionId: id, kind: 'interactive', cwd: '/fixture', status: 'idle' };
+      const { describeFn } = setup({}, () => [row]);
+      const spec = await describeFn.handler(resume);
+      expect(spec).toMatchObject({ cwd: '/fixture', claude_session_id: id });
+      expect((spec.args as string[]).slice(-2)).toEqual(['--resume', id]);
+      expect(spec.args).not.toContain('--fork-session');
+      expect(spec).not.toHaveProperty('copy');
+    });
+
+    it('resume mode returns attach for a running background session', async () => {
+      const { describeFn } = setup({}, () => [background]);
+      const spec = await describeFn.handler(resume);
+      expect(spec).toMatchObject({ args: ['attach', 'abcd1234'], claude_session_id: id });
+      expect(spec).not.toHaveProperty('copy');
+    });
+
+    it('resume mode returns --resume for a finished background session', async () => {
+      const finished: CliRow = { ...background, pid: undefined, state: 'done' };
+      const { describeFn } = setup({}, () => [finished]);
+      const spec = await describeFn.handler(resume);
+      expect((spec.args as string[]).slice(-2)).toEqual(['--resume', id]);
+      expect(spec.args).not.toContain('--fork-session');
+      expect(spec.args).not.toContain('attach');
+      expect(spec).not.toHaveProperty('copy');
+    });
+
+    it('resume mode refuses a session running in another terminal', async () => {
+      const row: CliRow = { sessionId: id, kind: 'interactive', cwd: '/fixture', pid: 7 };
+      const { claude, describeFn } = setup({}, () => [row]);
+      await expect(describeFn.handler(resume)).rejects.toThrow(elsewhere);
+      expect(claude.installs).toEqual([]);
+    });
+
+    it('resume mode refuses a conversation running under another row', async () => {
+      const run = (session_id: string): SessionRecord => ({
+        session_id,
+        claude_session_id: id,
+        cwd: '/fixture',
+        model: 'm',
+        status: 'done',
+        turns: 1,
+        total_cost_usd: 0,
+        usage: null,
+        updated_at_ms: 1,
+      });
+      live.add('running-run');
+      const { claude, describeFn } = setup({}, () => [], undefined, [
+        run('running-run'),
+        run('stopped-run'),
+      ]);
+      const request = { session: 'stopped-run', mode: 'resume', claude_session_id: id };
+      await expect(describeFn.handler(request)).rejects.toThrow(elsewhere);
+      expect(claude.installs).toEqual([]);
+    });
+
+    it('resume mode refuses a second resume while the first is opening', async () => {
+      const row: CliRow = { sessionId: id, kind: 'interactive', cwd: '/fixture', status: 'idle' };
+      const { claude, describeFn } = setup({}, () => [row]);
+      const run = claude.run;
+      let release = () => {};
+      const paused = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = () => {};
+      const preparing = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(claude, 'run').mockImplementation(async (program, args, folder) => {
+        entered();
+        await paused;
+        return run(program, args, folder);
+      });
+      const first = describeFn.handler(resume);
+      await preparing;
+      await expect(describeFn.handler(resume)).rejects.toThrow(elsewhere);
+      release();
+      // The guard the first call set does not refuse its own revalidation.
+      const spec = await first;
+      expect((spec.args as string[]).slice(-2)).toEqual(['--resume', id]);
+      expect(spec).not.toHaveProperty('copy');
+    });
+
+    it('resume mode refuses a running background session without a short id', async () => {
+      const { describeFn } = setup({}, () => [{ ...background, id: undefined }]);
+      await expect(describeFn.handler(resume)).rejects.toThrow(
+        /^the background session has no short id to open it by$/,
+      );
+    });
+
+    it('resume mode refuses a mismatched conversation', async () => {
+      const row: CliRow = { sessionId: id, kind: 'interactive', cwd: '/fixture', status: 'idle' };
+      const { claude, describeFn } = setup({}, () => [row]);
+      const other = '12345678-1111-4000-8000-000000000002';
+      await expect(describeFn.handler({ ...resume, claude_session_id: other })).rejects.toThrow(
+        /changed or is unavailable/,
+      );
+      expect(claude.installs).toEqual([]);
+    });
   });
 
   it('attaches to a background session with nothing but attach', async () => {

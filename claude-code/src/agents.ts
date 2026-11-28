@@ -59,13 +59,19 @@ const AgentRowSchema = z.object({
 });
 export type AgentRow = z.infer<typeof AgentRowSchema>;
 
-/** How a terminal opens a listed session; `copy` when it opens a fork of it. */
-export type OpenSpec = { args: string[]; cwd: string; copy?: true };
-type OpenRequest = { mode: 'fork'; claude_session_id: string };
+/**
+ * How a terminal opens a listed session; `copy` when it opens a fork of it.
+ * `release` drops the opening guard a resume set, for a describe that failed.
+ */
+export type OpenSpec = { args: string[]; cwd: string; copy?: true; release?: () => void };
+/** `guard` names one describe call: its own revalidation passes the opening guard it set. */
+export type OpenRequest =
+  | { mode: 'fork'; claude_session_id: string }
+  | { mode: 'resume'; claude_session_id: string; guard: string };
 export type ResolveOpen = (id: string, request?: OpenRequest) => Promise<OpenSpec>;
 export type OpenVisibility = {
   (): number | null;
-  (mode: 'legacy' | 'fork'): number | null | Promise<number | null>;
+  (mode: 'legacy' | 'fork' | 'resume'): number | null | Promise<number | null>;
 };
 
 const ListPayloadSchema = z.object({
@@ -96,6 +102,7 @@ const INVENTORY_UNAVAILABLE = 'Terminal host inventory unavailable';
  * out for it: the CLI lists the session only once its process has started.
  */
 const OPENING_MS = 15_000;
+const OPEN_ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
 
 export function parseAgentsJson(stdout: string): CliRow[] | null {
   try {
@@ -318,8 +325,11 @@ export function registerAgents(
   /** Whether a process on the terminal host has a conversation open, or is about to. */
   heldElsewhere: (claudeSessionId: string) => Promise<boolean>;
 } {
-  const opening = new Map<string, number>();
-  const isOpening = (claudeId: string) => (opening.get(claudeId) ?? 0) > Date.now();
+  const opening = new Map<string, { until: number; guard?: string }>();
+  const isOpening = (claudeId: string) => (opening.get(claudeId)?.until ?? 0) > Date.now();
+  // Another call's resume (or a legacy open) is still starting its process.
+  const openingElsewhere = (claudeId: string, guard: string) =>
+    isOpening(claudeId) && opening.get(claudeId)?.guard !== guard;
 
   const inventory = async (
     all: boolean,
@@ -559,11 +569,13 @@ export function registerAgents(
   );
 
   function openVisibility(): number | null;
-  function openVisibility(mode: 'legacy' | 'fork'): number | null | Promise<number | null>;
-  function openVisibility(mode?: 'legacy' | 'fork') {
+  function openVisibility(
+    mode: 'legacy' | 'fork' | 'resume',
+  ): number | null | Promise<number | null>;
+  function openVisibility(mode?: 'legacy' | 'fork' | 'resume') {
     // A listed-session describe can admit itself after silent observer replay.
     // Publication checks only read the grant picked at admission.
-    if (mode === 'fork') return access.confirm();
+    if (mode === 'fork' || mode === 'resume') return access.confirm();
     const epoch = access.epoch;
     return mode === 'legacy' && epoch === null ? access.confirm() : epoch;
   }
@@ -588,6 +600,31 @@ export function registerAgents(
         request.claude_session_id !== claudeId
       ) {
         throw new Error('the listed conversation changed or is unavailable');
+      }
+      if (request.mode === 'resume') {
+        // By conversation, not by row: a second writer on the original is never handed out.
+        const runElsewhere = agents.some(
+          (agent) => agent !== row && agent.alive && agent.claude_session_id === claudeId,
+        );
+        if (runElsewhere || openingElsewhere(claudeId, request.guard)) {
+          throw new Error(OPEN_ELSEWHERE);
+        }
+        // A headless run takes its next turn through claude::start, not a terminal.
+        if (row.kind === 'headless') throw new Error('a headless run is not resumed in a terminal');
+        if (row.alive) {
+          if (row.kind !== 'background') throw new Error(OPEN_ELSEWHERE);
+          if (!row.short_id || !SHORT_ID.test(row.short_id)) {
+            throw new Error('the background session has no short id to open it by');
+          }
+          return { args: ['attach', row.short_id], cwd: row.cwd ?? prepared.workspace };
+        }
+        if (!row.cwd) throw new Error('this session has no recorded working directory');
+        const held = { until: Date.now() + OPENING_MS, guard: request.guard };
+        opening.set(claudeId, held);
+        const release = () => {
+          if (opening.get(claudeId) === held) opening.delete(claudeId);
+        };
+        return { args: [...prepared.args, '--resume', claudeId], cwd: row.cwd, release };
       }
       if (!row.cwd) throw new Error('this session has no recorded working directory');
       return {
@@ -617,7 +654,7 @@ export function registerAgents(
       isOpening(claudeId) ||
       agents.some((agent) => agent.alive && agent.claude_session_id === claudeId);
     if (alive) return { args: [...args, '--fork-session'], cwd: row.cwd, copy: true };
-    opening.set(claudeId, Date.now() + OPENING_MS);
+    opening.set(claudeId, { until: Date.now() + OPENING_MS });
     return { args, cwd: row.cwd };
   };
 

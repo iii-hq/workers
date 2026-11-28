@@ -7,19 +7,20 @@
  * the page a Claude terminal rather than a shell with extra steps.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import type { OpenSpec, OpenVisibility, ResolveOpen } from '../agents.js';
+import type { OpenRequest, OpenSpec, OpenVisibility, ResolveOpen } from '../agents.js';
 import type { TerminalConfig } from '../config.js';
 import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
 
 const DescribePayloadSchema = z.object({
   mode: z
-    .literal('fork')
+    .enum(['fork', 'resume'])
     .optional()
     .describe(
-      'Explicitly open a separate fork. Without a mode, preserve the legacy automatic behavior.',
+      'fork: open a separate copy. resume: reopen the original, only when no other process has it. Without a mode, preserve the legacy automatic behavior.',
     ),
   claude_session_id: z
     .guid()
@@ -50,6 +51,16 @@ export function openArgs(prepared: string[], open: OpenSpec): string[] {
   return open.args[0] === 'attach' ? open.args : [...prepared, ...open.args];
 }
 
+/** `--resume <id>` at the end, without `--fork-session`, or `attach <short id>`. */
+function isResumePlan(open: OpenSpec, claudeSessionId: string | undefined): boolean {
+  if (open.args[0] === 'attach') return open.args.length === 2;
+  return (
+    open.args.at(-2) === '--resume' &&
+    open.args.at(-1) === claudeSessionId &&
+    !open.args.includes('--fork-session')
+  );
+}
+
 export function registerTerminal(
   iii: IIIClient,
   host: () => HostPrepared,
@@ -67,7 +78,15 @@ export function registerTerminal(
       }
       if (mode && (!session || !claude_session_id))
         throw new Error('an explicit action needs a session and conversation UUID');
-      const request = mode && claude_session_id ? { mode, claude_session_id } : undefined;
+      const request: OpenRequest | undefined = !claude_session_id
+        ? undefined
+        : mode === 'resume'
+          ? // One guard per call: its own revalidation passes the opening guard it set.
+            { mode, claude_session_id, guard: randomUUID() }
+          : mode === 'fork'
+            ? { mode, claude_session_id }
+            : undefined;
+      let held: OpenSpec | undefined;
       const epoch = session ? await visibilityEpoch(mode ?? 'legacy') : null;
       const verifyVisibility = () => {
         if (session && epoch !== visibilityEpoch()) {
@@ -87,13 +106,19 @@ export function registerTerminal(
             ? await resolveOpen(session, request)
             : await resolveOpen(session)
           : undefined;
+        held = open;
         if (mode === 'fork' && !open?.copy) throw new Error('no separate fork plan');
+        // Resume never hands out a copy: only the original, by --resume or attach.
+        if (mode === 'resume' && (!open || open.copy || !isResumePlan(open, claude_session_id))) {
+          throw new Error('no resume plan for that conversation');
+        }
         verifyVisibility();
         const spec = await prepareSession(iii, config(), prepared, { cwd: open?.cwd || cwd });
         verifyHost();
         // Plugin preparation can take minutes. Revalidate the explicit fork before returning it.
         if (session && request && open) {
           const fresh = await resolveOpen(session, request);
+          held = fresh;
           if (
             fresh.cwd !== open.cwd ||
             fresh.copy !== open.copy ||
@@ -114,6 +139,8 @@ export function registerTerminal(
           ...(open.copy ? { copy: true } : {}),
         };
       } catch (error) {
+        // A resume that hands out nothing must not keep its conversation held.
+        held?.release?.();
         // Preparation errors can contain the external directory too, not just a successful spec.
         verifyVisibility();
         verifyHost();
@@ -122,7 +149,7 @@ export function registerTerminal(
     },
     {
       description:
-        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit fork always creates a separate conversation.',
+        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit fork always creates a separate conversation; an explicit resume reopens the original (`--resume`, or `attach` for a running background session) and is refused while another process has it.',
       request_format: jsonSchema(DescribePayloadSchema),
       response_format: {
         type: 'object',

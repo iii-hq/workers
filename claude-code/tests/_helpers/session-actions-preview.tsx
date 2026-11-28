@@ -85,6 +85,8 @@ const missingForkDirectory = new URLSearchParams(window.location.search).has(
   'missing-fork-directory',
 );
 const forkFails = new URLSearchParams(window.location.search).has('fork-fails');
+// The worker refuses every resume, as it does while another process has the conversation.
+const resumeRefused = new URLSearchParams(window.location.search).has('resume-refused');
 // Access off with host sessions the worker left out: every host row hidden and
 // none listed (all), hidden below a worker row (worker), or no host session (none).
 const hiddenHost = new URLSearchParams(window.location.search).get('hidden-host');
@@ -305,6 +307,24 @@ const host = {
           copy: true,
         };
       }
+      if (fn === 'claude::terminal::describe' && p.mode === 'resume') {
+        const held = holdDescribe;
+        holdDescribe = undefined;
+        if (held) await held;
+        if (p.claude_session_id !== row.id) throw new Error('Conversation changed');
+        const elsewhere = 'This session is open in another terminal. Close it there to resume it.';
+        if (resumeRefused) throw new Error(elsewhere);
+        const base = {
+          claude_session_id: row.id,
+          program: 'mock-claude',
+          cwd: '/fixture',
+          env: {},
+        };
+        if (!row.alive) return { ...base, args: ['--resume', row.id] };
+        if (row.kind === 'background' && row.short_id)
+          return { ...base, args: ['attach', row.short_id] };
+        throw new Error(elsewhere);
+      }
       throw new Error(`Unexpected synthetic call: ${fn}`);
     },
   },
@@ -346,6 +366,21 @@ function Preview() {
     async open({ key, pty, spec }) {
       setOpenCalls((n) => n + 1);
       const args = spec?.args;
+      const original = rows.find((row) => row.id === args?.at(-1) || row.short_id === args?.at(-1));
+      if (!pty && original && args?.includes('--fork-session') === false) {
+        // The original conversation, never a copy: a resume or an attach.
+        const attach = args[0] === 'attach';
+        if (!attach && args.at(-2) !== '--resume')
+          throw new Error('The fixture only opens a resume or an attach');
+        const n = ++nextPtyId.current;
+        setCount(n);
+        setScreen({
+          pty: `fixture-original-${n}`,
+          key,
+          text: `${attach ? 'Attached' : 'Original'} terminal · ${original.name} · ${args.join(' ')}`,
+        });
+        return true;
+      }
       if (pty || args?.at(-3) !== '--resume' || args.at(-1) !== '--fork-session')
         throw new Error('The fixture only supports an explicit fork');
       const copy = ++nextPtyId.current;
@@ -484,6 +519,11 @@ function Preview() {
       emit('claude::terminal::activity', {});
     }
     if (e.code === 'KeyM') notifyConfig();
+    if (e.code === 'Digit1') {
+      // The stopped 'Finished review' row leaves the list.
+      hiddenRows.add(rows[4].id);
+      emit('claude::terminal::activity', {});
+    }
     if (e.code === 'KeyF') {
       backgroundFinished = true;
       emit('claude::terminal::activity', {});

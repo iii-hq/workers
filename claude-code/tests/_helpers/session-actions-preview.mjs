@@ -113,6 +113,7 @@ async function testSessionActions(code) {
       refuseConfigWatch = false,
       retryFollowOnce = false,
       forkFails = false,
+      resumeRefused = false,
       hiddenHost,
       hiddenReason,
     } = {},
@@ -123,6 +124,7 @@ async function testSessionActions(code) {
     if (refuseConfigWatch) url.searchParams.set('refuse-config-watch', '');
     if (retryFollowOnce) url.searchParams.set('retry-follow-once', '');
     if (forkFails) url.searchParams.set('fork-fails', '');
+    if (resumeRefused) url.searchParams.set('resume-refused', '');
     if (hiddenHost) url.searchParams.set('hidden-host', hiddenHost);
     if (hiddenReason) url.searchParams.set('hidden-reason', hiddenReason);
     const { window } = new JSDOM('<div id="root"></div>', {
@@ -862,6 +864,81 @@ async function testSessionActions(code) {
     await settle(document);
     assert.equal(openCalls(document), '0');
     assert.doesNotMatch(document.body.textContent, /Separate fork terminal|Opened a fork/);
+  });
+
+  const ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+  const resumeButton = (document, name) =>
+    document.querySelector(`button[aria-label="Resume ${name}"]`);
+  const notices = (document) =>
+    document.querySelector('.claude-sessions-notices')?.textContent ?? '';
+
+  await test('Resume opens the original of a stopped session', async (t) => {
+    const { click, document, text, until } = setup(t, { heartbeat: false });
+    await text('Finished review');
+    const fork = await until(() => document.querySelector('[aria-label="Fork Finished review"]'));
+    const resume = resumeButton(document, 'Finished review');
+    assert.ok(resume);
+    assert.equal(resume.parentElement, fork.parentElement);
+    assert.notEqual(resume.getAttribute('aria-disabled'), 'true');
+    // Rows already in this console's terminal offer no Resume.
+    assert.equal(resumeButton(document, 'Console original'), null);
+    assert.equal(resumeButton(document, 'Other console'), null);
+    await click('Resume Finished review');
+    await text('Resumed Finished review');
+    await text(
+      'Original terminal · Finished review · --resume 12345674-1234-4321-8123-000000000001',
+    );
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|--fork-session/);
+    assert.equal(openCalls(document), '1');
+  });
+
+  await test('Resume attaches a running background session', async (t) => {
+    const { click, document, text } = setup(t, { heartbeat: false });
+    await text('Background indexing');
+    await click('Resume Background indexing');
+    await text('Resumed Background indexing');
+    await text('Attached terminal · Background indexing · attach 12345672');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|--fork-session/);
+    assert.equal(openCalls(document), '1');
+  });
+
+  await test('Resume is unavailable while the session runs in another terminal', async (t) => {
+    const { document, text, until } = setup(t, { heartbeat: false });
+    await text('Design review');
+    const resume = await until(() => resumeButton(document, 'Design review'));
+    assert.equal(resume.getAttribute('aria-disabled'), 'true');
+    const reason = document.getElementById(resume.getAttribute('aria-describedby'));
+    assert.equal(reason?.textContent, ELSEWHERE);
+    resume.click();
+    await until(() => notices(document).includes(ELSEWHERE));
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Resumed Design review/);
+  });
+
+  await test('a refused resume opens nothing and says why', async (t) => {
+    const { click, document, text, until } = setup(t, { heartbeat: false, resumeRefused: true });
+    await text('Finished review');
+    await click('Resume Finished review');
+    await until(() => notices(document).includes(ELSEWHERE));
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Resumed Finished review|Original terminal/);
+    assert.ok(resumeButton(document, 'Finished review'));
+  });
+
+  await test('a resume whose row left the rail during describe opens nothing', async (t) => {
+    const { click, document, shortcut, text, until } = setup(t, { heartbeat: false });
+    await text('Finished review');
+    shortcut('KeyD');
+    await click('Resume Finished review');
+    await text('Opening…');
+    shortcut('Digit1');
+    await until(() => !resumeButton(document, 'Finished review'));
+    shortcut('KeyE');
+    await settle(document);
+    assert.equal(openCalls(document), '0');
+    assert.doesNotMatch(document.body.textContent, /Resumed|Original terminal/);
   });
 
   const HINT = /sessions on the terminal host are hidden; set external_sessions: true to list them/;
