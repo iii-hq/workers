@@ -37,8 +37,16 @@ import {
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format';
 import { useWorkerLive } from '@iii-dev/console-ui/hooks';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
-import { MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
-import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
+import { EyeOff, MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { SessionDetail, STATUS, type Status, sessionActionNonce } from './session-detail';
 
 /** The console injects an untyped host object; this is the boundary. */
@@ -352,8 +360,11 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     !sessions.error;
   const listed = sessions.data?.agents ?? [];
   // What an action that awaits reads to learn whether its row is still shown and authorized.
+  // Updated after commit, so an action reads the rail the operator last saw, not a discarded render.
   const latest = useRef({ visible: false, visibility: 0, listed: [] as AgentRow[] });
-  latest.current = { visible: currentVisibility, visibility, listed };
+  useLayoutEffect(() => {
+    latest.current = { visible: currentVisibility, visibility, listed };
+  });
   const noticeVisible = (externalId?: string) =>
     !externalId || (currentVisibility && listed.some((row) => row.id === externalId));
   const liveAnnouncement = noticeVisible(announcement?.externalId) ? announcement : null;
@@ -446,8 +457,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       if (!(await terminal.open({ key, spec })))
         throw new Error('This terminal is no longer available. Refresh the list and try again.');
       setFollow(null);
-      // Another row's open draft is not this fork's to close.
-      setComposing((open) => (open === row.id ? null : open));
+      // The fork is a new conversation: every open draft, the original's included, stays.
       announce(row, `Opened a fork of ${name}`);
     } catch (err) {
       reportFailure(row, errorMessage(err));
@@ -639,6 +649,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     ) : null;
 
   const hostUnavailable = sessions.data?.inventory_status === 'unavailable';
+  // With access off, the worker counts the host sessions it left out and says how to list them.
+  const hiddenHint =
+    sessions.data?.inventory_status === 'available' && !sessions.data.external_visibility
+      ? sessions.data.detail?.match(
+          /\d+ sessions? on the terminal host (?:is|are) hidden; set external_sessions: true to list them/,
+        )?.[0]
+      : undefined;
   let body: React.ReactNode;
   if (sessions.error && !sessions.data) {
     body = (
@@ -675,6 +692,15 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     );
   } else if (rows.length === 0 && hostUnavailable) {
     body = null; // The inventory warning below replaces the successful empty state.
+  } else if (rows.length === 0 && hiddenHint) {
+    body = (
+      <EmptyState
+        compact
+        icon={EyeOff}
+        title="External sessions are off"
+        description={hiddenHint}
+      />
+    );
   } else if (rows.length === 0) {
     body = (
       <EmptyState
@@ -794,6 +820,10 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             headline="Host sessions unavailable"
             detail="Refresh to try reading the terminal host again."
           />
+        ) : hiddenHint ? (
+          rows.length > 0 ? (
+            <p className="claude-sessions-note">{hiddenHint}</p>
+          ) : null
         ) : currentVisibility && sessions.data?.detail ? (
           <p className="claude-sessions-note">{sessions.data.detail}</p>
         ) : null}
