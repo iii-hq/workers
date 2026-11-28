@@ -136,9 +136,25 @@ async fn use_makes_a_worktree_from_origin_and_leaves_the_checkout_alone() {
         Some(ws.clone())
     );
     assert!(h.fake.kinds().iter().any(|k| k == "project:true"));
+    // A fresh worktree records when it began; a reused one keeps it.
+    let started = h
+        .ctx
+        .store
+        .read(|s| s.worktree_started.get(&key_of(&ws)).cloned())
+        .expect("recorded for a fresh worktree");
+    // A key connects one environment and has no cloud project to switch to.
+    assert!(h.ctx.store.read(|s| s.recent_projects.is_empty()));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     // Again: the same worktree is reused.
     let again = use_project(&h.ctx, use_req(&r.checkout)).await.unwrap();
     assert_eq!(again.workspace.unwrap(), ws);
+    assert_eq!(
+        h.ctx
+            .store
+            .read(|s| s.worktree_started.get(&key_of(&ws)).cloned()),
+        Some(started),
+        "a reused worktree keeps its start"
+    );
     // Excludes are not duplicated.
     let exclude = std::fs::read_to_string(r.checkout.join(".git/info/exclude")).unwrap();
     assert_eq!(exclude.lines().filter(|l| *l == ".iii/").count(), 1);
@@ -270,49 +286,6 @@ async fn an_earlier_fix_branch_is_resumed_with_its_commits_and_the_base_brought_
     );
 }
 
-/// The page's "moved since" compares the source's tip with `source_sha`,
-/// never the worktree's own head: the person's later commits on another
-/// branch don't make it differ.
-#[tokio::test]
-async fn source_sha_is_what_the_source_pointed_at_when_it_was_taken() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    staging(&server).await;
-    feature(&r);
-    let req = UseRequest {
-        source: Some("origin/main".into()),
-        ..from_checkout(&r.checkout, ENV2)
-    };
-    let w = use_project(&h.ctx, req).await.unwrap().workspace.unwrap();
-    let main = git(&r.checkout, &["rev-parse", "origin/main"]);
-    assert_eq!(w.source_sha.as_deref(), Some(main.as_str()));
-    // The person commits on their own branch: the source did not move.
-    old_commit(&r.checkout, "later.txt", "later");
-    let plain = use_project(
-        &h.ctx,
-        UseRequest {
-            environment_id: Some(ENV2.into()),
-            ..use_req(&r.checkout)
-        },
-    )
-    .await
-    .unwrap()
-    .workspace
-    .unwrap();
-    assert_eq!(plain.source_sha.as_deref(), Some(main.as_str()));
-    // Without a source it is the checkout's HEAD.
-    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    assert_eq!(
-        w.source_sha.as_deref(),
-        Some(git(&r.checkout, &["rev-parse", "HEAD"]).as_str())
-    );
-}
-
 #[tokio::test]
 async fn a_resumed_fix_branch_that_conflicts_with_the_base_is_left_as_it_was() {
     let server = MockServer::start().await;
@@ -357,16 +330,6 @@ async fn a_merged_fix_branch_is_resumed_at_the_base() {
         git(std::path::Path::new(&w.path), &["rev-parse", "HEAD"]),
         main
     );
-}
-
-#[tokio::test]
-async fn a_commit_is_pushed_only_when_a_remote_branch_has_it() {
-    let r = repo();
-    git(&r.checkout, &["commit", "--allow-empty", "-m", "local"]);
-    let sha = git(&r.checkout, &["rev-parse", "HEAD"]);
-    assert!(!pushed(&r.checkout, &sha).await);
-    git(&r.checkout, &["push", "origin", "main"]);
-    assert!(pushed(&r.checkout, &sha).await);
 }
 
 const ENV2: &str = "55555555-5555-4555-8555-555555555555";
@@ -570,37 +533,6 @@ async fn resolving_another_folder_keeps_the_selection_and_reads_it_as_the_candid
 
 fn key_of(w: &Workspace) -> String {
     format!("{}\n{}", w.path, w.branch)
-}
-
-#[tokio::test]
-async fn a_fresh_worktree_records_when_it_began_and_a_reused_one_keeps_it() {
-    let server = MockServer::start().await;
-    let r = repo();
-    let h = connected(&server, "worker-compose.yaml").await;
-    let first = use_project(&h.ctx, use_req(&r.checkout))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    let started = h
-        .ctx
-        .store
-        .read(|s| s.worktree_started.get(&key_of(&first)).cloned())
-        .expect("recorded for a fresh worktree");
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let again = use_project(&h.ctx, use_req(&r.checkout))
-        .await
-        .unwrap()
-        .workspace
-        .unwrap();
-    assert_eq!(again, first);
-    assert_eq!(
-        h.ctx
-            .store
-            .read(|s| s.worktree_started.get(&key_of(&first)).cloned()),
-        Some(started),
-        "a reused worktree keeps its start"
-    );
 }
 
 #[tokio::test]
@@ -1003,17 +935,6 @@ fn recent_projects_keep_one_entry_per_folder_and_project_and_at_most_eight() {
     assert_eq!(keys.iter().filter(|k| k.0 == "/r5").count(), 1);
 }
 
-#[tokio::test]
-async fn an_api_key_session_keeps_no_recent_project() {
-    let server = MockServer::start().await;
-    let (r1, r2) = (repo(), repo());
-    let h = connected(&server, "worker-compose.yaml").await;
-    use_project(&h.ctx, use_req(&r1.checkout)).await.unwrap();
-    use_project(&h.ctx, use_req(&r2.checkout)).await.unwrap();
-    // A key connects one environment and has no cloud project to switch to.
-    assert!(h.ctx.store.read(|s| s.recent_projects.is_empty()));
-}
-
 /// A branch `name` on origin only, one commit `file` past origin's main.
 fn origin_branch(r: &Repo, name: &str, file: &str) -> String {
     let t = r.root.path().join(format!("clone-{name}"));
@@ -1116,6 +1037,8 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         (w.source.as_deref(), w.from_head.as_deref()),
         (Some("main"), Some(main.as_str()))
     );
+    // `source_sha` is what the source pointed at when it was taken.
+    assert_eq!(w.source_sha.as_deref(), Some(main.as_str()));
     // Another branch, on origin only, diverged from main: merged in the
     // worktree.
     let x = origin_branch(&r, "feature-x", "x.txt");
@@ -1134,6 +1057,7 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         format!("{moved} {x}")
     );
     assert_eq!(w.source.as_deref(), Some("origin/feature-x"));
+    assert_eq!(w.source_sha.as_deref(), Some(x.as_str()));
     assert_eq!(
         w.from_head.as_deref(),
         Some(git(&ws, &["rev-parse", "HEAD"]).as_str())
@@ -1151,6 +1075,8 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
     .workspace
     .unwrap();
     assert_eq!(plain.source.as_deref(), Some("origin/feature-x"));
+    // Never the worktree's own head (the merge): the page's "moved since" compares the source's tip.
+    assert_eq!(plain.source_sha.as_deref(), Some(x.as_str()));
     // The checkout is never touched.
     assert_eq!(git(&r.checkout, &["rev-parse", "HEAD"]), mine);
     assert_eq!(
@@ -1171,6 +1097,13 @@ async fn from_checkout_takes_the_branch_named_as_source_instead_of_head() {
         let err = use_project(&h.ctx, req).await.unwrap_err();
         assert_eq!(err.code, "INVALID_REQUEST", "{}", err.message);
     }
+    // Without a source it is the checkout's HEAD.
+    let w = use_project(&h.ctx, from_checkout(&r.checkout, ENV2))
+        .await
+        .unwrap()
+        .workspace
+        .unwrap();
+    assert_eq!(w.source_sha.as_deref(), Some(mine.as_str()));
 }
 
 #[tokio::test]
@@ -1289,6 +1222,9 @@ async fn a_commit_on_another_branch_pushed_from_another_clone_is_pushed() {
     );
     let local = git(&r.checkout, &["rev-parse", "HEAD"]);
     assert!(!pushed(&r.checkout, &local).await);
+    // Pushed to origin's main, the tracking ref has it.
+    git(&r.checkout, &["push", "origin", "main"]);
+    assert!(pushed(&r.checkout, &local).await);
 }
 
 /// The workspace's source commit is part of what a check was made for, so a branch

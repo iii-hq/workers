@@ -572,41 +572,6 @@ async fn a_run_left_files(ws: &std::path::Path) -> std::collections::BTreeMap<St
 }
 
 #[tokio::test]
-async fn what_a_local_run_left_in_the_worktree_is_not_the_agents_uncommitted_change() {
-    let (h, _s, _repo, ws) = setup().await;
-    create(&h.ctx, ready_req()).await.unwrap();
-    let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
-    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    assert!(
-        !c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"),
-        "{:?}",
-        c.problems.iter().map(|p| &p.code).collect::<Vec<_>>()
-    );
-    // The agent edits one of those files afterwards: it counts again, by name, with no `git add -A`.
-    std::fs::write(ws.join("README.md"), "the agent's own edit\n").unwrap();
-    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    let p = c
-        .problems
-        .iter()
-        .find(|p| p.code == "UNCOMMITTED_CHANGES")
-        .expect("an edit after the run counts");
-    let detail = p.detail.as_deref().unwrap();
-    assert!(
-        detail.starts_with("README.md. ")
-            && detail.contains("git add <paths>")
-            && !detail.contains("git add -A"),
-        "{detail}"
-    );
-    // Nothing was deleted or restored.
-    assert_eq!(
-        std::fs::read_to_string(ws.join("README.md")).unwrap(),
-        "the agent's own edit\n"
-    );
-    assert!(ws.join("api/data/a.db").exists());
-}
-
-#[tokio::test]
 async fn a_file_the_agent_changed_before_the_run_still_counts() {
     let (h, _s, _repo, ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
@@ -674,33 +639,7 @@ async fn a_second_run_keeps_what_the_first_left_and_a_run_that_writes_nothing_dr
     assert_eq!(counts(&h), 3);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(!c.problems.iter().any(|p| p.code == "UNCOMMITTED_CHANGES"));
-}
-
-#[tokio::test]
-async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
-    let (h, _s, _repo, ws) = setup().await;
-    create(&h.ctx, ready_req()).await.unwrap();
-    std::fs::write(ws.join("README.md"), "the agent's edit\n").unwrap();
-    // The run starts with that edit in the worktree and rewrites the file.
-    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
-    std::fs::write(ws.join("README.md"), "the engine's version of it\n").unwrap();
-    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
-    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    let p = c
-        .problems
-        .iter()
-        .find(|p| p.code == "UNCOMMITTED_CHANGES")
-        .expect("it was dirty before the run, and not the run's");
-    assert!(p.detail.as_deref().unwrap().starts_with("README.md. "));
-}
-
-#[tokio::test]
-async fn the_check_names_the_files_a_run_left_in_one_info_line() {
-    let (h, _s, _repo, ws) = setup().await;
-    create(&h.ctx, ready_req()).await.unwrap();
-    let before = a_run_left_files(&ws).await;
-    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
-    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    // The check names the files a run left in one info line, which is not a problem to count.
     let p = c
         .problems
         .iter()
@@ -723,12 +662,50 @@ async fn the_check_names_the_files_a_run_left_in_one_info_line() {
             && d.contains("Created or edited during the run: if one is the run's own, delete it; if it is yours, commit it."),
         "{d}"
     );
+    // The agent edits one of those files afterwards: it counts again, by name, with no `git add -A`.
+    std::fs::write(ws.join("README.md"), "the agent's own edit\n").unwrap();
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .expect("an edit after the run counts");
+    let detail = p.detail.as_deref().unwrap();
+    assert!(
+        detail.starts_with("README.md. ")
+            && detail.contains("git add <paths>")
+            && !detail.contains("git add -A"),
+        "{detail}"
+    );
+    // Nothing was deleted or restored.
+    assert_eq!(
+        std::fs::read_to_string(ws.join("README.md")).unwrap(),
+        "the agent's own edit\n"
+    );
+    assert!(ws.join("api/data/a.db").exists());
     // None set aside, none named.
     std::fs::remove_dir_all(ws.join("api/data")).unwrap();
-    std::fs::remove_file(ws.join("README.md")).ok();
     git(&ws, &["checkout", "--", "README.md"]);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert!(!c.problems.iter().any(|p| p.code == "RUN_LEFT_FILES"));
+}
+
+#[tokio::test]
+async fn the_agents_uncommitted_edit_that_a_run_then_rewrites_still_counts() {
+    let (h, _s, _repo, ws) = setup().await;
+    create(&h.ctx, ready_req()).await.unwrap();
+    std::fs::write(ws.join("README.md"), "the agent's edit\n").unwrap();
+    // The run starts with that edit in the worktree and rewrites the file.
+    let before = iii_cloud::run::dirty_snapshot(&ws).await.unwrap();
+    std::fs::write(ws.join("README.md"), "the engine's version of it\n").unwrap();
+    iii_cloud::run::set_aside(&h.ctx, &ws, &before).await;
+    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
+    let p = c
+        .problems
+        .iter()
+        .find(|p| p.code == "UNCOMMITTED_CHANGES")
+        .expect("it was dirty before the run, and not the run's");
+    assert!(p.detail.as_deref().unwrap().starts_with("README.md. "));
 }
 
 #[tokio::test]
@@ -834,28 +811,6 @@ async fn the_record_of_a_worktree_that_is_gone_is_dropped() {
             .store
             .read(|s| !s.run_wrote.contains_key("/no/such/worktree"))
     );
-}
-
-#[tokio::test]
-async fn in_the_persons_own_folder_nothing_a_run_overlaps_is_set_aside() {
-    let (h, _s, repo, _ws) = setup().await;
-    // Checkout mode: the workspace is the person's folder.
-    let folder = repo.checkout.clone();
-    h.ctx.store.update(|s| {
-        s.project.as_mut().unwrap().path = folder.to_string_lossy().into_owned();
-    });
-    let before = iii_cloud::run::dirty_snapshot(&folder).await.unwrap();
-    // The person edits a file while the run goes.
-    std::fs::write(folder.join("README.md"), "typed during the run\n").unwrap();
-    assert!(
-        iii_cloud::run::set_aside(&h.ctx, &folder, &before)
-            .await
-            .is_none()
-    );
-    assert!(h.ctx.store.read(|s| s.run_wrote.is_empty()));
-    let dirty = iii_cloud::run::dirty_split(&h.ctx, &folder).await.unwrap();
-    assert_eq!(dirty.0, vec!["README.md".to_string()]);
-    assert!(dirty.1.is_empty());
 }
 
 #[tokio::test]
@@ -1017,6 +972,12 @@ async fn in_the_persons_own_folder_nothing_is_put_back_and_a_big_file_stays_set_
         std::fs::read_to_string(folder.join("README.md")).unwrap(),
         "typed by the person\n"
     );
+    assert!(done.note.is_none());
+    assert!(h.ctx.store.read(|s| s.run_wrote.is_empty()));
+    // What the person typed stays theirs: the dirty check reports it as the agent's own to judge.
+    let dirty = iii_cloud::run::dirty_split(&h.ctx, &folder).await.unwrap();
+    assert_eq!(dirty.0, vec!["README.md".to_string()]);
+    assert!(dirty.1.is_empty());
     // A worktree: a tracked file over 4 MiB is left where it is, and set aside.
     h.ctx.store.update(|s| {
         s.project.as_mut().unwrap().path = "/the/persons/own/folder".into();

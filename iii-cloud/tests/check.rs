@@ -67,26 +67,6 @@ fn codes(c: &Check) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn a_pushed_clean_commit_has_a_clean_plan_and_is_not_ready_without_a_run() {
-    let server = MockServer::start().await;
-    let (h, repo, ws) = ready(&server, 200).await;
-    let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
-    assert_eq!(c.plan.status, PlanStatus::Clean);
-    assert_eq!(c.commit, git(&ws, &["rev-parse", "HEAD"]));
-    assert_eq!(c.base, git(&repo.origin, &["rev-parse", "main"]));
-    assert!(
-        !codes(&c).contains(&"UNCOMMITTED_CHANGES") && !codes(&c).contains(&"BASE_NOT_IN_HISTORY")
-    );
-    assert!(!c.ready, "no run yet");
-    assert!(
-        c.report
-            .starts_with("## iii cloud readiness\nCloud plan for ")
-    );
-    assert_eq!(h.ctx.store.read(|s| s.check.clone()).unwrap().id, c.id);
-    assert!(h.fake.kinds().contains(&"check:true".to_string()));
-}
-
-#[tokio::test]
 async fn uncommitted_changes_and_a_base_that_moved_block_ready() {
     let server = MockServer::start().await;
     let (h, repo, ws) = ready(&server, 200).await;
@@ -209,45 +189,6 @@ async fn an_unreadable_base_is_a_problem_not_a_pass() {
     assert!(!c.ready && c.base.is_empty());
 }
 
-#[tokio::test]
-async fn a_short_commit_is_stored_in_full_so_ready_can_equal_the_runs_head() {
-    let server = MockServer::start().await;
-    let (h, _repo, ws) = ready(&server, 200).await;
-    let full = git(&ws, &["rev-parse", "HEAD"]);
-    let c = check(
-        &h.ctx,
-        CheckRequest {
-            handoff_id: None,
-            commit: Some(full[..9].to_string()),
-            run: None,
-            manifest: None,
-            push: None,
-            force: None,
-            from_page: false,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(c.commit, full);
-    // A commit only the cloud knows stays as given.
-    let c = check(
-        &h.ctx,
-        CheckRequest {
-            handoff_id: None,
-            commit: Some("abcdef1".into()),
-            run: None,
-            manifest: None,
-            push: None,
-            force: None,
-            from_page: false,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(c.commit, "abcdef1");
-    assert!(c.commits.is_empty(), "not here: no commit list");
-}
-
 fn plan_mock(status: u16, body: serde_json::Value) -> Mock {
     Mock::given(method("GET"))
         .and(path_regex(r"/plan$"))
@@ -315,7 +256,7 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
         "{asked:?}"
     );
     // A commit only the cloud knows, uppercase: lowercase as well.
-    check(
+    let unknown = check(
         &h.ctx,
         CheckRequest {
             handoff_id: None,
@@ -329,6 +270,9 @@ async fn the_commit_goes_to_the_cloud_in_lowercase() {
     )
     .await
     .unwrap();
+    // It stays as given (lowercase), and has no commit list here.
+    assert_eq!(unknown.commit, "abcdef1");
+    assert!(unknown.commits.is_empty(), "not here: no commit list");
     let last = server
         .received_requests()
         .await
@@ -487,40 +431,47 @@ async fn another_compose_file_is_planned_and_checked_here_and_kept_on_the_check(
 }
 
 #[tokio::test]
-async fn a_cloud_that_plans_the_environments_file_instead_is_a_cloud_error() {
-    let server = MockServer::start().await;
-    let (h, _repo, ws) = ready(&server, 200).await;
-    let head = commit_next_file(&ws);
-    plan_mock(200, json!({"can_deploy": true, "fingerprint": "fp", "plan": {"source": {"manifest": "worker-compose.yaml"}, "settings": {}, "resources": [], "issues": [], "deploy_issues": []}}))
-        .mount(&server)
-        .await;
-    let c = check(
-        &h.ctx,
-        CheckRequest {
-            commit: Some(head),
-            manifest: Some("worker-compose-next.yaml".into()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(c.plan.status, PlanStatus::Unavailable);
-    let e = c.plan.error.clone().unwrap();
-    assert_eq!(e.code, "CLOUD_ERROR");
-    assert_eq!(
-        e.message,
-        "iii cloud planned worker-compose.yaml instead of worker-compose-next.yaml."
-    );
-    assert!(!c.ready);
-    // Without a plan the lock is looked for here, beside the asked file.
-    assert!(
-        c.problems
-            .iter()
-            .any(|p| p.code == "LOCK_MISSING"
+async fn a_cloud_that_plans_another_file_or_none_is_a_cloud_error() {
+    // The cloud plans the environment's file, or a plan that does not say its file: neither is the asked one.
+    for (source, said) in [
+        (
+            json!({"manifest": "worker-compose.yaml"}),
+            "worker-compose.yaml",
+        ),
+        (json!({}), "the environment's file"),
+    ] {
+        let server = MockServer::start().await;
+        let (h, _repo, ws) = ready(&server, 200).await;
+        let head = commit_next_file(&ws);
+        plan_mock(200, json!({"can_deploy": true, "fingerprint": "fp", "plan": {"source": source, "settings": {}, "resources": [], "issues": [], "deploy_issues": []}}))
+            .mount(&server)
+            .await;
+        let c = check(
+            &h.ctx,
+            CheckRequest {
+                commit: Some(head),
+                manifest: Some("worker-compose-next.yaml".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.plan.status, PlanStatus::Unavailable);
+        let e = c.plan.error.clone().unwrap();
+        assert_eq!(e.code, "CLOUD_ERROR");
+        assert_eq!(
+            e.message,
+            format!("iii cloud planned {said} instead of worker-compose-next.yaml.")
+        );
+        assert!(!c.ready);
+        // Without a plan the lock is looked for here, beside the asked file.
+        assert!(
+            c.problems.iter().any(|p| p.code == "LOCK_MISSING"
                 && p.file.as_deref() == Some("worker-compose-next.lock")),
-        "{:?}",
-        c.problems
-    );
+            "{:?}",
+            c.problems
+        );
+    }
 }
 
 #[tokio::test]
@@ -561,35 +512,6 @@ async fn a_manifest_the_cloud_would_not_plan_is_refused_before_anything_runs() {
         "no plan was asked"
     );
     assert!(h.ctx.store.read(|s| s.check.is_none()), "no check was kept");
-}
-
-#[tokio::test]
-async fn a_plan_that_does_not_say_its_file_is_not_taken_for_the_asked_one() {
-    let server = MockServer::start().await;
-    let (h, _repo, ws) = ready(&server, 200).await;
-    let head = commit_next_file(&ws);
-    plan_mock(200, json!({"can_deploy": true, "fingerprint": "fp", "plan": {"source": {"commit": head}, "settings": {}, "resources": [], "issues": [], "deploy_issues": []}}))
-        .mount(&server)
-        .await;
-    let c = check(
-        &h.ctx,
-        CheckRequest {
-            commit: Some(head),
-            manifest: Some("worker-compose-next.yaml".into()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(c.plan.status, PlanStatus::Unavailable);
-    let e = c.plan.error.unwrap();
-    assert_eq!(
-        (e.code.as_str(), e.message.as_str()),
-        (
-            "CLOUD_ERROR",
-            "iii cloud planned the environment's file instead of worker-compose-next.yaml."
-        )
-    );
 }
 
 #[tokio::test]
@@ -1092,11 +1014,20 @@ fn trips(log: &std::path::Path) -> usize {
 #[tokio::test]
 async fn a_check_makes_one_round_trip_to_github_and_still_answers_the_three_questions() {
     let server = MockServer::start().await;
-    let (h, repo, _ws) = ready(&server, 200).await;
+    let (h, repo, ws) = ready(&server, 200).await;
     let log = count_round_trips(&repo);
     let c = check(&h.ctx, CheckRequest::default()).await.unwrap();
     assert_eq!(trips(&log), 1, "one fetch of the environment's branch");
     assert_eq!(c.plan.status, PlanStatus::Clean, "pushed");
+    // A clean pushed commit with no run is not ready; the check is the one kept.
+    assert_eq!(c.commit, git(&ws, &["rev-parse", "HEAD"]));
+    assert!(!c.ready, "no run yet");
+    assert!(
+        c.report
+            .starts_with("## iii cloud readiness\nCloud plan for ")
+    );
+    assert_eq!(h.ctx.store.read(|s| s.check.clone()).unwrap().id, c.id);
+    assert!(h.fake.kinds().contains(&"check:true".to_string()));
     assert_eq!(c.base, git(&repo.origin, &["rev-parse", "main"]));
     assert!(
         !codes(&c).contains(&"BASE_NOT_IN_HISTORY"),
@@ -1677,4 +1608,33 @@ async fn plan_requests(server: &MockServer) -> usize {
         .iter()
         .filter(|r| r.url.path().ends_with("/plan"))
         .count()
+}
+
+#[tokio::test]
+async fn a_plan_that_does_not_say_its_file_is_not_taken_for_the_asked_one() {
+    let server = MockServer::start().await;
+    let (h, _repo, ws) = ready(&server, 200).await;
+    let head = commit_next_file(&ws);
+    plan_mock(200, json!({"can_deploy": true, "fingerprint": "fp", "plan": {"source": {"commit": head}, "settings": {}, "resources": [], "issues": [], "deploy_issues": []}}))
+        .mount(&server)
+        .await;
+    let c = check(
+        &h.ctx,
+        CheckRequest {
+            commit: Some(head),
+            manifest: Some("worker-compose-next.yaml".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.plan.status, PlanStatus::Unavailable);
+    let e = c.plan.error.unwrap();
+    assert_eq!(
+        (e.code.as_str(), e.message.as_str()),
+        (
+            "CLOUD_ERROR",
+            "iii cloud planned the environment's file instead of worker-compose-next.yaml."
+        )
+    );
 }

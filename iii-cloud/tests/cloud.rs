@@ -464,13 +464,6 @@ async fn a_changed_cloud_url_signs_out() {
     );
 }
 
-#[test]
-fn the_device_name_is_cut_and_clean() {
-    let name = device_name(&format!("host\u{7}{}", "x".repeat(100)));
-    assert_eq!(name.chars().count(), 64);
-    assert!(!name.chars().any(char::is_control));
-}
-
 #[tokio::test]
 async fn a_cookie_only_route_does_not_sign_a_valid_session_out() {
     let server = MockServer::start().await;
@@ -555,6 +548,10 @@ async fn only_a_platform_422_means_no_worker_sign_in_yet() {
 fn the_device_name_loses_format_characters_too() {
     let name = device_name("ho\u{200B}st\u{200F}\u{2060}\u{FEFF}x\u{AD}");
     assert_eq!(name, "iii-cloud worker on hostx");
+    // Cut at 64 characters, control characters gone.
+    let name = device_name(&format!("host\u{7}{}", "x".repeat(100)));
+    assert_eq!(name.chars().count(), 64);
+    assert!(!name.chars().any(char::is_control));
 }
 
 /// `api` only reads (owner decision, 26/11): every write is `PERSON_ONLY` and

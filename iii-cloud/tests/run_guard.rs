@@ -65,7 +65,25 @@ async fn a_compose_file_of_the_wrong_shape_fails_the_run_and_frees_the_lock() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(run.status, RunStatus::Failed);
-    assert_eq!(run.error.unwrap().code, "COMPOSE_FAILED");
+    let stored = run.error.clone().unwrap();
+    assert_eq!(stored.code, "COMPOSE_FAILED");
+    // The run says where its whole log is, and the file is there.
+    let expected = h.dir.path().join("data/runs").join(&run.id).join("run.log");
+    assert_eq!(run.log_path.as_deref(), Some(expected.to_str().unwrap()));
+    assert!(expected.exists(), "the file the path names is there");
+    // The run event carries the owner the stored check says.
+    assert!(stored.owner.is_some(), "the stored check says whose it is");
+    let events = h.fake.events.lock().unwrap().clone();
+    let last = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == EventKind::Run && e.terminal)
+        .expect("a terminal run event");
+    assert_eq!(
+        last.record["error"]["owner"],
+        serde_json::to_value(stored.owner).unwrap()
+    );
+    assert_eq!(last.record["error"]["withheld"], stored.withheld);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(h.ctx.runs.lock().unwrap().is_empty(), "the slot is free");
     // And a new run may start.
@@ -546,36 +564,6 @@ fn a_taken_postgres_port_is_not_reported_as_a_missing_docker() {
 }
 
 #[tokio::test]
-async fn a_container_that_exited_fails_the_stage_at_once() {
-    let server = MockServer::start().await;
-    let (h, _ws) = with_check(&server, TWO_WORKERS).await;
-    // A pid nothing has: a process that ended and was reaped.
-    let mut gone = std::process::Command::new("true").spawn().unwrap();
-    let pid = gone.id();
-    gone.wait().unwrap();
-    let bin = fake_iii(
-        &h,
-        &format!(
-            "mkdir -p .iii/compose/iii-cloud-run/logs; echo 'stderr\tcrashed-beta' > .iii/compose/iii-cloud-run/logs/beta.log; echo '{{\"containers\":{{\"beta\":{{\"pid\":{pid},\"status\":\"ready\"}}}}}}' > .iii/compose/iii-cloud-run/state.json;"
-        ),
-    );
-    use_iii(&h, &server, &bin).await;
-    set_workers(&h, ONLY_ALPHA);
-    start(&h.ctx, "chk".into()).await.unwrap();
-    let run = ended(&h, "chk").await;
-    let error = run.error.unwrap();
-    assert_eq!(error.code, "WORKERS_NOT_READY");
-    assert!(
-        error
-            .message
-            .contains("beta exited before all workers connected"),
-        "{}",
-        error.message
-    );
-    assert!(run.log_tail.iter().any(|l| l == "[beta] crashed-beta"));
-}
-
-#[tokio::test]
 async fn a_run_of_another_workspace_starts_while_one_is_running() {
     let server = MockServer::start().await;
     let (h, ws) = with_check(&server, TWO_WORKERS).await;
@@ -999,7 +987,7 @@ async fn the_loop_fails_a_container_only_after_two_looks_in_a_row_find_it_dead()
     std::fs::write(
         &bin,
         format!(
-            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) mkdir -p '{st}'; cp '{d}/alive.json' '{s}'; exec sleep 20;;\n  call) n=$(cat '{d}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{d}/n'\n    if [ $n = 1 ]; then cp '{d}/alive.json' '{s}'; else cp '{d}/dead.json' '{s}'; fi\n    cat '{d}/workers.json';;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'iii 0.27.0';;\n  compose) mkdir -p '{st}/logs'; printf 'stderr\\tcrashed-beta\\n' > '{st}/logs/beta.log'; cp '{d}/alive.json' '{s}'; exec sleep 20;;\n  call) n=$(cat '{d}/n' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{d}/n'\n    if [ $n = 1 ]; then cp '{d}/alive.json' '{s}'; else cp '{d}/dead.json' '{s}'; fi\n    cat '{d}/workers.json';;\nesac\n",
             st = state.parent().unwrap().display(),
             s = state.display(),
             d = dir.display()
@@ -1021,6 +1009,7 @@ async fn the_loop_fails_a_container_only_after_two_looks_in_a_row_find_it_dead()
         "{}",
         error.message
     );
+    assert!(run.log_tail.iter().any(|l| l == "[beta] crashed-beta"));
     // Calls 1 and 2 (an alive look, a first dead look) and 3 came before the verdict.
     let calls: u32 = std::fs::read_to_string(dir.join("n"))
         .unwrap()
@@ -1244,17 +1233,6 @@ async fn a_passed_run_that_made_data_leaves_a_clean_copy_and_stays_the_runs_proo
 }
 
 #[tokio::test]
-async fn a_run_says_where_its_whole_log_is() {
-    let server = MockServer::start().await;
-    let (h, _ws) = with_check(&server, "containers: {}\nengine: nope\n").await;
-    start(&h.ctx, "chk".into()).await.unwrap();
-    let run = ended(&h, "chk").await;
-    let expected = h.dir.path().join("data/runs").join(&run.id).join("run.log");
-    assert_eq!(run.log_path.as_deref(), Some(expected.to_str().unwrap()));
-    assert!(expected.exists(), "the file the path names is there");
-}
-
-#[tokio::test]
 async fn the_agent_reads_the_whole_log_and_a_kept_file_through_the_worker_only() {
     use iii_cloud::check::read;
     use std::os::unix::fs::PermissionsExt;
@@ -1431,27 +1409,6 @@ async fn a_kept_copy_never_holds_a_secret_and_an_older_run_is_not_readable() {
     )
     .unwrap_err();
     assert_eq!(err.code, "NOT_AVAILABLE");
-}
-
-#[tokio::test]
-async fn the_run_event_carries_the_owner_the_stored_check_says() {
-    let server = MockServer::start().await;
-    let (h, _ws) = with_check(&server, "containers: {}\nengine: nope\n").await;
-    start(&h.ctx, "chk".into()).await.unwrap();
-    let run = ended(&h, "chk").await;
-    let stored = run.error.clone().unwrap();
-    assert!(stored.owner.is_some(), "the stored check says whose it is");
-    let events = h.fake.events.lock().unwrap().clone();
-    let last = events
-        .iter()
-        .rev()
-        .find(|e| e.kind == EventKind::Run && e.terminal)
-        .expect("a terminal run event");
-    assert_eq!(
-        last.record["error"]["owner"],
-        serde_json::to_value(stored.owner).unwrap()
-    );
-    assert_eq!(last.record["error"]["withheld"], stored.withheld);
 }
 
 #[tokio::test]

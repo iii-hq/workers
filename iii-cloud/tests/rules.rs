@@ -793,32 +793,6 @@ fn a_compose_file_of_the_wrong_shape_is_an_error_not_a_panic() {
 }
 
 #[test]
-fn the_stream_worker_moves_even_without_a_port_in_the_file() {
-    let mut next = 50_000;
-    let mut alloc = || {
-        next += 1;
-        next
-    };
-    let yaml: Value = serde_yaml_ng::from_str("containers: {}\n").unwrap();
-    let copy = rewrite_run_copy(&yaml, 41_000, &[], &[], &mut alloc).unwrap();
-    {
-        let name = "iii-stream";
-        let port = copy["engine"]["workers"][name]["port"].as_u64().unwrap();
-        assert!(
-            port > 50_000 && !FORBIDDEN_PORTS.contains(&(port as u16)),
-            "{name} {port}"
-        );
-        assert_eq!(copy["engine"]["workers"][name]["host"], "127.0.0.1");
-    }
-    // iii-http-functions takes no host or port (the engine refuses them): never added.
-    assert!(
-        copy["engine"]["workers"]
-            .get("iii-http-functions")
-            .is_none()
-    );
-}
-
-#[test]
 fn percent_encoded_dots_slashes_and_backslashes_are_refused() {
     for bad in [
         "/a/%2e%2e/b",
@@ -1472,6 +1446,7 @@ fn a_value_problem_about_a_database_url_is_the_agents_with_the_binding_fix() {
             .unwrap_or("")
             .contains("managed database")
     );
+    assert_eq!(problems[2].variable.as_deref(), Some("SESSION_SECRET"));
     // Here, a database URL is never LOCAL_VARIABLE_UNSET: DATABASE_NOT_MANAGED, the agent's, takes it.
     let ws = tempfile::tempdir().unwrap();
     let here = local(
@@ -1791,6 +1766,32 @@ fn no_skill_or_agent_file_tells_the_agent_to_stage_everything() {
             );
         }
     }
+}
+
+#[test]
+fn the_stream_worker_moves_even_without_a_port_in_the_file() {
+    let mut next = 50_000;
+    let mut alloc = || {
+        next += 1;
+        next
+    };
+    let yaml: Value = serde_yaml_ng::from_str("containers: {}\n").unwrap();
+    let copy = rewrite_run_copy(&yaml, 41_000, &[], &[], &mut alloc).unwrap();
+    {
+        let name = "iii-stream";
+        let port = copy["engine"]["workers"][name]["port"].as_u64().unwrap();
+        assert!(
+            port > 50_000 && !FORBIDDEN_PORTS.contains(&(port as u16)),
+            "{name} {port}"
+        );
+        assert_eq!(copy["engine"]["workers"][name]["host"], "127.0.0.1");
+    }
+    // iii-http-functions takes no host or port (the engine refuses them): never added.
+    assert!(
+        copy["engine"]["workers"]
+            .get("iii-http-functions")
+            .is_none()
+    );
 }
 
 #[test]

@@ -315,6 +315,27 @@ async fn a_handoff_has_a_marker_and_a_new_one_replaces_the_open_one() {
         (agent.handoff_id.as_str(), agent.state, agent.session_id),
         (a.id.as_str(), AgentPhase::Starting, None)
     );
+    // The page applies the event's `record` as `status.agent`, by `id`.
+    let events: Vec<ChangeEvent> = h
+        .fake
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == EventKind::Agent)
+        .cloned()
+        .collect();
+    let e = events.first().expect("an agent event");
+    assert_eq!(e.id, a.id);
+    assert_eq!(
+        (
+            e.record["handoff_id"].as_str(),
+            e.record["state"].as_str(),
+            e.record["kind"].as_str()
+        ),
+        (Some(a.id.as_str()), Some("starting"), Some("ready"))
+    );
+    assert!(!e.terminal);
     // The same hand-off again (a double click) is the one already open.
     let twice = create(&h.ctx, ready_req()).await.unwrap();
     assert!(
@@ -381,6 +402,28 @@ async fn a_handoff_has_a_marker_and_a_new_one_replaces_the_open_one() {
         create(&h.ctx, fix).await.unwrap_err().code,
         "INVALID_REQUEST"
     );
+    // `progress` and `check` take the short id from the marker and keep the full one.
+    let out = iii_cloud::handoff::progress(
+        &h.ctx,
+        HandoffProgressRequest {
+            handoff_id: Some(b.id[..8].to_string()),
+            working_on: vec![],
+            note: Some("starting".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.note.as_deref(), Some("starting"));
+    let c = iii_cloud::check::check(
+        &h.ctx,
+        CheckRequest {
+            handoff_id: Some(b.id[..8].to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(c.handoff_id.as_deref(), Some(b.id.as_str()));
 }
 
 #[tokio::test]
@@ -1161,6 +1204,12 @@ async fn a_refused_continue_is_not_counted_and_is_tried_again_after_the_window()
         Some(QuestionSource::Agent),
         "the chat is where to look"
     );
+    // What the page shows after a restart (a fresh follower) is what it showed before.
+    let restarted = iii_cloud::handoff::poll_now(&h.ctx, &created.id)
+        .await
+        .unwrap();
+    assert_eq!(restarted.state, AgentPhase::Stalled);
+    assert!(restarted.question.is_some());
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(sent(&h).len(), 1, "one try inside the window");
     assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 0);
@@ -1390,33 +1439,14 @@ async fn the_brief_function_answers_the_brief_alone_by_short_or_full_id_with_the
     );
     assert_eq!(f.log_tail.len(), 40);
     assert_eq!(f.log_tail.last().map(String::as_str), Some("line 59"));
-}
-
-#[tokio::test]
-async fn progress_and_check_take_the_short_id_from_the_marker_and_keep_the_full_one() {
-    let (h, _s, _r, _ws) = setup().await;
-    let created = create(&h.ctx, ready_req()).await.unwrap();
-    let out = iii_cloud::handoff::progress(
-        &h.ctx,
-        HandoffProgressRequest {
-            handoff_id: Some(created.id[..8].to_string()),
-            working_on: vec![],
-            note: Some("starting".into()),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(out.note.as_deref(), Some("starting"));
-    let c = iii_cloud::check::check(
-        &h.ctx,
-        CheckRequest {
-            handoff_id: Some(created.id[..8].to_string()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(c.handoff_id.as_deref(), Some(created.id.as_str()));
+    // The failed run of the check the hand-off was made from counts even with no hand-off id on it.
+    h.ctx.store.update(|s| {
+        let mut c = s.check.clone().unwrap();
+        c.handoff_id = None;
+        s.put_check(c);
+    });
+    let from_check = brief_for(&h.ctx, by(&created.id)).await.unwrap();
+    assert_eq!(from_check.run_failure.unwrap().code, "WORKERS_NOT_READY");
 }
 
 #[tokio::test]
@@ -1690,77 +1720,6 @@ async fn a_follow_up_is_sent_into_the_existing_chat_like_the_console_would() {
 }
 
 #[tokio::test]
-async fn a_double_click_is_one_hand_off_until_it_ends() {
-    let (h, _s, _r, _ws) = setup().await;
-    let w = world();
-    let a = create(&h.ctx, ready_req()).await.unwrap();
-    install(&h.fake, &a.marker, &w, NOW_FN() + 1_000);
-    until(&h, "working", |x| x.state == AgentPhase::Working).await;
-    // Working: still the same one, with its session.
-    let again = create(&h.ctx, ready_req()).await.unwrap();
-    assert_eq!(
-        (
-            again.id.as_str(),
-            again.reused,
-            again.session_id.as_deref(),
-            again.delivered
-        ),
-        (a.id.as_str(), true, Some("s-ours"), true)
-    );
-    // Another kind while it works goes into the same agent as a follow-up.
-    let fix = HandoffRequest {
-        check_id: Some("chk".into()),
-        kind: HandoffKind::DeployFix,
-        deployment_id: Some("d1".into()),
-        text: None,
-        candidate: None,
-    };
-    let followed = create(&h.ctx, fix.clone()).await.unwrap();
-    assert_eq!(
-        (followed.id.as_str(), followed.reused),
-        (a.id.as_str(), true)
-    );
-    // A different deployment is a different hand-off once the first is over.
-    h.ctx
-        .store
-        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
-    let b = create(&h.ctx, fix.clone()).await.unwrap();
-    assert_ne!(b.id, a.id);
-    h.ctx
-        .store
-        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
-    let other = HandoffRequest {
-        deployment_id: Some("d2".into()),
-        ..fix
-    };
-    assert_ne!(create(&h.ctx, other).await.unwrap().id, b.id);
-    // Once it is over, the same request starts a fresh one.
-    h.fake
-        .on("harness::stop", |_| Ok(json!({"stopping": true})));
-    let id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
-    let _ = stop(&h.ctx, HandoffStopRequest { id }).await;
-    h.ctx
-        .store
-        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
-    let fresh = create(
-        &h.ctx,
-        h.ctx.store.read(|s| {
-            let x = &s.handoffs[0];
-            HandoffRequest {
-                check_id: x.check_id.clone(),
-                kind: x.kind,
-                deployment_id: x.deployment_id.clone(),
-                text: None,
-                candidate: None,
-            }
-        }),
-    )
-    .await
-    .unwrap();
-    assert!(!fresh.reused);
-}
-
-#[tokio::test]
 async fn a_hand_off_with_no_chat_is_reused_for_90_seconds_then_a_new_one_starts() {
     let (h, _s, _r, _ws) = setup().await;
     let a = create(&h.ctx, ready_req()).await.unwrap();
@@ -1854,33 +1813,6 @@ async fn done_is_provisional_the_chat_is_followed_on_and_a_pending_ask_wins() {
     assert!(a.current.is_some(), "the new call is shown");
     // last_activity_at follows the newest message.
     assert!(a.last_activity_at.unwrap() > first_activity);
-}
-
-#[tokio::test]
-async fn agent_updates_are_events_of_kind_agent_with_the_status_record() {
-    let (h, _s, _r, _ws) = setup().await;
-    let a = create(&h.ctx, ready_req()).await.unwrap();
-    let events: Vec<ChangeEvent> = h
-        .fake
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|e| e.kind == EventKind::Agent)
-        .cloned()
-        .collect();
-    let e = events.first().expect("an agent event");
-    // The page applies `record` as `status.agent`, by `id`.
-    assert_eq!(e.id, a.id);
-    assert_eq!(
-        (
-            e.record["handoff_id"].as_str(),
-            e.record["state"].as_str(),
-            e.record["kind"].as_str()
-        ),
-        (Some(a.id.as_str()), Some("starting"), Some("ready"))
-    );
-    assert!(!e.terminal);
 }
 
 #[tokio::test]
@@ -2662,27 +2594,6 @@ fn failed_run(check_id: &str, commit: &str) -> Run {
     }
 }
 
-/// The failed run of the check the hand-off was made from is part of its brief.
-#[tokio::test]
-async fn run_failure_comes_from_the_check_the_hand_off_was_made_from() {
-    let (h, _s, _r, _ws) = setup().await;
-    h.ctx.store.update(|s| {
-        let mut c = s.check.clone().unwrap();
-        c.run = Some(failed_run(&c.id, "abc"));
-        s.put_check(c);
-    });
-    let created = create(&h.ctx, ready_req()).await.unwrap();
-    let out = iii_cloud::handoff::brief_for(
-        &h.ctx,
-        HandoffBriefRequest {
-            handoff_id: created.id,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(out.run_failure.unwrap().code, "WORKERS_NOT_READY");
-}
-
 /// A check the person starts in their own folder says nothing about the agent's work.
 #[tokio::test]
 async fn a_check_of_the_persons_own_does_not_bring_a_finished_hand_off_a_continue() {
@@ -2710,40 +2621,6 @@ async fn a_check_of_the_persons_own_does_not_bring_a_finished_hand_off_a_continu
         h.ctx.store.read(|s| s.handoffs[0].agent.state),
         AgentPhase::Done
     );
-}
-
-/// A failed local run of the hand-off's commit is the agent's work: it gets a continue naming it.
-#[tokio::test]
-async fn a_failed_run_with_a_clean_plan_gets_a_continue_that_names_the_failure() {
-    let (h, _s, _r, ws) = setup().await;
-    accept_sends(&h);
-    clean_manifest(&ws);
-    let w = world();
-    let created = create(&h.ctx, ready_req()).await.unwrap();
-    seed_passed_run(&h, &ws);
-    let head = git(&ws, &["rev-parse", "HEAD"]);
-    h.ctx.store.update(|s| {
-        let c = s.checks.iter_mut().find(|c| c.id == "agent-check").unwrap();
-        c.ready = false;
-        c.run = Some(failed_run("agent-check", &head));
-    });
-    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
-    until(&h, "working", |a| a.state == AgentPhase::Working).await;
-    idle_for(&w, 0).await;
-    for _ in 0..200 {
-        if !sent(&h).is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let messages = sent(&h);
-    assert_eq!(messages.len(), 1);
-    assert!(
-        messages[0].contains("WORKERS_NOT_READY: api did not connect (stage workers)"),
-        "{}",
-        messages[0]
-    );
-    assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
 }
 
 /// The worktree on another branch is the agent's mistake: it is told, and it is counted.
@@ -3077,30 +2954,6 @@ async fn the_agents_own_checks_survive_the_history_cap_while_the_hand_off_goes_o
     until(&h, "done", |a| a.state == AgentPhase::Done).await;
 }
 
-/// What the page shows after a restart is what it showed before.
-#[tokio::test]
-async fn a_refused_continue_still_reads_stalled_after_a_restart() {
-    let (h, _s, _r, _ws) = setup().await;
-    h.fake.on("harness::send", |_| {
-        Err(iii_cloud::error::CloudError::new("BOOM", "refused"))
-    });
-    let w = world();
-    let created = create(&h.ctx, ready_req()).await.unwrap();
-    install(&h.fake, &created.marker, &w, NOW_FN() + 1_000);
-    until(&h, "working", |a| a.state == AgentPhase::Working).await;
-    idle_for(&w, 0).await;
-    until(&h, "stalled", |a| {
-        a.state == AgentPhase::Stalled && a.question.is_some()
-    })
-    .await;
-    // A fresh follower, as after a restart.
-    let a = iii_cloud::handoff::poll_now(&h.ctx, &created.id)
-        .await
-        .unwrap();
-    assert_eq!(a.state, AgentPhase::Stalled);
-    assert!(a.question.is_some());
-}
-
 /// The waiting notice is information: once per run, outside the cap of three.
 #[tokio::test]
 async fn the_first_waiting_continue_goes_once_for_its_run_and_does_not_use_the_cap() {
@@ -3147,6 +3000,11 @@ async fn the_first_waiting_continue_goes_once_for_its_run_and_does_not_use_the_c
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(sent(&h)[1].contains("WORKERS_NOT_READY"), "{:?}", sent(&h));
+    assert!(
+        sent(&h)[1].contains("WORKERS_NOT_READY: api did not connect (stage workers)"),
+        "the continue names the failure and its stage: {:?}",
+        sent(&h)
+    );
     assert_eq!(h.ctx.store.read(|s| s.handoffs[0].continues), 1);
 }
 
@@ -3349,16 +3207,6 @@ async fn a_check_the_person_started_with_a_failed_run_wakes_an_agent_waiting_on_
 }
 
 #[tokio::test]
-async fn a_ready_check_or_one_with_only_the_persons_things_open_sends_the_agent_nothing() {
-    let (_h, told) = person_check_while_waiting(vec![], None, true, 1).await;
-    assert!(told.is_empty(), "{told:?}");
-    let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
-    values.owner = Owner::Person;
-    let (_h, told) = person_check_while_waiting(vec![values], None, false, 1).await;
-    assert!(told.is_empty(), "{told:?}");
-}
-
-#[tokio::test]
 async fn only_the_pages_own_check_marks_a_waiting_agents_hand_off() {
     let (h, _s, _r, _ws) = setup().await;
     create(&h.ctx, ready_req()).await.unwrap();
@@ -3397,6 +3245,26 @@ async fn a_run_that_failed_for_the_persons_missing_value_is_not_sent_to_the_agen
     )
     .await;
     assert!(told.is_empty(), "{told:?}");
+    // Other checks of the person's that leave the agent nothing: a ready one, only the person's
+    // values open, and a run a newer run replaced.
+    let mut replaced = failed_run("person-check", "abc");
+    replaced.error = Some(RunError {
+        stage: StageName::Workers,
+        code: "RUN_REPLACED".into(),
+        message: "A newer commit of this workspace started a run, so this one stopped.".into(),
+        owner: None,
+        withheld: false,
+    });
+    let mut values = prob("values", "LOCAL_VARIABLE_UNSET");
+    values.owner = Owner::Person;
+    for (problems, run, ready) in [
+        (vec![], None, true),
+        (vec![values], None, false),
+        (vec![], Some(replaced), false),
+    ] {
+        let (_h, told) = person_check_while_waiting(problems, run, ready, 1).await;
+        assert!(told.is_empty(), "{told:?}");
+    }
 }
 
 #[tokio::test]
@@ -3486,20 +3354,6 @@ async fn a_refused_continue_to_a_waiting_agent_is_not_retried_inside_the_grace_a
     );
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert_eq!(sent(&h).len() - before, 1, "one try inside the grace");
-}
-
-#[tokio::test]
-async fn a_person_run_that_a_newer_run_replaced_sends_the_agent_nothing() {
-    let mut run = failed_run("person-check", "abc");
-    run.error = Some(RunError {
-        stage: StageName::Workers,
-        code: "RUN_REPLACED".into(),
-        message: "A newer commit of this workspace started a run, so this one stopped.".into(),
-        owner: None,
-        withheld: false,
-    });
-    let (_h, told) = person_check_while_waiting(vec![], Some(run), false, 1).await;
-    assert!(told.is_empty(), "{told:?}");
 }
 
 #[tokio::test]
@@ -3632,21 +3486,6 @@ async fn a_stopped_hand_off_hears_nothing_of_the_persons_check() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(continues(&h).is_empty());
     assert!(h.ctx.store.read(|s| s.handoffs[0].person_check.is_none()));
-}
-
-#[tokio::test]
-async fn fix_with_your_agent_sends_an_idle_hand_off_on_with_what_the_latest_check_leaves_it() {
-    let (h, _ws, _w, _keep) = ended_agent().await;
-    person_check(&h, vec![], Some(release_failed()), false);
-    let before = continues(&h).len();
-    let again = create(&h.ctx, ready_req()).await.unwrap();
-    assert!(again.reused && again.sent == Some(true), "{again:?}");
-    let told = continues(&h);
-    assert_eq!(told.len() - before, 1);
-    assert!(told.last().unwrap().contains("RELEASE_FAILED"));
-    // Asked again with the same check: the poll does not send it a second time.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(continues(&h).len() - before, 1);
 }
 
 #[tokio::test]
@@ -3810,6 +3649,10 @@ async fn asking_again_for_a_check_already_told_answers_that_something_went() {
     let again = create(&h.ctx, ready_req()).await.unwrap();
     assert!(again.reused && again.sent == Some(true), "{again:?}");
     assert_eq!(continues(&h).len(), before, "no second message");
+    // The one message was the check's failure, and the poll does not send it again.
+    assert!(continues(&h).last().unwrap().contains("RELEASE_FAILED"));
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(continues(&h).len(), before);
 }
 
 #[tokio::test]
@@ -3895,4 +3738,75 @@ async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_ch
         !again.reused && !again.asks && again.id != old_id,
         "{again:?}"
     );
+}
+
+#[tokio::test]
+async fn a_double_click_is_one_hand_off_until_it_ends() {
+    let (h, _s, _r, _ws) = setup().await;
+    let w = world();
+    let a = create(&h.ctx, ready_req()).await.unwrap();
+    install(&h.fake, &a.marker, &w, NOW_FN() + 1_000);
+    until(&h, "working", |x| x.state == AgentPhase::Working).await;
+    // Working: still the same one, with its session.
+    let again = create(&h.ctx, ready_req()).await.unwrap();
+    assert_eq!(
+        (
+            again.id.as_str(),
+            again.reused,
+            again.session_id.as_deref(),
+            again.delivered
+        ),
+        (a.id.as_str(), true, Some("s-ours"), true)
+    );
+    // Another kind while it works goes into the same agent as a follow-up.
+    let fix = HandoffRequest {
+        check_id: Some("chk".into()),
+        kind: HandoffKind::DeployFix,
+        deployment_id: Some("d1".into()),
+        text: None,
+        candidate: None,
+    };
+    let followed = create(&h.ctx, fix.clone()).await.unwrap();
+    assert_eq!(
+        (followed.id.as_str(), followed.reused),
+        (a.id.as_str(), true)
+    );
+    // A different deployment is a different hand-off once the first is over.
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
+    let b = create(&h.ctx, fix.clone()).await.unwrap();
+    assert_ne!(b.id, a.id);
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
+    let other = HandoffRequest {
+        deployment_id: Some("d2".into()),
+        ..fix
+    };
+    assert_ne!(create(&h.ctx, other).await.unwrap().id, b.id);
+    // Once it is over, the same request starts a fresh one.
+    h.fake
+        .on("harness::stop", |_| Ok(json!({"stopping": true})));
+    let id = h.ctx.store.read(|s| s.handoffs[0].id.clone());
+    let _ = stop(&h.ctx, HandoffStopRequest { id }).await;
+    h.ctx
+        .store
+        .update(|s| s.handoffs[0].agent.state = AgentPhase::Done);
+    let fresh = create(
+        &h.ctx,
+        h.ctx.store.read(|s| {
+            let x = &s.handoffs[0];
+            HandoffRequest {
+                check_id: x.check_id.clone(),
+                kind: x.kind,
+                deployment_id: x.deployment_id.clone(),
+                text: None,
+                candidate: None,
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(!fresh.reused);
 }

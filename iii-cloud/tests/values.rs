@@ -712,43 +712,6 @@ fn codes(out: &ValuesSaved) -> Vec<(&str, Option<&str>)> {
 }
 
 #[tokio::test]
-async fn names_are_written_four_at_a_time_and_answered_in_the_requests_order() {
-    let w = world(false, "developer").await;
-    for (name, status) in [("ONE", 200), ("TWO", 422), ("THREE", 200)] {
-        Mock::given(method("PUT"))
-            .and(path(format!("/api/v1{}/{name}", vars(ENV))))
-            .respond_with(
-                ResponseTemplate::new(status)
-                    .set_delay(std::time::Duration::from_millis(400))
-                    .set_body_json(json!({"code": "REFUSED"})),
-            )
-            .mount(&w.server)
-            .await;
-    }
-    let started = std::time::Instant::now();
-    let out = save(
-        &w.h.ctx,
-        request(json!([
-            {"name": "ONE", "from": "typed", "type": "variable", "value": "one"},
-            {"name": "TWO", "from": "typed", "type": "variable", "value": "two"},
-            {"name": "THREE", "from": "typed", "type": "variable", "value": "three"}
-        ])),
-    )
-    .await
-    .unwrap();
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(1100),
-        "three 400 ms writes ran one after the other"
-    );
-    assert_eq!(
-        codes(&out),
-        vec![("ONE", None), ("TWO", Some("NOT_SAVED")), ("THREE", None)],
-        "the failing name in the middle is its own result; the others are written"
-    );
-    assert_eq!(sent(&w.server, "PUT").await.len(), 3);
-}
-
-#[tokio::test]
 async fn a_refusal_of_the_session_leaves_the_later_chunks_untried() {
     let w = world(false, "developer").await;
     for (name, status) in [

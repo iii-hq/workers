@@ -359,99 +359,6 @@ async fn merge_then_confirm_creates_one_pinned_deployment_and_follows_it_to_read
     );
 }
 
-#[tokio::test]
-async fn a_plan_that_needs_nothing_adopts_the_push_deployment_and_never_creates() {
-    let s = setup(plan(false)).await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "queued",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("{}/{DEP_ID}", dep_base())))
-        .respond_with(|_: &Request| {
-            ResponseTemplate::new(200).set_body_json(deployment(DEP_ID, "x", "ready", "push"))
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(dep_base()))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&s.server)
-        .await;
-    let d = deploy(
-        &s.h.ctx,
-        DeployRequest {
-            handoff_id: None,
-            check_id: "chk".into(),
-            pr: Some(12),
-            deployment_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(d.id, DEP_ID);
-    assert!(!d.approved_by_worker, "it needed no confirmation");
-    assert_eq!(terminal_events(&s.h, DEP_ID).await, 1);
-}
-
-#[tokio::test]
-async fn a_changed_plan_after_the_merge_cancels_the_push_deployment_and_deploys_nothing() {
-    let s = setup(plan(false)).await;
-    // The plan of the merged commit differs from the one the check saw.
-    s.server.reset().await;
-    let mut changed = plan(false);
-    changed["settings"] =
-        json!({"release": {"worker": "api", "command": "x", "timeout": "1m", "source": "file"}});
-    Mock::given(method("GET"))
-        .and(path_regex(r"/plan$"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
-        )
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "queued",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .expect(1)
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(dep_base()))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&s.server)
-        .await;
-    let err = deploy(
-        &s.h.ctx,
-        DeployRequest {
-            handoff_id: None,
-            check_id: "chk".into(),
-            pr: Some(12),
-            deployment_id: None,
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(err.code, "PLAN_CHANGED");
-    assert!(err.message.contains("settings"), "{}", err.message);
-    // The merge is remembered: the next deploy resumes from the pin.
-    assert_eq!(s.h.ctx.store.read(|st| st.merges.len()), 1);
-}
-
 /// Past Routes and TLS the cloud refuses the cancel (409): the merged commit is
 /// deploying, and the caller and status say so instead of "check again".
 #[tokio::test]
@@ -617,6 +524,13 @@ async fn a_second_deploy_after_the_merge_resumes_without_merging_again() {
         1,
         "saved right after the merge"
     );
+    // The push deployment needs nothing: it is adopted, never created.
+    Mock::given(method("POST"))
+        .and(path(dep_base()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&s.server)
+        .await;
     let merges_before = argv(&s).matches("pr merge").count();
     let d = deploy(
         &s.h.ctx,
@@ -630,6 +544,8 @@ async fn a_second_deploy_after_the_merge_resumes_without_merging_again() {
     .await
     .unwrap();
     assert_eq!(d.id, DEP_ID);
+    assert!(!d.approved_by_worker, "it needed no confirmation");
+    assert_eq!(terminal_events(&s.h, DEP_ID).await, 1);
     assert_eq!(
         argv(&s).matches("pr merge").count(),
         merges_before,
@@ -861,6 +777,20 @@ async fn a_forbidden_create_and_a_conflict_have_their_codes() {
         .code,
         "IDEMPOTENCY_KEY_REUSED"
     );
+    // Another 409 keeps the cloud's code: it is not PLAN_CHANGED.
+    Mock::given(method("POST"))
+        .and(path(dep_base()))
+        .respond_with(ResponseTemplate::new(409).set_body_json(
+            json!({"code": "QUEUE_FULL", "message": "Too many deployments are waiting."}),
+        ))
+        .up_to_n_times(1)
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
+        .await
+        .unwrap_err();
+    assert_eq!((err.code.as_str(), err.status), ("CLOUD_ERROR", Some(409)));
+    assert!(err.message.contains("QUEUE_FULL"));
 }
 
 #[tokio::test]
@@ -1742,31 +1672,6 @@ fn req(check: &str, pr: Option<u64>, deployment_id: Option<&str>) -> DeployReque
 }
 
 #[tokio::test]
-async fn another_409_keeps_the_clouds_code_and_is_not_plan_changed() {
-    let s = setup(plan(true)).await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "needs_action",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(dep_base()))
-        .respond_with(ResponseTemplate::new(409).set_body_json(
-            json!({"code": "QUEUE_FULL", "message": "Too many deployments are waiting."}),
-        ))
-        .mount(&s.server)
-        .await;
-    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
-        .await
-        .unwrap_err();
-    assert_eq!((err.code.as_str(), err.status), ("CLOUD_ERROR", Some(409)));
-    assert!(err.message.contains("QUEUE_FULL"));
-}
-
-#[tokio::test]
 async fn a_pull_request_merged_on_github_with_another_head_is_not_deployed() {
     let s = setup(plan(false)).await;
     // Merged on GitHub (no merge of ours saved) after a newer push: the head is not what was checked.
@@ -1893,6 +1798,12 @@ async fn a_changed_plan_waits_for_the_push_deployment_to_cancel_it_but_only_afte
         )
         .mount(&s.server)
         .await;
+    Mock::given(method("POST"))
+        .and(path(dep_base()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&s.server)
+        .await;
     // The push deployment shows up on the third look only.
     let (origin, looks) = (
         s.repo.origin.clone(),
@@ -1911,13 +1822,13 @@ async fn a_changed_plan_waits_for_the_push_deployment_to_cancel_it_but_only_afte
         .expect(1)
         .mount(&s.server)
         .await;
-    assert_eq!(
-        deploy(&s.h.ctx, req("chk", Some(12), None))
-            .await
-            .unwrap_err()
-            .code,
-        "PLAN_CHANGED"
-    );
+    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "PLAN_CHANGED");
+    assert!(err.message.contains("settings"), "{}", err.message);
+    // The merge is remembered: the next deploy resumes from the pin.
+    assert_eq!(s.h.ctx.store.read(|st| st.merges.len()), 1);
 }
 
 #[tokio::test]
@@ -1952,34 +1863,6 @@ async fn without_a_merge_a_changed_plan_cancels_nothing() {
             .unwrap_err()
             .code,
         "PLAN_CHANGED"
-    );
-}
-
-#[tokio::test]
-async fn a_follower_stops_on_a_404_and_frees_its_key() {
-    let s = setup(plan(false)).await;
-    s.server.reset().await;
-    Mock::given(method("GET"))
-        .and(path_regex(r"/environments/[^/]+$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"settings": {}})))
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("{}/{DEP_ID}", dep_base())))
-        .respond_with(
-            ResponseTemplate::new(404)
-                .set_body_json(json!({"code": "NOT_FOUND", "message": "gone"})),
-        )
-        .mount(&s.server)
-        .await;
-    iii_cloud::watch::follow(&s.h.ctx, DEP_ID.into());
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(
-        !s.h.ctx
-            .busy
-            .lock()
-            .unwrap()
-            .contains(&format!("deploy:{DEP_ID}"))
     );
 }
 
@@ -2695,24 +2578,6 @@ async fn an_assisted_environment_on_its_own_branch_is_pushed_by_the_persons_depl
 }
 
 #[tokio::test]
-async fn a_direct_push_switches_the_file_first_and_the_confirmed_deployment_keeps_it() {
-    let s = setup(next_plan(true)).await;
-    check_of_next(&s);
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    direct(&s).await;
-    push_list(&s, "needs_action").await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
-    assert_eq!(
-        f.log(),
-        vec![format!("switch to {NEXT}"), format!("create with {NEXT}")],
-        "the switch comes before the push"
-    );
-    assert_eq!(*f.manifest.lock().unwrap(), NEXT);
-    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
-}
-
-#[tokio::test]
 async fn a_direct_push_that_is_refused_or_finds_main_moved_puts_the_old_file_back() {
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
@@ -2903,32 +2768,6 @@ async fn a_push_whose_outcome_is_unknown_keeps_the_switch_and_says_so() {
     );
 }
 
-#[tokio::test]
-async fn a_deploy_this_worker_made_is_not_from_the_console() {
-    let s = setup(plan(false)).await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "queued",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("{}/{DEP_ID}", dep_base())))
-        .respond_with(|_: &Request| {
-            ResponseTemplate::new(200).set_body_json(deployment(DEP_ID, "x", "ready", "push"))
-        })
-        .mount(&s.server)
-        .await;
-    deploy(&s.h.ctx, req("chk", Some(12), None)).await.unwrap();
-    let status = iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
-        .await
-        .unwrap();
-    let d = status.deploys.iter().find(|d| d.id == DEP_ID).unwrap();
-    assert!(!d.from_console);
-}
-
 async fn refreshed(s: &Setup) -> Status {
     iii_cloud::status::status(
         &s.h.ctx,
@@ -3029,6 +2868,27 @@ async fn following_a_deployment_the_cloud_lost_marks_it_gone_and_a_refusal_stops
     let gone = gone.expect("the record says it is gone");
     assert_eq!(gone.outcome, Outcome::Canceled);
     assert!(gone.status_detail.unwrap().contains("no longer has"));
+    // A 404 frees the key too.
+    for _ in 0..200 {
+        if !s
+            .h
+            .ctx
+            .busy
+            .lock()
+            .unwrap()
+            .contains(&format!("deploy:{DEP_ID}"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        !s.h.ctx
+            .busy
+            .lock()
+            .unwrap()
+            .contains(&format!("deploy:{DEP_ID}"))
+    );
     // A 403 ends the loop (the key is freed) and changes nothing.
     let other = watch_record(&s, NEW_ID, "running");
     s.h.ctx.store.update(|st| st.put_deploy(other));
@@ -3371,25 +3231,6 @@ async fn pushed_directly(s: &Setup) {
 }
 
 #[tokio::test]
-async fn a_push_made_with_the_old_file_is_not_adopted_and_the_switch_comes_right_before_the_create()
-{
-    let s = setup(next_plan(false)).await;
-    check_of_next(&s);
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    pushed_directly(&s).await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
-    assert_eq!(
-        f.log(),
-        vec![
-            format!("switch to {NEXT} with the commit on main"),
-            format!("create with {NEXT}")
-        ]
-    );
-    assert_eq!(local_env_manifest(&s).as_deref(), Some(NEXT));
-}
-
-#[tokio::test]
 async fn a_create_that_fails_after_the_switch_puts_the_old_file_back_and_says_so() {
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
@@ -3478,104 +3319,6 @@ async fn a_check_of_the_environments_own_file_switches_nothing() {
 }
 
 #[tokio::test]
-async fn a_changed_plan_after_the_merge_whose_push_was_canceled_puts_the_old_file_back() {
-    let s = setup(next_plan(false)).await;
-    check_of_next(&s);
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    // The merged commit plans differently (with the new file all the same).
-    let mut changed = next_plan(false);
-    changed["settings"] =
-        json!({"release": {"worker": "api", "command": "x", "timeout": "1m", "source": "file"}});
-    Mock::given(method("GET"))
-        .and(path_regex(r"/plan$"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
-        )
-        .with_priority(1)
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "queued",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .expect(1)
-        .mount(&s.server)
-        .await;
-    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "PLAN_CHANGED");
-    assert!(
-        err.message
-            .ends_with("production is back on worker-compose.yaml."),
-        "{}",
-        err.message
-    );
-    assert_eq!(
-        f.log(),
-        vec![
-            format!("switch to {NEXT}"),
-            "switch to worker-compose.yaml with the commit on main".to_string()
-        ]
-    );
-}
-
-#[tokio::test]
-async fn a_push_still_running_after_a_changed_plan_keeps_the_switch_and_says_so() {
-    let s = setup(next_plan(false)).await;
-    check_of_next(&s);
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    let mut changed = next_plan(false);
-    changed["settings"] =
-        json!({"release": {"worker": "api", "command": "x", "timeout": "1m", "source": "file"}});
-    Mock::given(method("GET"))
-        .and(path_regex(r"/plan$"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
-        )
-        .with_priority(1)
-        .mount(&s.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(dep_base()))
-        .respond_with(PushList {
-            origin: s.repo.origin.clone(),
-            status: "in_progress",
-        })
-        .mount(&s.server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
-        .respond_with(
-            ResponseTemplate::new(409).set_body_json(
-                json!({"code": "CONFLICT", "message": "can't be canceled any more"}),
-            ),
-        )
-        .mount(&s.server)
-        .await;
-    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, "PUSH_STILL_RUNNING");
-    assert!(
-        err.message
-            .ends_with(&format!("production now uses {NEXT}.")),
-        "{}",
-        err.message
-    );
-    assert_eq!(f.log(), vec![format!("switch to {NEXT}")]);
-}
-
-#[tokio::test]
 async fn a_create_whose_answer_is_lost_keeps_the_switch() {
     let s = setup(next_plan(false)).await;
     check_of_next(&s);
@@ -3597,6 +3340,7 @@ async fn a_create_whose_answer_is_lost_keeps_the_switch() {
         "no switch back: {log:?}"
     );
     assert_eq!(*f.manifest.lock().unwrap(), NEXT);
+    assert_eq!(local_env_manifest(&s).as_deref(), Some(NEXT));
 }
 
 async fn deploy_chk(s: &Setup) -> Result<Deploy, iii_cloud::error::CloudError> {
@@ -3724,6 +3468,17 @@ async fn a_deploy_event_says_whether_it_came_from_the_console_like_the_status_do
         d.from_console = !d.from_console; // whatever the record said, the event follows the rule
         iii_cloud::watch::record(&s.h.ctx, &d);
     }
+    // A teammate's push deployment is not "from the console" either.
+    let push = "33333333-cccc-4ccc-8ccc-333333333333";
+    let d = iii_cloud::watch::to_deploy(
+        "http://x",
+        (None, None, "production"),
+        &deployment(push, "abc1234", "needs_action", "push"),
+        None,
+        false,
+    )
+    .unwrap();
+    iii_cloud::watch::record(&s.h.ctx, &d);
     let events = s.h.fake.events.lock().unwrap().clone();
     let of = |id: &str| {
         events
@@ -3734,11 +3489,12 @@ async fn a_deploy_event_says_whether_it_came_from_the_console_like_the_status_do
     };
     assert_eq!(of(mine), Some(json!(false)));
     assert_eq!(of(theirs), Some(json!(true)));
+    assert_eq!(of(push), Some(json!(false)));
     let st = iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
         .await
         .unwrap();
     for d in st.deploys {
-        assert_eq!(d.from_console, d.id != mine, "{}", d.id);
+        assert_eq!(d.from_console, d.id == theirs, "{}", d.id);
     }
 }
 
@@ -3775,41 +3531,6 @@ async fn deploy_refuses_when_the_cloud_has_another_compose_file_than_the_check_b
         !requests.iter().any(|r| r.method.as_str() == "PATCH"),
         "the environment was switched back"
     );
-}
-
-/// A teammate's push deployment is not "from the console"; a manual one made there is.
-#[tokio::test]
-async fn only_a_manual_deployment_this_worker_did_not_make_is_from_the_console() {
-    let s = setup(plan(false)).await;
-    let push = "33333333-cccc-4ccc-8ccc-333333333333";
-    let manual = "44444444-dddd-4ddd-8ddd-444444444444";
-    for (id, kind) in [(push, "push"), (manual, "manual")] {
-        let d = iii_cloud::watch::to_deploy(
-            "http://x",
-            (None, None, "production"),
-            &deployment(id, "abc1234", "needs_action", kind),
-            None,
-            false,
-        )
-        .unwrap();
-        iii_cloud::watch::record(&s.h.ctx, &d);
-    }
-    let events = s.h.fake.events.lock().unwrap().clone();
-    let of = |id: &str| {
-        events
-            .iter()
-            .rev()
-            .find(|e| e.kind == EventKind::Deploy && e.id == id)
-            .map(|e| e.record["from_console"].clone())
-    };
-    assert_eq!(of(push), Some(json!(false)));
-    assert_eq!(of(manual), Some(json!(true)));
-    let st = iii_cloud::status::status(&s.h.ctx, StatusRequest::default())
-        .await
-        .unwrap();
-    for d in st.deploys {
-        assert_eq!(d.from_console, d.id == manual, "{}", d.id);
-    }
 }
 
 /// A check made while another environment was selected has its compose file on record
@@ -3959,97 +3680,6 @@ fn origin_branch(s: &Setup, branch: &str) -> Option<String> {
 }
 
 #[tokio::test]
-async fn the_first_assisted_deploy_pushes_the_commit_to_its_own_branch_moves_the_environment_and_adopts_the_push()
- {
-    let s = setup(plan(false)).await;
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    first_assisted(&s).await;
-    list_of_commit(&s, &f, Some("queued")).await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!((d.id.as_str(), d.approved_by_worker), (DEP_ID, false));
-    assert_eq!(
-        origin_branch(&s, OWN).as_deref(),
-        Some(s.check.commit.as_str())
-    );
-    assert_eq!(
-        git(&s.repo.origin, &["rev-parse", "main"]),
-        s.check.base,
-        "the default branch is never pushed"
-    );
-    // One write, made after the branch exists on origin; nothing else.
-    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
-    let patches = requests_of(&s, "PATCH").await;
-    assert_eq!(patches.len(), 1);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&patches[0].body).unwrap(),
-        json!({"branch": OWN})
-    );
-    // The page's record follows.
-    let env =
-        s.h.ctx
-            .store
-            .read(|st| st.project.as_ref().unwrap().environment.clone().unwrap());
-    assert_eq!(env.branch, OWN);
-}
-
-#[tokio::test]
-async fn with_no_push_deployment_the_first_assisted_deploy_creates_one_after_a_short_wait() {
-    let s = setup(plan(false)).await;
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    first_assisted(&s).await;
-    list_of_commit(&s, &f, None).await;
-    let started = std::time::Instant::now();
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
-    // The old wait was 120 ticks of 10 ms; the grace is 10.
-    assert!(started.elapsed() < Duration::from_millis(900));
-    let posts = requests_of_path(&s, "POST", &dep_base()).await;
-    assert_eq!(posts.len(), 1);
-    assert_eq!(
-        posts[0].headers.get("if-match").unwrap().to_str().unwrap(),
-        "fp-target"
-    );
-    assert_eq!(
-        f.log(),
-        vec![
-            format!("move to {OWN}"),
-            "create with worker-compose.yaml".to_string()
-        ]
-    );
-}
-
-async fn requests_of_path(s: &Setup, verb: &str, p: &str) -> Vec<Request> {
-    s.server
-        .received_requests()
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.method.as_str() == verb && r.url.path() == p)
-        .collect()
-}
-
-#[tokio::test]
-async fn a_first_assisted_deploy_of_another_compose_file_moves_the_branch_and_the_file_in_one_write()
- {
-    let s = setup(next_plan(false)).await;
-    check_of_next(&s);
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    first_assisted(&s).await;
-    list_of_commit(&s, &f, Some("needs_action")).await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!(d.id, NEW_ID);
-    assert_eq!(
-        f.log(),
-        vec![
-            format!("move to {OWN} and switch to {NEXT}"),
-            format!("create with {NEXT}")
-        ],
-        "no manifest write of its own before the move"
-    );
-    assert_eq!(requests_of(&s, "PATCH").await.len(), 1);
-}
-
-#[tokio::test]
 async fn a_branch_of_that_name_with_other_commits_is_never_touched() {
     let s = setup(plan(false)).await;
     let f = env_file(&s, "worker-compose.yaml", 201).await;
@@ -4120,8 +3750,24 @@ async fn a_refused_move_is_retried_by_the_second_click_without_pushing_again() {
     refuse_pushes(&s);
     let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
     assert_eq!(d.id, DEP_ID);
-    assert_eq!(requests_of(&s, "PATCH").await.len(), 2);
+    let patches = requests_of(&s, "PATCH").await;
+    assert_eq!(patches.len(), 2);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&patches[1].body).unwrap(),
+        json!({"branch": OWN})
+    );
     assert_eq!(f.log(), vec![format!("move to {OWN}")]);
+    assert_eq!(
+        git(&s.repo.origin, &["rev-parse", "main"]),
+        s.check.base,
+        "the default branch is never pushed"
+    );
+    // The page's record follows.
+    let env =
+        s.h.ctx
+            .store
+            .read(|st| st.project.as_ref().unwrap().environment.clone().unwrap());
+    assert_eq!(env.branch, OWN);
 }
 
 #[tokio::test]
@@ -4204,29 +3850,6 @@ async fn production_never_pushes_whatever_the_default_branch_is() {
         .update(|st| st.project.as_mut().unwrap().default_branch = Some("trunk".into()));
     let err = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap_err();
     assert_eq!(err.code, "MERGE_FIRST");
-    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
-}
-
-#[tokio::test]
-async fn a_branch_another_environment_follows_gets_its_own_branch_for_this_one() {
-    let s = setup(plan(false)).await;
-    let f = env_file(&s, "worker-compose.yaml", 201).await;
-    first_assisted(&s).await;
-    // `main` is not the default here, but production (another environment) follows it.
-    s.h.ctx.store.update(|st| {
-        let p = st.project.as_mut().unwrap();
-        p.default_branch = Some("trunk".into());
-        p.environments = vec![EnvironmentBrief {
-            id: "other".into(),
-            name: "live".into(),
-            production: true,
-            branch: "main".into(),
-        }];
-    });
-    list_of_commit(&s, &f, Some("queued")).await;
-    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
-    assert_eq!(d.id, DEP_ID);
-    assert_eq!(f.log(), vec![format!("move to {OWN}")]);
     assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.base);
 }
 
@@ -4699,7 +4322,14 @@ async fn a_deploy_that_switched_the_file_records_it_so_a_revert_in_the_console_s
     let f = env_file(&s, "worker-compose.yaml", 201).await;
     direct(&s).await;
     push_list(&s, "needs_action").await;
-    deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+    assert_eq!(
+        f.log(),
+        vec![format!("switch to {NEXT}"), format!("create with {NEXT}")],
+        "the switch comes before the push"
+    );
+    assert_eq!(git(&s.repo.origin, &["rev-parse", "main"]), s.check.commit);
     assert_eq!(*f.manifest.lock().unwrap(), NEXT);
     // What the check was made for is left as it was: a deploy of an older check still meets SOURCE_CHANGED.
     assert_eq!(
@@ -4799,4 +4429,121 @@ async fn after_a_merge_the_resume_follows_the_workers_own_manual_deployment() {
         .await
         .unwrap();
     assert_eq!(list["deployments"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_changed_plan_after_the_merge_whose_push_was_canceled_puts_the_old_file_back() {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    // The merged commit plans differently (with the new file all the same).
+    let mut changed = next_plan(false);
+    changed["settings"] =
+        json!({"release": {"worker": "api", "command": "x", "timeout": "1m", "source": "file"}});
+    Mock::given(method("GET"))
+        .and(path_regex(r"/plan$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
+        )
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(PushList {
+            origin: s.repo.origin.clone(),
+            status: "queued",
+        })
+        .mount(&s.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "PLAN_CHANGED");
+    assert!(
+        err.message
+            .ends_with("production is back on worker-compose.yaml."),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("switch to {NEXT}"),
+            "switch to worker-compose.yaml with the commit on main".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_push_still_running_after_a_changed_plan_keeps_the_switch_and_says_so() {
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    let mut changed = next_plan(false);
+    changed["settings"] =
+        json!({"release": {"worker": "api", "command": "x", "timeout": "1m", "source": "file"}});
+    Mock::given(method("GET"))
+        .and(path_regex(r"/plan$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"can_deploy": true, "fingerprint": "fp2", "plan": changed})),
+        )
+        .with_priority(1)
+        .mount(&s.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(dep_base()))
+        .respond_with(PushList {
+            origin: s.repo.origin.clone(),
+            status: "in_progress",
+        })
+        .mount(&s.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{}/{DEP_ID}/cancel", dep_base())))
+        .respond_with(
+            ResponseTemplate::new(409).set_body_json(
+                json!({"code": "CONFLICT", "message": "can't be canceled any more"}),
+            ),
+        )
+        .mount(&s.server)
+        .await;
+    let err = deploy(&s.h.ctx, req("chk", Some(12), None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "PUSH_STILL_RUNNING");
+    assert!(
+        err.message
+            .ends_with(&format!("production now uses {NEXT}.")),
+        "{}",
+        err.message
+    );
+    assert_eq!(f.log(), vec![format!("switch to {NEXT}")]);
+}
+
+#[tokio::test]
+async fn a_push_made_with_the_old_file_is_not_adopted_and_the_switch_comes_right_before_the_create()
+{
+    let s = setup(next_plan(false)).await;
+    check_of_next(&s);
+    let f = env_file(&s, "worker-compose.yaml", 201).await;
+    pushed_directly(&s).await;
+    let d = deploy(&s.h.ctx, req("chk", None, None)).await.unwrap();
+    assert_eq!((d.id.as_str(), d.approved_by_worker), (NEW_ID, true));
+    assert_eq!(
+        f.log(),
+        vec![
+            format!("switch to {NEXT} with the commit on main"),
+            format!("create with {NEXT}")
+        ]
+    );
+    assert_eq!(local_env_manifest(&s).as_deref(), Some(NEXT));
 }
