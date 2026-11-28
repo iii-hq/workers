@@ -228,18 +228,27 @@ export function registerExternalReplies(
       for (const [key, w] of batch) {
         if (w.sent?.from !== cursor) w.sent = { from: cursor, ids: new Set() };
         const sent = w.sent;
-        for (const reply of next.replies) {
+        try {
+          for (const reply of next.replies) {
+            lease.check();
+            if (g.watches.get(key) !== w) break;
+            // Already dispatched before a failure partway through this page.
+            if (sent.ids.has(reply.id)) continue;
+            requireOpenSocket();
+            await iii.call({
+              function_id: ON_REPLY,
+              metadata: { for_observer: key, epoch },
+              payload: { claude_session_id: id, reply },
+            });
+            sent.ids.add(reply.id);
+          }
+        } catch {
+          // A lost grant or a closed socket ends the whole poll. A rejected
+          // dispatch keeps only this observer's undelivered replies for its
+          // next poll; the other observers of the session still receive theirs.
           lease.check();
-          if (g.watches.get(key) !== w) break;
-          // Already dispatched before a failure partway through this page.
-          if (sent.ids.has(reply.id)) continue;
           requireOpenSocket();
-          await iii.call({
-            function_id: ON_REPLY,
-            metadata: { for_observer: key, epoch },
-            payload: { claude_session_id: id, reply },
-          });
-          sent.ids.add(reply.id);
+          continue;
         }
         w.cursor = next.cursor;
         w.epoch = epoch;

@@ -98,7 +98,17 @@ type Hooks = {
   deliver?: DeliverHook;
 };
 
+/** The synthetic host runs the transcript reader with the runner's `python3`.
+ * Without one every read fails anonymously, so refuse to start instead. */
+function requirePython3() {
+  const r = spawnSync('python3', ['--version'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) {
+    throw new Error('python3 is required on PATH to run the synthetic host');
+  }
+}
+
 async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHandler) {
+  requirePython3();
   const projects = join(root, 'projects');
   const project = join(projects, 'synthetic');
   const file = join(project, `${id}.jsonl`);
@@ -219,7 +229,7 @@ async function makeHost(root: string, confirmed: boolean, wrapHandler?: WrapHand
         if (payload.command !== 'python3') throw new Error('unexpected host command');
         await host.beforeRead();
         const r = spawnSync('python3', payload.args as string[], {
-          env: { ...env, PATH: '/usr/bin:/bin', HOME: root },
+          env: { ...env, PATH: process.env.PATH ?? '', HOME: root },
           cwd: root,
           encoding: 'utf8',
           timeout: Number(payload.timeout_ms),
