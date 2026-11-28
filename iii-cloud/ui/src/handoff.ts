@@ -72,8 +72,10 @@ export async function handOff(
   hubOf(host).markStopped(status.project?.environment?.id ?? '', false)
   // The agent has a real question open (also for a new hand-off, when the previous chat has one): nothing was
   // delivered, the person answers it first, and the page's own text goes into no chat.
-  if (made?.asks) {
-    if (made.session_id) openChatFor(host, made.session_id)
+  // The worker names the asking hand-off's own session; an older answer names none, and then the launch path below
+  // runs as for a new hand-off, so none is left without a chat.
+  if (made?.asks && made.session_id) {
+    openChatFor(host, made.session_id)
     setLaunch({ kind: 'asks', check: status.check?.id })
     return true
   }
