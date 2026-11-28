@@ -102,7 +102,7 @@ Long turns: use `claude::start` to return immediately, then observe `claude::on-
 | `claude::sessions::list` | All sessions this worker has run |
 | `claude::agents::list` | Every Claude Code session in one list: this worker's headless runs plus the terminal host's interactive and background sessions (see [Listing sessions](#listing-sessions)) |
 | `claude::agents::stop` | Stop a live background session of the terminal host (`claude stop`); its conversation is kept. Only with `external_sessions` on. A headless run stops through `claude::stop` |
-| `claude::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. With `session` (a row id of `claude::agents::list`), the argv and cwd that open that session, and `copy: true` when they open a copy of it. Internal. |
+| `claude::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. With `session` (a row id of `claude::agents::list`), the argv and cwd that open that session, and `copy: true` when they open a copy of it. With `mode: "resume"` on a live interactive session that runs in a tmux pane (and `external_sessions` on), program `tmux` with args `attach-session -t <$S> ; select-window -t <@W> ; select-pane -t <%P>` and env `TMUX` empty: the terminal becomes one more client of that tmux session and shares its view. The pane is found fresh by walking the session's pid up to a `tmux list-panes -a` pane pid; ids that are not `$N`, `@N` and `%N`, or no pane, keep the refusal. Internal. |
 | `claude::terminal::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the feed, not the delivery. |
 | `claude::auth::status` | Which plan a terminal session spends (see [Billing](#billing-which-plan-a-session-spends)). Agent-denied. |
 | `claude::ui-content` | Console page assets. Internal. |
@@ -129,16 +129,17 @@ And the full output side is available raw: every message Claude Code emits (`sys
 
 ## Event feeds
 
-The worker hosts two event feeds and publishes every turn on them (headless
-runs, `claude::task` sub-agents, and the console terminal). Both are private functions: only this worker calls them, and anyone
-may observe them.
+Only the worker calls these private functions. The two turn feeds publish frames from headless runs, `claude::task` sub-agents, and the console terminal. The external reply watch polls the selected terminal session instead.
 
-| Function | Args | Delivery | `event` carries |
+| Function | Args | Delivery | What observers receive |
 | --- | --- | --- | --- |
 | `claude::on-agent-event` | `{ session_id }` | iii, to the observers of that session | translated AgentEvent frames (`message_complete`, `function_execution_start/end`, `turn_end`, `agent_end`) |
 | `claude::on-raw-event` | `{ session_id }` | iii, to the observers of that session | every Claude Code message verbatim (`system/init`, `assistant`, `user`, `result`, `stream_event`) |
+| `claude::agents::on-reply` | `{ claude_session_id }` (full UUID) | To the matching observer when a poll finds a newly completed active-branch reply after its baseline | `{ claude_session_id, reply: { id, text } }` |
 
-`session_id` is required, non-empty and at most 512 characters; the engine
+For a reply watch, enable `external_sessions` and follow the [lookup and subscription example](#reading-a-terminal-sessions-replies).
+
+For the two turn feeds, `session_id` is required, non-empty and at most 512 characters; the engine
 rejects any other arg with `INVALID_ARGS`. Each feed accepts up to 256
 observers; one more is rejected with `OBSERVER_LIMIT`. A frame of a session
 nobody observes is not sent.
@@ -151,7 +152,7 @@ iii.observe(
 );
 ```
 
-With `capture: ['output']` your function receives one call per frame,
+With `capture: ['output']` a turn-feed observer receives one call per frame,
 fire-and-forget: the `Observed` envelope, whose `output` is the frame:
 
 ```jsonc
@@ -262,14 +263,32 @@ one row per session:
   `external_sessions` on: it is what `claude::agents::stop` needs.
   `pty_session_id` names the console terminal (`shell::pty`) that runs the
   session, when one does.
+- ended `interactive` sessions, only with a confirmed live
+  `external_sessions: true`: sessions no process runs any more, read from the
+  terminal host's transcripts (`$CLAUDE_CONFIG_DIR/projects`, else
+  `~/.claude/projects`, no symlink followed below it). Only top-level files
+  named `<uuid>.jsonl` modified in the last 7 days count, and only a bounded
+  head of each is read: a session the CLI started interactively (`entrypoint`
+  `cli`) with a recorded folder. At most 20, newest first, each with
+  `alive: false`, `ended: true`, `status: "stopped"`, `cwd` (the folder of its
+  first record that has one), `name` (its title, when it has one) and
+  `updated_at_ms` (when the transcript last changed). No message text is read
+  into the list. A session `claude agents --json --all` lists (live, or a
+  finished background one) and a run of this worker are never listed again as
+  ended. The read runs alongside the CLI listing under its own short cap; when
+  it times out or fails, the list has no ended rows and is otherwise unchanged.
+  Resume (`claude::terminal::describe` with `mode: "resume"`) opens one with
+  `claude --resume <id>` in that folder, and refuses while a process has the
+  conversation open again. An ended row is not a reply source: the reply and
+  follow lookups do not find it.
 
 That output has no versioned contract, so a value this worker does not know
 reads as `unknown`, and a failed or unreadable listing leaves only the
-headless rows, with the reason in `detail`. By default a host session is
+headless rows. Check `inventory_status`: `available` with no rows means the list is empty; `unavailable` means the host could not be read. The console shows a generic warning alongside any worker rows. By default a host session is
 listed only when this worker saw it (its hooks reached
 `claude::terminal::activity`) or it runs in a console terminal; the others are
-counted in `detail`. Set `external_sessions: true` to list every session on
-that host.
+counted in `detail`. A confirmed live `external_sessions: true` setting is
+required to list external-only sessions; a startup setting alone is not enough.
 
 `claude::agents::stop` (`{ id }`, the Claude Code session id) stops one
 background session by the short id a fresh listing gives it. It refuses, with a
@@ -278,21 +297,51 @@ that id, and for interactive sessions, which nothing here can stop.
 
 The console's **claude** page shows this list in a rail beside the terminal:
 the sessions open in this console, the others on the host, of which a live
-background one can be stopped, and the worker's own runs, which take a message
-(`claude::start`) or a stop (`claude::stop`). It re-reads when a turn starts or settles (`claude_sessions`
+background one can be stopped, the worker's own runs, which take a message
+(`claude::start`) or a stop (`claude::stop`), and, under **Ended**, the ended
+interactive sessions, newest first, which take a Resume. It re-reads when a turn starts or settles (`claude_sessions`
 and `claude_turns` in state), when a hooked terminal reports a session start, a
 prompt, a stop or an end, when the terminal beside it changes session, when the
 window gains focus, and on its refresh button.
 
-A click on a row opens that session in the terminal, in its own directory. One
-that runs in a terminal of this console shows that terminal; a finished run
-resumes (`claude --resume`); a background session is attached to (`claude
-attach`, which needs `external_sessions` on). A session that is live anywhere
-else, in another terminal or in a headless turn, opens as a copy under a new id
-(`--fork-session`), after a confirmation: the CLI would let a second process
-resume the same id, and both would write to one transcript. Nothing is
-resumed while `claude agents --json` fails, since then nothing says whether a
-session is live.
+Select **Open original** to follow the conversation’s status and latest assistant
+replies **read only**, when live `external_sessions` permission and a readable
+host transcript are available. A terminal key, process ID, or fresh inventory
+match cannot guarantee that terminal input and output stay with that
+conversation. ADE does not acquire a terminal, resume the session, or create a
+copy. Use the original terminal to continue the conversation.
+
+Close the viewer to stop following. ADE uses `claude::agents::on-reply` as a
+wakeup and reads the active branch before showing text. A bounded snapshot also
+catches replies completed after the first view but before the observer starts. If a burst exceeds one snapshot, the viewer shows the newest replies that fit, ending at the latest active-branch reply.
+This is not a transcript archive or a durable feed. If access or the source is
+lost, the viewer clears the reply and shows that replies are unavailable.
+
+Choose **Fork** and confirm **Create fork** to start a separate conversation from the selected conversation’s history (`--fork-session`). Canceling opens nothing. Opening the original never selects that copy. An unavailable original never falls back to a resume or fork.
+
+### Reading a terminal session’s replies
+
+Enable `external_sessions: true` only if callers may read assistant reply text on the terminal host. Use the full `claude_session_id` of an interactive or background row, even if idle. Neither API opens the session or needs a Stop hook. A headless-only row, a worker session alias, a CLI short ID or a conversation absent from `claude agents --json --all` is not a lookup key.
+
+```typescript
+const { last_reply, status } = await iii.call({
+  function_id: 'claude::agents::get', payload: { claude_session_id },
+});
+// last_reply is { id, text }, or null if the active branch has no assistant text.
+iii.registerFunction('consumer::on-reply', ({ output }) => handleReply(output.reply));
+const watch = iii.observe({
+  function_id: 'claude::agents::on-reply', args: { claude_session_id }, capture: ['output'],
+}, 'consumer::on-reply');
+await watch.ready(); // a readable transcript was required for admission
+```
+
+`invalid Claude session id`, `session not listed` and `inventory unavailable` distinguish a bad key, a successful inventory miss and a failed listing. `transcript unavailable` is an error, **not** `last_reply: null`. The terminal host needs POSIX directory-relative file access and Python 3 on PATH. The reader looks only in `projects/<project>/<UUID>.jsonl` under `CLAUDE_CONFIG_DIR` (default `~/.claude`). The projects root may point to a shared store; descendant links, ambiguous matches, unreadable files and unsupported or broken parent chains are refused. A compacted session shows the replies since its latest compaction: the active chain ends at the CLI's `compact_boundary` record, and neither its `parentUuid` nor its `logicalParentUuid` is followed, so the last reply is `null` until the conversation answers again after the compaction. Unknown record types that carry a `uuid` and content-replacement records are not supported; a `session-owner` record and other unknown records without a `uuid` are skipped as annotations. On the active chain, the reader accepts string messages and text blocks; user messages may also contain images, documents, search results and tool results. Assistant messages may also contain thinking, redacted thinking and tool use. Other message block types make the transcript unavailable rather than being silently skipped. Limits per read: 4,096 project entries, the final 8 MiB of the file, 65,536 complete records, 48 KiB of encoded output and five seconds. A poll with a valid cursor parses only the bytes appended since it when they are within 8 MiB of the end; otherwise a larger transcript is parsed from the first complete record in its final 8 MiB, and a read fails only when that window holds no complete record. The 8 MiB window bounds the initial parse only. A cursor carries the chain tip it validated, so a chain that reaches that tip ends there without reading earlier bytes. Any other chain that reaches a parent before the parsed bytes starts a historical search, which may read up to 8 MiB more before the parsed start: the chain ends there if a record with that `uuid` starts within that range and passes the same checks as a chain record (not a sidechain, no `teamName`, the same session), and the transcript is unavailable for that read otherwise, including when the record lies past that budget. A pending watch page keeps walking back to deliver a reply it has not yet sent. The history before a compaction, including its `logicalParentUuid`, is searched the same way; a missing, invalid or over-budget record there gives `last_reply: null` instead of failing the read. A watch cursor that falls more than 8 MiB behind with no pending page advances across the gap, and replies inside it are not delivered. Rewrites are detected by inode, size and the final 64 KiB before the cursor; earlier changes in a large transcript are not detected. A watched reply too large for one result is delivered under its own ID with its text cut to fit and ending in `[reply truncated]`; a viewer still reports `transcript unavailable` for it. Only newline-complete records count. The last reply follows the latest non-sidechain conversation back through its parents; user messages, tool use/results, thinking and abandoned branches are not replies.
+
+The reader sends a protected result rather than plaintext on the IDE exec path. The Claude Code worker disables SDK invocation payload recording for its process; timing and status spans remain available. Reply text still reaches callers and subscribed targets as plaintext. If a target uses an SDK that records invocation payloads, set `III_DISABLE_TRACE_PAYLOADS=1` on that target worker before subscribing, and do not log the reply in the target handler.
+
+The watch argument is `{ claude_session_id: string }` (a full UUID). Admission rejects with `OBSERVER_LIMIT` at 256 watches, including pending admissions. A closed gate or failed baseline rejects with `OBSERVE_REJECTED`; an invalid argument can be rejected by the engine as `INVALID_ARGS`. Targets receive the call fields they capture: with `capture: ['output']`, `output` contains `{ claude_session_id, reply: { id, text } }`. The worker dispatches directly to the matching observer while permission is current; its private poller receives no result.
+
+Each watch starts at its **own** successful baseline; it does not send the current answer. Lookup and subscribe are not atomic: an answer between them can be missed. Polling is best effort, not a durable feed. Only newly appended replies still on the active branch at a successful poll are delivered. Bursts larger than one bounded result are delivered in order over successive polls, provided each reply fits. Failed reads leave the cursor unchanged; replacement, truncation or prefix changes establish a new baseline without replay. A closed or uncertain live setting pauses watches; the next successful live confirmation restores access without a reconnect or configuration edit. An explicit rail probe waits for the retained-watch checkpoint attempt, not the inventory check. If the attempt outlasts the probe, permission remains pending in the rail until a later probe can confirm it. A successful read-only viewer snapshot can supply the checkpoint for the same watch and permission generation. Delivery still requires a fresh inventory lookup and skips replies before the checkpoint, including those from the denied interval. If the checkpoint cannot be read, a later authorized poll takes a new baseline without replaying earlier replies. Worker restarts, branch switches, permission changes, limits and delivery failures can leave gaps. Use the reply’s record ID, not its text, to deduplicate. Dispose the watch when finished.
 
 ## The agent on the bus
 
@@ -374,10 +423,10 @@ starts in the chat's working directory, else in the compose project's folder
 (the folder holding the project's worker-compose file, from `compose::list`),
 never in the ide worker's own folder. Picking another folder closes the
 session and starts a new one there: Claude Code cannot change folder
-mid-session. `claude::terminal::describe { cwd?, session? }` is what the page
-calls; it prepares the session right then, every time. A session opened from
-the Sessions panel (`session`: a `claude::agents::list` row id) is prepared in
-that session's own folder, and its resume argv goes after the prepared one.
+mid-session. `claude::terminal::describe { cwd?, session? }` prepares new
+terminals when they are opened. For a confirmed fork, the selected session's own
+folder is used, and the fork argv goes after the prepared argv. Following an
+original does not prepare a terminal.
 
 When `terminal.setup_workspace` is on, that preparation:
 
@@ -515,7 +564,7 @@ defaults:
 approval_gate: false           # route tool permissions through policy::check_permissions
 claude_executable: ""          # path to the claude CLI; empty = SDK default resolution
 external_sessions: false       # claude::agents::list shows every session on the terminal host, and
-                               # its background ones may be opened and stopped
+                               # allows reading assistant replies and opening/stopping background sessions
 
 terminal:                      # the console terminal page — a DIFFERENT host: the ide worker's
   executable: ""               # path to `claude` there; empty = resolve on PATH there

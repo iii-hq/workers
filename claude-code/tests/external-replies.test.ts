@@ -1,0 +1,2855 @@
+import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import {
+  appendFile,
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  truncate,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { context, trace } from '@opentelemetry/api';
+import { type IIIClient, registerWorker } from 'iii-sdk';
+import { describe, expect, it, vi } from 'vitest';
+import { readTranscript } from '../src/terminal/external-transcript.js';
+import {
+  compactBoundary,
+  compactSummary,
+  deferred,
+  filler,
+  id,
+  MiB,
+  record,
+  recordId,
+  runnerPath,
+  type SyntheticHost,
+  summaryLine,
+  withSyntheticHost,
+} from './_helpers/external-replies-host.js';
+
+const GET = 'claude::agents::get';
+const ON = 'claude::agents::on-reply';
+const lookup = (s: SyntheticHost, session = id) =>
+  s.client.call({ function_id: GET, payload: { claude_session_id: session } });
+const observe = (s: SyntheticHost, key: string, session = id) => s.client.observe(ON, key, session);
+const lines = (...rows: unknown[]) => rows.map((r) => `${JSON.stringify(r)}\n`).join('');
+const answer = (n: number, parent: number | null, text: string) =>
+  record(n, parent, 'assistant', text);
+const toolResultTranscript = (
+  fields: { content?: unknown; tool_use_id?: unknown; is_error?: unknown },
+  toolUse: { id?: unknown; name?: unknown; input?: unknown } = {},
+) =>
+  lines(
+    record(1, null, 'user', 'synthetic prompt'),
+    record(2, 1, 'assistant', [
+      { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {}, ...toolUse },
+    ]),
+    record(3, 2, 'user', [{ type: 'tool_result', tool_use_id: 'toolu_1', ...fields }]),
+    answer(4, 3, 'synthetic answer'),
+  );
+const unknownBlockTranscript = (role: string) =>
+  lines(
+    record(1, null, role, [{ type: 'unsupported-fixture-block' }]),
+    answer(2, 1, 'synthetic answer'),
+  );
+const malformedToolUses = [
+  { name: 'numeric ID', fields: { id: 42 } },
+  { name: 'missing ID', fields: { id: undefined } },
+  { name: 'empty ID', fields: { id: '' } },
+  { name: 'numeric name', fields: { name: 42 } },
+  { name: 'missing name', fields: { name: undefined } },
+  { name: 'empty name', fields: { name: '' } },
+  { name: 'missing input', fields: { input: undefined } },
+];
+const malformedToolResults = [
+  { name: 'numeric error flag', fields: { is_error: 42 } },
+  { name: 'numeric content', fields: { content: 42 } },
+  { name: 'numeric block', fields: { content: [42] } },
+  { name: 'unknown block type', fields: { content: [{ type: 'tool_use' }] } },
+  { name: 'malformed text block', fields: { content: [{ type: 'text', text: 42 }] } },
+  { name: 'malformed image block', fields: { content: [{ type: 'image', source: 42 }] } },
+  {
+    name: 'malformed document source',
+    fields: { content: [{ type: 'document', source: { type: 'content', content: [42] } }] },
+  },
+  {
+    name: 'malformed search result',
+    fields: {
+      content: [{ type: 'search_result', source: 'synthetic', title: 'synthetic', content: [42] }],
+    },
+  },
+  {
+    name: 'malformed tool reference',
+    fields: { content: [{ type: 'tool_reference', tool_name: 42 }] },
+  },
+  { name: 'numeric tool use ID', fields: { tool_use_id: 42, content: 'synthetic result' } },
+  { name: 'missing tool use ID', fields: { tool_use_id: undefined } },
+  { name: 'empty tool use ID', fields: { tool_use_id: '' } },
+];
+const reads = (s: SyntheticHost) => s.host.calls.filter((c) => c.payload.command === 'python3');
+const seen = (s: SyntheticHost, observer: string) =>
+  s.host.deliveries.filter((d) => d.observer === observer).map((d) => d.event.reply);
+
+describe('lookup', () => {
+  it('uses the current CLI row, not an alias, short id, unknown kind or headless-only row', async () => {
+    await withSyntheticHost(async (s) => {
+      expect(await lookup(s)).toEqual({
+        claude_session_id: id,
+        cwd: '/fixture',
+        name: 'fixture',
+        status: 'idle',
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      s.host.cli[0] = { kind: 'background', state: 'blocked', id: 'deadbeef', sessionId: id };
+      expect(await lookup(s)).toMatchObject({ cwd: null, name: null, status: 'waiting' });
+      await expect(lookup(s, 'deadbeef')).rejects.toThrow('invalid Claude session id');
+      s.host.cli[0].kind = 'unsupported';
+      await expect(lookup(s)).rejects.toThrow('session not listed');
+      s.host.cli.length = 0;
+      s.host.records.push({ session_id: recordId(9), claude_session_id: id, status: 'done' });
+      await expect(lookup(s, recordId(9))).rejects.toThrow('session not listed');
+      await expect(lookup(s)).rejects.toThrow('session not listed');
+      s.host.inventoryOK = false;
+      await expect(lookup(s)).rejects.toThrow(/^inventory unavailable$/);
+      expect(reads(s)).toHaveLength(2);
+    });
+  });
+
+  it('accepts the caller id the engine adds to the payload, and no other unknown key', async () => {
+    await withSyntheticHost(async (s) => {
+      const call = (extra: Record<string, unknown>) =>
+        s.client.call({ function_id: GET, payload: { claude_session_id: id, ...extra } });
+      expect(await call({ _caller_worker_id: 'console-client' })).toMatchObject({
+        claude_session_id: id,
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(call({ unexpected: true })).rejects.toThrow('invalid Claude session id');
+    });
+  });
+
+  it('uses an idle CLI row even when an old headless record shares its UUID', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.records.push({ session_id: recordId(9), claude_session_id: id, status: 'done' });
+      expect(await lookup(s)).toEqual({
+        claude_session_id: id,
+        cwd: '/fixture',
+        name: 'fixture',
+        status: 'idle',
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+    });
+  });
+
+  it.each([
+    'NaN',
+    'Infinity',
+    '-Infinity',
+  ])('rejects the nonstandard JSON token %s in a complete active record', async (token) => {
+    await withSyntheticHost(async (s) => {
+      const row = JSON.stringify(record(1, null, 'user', ['INVALID_NUMBER']));
+      await writeFile(s.file, `${row.replace('"INVALID_NUMBER"', token)}\n`);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('rejects malformed user message blocks on the active chain', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, lines(record(1, null, 'user', [42])));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+
+      for (const block of [{ type: 42 }, { type: 'text' }, { type: 'text', text: 7 }]) {
+        await writeFile(s.file, lines(record(1, null, 'user', [block]), answer(2, 1, 'later')));
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      }
+    });
+  });
+
+  it.each(['user', 'assistant'])('rejects unknown blocks in an active %s message', async (role) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, unknownBlockTranscript(role));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
+  it.each(malformedToolResults)('rejects an active tool result with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(fields));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
+  it.each(malformedToolUses)('rejects an active tool use with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript({}, fields));
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+
+  it('accepts both boolean values for a tool result error flag', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const is_error of [true, false]) {
+        await writeFile(s.file, toolResultTranscript({ is_error }));
+        expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      }
+    });
+  });
+
+  it('accepts string, block array and omitted tool result content', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const content of [
+        'synthetic result',
+        [],
+        [
+          { type: 'text', text: 'synthetic result' },
+          { type: 'image', source: { type: 'url', url: 'https://example.invalid/image.png' } },
+          {
+            type: 'document',
+            source: { type: 'content', content: [{ type: 'text', text: 'synthetic document' }] },
+          },
+          {
+            type: 'search_result',
+            title: 'synthetic result',
+            source: 'synthetic',
+            content: [{ type: 'text', text: 'synthetic result' }],
+          },
+          { type: 'tool_reference', tool_name: 'Read' },
+        ],
+        undefined,
+      ]) {
+        await writeFile(s.file, toolResultTranscript({ content }));
+        expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      }
+    });
+  });
+
+  it('selects complete visible blocks on the active branch and never exports raw records', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          record(1, null, 'user', 'secret prompt'),
+          answer(2, 1, 'secret abandoned'),
+          record(3, 1, 'assistant', [
+            { type: 'thinking', thinking: 'secret reasoning', signature: 'synthetic' },
+            { type: 'text', text: 'first' },
+            { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { path: 'secret argument' } },
+            { type: 'text', text: 'second' },
+          ]),
+          record(4, 3, 'assistant', '  '),
+          { ...answer(5, 4, 'secret meta'), isMeta: true },
+          { ...answer(6, 5, 'secret sidechain'), isSidechain: true },
+          { type: 'summary', summary: 'secret summary', leafUuid: recordId(2) },
+        ) + JSON.stringify(answer(7, 5, 'not yet')),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(3), text: 'first\nsecond' });
+      expect(JSON.parse(s.host.snapshots[0])).toEqual({
+        cursor: expect.any(String),
+        replies: [{ id: recordId(3), text: 'first\nsecond' }],
+      });
+      await appendFile(s.file, '\n');
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(7), text: 'not yet' });
+    });
+  });
+
+  it('does not fall back to an abandoned assistant sibling when the active branch has no text', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          record(1, null, 'user', 'hello'),
+          answer(2, 1, 'abandoned'),
+          record(3, 1, 'assistant', [
+            { type: 'tool_use', id: 'toolu_1', name: 'Read', input: 'private' },
+          ]),
+          record(4, 3, 'user', [
+            { type: 'tool_result', tool_use_id: 'toolu_1', content: 'private' },
+          ]),
+        ),
+      );
+      expect((await lookup(s)).last_reply).toBeNull();
+      await appendFile(
+        s.file,
+        lines(
+          { ...answer(5, 2, 'annotation'), isMeta: true },
+          { ...answer(6, 2, 'teammate'), teamName: 'other' },
+        ),
+      );
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toMatch(/abandoned|private|hello|teammate/);
+    });
+  });
+
+  it('distinguishes broken chains and corrupt complete records from a successful empty read', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const data of [
+        lines(answer(1, 3, 'orphan')),
+        lines(answer(1, 1, 'cycle')),
+        lines(answer(1, null, 'a'), answer(1, null, 'duplicate')),
+        '{broken\n',
+        lines({ ...answer(1, null, 'wrong session'), sessionId: recordId(99) }),
+        lines({ ...answer(1, null, 'invalid id'), uuid: 'other' }),
+        lines({ ...answer(1, null, 'no parent field'), parentUuid: undefined }),
+        lines({ type: 'user', uuid: recordId(1), parentUuid: null }),
+        lines({ type: 'unsupported-format', uuid: recordId(1), message: { content: 'private' } }),
+      ]) {
+        await writeFile(s.file, data);
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      }
+      await writeFile(s.file, '');
+      expect((await lookup(s)).last_reply).toBeNull();
+    });
+  });
+});
+
+describe('host reader', () => {
+  it('rejects duplicate parent members for lookup and observer admission', async () => {
+    await withSyntheticHost(async (s) => {
+      // Equal values isolate the duplicate name from any error in the chain itself.
+      const row = JSON.stringify(record(1, null, 'user', ''));
+      await writeFile(s.file, `{"parentUuid":null,${row.slice(1)}\n`);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      await expect(observe(s, 'duplicate')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it('keeps reply text out of both shell exec payloads and rejects modified output', async () => {
+    await withSyntheticHost(async (s) => {
+      const text = 'fixture answer';
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(1), text });
+      expect((await lookup(s)).last_reply?.text).toBe(text);
+      const [first, , second] = s.host.outputs;
+      expect(first).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+      expect(second).not.toBe(first);
+      expect(s.host.outputs.join('')).not.toContain(text);
+      for (const { payload } of reads(s)) {
+        // The Rust SDK's payload redactor masks values under keys containing
+        // "secret", but stdout and argv are recorded verbatim.
+        expect(payload.env).toHaveProperty('CLAUDE_REPLY_SECRET_PAD');
+        expect(JSON.stringify(payload)).not.toContain(text);
+      }
+      s.host.hostOutput = (stdout) => `${stdout[0] === 'A' ? 'B' : 'A'}${stdout.slice(1)}`;
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('keeps lookup and poll text out of recording Node SDK spans', async () => {
+    type Handler = (value: unknown) => unknown;
+    type WrappedHandler = (value: unknown) => Promise<unknown>;
+    let wrap!: (fn: string, handler: Handler) => WrappedHandler;
+    vi.stubEnv('III_DISABLE_TRACE_PAYLOADS', undefined);
+    try {
+      await withSyntheticHost(
+        async (s) => {
+          vi.stubEnv('HOME', s.root);
+          const sdk = registerWorker('ws://127.0.0.1:0', {
+            enableMetricsReporting: false,
+            reconnectionConfig: { maxRetries: 0 },
+            otel: {
+              enabled: true,
+              fetchInstrumentationEnabled: false,
+              metricsEnabled: false,
+              reconnectionConfig: { maxRetries: 0 },
+            },
+          });
+          const { wrapHandler } = sdk as unknown as {
+            wrapHandler: (fn: string, handler: Handler) => WrappedHandler;
+          };
+          wrap = wrapHandler.bind(sdk);
+          const probe = trace.getTracer('reply-privacy-test').startSpan('recorder probe');
+          const addEvent = vi.spyOn(Object.getPrototypeOf(probe), 'addEvent');
+          const policy = process.env.III_DISABLE_TRACE_PAYLOADS;
+          try {
+            expect(probe.isRecording()).toBe(true);
+            // Positive control: the pinned SDK records plaintext if enabled.
+            delete process.env.III_DISABLE_TRACE_PAYLOADS;
+            await context.with(trace.setSpan(context.active(), probe), () =>
+              wrap('test::recorder-control', () => ({ text: 'recorder control' }))({}),
+            );
+            expect(JSON.stringify(addEvent.mock.calls)).toContain('recorder control');
+            if (policy !== undefined) process.env.III_DISABLE_TRACE_PAYLOADS = policy;
+            addEvent.mockClear();
+
+            expect((await lookup(s)).last_reply?.text).toBe('fixture answer');
+            await observe(s, 'A');
+            await appendFile(s.file, lines(answer(2, 1, 'synthetic later answer')));
+            await s.poll();
+            expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'synthetic later answer' }]);
+            const spanEvents = JSON.stringify(addEvent.mock.calls);
+            expect(spanEvents).not.toMatch(/fixture answer|synthetic later answer/);
+          } finally {
+            probe.end();
+            addEvent.mockRestore();
+            await sdk.shutdown();
+            trace.disable();
+            context.disable();
+          }
+        },
+        true,
+        (fn, handler) => (value) => wrap(fn, handler)(value),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('pins the configured shared projects store, using the inventory environment, not cwd', async () => {
+    await withSyntheticHost(async (s) => {
+      const shared = join(s.root, 'shared store');
+      await rename(s.projects, shared);
+      await symlink(shared, s.projects);
+      s.host.cli[0].cwd = '/not/the/transcript/path';
+      expect((await lookup(s)).last_reply?.text).toBe('fixture answer');
+      expect(reads(s)[0].payload).toMatchObject({
+        command: 'python3',
+        env: { CLAUDE_CONFIG_DIR: s.root },
+        timeout_ms: 5000,
+      });
+      expect((reads(s)[0].payload.args as string[]).slice(0, 4)).toEqual(['-I', '-S', '-B', '-c']);
+      expect(reads(s)[0].payload).not.toHaveProperty('cwd');
+    });
+  });
+
+  it('rejects traversal, ambiguous matches, descendant links and nonregular files', async () => {
+    await withSyntheticHost(async (s) => {
+      await expect(lookup(s, `../${id}`)).rejects.toThrow('invalid Claude session id');
+      expect(reads(s)).toHaveLength(0);
+      const other = join(s.projects, 'other');
+      await mkdir(other);
+      const duplicate = join(other, `${id}.jsonl`);
+      await writeFile(duplicate, lines(answer(1, null, 'other answer')));
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      await unlink(duplicate);
+      const target = join(s.root, 'outside');
+      await rename(s.file, target);
+      await symlink(target, s.file);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      await unlink(s.file);
+      await link(target, s.file);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      await unlink(s.file);
+      await mkdir(s.file);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      await rename(s.project, join(s.root, 'elsewhere'));
+      await symlink(join(s.root, 'elsewhere'), s.project);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      expect(s.host.outputs.join('')).toBe('');
+    });
+  });
+
+  it('fails quietly for a missing file, over-limit record, result or file, or host failure', async () => {
+    await withSyntheticHost(async (s) => {
+      await unlink(s.file);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      for (const bytes of [49 * 1024, 1024 * 1024]) {
+        await writeFile(s.file, lines(answer(1, null, 'x'.repeat(bytes))));
+        await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      }
+      await truncate(s.file, 8 * 1024 * 1024 + 1);
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      s.host.beforeRead = async () => {
+        throw new Error('private diagnostic');
+      };
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.outputs.join('')).toBe('');
+    });
+  });
+});
+
+describe('large transcripts and new CLI records', () => {
+  const owner = { type: 'session-owner', sessionId: id, pid: 4242, owner: 'synthetic' };
+  const ids = (s: SyntheticHost, observer: string) => seen(s, observer).map((r) => r.id);
+
+  it('returns the last active reply from the final 8 MiB of a 40 MiB transcript', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(40 * MiB) +
+          // The active chain starts inside the window: a parent 40 MiB back is
+          // past the historical search budget and would make the read unavailable.
+          lines(
+            record(3, null, 'user', 'late prompt'),
+            answer(4, 3, 'abandoned answer'),
+            answer(5, 3, 'latest answer'),
+          ),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(40 * MiB);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(5), text: 'latest answer' });
+      expect(s.host.snapshots.join('')).not.toMatch(/early|abandoned/);
+    });
+  });
+
+  it('ends an active chain at the window and still yields its replies', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt')),
+      );
+      // The only reply on the active chain lies before the parsed window.
+      expect((await lookup(s)).last_reply).toBeNull();
+      await appendFile(s.file, lines(answer(4, 3, 'late answer')));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'late answer' });
+    });
+  });
+
+  it('still rejects a missing parent in a transcript of at most 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      const tail = lines(answer(2, 1, 'orphan'));
+      const padded =
+        filler(8 * MiB - 64 * 1024) + summaryLine(64 * 1024 - Buffer.byteLength(tail)) + tail;
+      await writeFile(s.file, padded);
+      expect((await stat(s.file)).size).toBe(8 * MiB);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      // One more record pushes the parent's place out of the parsed window.
+      await writeFile(s.file, lines(record(1, null, 'user', 'early prompt')) + padded);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'orphan' });
+    });
+  });
+
+  it('delivers each reply appended after admission once, in order, on a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, filler(9 * MiB) + lines(answer(1, null, 'before admission')));
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      // Growth moves the delivered boundary before the parsed window.
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+        { id: recordId(4), text: 'third' },
+      ]);
+    });
+  });
+
+  it.each([
+    'truncate',
+    'rewrite',
+  ])('rebaselines a watcher after a %s of a transcript over 8 MiB', async (mutation) => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      const baseline = filler(9 * MiB) + lines(answer(1, null, 'fixture answer'));
+      const first = lines(answer(2, 1, large));
+      const second = lines(answer(3, 2, large));
+      const third = lines(answer(4, 3, large));
+      await writeFile(s.file, baseline);
+      await observe(s, 'large');
+      await appendFile(s.file, first + second + third);
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+
+      if (mutation === 'truncate') {
+        await truncate(s.file, Buffer.byteLength(baseline + first + second));
+      } else {
+        // Same size and the same parsed window: only the hashed final bytes change.
+        const handle = await open(s.file, 'r+');
+        try {
+          await handle.write('g', Buffer.byteLength(baseline) - 1000);
+        } finally {
+          await handle.close();
+        }
+      }
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+
+      const parent = mutation === 'truncate' ? 3 : 4;
+      await appendFile(s.file, lines(answer(5, parent, 'after reset')));
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(5), text: 'after reset' },
+      ]);
+    });
+  });
+
+  // A watch on a 9 MiB transcript whose byte `at(observed)` is rewritten (same
+  // size and inode) while a reply is appended; `observed` is the size at the
+  // watch's cursor. The rewritten byte is filler text, so the JSON stays valid.
+  async function rewriteBeforeCursor(s: SyntheticHost, at: (observed: number) => number) {
+    await writeFile(s.file, filler(9 * MiB) + lines(answer(1, null, 'fixture answer')));
+    const observed = (await stat(s.file)).size;
+    await observe(s, 'large');
+    const handle = await open(s.file, 'r+');
+    try {
+      const byte = Buffer.alloc(1);
+      await handle.read(byte, 0, 1, at(observed));
+      expect(byte.toString()).toBe('f');
+      await handle.write('g', at(observed));
+    } finally {
+      await handle.close();
+    }
+    expect((await stat(s.file)).size).toBe(observed);
+    await appendFile(s.file, lines(answer(2, 1, 'after rewrite')));
+    await s.poll();
+    return observed;
+  }
+
+  it('keeps delivering after a rewrite before the final bytes of a large transcript', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, () => 100);
+      expect(seen(s, 'large')).toEqual([{ id: recordId(2), text: 'after rewrite' }]);
+    });
+  });
+
+  it('rebaselines when the bytes just before the cursor change', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, (observed) => observed - 65536);
+      expect(seen(s, 'large')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after new baseline')));
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([{ id: recordId(3), text: 'after new baseline' }]);
+    });
+  });
+
+  it('delivers after a rewrite one byte before the hashed tail', async () => {
+    await withSyntheticHost(async (s) => {
+      await rewriteBeforeCursor(s, (observed) => observed - 65537);
+      expect(seen(s, 'large')).toEqual([{ id: recordId(2), text: 'after rewrite' }]);
+    });
+  });
+
+  it('accepts a parent before the window that exists in the file', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'early answer')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'late answer' });
+    });
+  });
+
+  it('rejects a parent missing from the whole file of a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(record(1, null, 'user', 'early prompt')) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('rejects a parent named only inside another record', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          record(1, null, 'user', recordId(2)),
+          record(5, 2, 'user', 'names the parent in parentUuid'),
+          compactBoundary(6, 2),
+        ) +
+          filler(9 * MiB) +
+          lines(record(3, 2, 'user', 'late prompt'), answer(4, 3, 'late answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('does not acknowledge a pending reply that falls before the window', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, large), answer(3, 2, large)));
+      await s.poll();
+      expect(ids(s, 'large')).toEqual([recordId(2)]);
+      // The window now starts after the undelivered reply 3.
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(4, 3, 'after gap')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(3), text: large },
+        { id: recordId(4), text: 'after gap' },
+      ]);
+    });
+  });
+
+  it('advances a full-page cursor across a gap over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'large');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, 'in gap')) + filler(9 * MiB) + lines(answer(3, 2, 'after gap')),
+      );
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'next')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'large')).toEqual([
+        { id: recordId(3), text: 'after gap' },
+        { id: recordId(4), text: 'next' },
+      ]);
+    });
+  });
+
+  it('delivers an oversized reply truncated, then the reply after it', async () => {
+    await withSyntheticHost(async (s) => {
+      const big = 'x'.repeat(100 * 1024);
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, big), answer(3, 2, 'short after')));
+      await s.poll();
+      await s.poll();
+      const got = seen(s, 'large');
+      expect(got.map((r) => r.id)).toEqual([recordId(2), recordId(3)]);
+      expect(got[0].text).toMatch(/\n\[reply truncated\]$/);
+      expect(got[0].text.length).toBeLessThan(big.length);
+      expect(big.startsWith(got[0].text.slice(0, -'\n[reply truncated]'.length))).toBe(true);
+      expect(got[1]).toEqual({ id: recordId(3), text: 'short after' });
+    });
+  });
+
+  it('truncates an oversized non-ASCII reply on a code-point boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      const big = 'é😀'.repeat(20000); // About 117 KiB of UTF-8.
+      await observe(s, 'large');
+      await appendFile(s.file, lines(answer(2, 1, big)));
+      await s.poll();
+      const [reply] = seen(s, 'large');
+      expect(reply.id).toBe(recordId(2));
+      expect(reply.text).toMatch(/\n\[reply truncated\]$/);
+      expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(48 * 1024);
+      const kept = reply.text.slice(0, -'\n[reply truncated]'.length);
+      expect(kept.length).toBeGreaterThan(0);
+      expect(big.startsWith(kept)).toBe(true);
+      // Never half a surrogate pair.
+      // A lone surrogate would not survive a UTF-8 round trip.
+      expect(Buffer.from(kept, 'utf8').toString('utf8')).toBe(kept);
+    });
+  });
+
+  it('reports an oversized reply in a recent read as unavailable', async () => {
+    await withSyntheticHost(async (s) => {
+      const follow = (cursor?: string) =>
+        s.client.call({
+          function_id: 'claude::agents::follow-snapshot',
+          payload: { claude_session_id: id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<unknown> as Promise<{ cursor: string }>;
+      const { cursor } = await follow();
+      expect(await follow(cursor)).toMatchObject({ replies: [] });
+      await appendFile(s.file, lines(answer(2, 1, 'x'.repeat(100 * 1024))));
+      await expect(follow(cursor)).rejects.toThrow(/^transcript unavailable$/);
+    });
+  });
+
+  it('skips a session-owner record and other new records without a uuid', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(
+          owner,
+          record(1, null, 'user', 'synthetic prompt'),
+          { type: 'future-annotation', note: 'synthetic' },
+          answer(2, 1, 'synthetic answer'),
+          owner,
+        ),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'synthetic answer' });
+      await observe(s, 'owner');
+      await appendFile(s.file, lines(owner, answer(3, 2, 'after owner')));
+      await s.poll();
+      expect(seen(s, 'owner')).toEqual([{ id: recordId(3), text: 'after owner' }]);
+    });
+  });
+
+  it('rejects an unknown record type that carries a uuid', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const unknown of [
+        { type: 'future-node', uuid: recordId(9), parentUuid: recordId(1) },
+        { ...owner, uuid: recordId(9) },
+      ]) {
+        await writeFile(
+          s.file,
+          lines(
+            record(1, null, 'user', 'synthetic prompt'),
+            unknown,
+            answer(2, 1, 'synthetic answer'),
+          ),
+        );
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+        await expect(observe(s, 'unknown')).rejects.toThrow(/^transcript unavailable$/);
+      }
+      expect(s.timers.size).toBe(0);
+    });
+  });
+});
+
+describe('compacted sessions and long lines', () => {
+  const prompt = (n: number, parent: number | null, text = 'synthetic prompt') =>
+    record(n, parent, 'user', text);
+  /** A conversation answered once, then compacted (records 1 to 4). */
+  const compacted = (linked = false) =>
+    lines(
+      prompt(1, null, 'early prompt'),
+      answer(2, 1, 'before compaction'),
+      compactBoundary(3, 2, linked ? 2 : null),
+      compactSummary(4, 3),
+    );
+  const follow = (s: SyntheticHost, cursor?: string) =>
+    s.client.call({
+      function_id: 'claude::agents::follow-snapshot',
+      payload: { claude_session_id: id, ...(cursor ? { cursor } : {}) },
+    }) as Promise<{ cursor: string; last_reply: unknown; replies: unknown[] }>;
+  const toolResult = (n: number, parent: number, bytes: number) =>
+    record(n, parent, 'user', [
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: 'r'.repeat(bytes) },
+    ]);
+
+  it('returns the last reply written after a compaction boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() + lines(prompt(5, 4), answer(6, 5, 'after compaction'), answer(7, 5, 'other')),
+      );
+      await appendFile(s.file, lines(answer(8, 6, 'latest after compaction')));
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(8),
+        text: 'latest after compaction',
+      });
+      expect(s.host.snapshots.join('')).not.toMatch(/before compaction|early prompt/);
+    });
+  });
+
+  it('ends the active chain at a boundary whose parentUuid points before the compaction', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted(true) + lines(prompt(5, 4)));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'before compaction' });
+      await appendFile(s.file, lines(answer(6, 5, 'after compaction')));
+      const earlier = s.host.snapshots.length;
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(6), text: 'after compaction' });
+      expect(s.host.snapshots.slice(earlier).join('')).not.toContain('before compaction');
+    });
+  });
+
+  it('returns the reply from between compactions when nothing was answered since the latest one', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() +
+          lines(
+            prompt(5, 4),
+            answer(6, 5, 'between compactions'),
+            compactBoundary(7, 6),
+            compactSummary(8, 7),
+            prompt(9, 8),
+            record(10, 9, 'assistant', [
+              { type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} },
+            ]),
+            toolResult(11, 10, 16),
+          ),
+      );
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(6),
+        text: 'between compactions',
+      });
+      expect(s.host.snapshots.join('')).not.toMatch(/before compaction|early prompt/);
+    });
+  });
+
+  it('returns the reply before the compaction when the boundary or its hidden summary is the newest chain record', async () => {
+    await withSyntheticHost(async (s) => {
+      const before = lines(prompt(1, null), answer(2, 1, 'before compaction'));
+      await writeFile(s.file, before + lines(compactBoundary(3, 2)));
+      const reply = { id: recordId(2), text: 'before compaction' };
+      expect((await lookup(s)).last_reply).toEqual(reply);
+      await appendFile(s.file, lines(compactSummary(4, 3)));
+      expect((await lookup(s)).last_reply).toEqual(reply);
+    });
+  });
+
+  it('shows the reply before a compaction in lookup and follow-snapshot, with and without a cursor', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted() + lines(prompt(5, 4)));
+      const reply = { id: recordId(2), text: 'before compaction' };
+      expect((await lookup(s)).last_reply).toEqual(reply);
+      const first = await follow(s);
+      expect(first).toMatchObject({ last_reply: reply, replies: [] });
+      expect(await follow(s, first.cursor)).toMatchObject({ last_reply: reply, replies: [] });
+    });
+  });
+
+  it('returns the reply before the earlier of two compactions when neither was answered', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        compacted() + lines(compactBoundary(5, 4), compactSummary(6, 5), prompt(7, 6)),
+      );
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(2), text: 'before compaction' });
+    });
+  });
+
+  /** Records 1 to 5: an answered prompt, then a boundary whose logical parent is `logical`. */
+  const crossing = (logical: unknown, ...before: unknown[]) =>
+    lines(
+      ...(before.length ? before : [prompt(1, null), answer(2, 1, 'before compaction')]),
+      { ...compactBoundary(3, 2), logicalParentUuid: logical },
+      compactSummary(4, 3),
+      prompt(5, 4),
+    );
+
+  it.each([
+    ['is missing', undefined],
+    ['names no record in the file', recordId(99)],
+    ['names the boundary itself', recordId(3)],
+    ['names its compact summary', recordId(4)],
+    ['names a later record', recordId(5)],
+  ])('returns no reply before a compaction whose logicalParentUuid %s', async (_, logical) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, crossing(logical));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it.each([
+    ['a sidechain record', { isSidechain: true }],
+    ['a team record', { teamName: 'synthetic-team' }],
+    ['a record of another session', { sessionId: '22222222-2222-4222-8222-222222222222' }],
+  ])('returns no reply before a compaction whose logical parent is %s', async (_, fields) => {
+    await withSyntheticHost(async (s) => {
+      const before = [prompt(1, null), { ...answer(2, 1, 'before compaction'), ...fields }];
+      await writeFile(s.file, crossing(recordId(2), ...before));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it.each([
+    [
+      'holds a record the reader rejects',
+      [
+        prompt(1, null),
+        answer(0, 1, 'before compaction'),
+        record(2, 0, 'user', [{ type: 'unsupported-fixture-block' }]),
+      ],
+    ],
+    [
+      'has a parentUuid naming no record in the file',
+      [prompt(1, 99), answer(2, 1, 'before compaction')],
+    ],
+  ])('returns no reply when the chain before a compaction %s', async (_, before) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, crossing(recordId(2), ...before));
+      expect((await lookup(s)).last_reply).toBeNull();
+      expect(s.host.snapshots.join('')).not.toContain('before compaction');
+    });
+  });
+
+  it('never sends a watcher admitted after an unanswered compaction the reply before it', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compacted() + lines(prompt(5, 4)));
+      await observe(s, 'admitted');
+      await s.poll();
+      await appendFile(s.file, lines(answer(6, 5, 'after admission')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'admitted')).toEqual([{ id: recordId(6), text: 'after admission' }]);
+    });
+  });
+
+  it('delivers each reply after a compaction once, in order, and none from before admission', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'early');
+      await appendFile(s.file, lines(answer(2, 1, 'before compaction')));
+      await s.poll();
+      await appendFile(
+        s.file,
+        lines(
+          compactBoundary(3, 2),
+          compactSummary(4, 3),
+          prompt(5, 4),
+          answer(6, 5, 'first after'),
+          answer(7, 6, 'second after'),
+        ),
+      );
+      await observe(s, 'late');
+      await s.poll();
+      await appendFile(s.file, lines(answer(8, 7, 'third after')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'early')).toEqual([
+        { id: recordId(2), text: 'before compaction' },
+        { id: recordId(6), text: 'first after' },
+        { id: recordId(7), text: 'second after' },
+        { id: recordId(8), text: 'third after' },
+      ]);
+      expect(seen(s, 'late')).toEqual([{ id: recordId(8), text: 'third after' }]);
+    });
+  });
+
+  it('does not deliver a reply left behind by a compaction that landed before delivery', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'race');
+      await appendFile(s.file, lines(answer(2, 1, 'undelivered before compaction')));
+      await appendFile(
+        s.file,
+        lines(compactBoundary(3, 2, 2), compactSummary(4, 3), prompt(5, 4)) +
+          lines(answer(6, 5, 'after compaction')),
+      );
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'race')).toEqual([{ id: recordId(6), text: 'after compaction' }]);
+      expect(s.host.snapshots.join('')).not.toContain('undelivered');
+    });
+  });
+
+  it('returns the last reply past a 3 MiB tool result line, for lookup and a watcher', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript({ content: 'r'.repeat(3 * MiB) }));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      await observe(s, 'long');
+      await appendFile(s.file, lines(toolResult(5, 4, 3 * MiB), answer(6, 5, 'after long line')));
+      await s.poll();
+      expect(seen(s, 'long')).toEqual([{ id: recordId(6), text: 'after long line' }]);
+    });
+  });
+
+  it('ignores a trailing partial line over 1 MiB that is still being written', async () => {
+    await withSyntheticHost(async (s) => {
+      const partial = JSON.stringify(toolResult(5, 4, 2 * MiB));
+      await writeFile(s.file, toolResultTranscript({}) + partial);
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(4), text: 'synthetic answer' });
+      await appendFile(s.file, '\n' + lines(answer(6, 5, 'after completion')));
+      expect((await lookup(s)).last_reply).toEqual({ id: recordId(6), text: 'after completion' });
+    });
+  });
+
+  it('fails closed on a complete line longer than the 8 MiB window', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        lines(prompt(1, null), answer(2, 1, 'earlier answer'), toolResult(3, 2, 9 * MiB)),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(9 * MiB);
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.host.snapshots).toEqual([]);
+    });
+  });
+});
+
+function barrier() {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  return {
+    entered: entered.promise,
+    release: () => release.resolve(),
+    wait: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  };
+}
+
+describe('observation', () => {
+  it('advances bounded pages independently of later observer admissions', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // Escaped JSON fits one reply, not two.
+      await observe(s, 'first');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, large), answer(3, 2, large), answer(4, 3, large)),
+      );
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+      await observe(s, 'later');
+      await appendFile(s.file, lines(answer(5, 4, 'small')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'first')).toEqual(
+        [2, 3, 4, 5].map((n) => ({ id: recordId(n), text: n === 5 ? 'small' : large })),
+      );
+      expect(seen(s, 'later')).toEqual([{ id: recordId(5), text: 'small' }]);
+      expect(s.host.snapshots.every((packet) => Buffer.byteLength(packet) <= 48 * 1024)).toBe(true);
+    });
+  });
+
+  it.each([
+    'truncate',
+    'rewrite',
+  ])('rebaselines after an in-place %s beyond the delivered page', async (mutation) => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      const baseline = lines(answer(1, null, 'fixture answer'));
+      const first = lines(answer(2, 1, large));
+      const second = lines(answer(3, 2, large));
+      const third = lines(answer(4, 3, large));
+      await observe(s, 'first');
+      await appendFile(s.file, first + second + third);
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+
+      if (mutation === 'truncate') {
+        await truncate(s.file, Buffer.byteLength(baseline + first + second));
+      } else {
+        await writeFile(
+          s.file,
+          baseline + first + second + lines(answer(4, 3, 'é' + large.slice(1))),
+        );
+      }
+      await s.poll();
+      expect(seen(s, 'first').map((r) => r.id)).toEqual([recordId(2)]);
+
+      const parent = mutation === 'truncate' ? 3 : 4;
+      await appendFile(s.file, lines(answer(5, parent, 'after reset')));
+      await s.poll();
+      expect(seen(s, 'first')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(5), text: 'after reset' },
+      ]);
+    });
+  });
+
+  it('delivers from a later baseline even when an earlier cursor cannot yield a page', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'first');
+      await appendFile(s.file, lines(answer(2, 1, 'ü'.repeat(9000))));
+      await observe(s, 'later');
+      await appendFile(s.file, lines(answer(3, 2, 'after admission')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'later')).toEqual([{ id: recordId(3), text: 'after admission' }]);
+      // Its unread reply is never skipped: it arrives cut, then the next one.
+      const first = seen(s, 'first');
+      expect(first.map((r) => r.id)).toEqual([recordId(2), recordId(3)]);
+      expect(first[0].text).toMatch(/\n\[reply truncated\]$/);
+      expect(first[1]).toEqual({ id: recordId(3), text: 'after admission' });
+    });
+  });
+
+  it('keeps a physical boundary per accepted observer and targets only its new active replies', async () => {
+    await withSyntheticHost(async (s) => {
+      await appendFile(s.file, lines(answer(2, 1, 'old sibling')));
+      await observe(s, 'A');
+      await appendFile(s.file, lines(answer(3, 1, 'new sibling')));
+      await observe(s, 'B');
+      const other = recordId(99);
+      s.host.cli.push({ kind: 'background', sessionId: other });
+      await writeFile(join(s.project, `${other}.jsonl`), '');
+      await observe(s, 'other', other);
+      expect(s.host.snapshots.join('')).not.toMatch(/sibling|fixture answer/);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'new sibling' }]);
+      expect(seen(s, 'B')).toEqual([]);
+      await appendFile(
+        s.file,
+        lines(answer(4, 3, 'not active'), answer(5, 3, 'equal'), answer(6, 5, 'equal')),
+      );
+      await s.poll();
+      await s.poll();
+      const both = [
+        { id: recordId(5), text: 'equal' },
+        { id: recordId(6), text: 'equal' },
+      ];
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'new sibling' }, ...both]);
+      expect(seen(s, 'B')).toEqual(both);
+      expect(seen(s, 'other')).toEqual([]);
+      expect(s.host.snapshots.join('')).not.toContain('not active');
+      expect(
+        s.host.calls.filter((c) => c.function_id === ON).map((c) => c.metadata?.for_observer),
+      ).toEqual(['A', 'A', 'A', 'B', 'B']);
+    });
+  });
+
+  it('defers partial records, retries failed reads, and rebaselines on replacement, rewrite and truncation', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, JSON.stringify(answer(2, 1, 'complete later')));
+      await s.poll();
+      await appendFile(s.file, '\n');
+      s.host.beforeRead = async () => {
+        throw new Error('transient');
+      };
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      s.host.beforeRead = async () => {};
+      await s.poll();
+      const first = [{ id: recordId(2), text: 'complete later' }];
+      expect(seen(s, 'A')).toEqual(first);
+      await rename(s.file, join(s.root, 'previous'));
+      await writeFile(s.file, lines(answer(10, null, 'replacement')));
+      await s.poll();
+      // Same inode, different complete prefix; unlike a truncation the file grows.
+      await writeFile(s.file, lines(answer(11, null, 'replacement'), answer(12, 11, 'rewritten')));
+      await s.poll();
+      await writeFile(s.file, lines(answer(13, null, 'smaller')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual(first);
+      await appendFile(s.file, lines(answer(14, 13, 'after reset')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([...first, { id: recordId(14), text: 'after reset' }]);
+      await s.restart();
+      await observe(s, 'restarted');
+      await s.poll();
+      expect(seen(s, 'restarted')).toEqual([]);
+      await appendFile(s.file, lines(answer(15, 14, 'after restart')));
+      await s.poll();
+      expect(seen(s, 'restarted')).toEqual([{ id: recordId(15), text: 'after restart' }]);
+    });
+  });
+
+  it('counts pending admissions toward the observer cap', async () => {
+    await withSyntheticHost(async (s) => {
+      const blocked = barrier();
+      s.host.beforeRead = blocked.wait;
+      const admissions = Promise.allSettled(
+        Array.from({ length: 256 }, (_, i) => observe(s, String(i))),
+      );
+      await blocked.entered;
+      await expect(observe(s, 'excess')).rejects.toMatchObject({ code: 'OBSERVER_LIMIT' });
+      await setPermission(s, false);
+      blocked.release();
+      expect((await admissions).filter((a) => a.status === 'rejected')).toHaveLength(256);
+      expect(reads(s)).toHaveLength(1);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it.each(['user', 'assistant'])('rejects unknown blocks in a %s baseline', async (role) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, unknownBlockTranscript(role));
+      await expect(observe(s, 'unknown')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it.each(malformedToolResults)('rejects a baseline tool result with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript(fields));
+      await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it.each(malformedToolUses)('rejects a baseline tool use with $name', async ({ fields }) => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, toolResultTranscript({}, fields));
+      await expect(observe(s, 'malformed')).rejects.toThrow(/^transcript unavailable$/);
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it('serializes admission with polling, rejects unreadable baselines and stops on last removal', async () => {
+    await withSyntheticHost(async (s) => {
+      await unlink(s.file);
+      await expect(observe(s, 'failed')).rejects.toThrow('transcript unavailable');
+      expect(s.timers.size).toBe(0);
+      await writeFile(s.file, '');
+      const stopA = await observe(s, 'A');
+      const block = barrier();
+      s.host.beforeRead = block.wait;
+      const polling = s.poll();
+      await block.entered;
+      const before = reads(s).length;
+      const admission = observe(s, 'B');
+      await stopA();
+      expect(reads(s)).toHaveLength(before);
+      await appendFile(s.file, lines(answer(1, null, 'during read')));
+      block.release();
+      await polling;
+      const stopB = await admission;
+      await s.poll();
+      expect(s.host.deliveries).toEqual([]);
+      await stopB();
+      expect(s.timers.size).toBe(0);
+      const stopped = reads(s).length;
+      await s.poll();
+      expect(reads(s)).toHaveLength(stopped);
+    });
+  });
+});
+
+async function setPermission(s: SyntheticHost, enabled: boolean) {
+  s.host.config = async () => ({ external_sessions: enabled });
+  await s.refresh();
+}
+
+describe('standalone terminal describe authorization', () => {
+  function reconnect(s: SyntheticHost, answered: boolean) {
+    // Active-to-active replay does not notify the SDK's state listeners.
+    s.host.connectionEpoch++;
+    s.host.configWatchAnswered = answered;
+  }
+
+  it('confirms an authorized fork after replay is acknowledged without another API or config edit', async () => {
+    await withSyntheticHost(async (s) => {
+      reconnect(s, false);
+      const pending = s.host.calls.length;
+      await expect(s.fork()).rejects.toThrow(/^no session with that id is listed$/);
+      expect(s.host.calls.slice(pending).some((c) => c.function_id === 'configuration::get')).toBe(
+        false,
+      );
+
+      s.host.configWatchAnswered = true;
+      const acknowledged = s.host.calls.length;
+      await expect(s.fork()).resolves.toMatchObject({
+        program: 'fixture-cli',
+        args: ['--resume', id, '--fork-session'],
+        cwd: '/fixture',
+        claude_session_id: id,
+        copy: true,
+      });
+      expect(s.host.calls[acknowledged]?.function_id).toBe('claude::terminal::describe');
+      expect(s.host.calls[acknowledged + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.some((c) => c.function_id === 'shell::pty::open')).toBe(false);
+    });
+  });
+
+  it('recovers repeated no-mode calls after acknowledged reconnect without another API', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.cli[0] = { ...s.host.cli[0], kind: 'background', pid: 7, id: 'deadbeef' };
+      const describeLegacy = () =>
+        s.client.call({ function_id: 'claude::terminal::describe', payload: { session: id } });
+      expect((await s.list()).agents).toHaveLength(1);
+      reconnect(s, false);
+      await expect(describeLegacy()).rejects.toThrow(/^no session with that id is listed$/);
+      s.host.configWatchAnswered = true;
+      const before = s.host.calls.length;
+      for (let i = 0; i < 2; i++) {
+        await expect(describeLegacy()).resolves.toMatchObject({
+          program: 'fixture-cli',
+          args: ['attach', 'deadbeef'],
+          cwd: '/fixture',
+        });
+      }
+      expect(s.host.calls[before + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.some((c) => c.function_id === 'shell::pty::open')).toBe(false);
+    });
+  });
+
+  it.each([
+    { state: 'unknown', value: null },
+    { state: 'revoked', value: { external_sessions: false } },
+  ])('denies a standalone external fork with $state permission on the new connection', async ({
+    value,
+  }) => {
+    await withSyntheticHost(async (s) => {
+      reconnect(s, true);
+      s.host.config = async () => value;
+      const before = s.host.calls.length;
+      await expect(s.fork()).rejects.toThrow(/^no session with that id is listed$/);
+      expect(s.host.calls[before + 1]?.function_id).toBe('configuration::get');
+      expect(s.host.calls.slice(before).some((c) => c.payload.command === 'pwd')).toBe(false);
+      expect(reads(s)).toEqual([]);
+    });
+  });
+
+  it('does not return a fork prepared under an earlier connection even if the new one allows it', async () => {
+    await withSyntheticHost(async (s) => {
+      const preparation = barrier();
+      s.host.beforePrepare = preparation.wait;
+      const old = expect(s.fork()).rejects.toThrow(
+        /^session visibility changed; refresh the list$/,
+      );
+      await preparation.entered;
+      reconnect(s, true);
+      s.host.beforePrepare = async () => {};
+      try {
+        await expect(s.fork()).resolves.toMatchObject({ copy: true });
+      } finally {
+        preparation.release();
+        await old;
+      }
+    });
+  });
+});
+
+describe('authorization', () => {
+  it('delivers replies appended after live confirmation while recovery inventory is pending', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const inventory = barrier();
+      const checkpoint = barrier();
+      s.host.beforeInventory = inventory.wait;
+      s.host.beforeRead = checkpoint.wait;
+      const before = reads(s).length;
+      const confirmation = s.client.call({
+        function_id: 'claude::agents::visibility',
+        payload: { confirm_live_config: true },
+      });
+      try {
+        await inventory.entered;
+        expect(reads(s)).toHaveLength(before + 1);
+        expect(
+          await Promise.race([
+            confirmation,
+            new Promise((resolve) => setImmediate(() => resolve('checkpoint pending'))),
+          ]),
+        ).toBe('checkpoint pending');
+        checkpoint.release();
+        expect(await confirmation).toMatchObject({ live_config_confirmed: true });
+        await appendFile(s.file, lines(answer(3, 2, 'first after live confirmation')));
+        expect(seen(s, 'retained')).toEqual([]); // Inventory has not confirmed the session yet.
+      } finally {
+        checkpoint.release();
+        inventory.release();
+      }
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after inventory completes')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'first after live confirmation' },
+        { id: recordId(4), text: 'after inventory completes' },
+      ]);
+    });
+  });
+
+  it('preserves the first reply after a fresh viewer returns during a pending watch checkpoint', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted === 1) await checkpoint.wait();
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer recovery')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after checkpoint')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'after viewer recovery' },
+        { id: recordId(4), text: 'after checkpoint' },
+      ]);
+    });
+  });
+
+  it('accepts a viewer boundary offered with an equal-valued env', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted !== 1) return;
+        // The viewer reads under a re-prepared host: same values, new object.
+        s.setEnv({ CLAUDE_CONFIG_DIR: s.root });
+        await checkpoint.wait();
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer recovery')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after viewer recovery' }]);
+    });
+  });
+
+  it('reports an ordinary grant only after the retained watch boundary, keeping the first later reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted === 1) await checkpoint.wait();
+      };
+      const visibility = s.client.call({ function_id: 'claude::agents::visibility', payload: {} });
+      try {
+        await checkpoint.entered;
+        expect(
+          await Promise.race([
+            visibility,
+            new Promise((resolve) => setImmediate(() => resolve('checkpoint pending'))),
+          ]),
+        ).toBe('checkpoint pending');
+        // The rail listing must not publish the grant before the boundary exists either.
+        expect(
+          await s.client.call({
+            function_id: 'claude::agents::list',
+            payload: { include_config_id: true },
+          }),
+        ).toMatchObject({ external_visibility: null });
+      } finally {
+        checkpoint.release();
+      }
+      expect(await visibility).toEqual({ external_visibility: expect.any(String) });
+      await appendFile(s.file, lines(answer(3, 2, 'first after reported grant')));
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'second after reported grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'first after reported grant' },
+        { id: recordId(4), text: 'second after reported grant' },
+      ]);
+    });
+  });
+
+  it('lets the next heartbeat accept a live confirmation that settled after its probe deadline', async () => {
+    await withSyntheticHost(async (s) => {
+      const confirm = () =>
+        s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: { confirm_live_config: true },
+        });
+      s.host.config = async () => null;
+      expect(await confirm()).toEqual({ external_visibility: null });
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        let configReads = 0;
+        // Each read succeeds inside the 5 s config budget but after the 4.5 s probe cutoff.
+        s.host.config = async () => {
+          configReads++;
+          await delay(4_800);
+          return { external_sessions: true };
+        };
+        const heartbeat = () =>
+          Promise.race([confirm(), delay(5_000).then(() => 'rail deadline exceeded')]);
+        const first = heartbeat();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(await first).toEqual({ external_visibility: null });
+        const second = heartbeat();
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(await second).toEqual({
+          external_visibility: expect.any(String),
+          live_config_confirmed: true,
+        });
+        expect(configReads).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('returns pending before the rail deadline rather than confirming an uncaptured watch boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        s.host.config = async () => {
+          await delay(2_000);
+          return { external_sessions: true };
+        };
+        s.host.beforeRead = () => delay(4_000);
+        const confirm = () =>
+          s.client.call({
+            function_id: 'claude::agents::visibility',
+            payload: { confirm_live_config: true },
+          });
+        const first = Promise.race([confirm(), delay(5_000).then(() => 'rail deadline exceeded')]);
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(await first).toEqual({ external_visibility: null });
+        const next = confirm();
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(await next).toMatchObject({ live_config_confirmed: true });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it.each([
+    'lookup',
+    'watch',
+    'poll',
+    'viewer',
+  ] as const)('recovers %s from a failed confirmation on the same connection', async (entry) => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'original');
+      const operation = () => {
+        if (entry === 'lookup') return lookup(s);
+        if (entry === 'watch') return observe(s, 'new');
+        if (entry === 'poll') return s.poll();
+        return s.client.call({
+          function_id: 'claude::agents::follow-snapshot',
+          payload: { claude_session_id: id },
+        });
+      };
+      s.host.config = async () => null;
+      const before = s.host.calls.length;
+      if (entry === 'poll') await operation();
+      else await expect(operation()).rejects.toThrow('reply access disabled');
+      expect(s.host.calls.slice(before).map((c) => c.function_id)).toContain('configuration::get');
+      expect(
+        s.host.calls.slice(before).filter((c) => /^(shell|state)::/.test(c.function_id)),
+      ).toEqual([]);
+      await appendFile(s.file, lines(answer(2, 1, 'during outage')));
+      s.host.config = async () => ({ external_sessions: true });
+      const recovered = await operation();
+      if (entry === 'lookup' || entry === 'viewer')
+        expect(recovered).toMatchObject({ last_reply: { id: recordId(2) } });
+      expect(seen(s, 'original')).toEqual([]);
+      // The recovery call has returned, but no subsequent poll has had a chance to baseline.
+      await appendFile(s.file, lines(answer(3, 2, 'after recovery')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'original')).toEqual([{ id: recordId(3), text: 'after recovery' }]);
+      if (entry === 'watch') expect(seen(s, 'new')).toEqual(seen(s, 'original'));
+    });
+  });
+
+  it.each([
+    'configuration:deleted',
+    'configuration:registered',
+  ])('does not let %s discard an in-flight settings update', async (event) => {
+    await withSyntheticHost(async (s) => {
+      expect((await s.list()).agents).toHaveLength(1);
+      const response = deferred<unknown>();
+      const captured = deferred<void>();
+      s.host.config = () => {
+        captured.resolve();
+        return response.promise;
+      };
+      const update = s.configEvent('configuration:updated');
+      await captured.promise;
+      s.host.config = async () => null;
+      await s.configEvent(event);
+      expect(s.externalSetting).toBe(true);
+      expect((await s.list()).agents).toEqual([]);
+      response.resolve({ external_sessions: false });
+      await update;
+      expect(s.externalSetting).toBe(false);
+      expect((await s.list()).agents).toEqual([]);
+      await expect(lookup(s)).rejects.toThrow('reply access disabled');
+    });
+  });
+  it('closes on deletion during an older refresh and rebaselines after registration', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      const slow = deferred<unknown>();
+      s.host.config = () => slow.promise;
+      const oldRefresh = s.configEvent('configuration:updated');
+      s.host.config = async () => null;
+      await s.configEvent('configuration:deleted');
+      slow.resolve({ external_sessions: true });
+      await oldRefresh;
+      const before = reads(s).length;
+      await expect(lookup(s)).rejects.toThrow('reply access disabled');
+      await expect(observe(s, 'B')).rejects.toThrow('reply access disabled');
+      await appendFile(s.file, lines(answer(2, 1, 'while absent')));
+      await s.poll();
+      expect(reads(s)).toHaveLength(before);
+      s.host.config = async () => ({ external_sessions: true });
+      await s.configEvent('configuration:registered');
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after registration')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after registration' }]);
+    });
+  });
+
+  it('does not send a previously matched reply after removal or into an offline queue', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const stage of ['remove', 'disconnect']) {
+        const remove = await observe(s, stage);
+        const block = barrier();
+        s.host.beforeDelivery = block.wait;
+        const n = stage === 'remove' ? 2 : 3;
+        await appendFile(s.file, lines(answer(n, n - 1, 'matched')));
+        const pending = s.poll();
+        await block.entered;
+        if (stage === 'remove') await remove();
+        else s.host.socketOpen = false;
+        block.release();
+        await pending;
+        expect(seen(s, stage)).toEqual([]);
+      }
+    });
+  });
+
+  it.each([
+    'pending',
+    'acknowledged',
+  ])('revokes permission across %s active-to-active configuration observer replay', async (replay) => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      const stalled = barrier();
+      s.host.beforeRead = stalled.wait;
+      const oldLookup = expect(lookup(s)).rejects.toThrow('reply access disabled');
+      await stalled.entered;
+
+      // No lease is checked while offline, and the observer state stays active.
+      s.host.socketOpen = false;
+      s.host.config = async () => ({ external_sessions: false });
+      s.host.connectionEpoch++;
+      s.host.configWatchAnswered = false;
+      s.host.socketOpen = true;
+      if (replay === 'acknowledged') s.host.configWatchAnswered = true;
+      const beforeReplay = s.host.calls.length;
+      stalled.release();
+      s.host.beforeRead = async () => {};
+      await oldLookup;
+      if (replay === 'pending') {
+        await expect(lookup(s)).rejects.toThrow('reply access disabled');
+        await expect(observe(s, 'before-ack')).rejects.toThrow('reply access disabled');
+        await s.poll();
+        expect(s.host.calls.slice(beforeReplay).map((c) => c.function_id)).toEqual([GET]);
+        s.host.configWatchAnswered = true;
+      }
+
+      await s.poll();
+      expect(
+        s.host.calls
+          .slice(beforeReplay)
+          .map((c) => c.function_id)
+          .filter((fn) => fn !== GET),
+      ).toEqual(['configuration::get']);
+      await expect(lookup(s)).rejects.toThrow('reply access disabled');
+      await expect(observe(s, 'denied')).rejects.toThrow('reply access disabled');
+
+      await appendFile(s.file, lines(answer(2, 1, 'during the gap')));
+      s.host.config = async () => ({ external_sessions: true });
+      await s.configEvent('configuration:updated');
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after new confirmation')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after new confirmation' }]);
+    });
+  });
+
+  it('requires a parsed current live true, never the enabled seed, timeout or an older refresh', async () => {
+    await withSyntheticHost(async (s) => {
+      async function closed() {
+        await expect(lookup(s)).rejects.toThrow('reply access disabled');
+        await expect(lookup(s, 'invalid')).rejects.toThrow('reply access disabled');
+        await expect(observe(s, 'denied')).rejects.toThrow('reply access disabled');
+        expect(
+          s.host.calls.filter(
+            (c) => c.function_id.startsWith('shell::') || c.function_id.startsWith('state::'),
+          ),
+        ).toEqual([]);
+      }
+      await closed();
+      await setPermission(s, false);
+      await closed();
+      s.host.config = async () => {
+        throw new Error('timeout');
+      };
+      await s.refresh();
+      await closed();
+      for (const value of [
+        null,
+        {},
+        { external_sessions: 'true' },
+        { external_sessions: true, terminal: 1 },
+      ]) {
+        s.host.config = async () => value;
+        await s.refresh();
+        await closed();
+      }
+      const slow = deferred<unknown>();
+      s.host.config = () => slow.promise;
+      const pending = s.refresh();
+      await setPermission(s, false);
+      slow.resolve({ external_sessions: true });
+      await pending;
+      await closed();
+      await setPermission(s, true);
+      expect((await lookup(s)).last_reply?.text).toBe('fixture answer');
+    }, false);
+  });
+
+  it('revokes lookups and admissions spanning off/on, including a stale negative inventory result', async () => {
+    await withSyntheticHost(async (s) => {
+      for (const phase of ['inventory', 'lookup', 'admission']) {
+        const block = barrier();
+        if (phase === 'inventory') s.host.beforeInventory = block.wait;
+        else s.host.beforeRead = block.wait;
+        const result = phase === 'admission' ? observe(s, 'stale') : lookup(s);
+        await block.entered;
+        await setPermission(s, false);
+        await setPermission(s, true);
+        s.host.inventoryOK = phase !== 'inventory';
+        block.release();
+        await expect(result).rejects.toThrow('reply access disabled');
+        if (phase === 'inventory') expect(reads(s)).toHaveLength(0);
+        s.host.inventoryOK = true;
+      }
+      expect(s.timers.size).toBe(0);
+    });
+  });
+
+  it('pauses polling without host calls and discards work spanning disable or uncertain refresh', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      for (const stage of ['read', 'delivery']) {
+        const block = barrier();
+        if (stage === 'read') s.host.beforeRead = block.wait;
+        else s.host.beforeDelivery = block.wait;
+        const n = stage === 'read' ? 2 : 3;
+        await appendFile(s.file, lines(answer(n, n - 1, 'not authorized for delivery')));
+        const polling = s.poll();
+        await block.entered;
+        await setPermission(s, false);
+        await setPermission(s, true);
+        block.release();
+        await polling;
+        await s.poll(); // fresh baseline, never backfill the interrupted poll
+        expect(seen(s, 'A')).toEqual([]);
+      }
+      s.host.config = async () => null;
+      await s.refresh();
+      const count = s.host.calls.length;
+      await appendFile(s.file, lines(answer(4, 3, 'while disabled')));
+      await s.poll();
+      expect(s.host.calls.slice(count).map((c) => c.function_id)).toEqual(['configuration::get']);
+      await setPermission(s, true);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(5, 4, 'authorized')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(5), text: 'authorized' }]);
+      expect(new Set(s.host.calls.map((c) => c.function_id))).toEqual(
+        new Set(['configuration::get', 'state::list', 'shell::exec', ON]),
+      );
+      expect(
+        new Set(
+          s.host.calls.filter((c) => c.function_id === 'shell::exec').map((c) => c.payload.command),
+        ),
+      ).toEqual(new Set(["'fixture-cli' agents --json --all", 'python3']));
+    });
+  });
+
+  const pendingOrSettled = (promise: Promise<unknown>) =>
+    Promise.race([
+      promise.then(() => 'settled'),
+      new Promise((resolve) => setImmediate(() => resolve('pending'))),
+    ]);
+  const inventoryCalls = (s: SyntheticHost) =>
+    s.host.calls.filter((c) => String(c.payload.command).includes(' agents --json')).length;
+
+  // Denies access, then grants it again with a baseline read that fails once.
+  async function failBaselineOnce(s: SyntheticHost) {
+    await observe(s, 'retained');
+    s.host.config = async () => null;
+    await s.poll();
+    s.host.config = async () => ({ external_sessions: true });
+    let failed = false;
+    s.host.beforeRead = async () => {
+      if (failed) return;
+      failed = true;
+      throw new Error('baseline unavailable');
+    };
+  }
+
+  it('delivers a reply appended after a refresh grant with a retained watch', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      await setPermission(s, false);
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      await setPermission(s, true);
+      await s.permission.watchCheckpointSettled();
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  // Denies access, then grants it again; `next` replaces the host env while the
+  // checkpoint's baseline read runs, after recovery captured its env and before
+  // the recovery inventory.
+  async function regrantWithEnv(s: SyntheticHost, next: () => Record<string, string>) {
+    await observe(s, 'retained');
+    await setPermission(s, false);
+    await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+    let replaced = false;
+    s.host.beforeRead = async () => {
+      if (replaced) return;
+      replaced = true;
+      s.setEnv(next());
+    };
+    await setPermission(s, true);
+    await s.permission.watchCheckpointSettled();
+    expect(replaced).toBe(true);
+    s.host.beforeRead = async () => {};
+  }
+
+  it('keeps a retained-watch checkpoint across an equivalent host preparation', async () => {
+    await withSyntheticHost(async (s) => {
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  it('keeps the checkpoint when equal env keys come in another order', async () => {
+    await withSyntheticHost(async (s) => {
+      s.setEnv({ CLAUDE_CONFIG_DIR: s.root, SYNTHETIC_FLAG: 'on' });
+      await regrantWithEnv(s, () => ({ SYNTHETIC_FLAG: 'on', CLAUDE_CONFIG_DIR: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'after refresh grant')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(3), text: 'after refresh grant' }]);
+    });
+  });
+
+  it('recaptures the checkpoint when the transcript root changes', async () => {
+    await withSyntheticHost(async (s) => {
+      const other = join(s.root, 'other');
+      const moved = join(other, 'projects', 'synthetic', `${id}.jsonl`);
+      await mkdir(join(other, 'projects', 'synthetic'), { recursive: true });
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: other }));
+      await writeFile(
+        moved,
+        lines(answer(1, null, 'fixture answer'), answer(2, 1, 'before new baseline')),
+      );
+      await appendFile(s.file, lines(answer(3, 2, 'old root after grant')));
+      await s.poll(); // Takes the new baseline under the new root.
+      expect(seen(s, 'retained')).toEqual([]);
+      await appendFile(moved, lines(answer(4, 2, 'after new baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(4), text: 'after new baseline' }]);
+    });
+  });
+
+  it('drops the checkpoint when an env key is added', async () => {
+    await withSyntheticHost(async (s) => {
+      await regrantWithEnv(s, () => ({ CLAUDE_CONFIG_DIR: s.root, HOME: s.root }));
+      await appendFile(s.file, lines(answer(3, 2, 'before new baseline')));
+      await s.poll(); // The dropped checkpoint leaves only a new baseline.
+      expect(seen(s, 'retained')).toEqual([]);
+      await appendFile(s.file, lines(answer(4, 3, 'after new baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([{ id: recordId(4), text: 'after new baseline' }]);
+    });
+  });
+
+  it('settles the refresh checkpoint without an inventory wait when no watch is retained', async () => {
+    await withSyntheticHost(async (s) => {
+      await setPermission(s, false);
+      s.host.beforeInventory = () => new Promise<void>(() => {});
+      const before = inventoryCalls(s);
+      await setPermission(s, true);
+      expect(s.permission.epoch).not.toBeNull();
+      expect(await pendingOrSettled(s.permission.watchCheckpointSettled())).toBe('settled');
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      expect(inventoryCalls(s)).toBe(before);
+    });
+  });
+
+  it('a refresh that denies access starts no checkpoint', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      const before = reads(s).length;
+      await setPermission(s, false);
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      expect(s.permission.epoch).toBeNull();
+      expect(reads(s)).toHaveLength(before);
+    });
+  });
+
+  it('a failed recovery baseline holds back only its own session', async () => {
+    await withSyntheticHost(async (s) => {
+      await failBaselineOnce(s);
+      const before = reads(s).length;
+      const epoch = await s.permission.confirm();
+      expect(epoch).not.toBeNull();
+      expect(reads(s)).toHaveLength(before + 1);
+      expect(s.permission.epoch).toBe(epoch);
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      // A later confirm does not read that transcript again: only a poll does.
+      expect(await s.permission.confirm()).toBe(epoch);
+      expect(reads(s)).toHaveLength(before + 1);
+    });
+  });
+
+  it('retries a failed recovery baseline', async () => {
+    await withSyntheticHost(async (s) => {
+      await failBaselineOnce(s);
+      expect(await s.permission.confirm()).not.toBeNull();
+      expect(s.permission.watchCheckpointPending).toBe(false);
+      // The reply lands while the retried checkpoint is still pending, right
+      // after its baseline read: the grant was never reported before it.
+      let written = false;
+      s.host.hostOutput = (stdout) => {
+        if (!written) {
+          written = true;
+          appendFileSync(s.file, lines(answer(2, 1, 'written while recovery was failing')));
+        }
+        return stdout;
+      };
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(written).toBe(true);
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(2), text: 'written while recovery was failing' },
+      ]);
+    });
+  });
+
+  it('a validated viewer boundary completes a recovery whose baseline failed', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'retained');
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(s.file, lines(answer(2, 1, 'denied interval')));
+      s.host.config = async () => ({ external_sessions: true });
+      const checkpoint = barrier();
+      let readsStarted = 0;
+      s.host.beforeRead = async () => {
+        if (++readsStarted !== 1) return;
+        await checkpoint.wait();
+        throw new Error('baseline unavailable');
+      };
+      const viewer = s.client.call({
+        function_id: 'claude::agents::follow-snapshot',
+        payload: { claude_session_id: id },
+      });
+      try {
+        await checkpoint.entered;
+        expect(await viewer).toMatchObject({ last_reply: { id: recordId(2) } });
+        await appendFile(s.file, lines(answer(3, 2, 'after viewer boundary')));
+      } finally {
+        checkpoint.release();
+      }
+      await s.permission.watchCheckpointSettled();
+      expect(s.permission.epoch).not.toBeNull();
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'after recovery')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'retained')).toEqual([
+        { id: recordId(3), text: 'after viewer boundary' },
+        { id: recordId(4), text: 'after recovery' },
+      ]);
+    });
+  });
+
+  const other = recordId(99);
+  const readsOf = (s: SyntheticHost, session: string) =>
+    reads(s).filter((c) => (c.payload.args as string[])[5] === session).length;
+  // Retained watches on two listed sessions; A's transcript is gone across a
+  // deny→grant refresh, so only A's recovery baseline fails.
+  async function unreadableAcrossGrant(s: SyntheticHost, denied?: string) {
+    s.host.cli.push({ kind: 'interactive', sessionId: other, status: 'idle', name: 'other' });
+    await writeFile(join(s.project, `${other}.jsonl`), lines(answer(50, null, 'B last reply')));
+    await observe(s, 'A');
+    await observe(s, 'B', other);
+    await setPermission(s, false);
+    if (denied) await appendFile(s.file, lines(answer(2, 1, denied)));
+    const content = await readFile(s.file);
+    await unlink(s.file);
+    await setPermission(s, true);
+    await s.permission.watchCheckpointSettled();
+    return () => writeFile(s.file, content);
+  }
+
+  it('confirm keeps the grant while one baseline fails', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      const epoch = s.permission.epoch;
+      expect(epoch).not.toBeNull();
+      for (let i = 0; i < 3; i++) expect(await s.permission.confirm()).toBe(epoch);
+      expect(s.permission.epoch).toBe(epoch);
+    });
+  });
+
+  it('persistently unreadable retained transcript does not deny other sessions', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      await s.poll();
+      await expect(lookup(s)).rejects.toThrow('transcript unavailable');
+      expect(await lookup(s, other)).toMatchObject({
+        claude_session_id: other,
+        last_reply: { id: recordId(50), text: 'B last reply' },
+      });
+    });
+  });
+
+  it('persistently unreadable retained transcript keeps rows listed', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      await s.poll();
+      const listed = (await s.list()).agents.map((a) => a.claude_session_id);
+      expect(listed).toEqual(expect.arrayContaining([id, other]));
+    });
+  });
+
+  it('unreadable baseline is read once per poll tick', async () => {
+    await withSyntheticHost(async (s) => {
+      await unreadableAcrossGrant(s);
+      const before = readsOf(s, id);
+      for (let tick = 1; tick <= 3; tick++) {
+        await s.poll();
+        expect(readsOf(s, id)).toBe(before + tick);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(readsOf(s, id)).toBe(before + tick);
+      }
+      expect(seen(s, 'A')).toEqual([]);
+    });
+  });
+
+  it('resumes from the first successful baseline', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s);
+      await s.poll();
+      // The reply reaches A before any baseline of its watch succeeds: the
+      // watch may skip it and resumes from its first successful baseline.
+      await restore();
+      await appendFile(s.file, lines(answer(2, 1, 'written while the baseline failed')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after the first baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after the first baseline' }]);
+    });
+  });
+
+  it('baseline recovers later gets its replies once', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s);
+      await s.poll();
+      await restore();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(2, 1, 'after recovery')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'after recovery' }]);
+    });
+  });
+
+  it('denied interval stays undelivered after a late baseline', async () => {
+    await withSyntheticHost(async (s) => {
+      const restore = await unreadableAcrossGrant(s, 'denied interval');
+      await s.poll();
+      await restore();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      await appendFile(s.file, lines(answer(3, 2, 'after late baseline')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after late baseline' }]);
+    });
+  });
+
+  const dispatched = (s: SyntheticHost, from = 0) =>
+    s.host.calls
+      .slice(from)
+      .filter((c) => c.function_id === ON)
+      .map((c) => [c.metadata?.for_observer, (c.payload.reply as { id: string }).id]);
+  const failSecondDispatchOnce = (s: SyntheticHost) => {
+    let n = 0;
+    s.host.beforeDelivery = async () => {
+      if (++n === 2) throw new Error('dispatch failed');
+    };
+  };
+
+  it('does not redeliver replies dispatched before a mid-page failure', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      failSecondDispatchOnce(s);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'first' }]);
+      const retry = s.host.calls.length;
+      await s.poll();
+      expect(dispatched(s, retry)).toEqual([['A', recordId(3)]]);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+      ]);
+    });
+  });
+
+  it('mid-page failure with two watches delivers each reply once per watch', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      failSecondDispatchOnce(s);
+      await s.poll();
+      const both = [
+        { id: recordId(2), text: 'first' },
+        { id: recordId(3), text: 'second' },
+      ];
+      // A's failure does not hold B back: B gets the whole page on the same poll.
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: 'first' }]);
+      expect(seen(s, 'B')).toEqual(both);
+      const retry = s.host.calls.length;
+      await s.poll();
+      expect(dispatched(s, retry)).toEqual([['A', recordId(3)]]);
+      await s.poll();
+      expect(seen(s, 'A')).toEqual(both);
+      expect(seen(s, 'B')).toEqual(both);
+    });
+  });
+});
+
+describe('validated ancestry and the historical search budget', () => {
+  const other = '22222222-2222-4222-8222-222222222222';
+  async function addSession(s: SyntheticHost) {
+    s.host.cli.push({
+      kind: 'interactive',
+      sessionId: other,
+      status: 'idle',
+      name: 'other',
+      cwd: '/fixture',
+    });
+    const file = join(s.project, `${other}.jsonl`);
+    await writeFile(file, lines(answer(1, null, 'other fixture')));
+    return file;
+  }
+  const client = (s: SyntheticHost) =>
+    ({
+      call: (r: Parameters<SyntheticHost['client']['call']>[0]) => s.client.call(r),
+    }) as unknown as IIIClient;
+  const read = (s: SyntheticHost, mode: 'baseline' | 'since', cursor?: string) =>
+    readTranscript(client(s), { CLAUDE_CONFIG_DIR: s.root }, id, mode, cursor);
+  /** The cursor without the validated chain tip it carries: the older shape. */
+  const withoutAncestry = (cursor: string) => {
+    const fields = cursor.split(':');
+    expect([6, 7]).toContain(fields.length);
+    return fields.slice(0, -2).join(':');
+  };
+  /** Annotation records of exactly `bytes` bytes in total (at least 128 KiB). */
+  const exact = (bytes: number) => {
+    const n = Math.floor(bytes / (64 * 1024)) - 1;
+    return summaryLine(64 * 1024).repeat(n) + summaryLine(bytes - n * 64 * 1024);
+  };
+  const cursorsOf = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[5] === id && args[6] === 'since')
+      .map((args) => args[7]);
+
+  it('an ordinary poll after a long annotation run does not search the prefix', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(record(2, 1, 'user', 'prompt before the run')));
+      await s.poll();
+      // Polls of annotations only: the prompt ends up more than the search
+      // budget before the parsed start, so only the cursor's tip can end the walk.
+      await appendFile(s.file, filler(7 * MiB));
+      await s.poll();
+      await appendFile(s.file, filler(7 * MiB));
+      await s.poll();
+      await appendFile(s.file, lines(answer(3, 2, 'after the run')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after the run' }]);
+    });
+  });
+
+  it('a cursor without validated ancestry falls back to the bounded search', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, lines(record(1, null, 'user', 'old cursor prompt')));
+      const base = await read(s, 'baseline');
+      await appendFile(s.file, filler(MiB) + lines(answer(2, 1, 'after old cursor')));
+      const next = await read(s, 'since', withoutAncestry(base.cursor));
+      expect(next.replies).toEqual([{ id: recordId(2), text: 'after old cursor' }]);
+    });
+  });
+
+  it('a parent at the search budget is found', async () => {
+    await withSyntheticHost(async (s) => {
+      const parent = lines(record(2, null, 'user', 'budget prompt'));
+      await writeFile(s.file, parent + exact(8 * MiB - Buffer.byteLength(parent)));
+      expect((await stat(s.file)).size).toBe(8 * MiB);
+      const base = await read(s, 'baseline');
+      await appendFile(s.file, lines(answer(3, 2, 'at the budget')));
+      const next = await read(s, 'since', withoutAncestry(base.cursor));
+      expect(next.replies).toEqual([{ id: recordId(3), text: 'at the budget' }]);
+    });
+  });
+
+  it('a historical search past its budget makes only that read unavailable', async () => {
+    await withSyntheticHost(async (s) => {
+      const otherFile = await addSession(s);
+      const parent = lines(record(2, null, 'user', 'past the budget'));
+      // The parent starts one byte further back than the budget allows.
+      await writeFile(s.file, parent + exact(8 * MiB + 1 - Buffer.byteLength(parent)));
+      await observe(s, 'A');
+      await observe(s, 'B', other);
+      await appendFile(s.file, lines(answer(3, 2, 'unreachable parent')));
+      await appendFile(otherFile, lines(answer(2, 1, 'other reply')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([{ id: recordId(2), text: 'other reply' }]);
+      const cursors = cursorsOf(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).toBe(cursors.at(-2));
+    });
+  });
+
+  it('a lookup past the search budget fails for that session', async () => {
+    await withSyntheticHost(async (s) => {
+      await addSession(s);
+      await writeFile(
+        s.file,
+        lines(record(2, null, 'user', 'far prompt')) +
+          filler(17 * MiB) +
+          lines(answer(3, 2, 'far answer')),
+      );
+      await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      expect((await lookup(s, other)).last_reply).toEqual({
+        id: recordId(1),
+        text: 'other fixture',
+      });
+    });
+  });
+
+  const compactedAfter = (bytes: number) =>
+    lines(record(1, null, 'user', 'early prompt'), answer(2, 1, 'before the window')) +
+    filler(bytes) +
+    lines(compactBoundary(3, 2), compactSummary(4, 3));
+
+  it('a compaction finds its logical parent before the window', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compactedAfter(9 * MiB));
+      expect((await lookup(s)).last_reply).toEqual({
+        id: recordId(2),
+        text: 'before the window',
+      });
+    });
+  });
+
+  it('a logical parent past the search budget gives a null reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(s.file, compactedAfter(17 * MiB));
+      expect((await lookup(s)).last_reply).toBeNull();
+    });
+  });
+
+  it('a failed crossing in a windowed file gives a null reply', async () => {
+    await withSyntheticHost(async (s) => {
+      await writeFile(
+        s.file,
+        filler(9 * MiB) +
+          lines(
+            record(2, 99, 'user', 'prompt with a missing parent'),
+            compactBoundary(3, 2),
+            compactSummary(4, 3),
+          ),
+      );
+      expect((await stat(s.file)).size).toBeGreaterThan(8 * MiB);
+      expect((await lookup(s)).last_reply).toBeNull();
+    });
+  });
+
+  // The parent is before the parsed range of the incremental read and off the
+  // chain the baseline validated (a later root is the tip there).
+  async function parentBeforeWindow(s: SyntheticHost, fields: Record<string, unknown>) {
+    await writeFile(
+      s.file,
+      lines(
+        { ...record(2, null, 'user', 'parent before the window'), ...fields },
+        record(5, null, 'user', 'later root'),
+      ),
+    );
+    const base = await read(s, 'baseline');
+    await appendFile(s.file, lines(answer(3, 2, 'main reply')));
+    return read(s, 'since', base.cursor);
+  }
+
+  it('a sidechain parent before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      // The same layout with an ordinary parent is read.
+      expect((await parentBeforeWindow(s, {})).replies).toEqual([
+        { id: recordId(3), text: 'main reply' },
+      ]);
+      await expect(parentBeforeWindow(s, { isSidechain: true })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+
+  it('a team parent before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      await expect(parentBeforeWindow(s, { teamName: 'synthetic-team' })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+
+  it('a parent of another session before the window is rejected', async () => {
+    await withSyntheticHost(async (s) => {
+      await expect(parentBeforeWindow(s, { sessionId: other })).rejects.toThrow(
+        /^transcript unavailable$/,
+      );
+    });
+  });
+});
+
+describe('per-observer dispatch failures', () => {
+  /** Rejects dispatch to `observer` while `failing(reply id)` holds. */
+  function failFor(s: SyntheticHost, observer: string, failing: (reply: string) => boolean) {
+    s.host.beforeDelivery = async () => {
+      const call = s.host.calls.findLast((c) => c.function_id === ON);
+      const reply = (call?.payload.reply as { id?: string } | undefined)?.id;
+      if (call?.metadata?.for_observer === observer && reply && failing(reply)) {
+        throw new Error('dispatch failed');
+      }
+    };
+  }
+  const dispatchedTo = (s: SyntheticHost, observer: string, from = 0) =>
+    s.host.calls
+      .slice(from)
+      .filter((c) => c.function_id === ON && c.metadata?.for_observer === observer);
+  const first = { id: recordId(2), text: 'first' };
+  const second = { id: recordId(3), text: 'second' };
+
+  it('a failing observer does not block another observer of the same session', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first]);
+    });
+  });
+
+  it('a failing observer receives its reply once the failure clears', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      failing = false;
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      expect(seen(s, 'B')).toEqual([first]);
+    });
+  });
+
+  it('a partly failed page is delivered exactly once to each observer', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      let failing = true;
+      failFor(s, 'A', (reply) => failing && reply === recordId(3));
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+      failing = false;
+      const retry = s.host.calls.length;
+      await s.poll();
+      await s.poll();
+      expect(
+        dispatchedTo(s, 'A', retry).map((c) => (c.payload.reply as { id: string }).id),
+      ).toEqual([recordId(3)]);
+      expect(dispatchedTo(s, 'B', retry)).toEqual([]);
+      expect(seen(s, 'A')).toEqual([first, second]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+    });
+  });
+
+  it('a lost grant during a failing dispatch ends the poll', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      s.host.beforeDelivery = async () => {
+        if (s.host.calls.findLast((c) => c.function_id === ON)?.metadata?.for_observer === 'A') {
+          // The socket closes while this dispatch fails.
+          s.host.socketOpen = false;
+          throw new Error('dispatch failed');
+        }
+      };
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([]);
+      // The poll ended at the failure: the other observer was never dispatched to.
+      expect(dispatchedTo(s, 'A')).toHaveLength(1);
+      expect(dispatchedTo(s, 'B')).toEqual([]);
+      // A reconnect starts a new grant, which rebaselines both watches by design:
+      // only replies written after it are delivered, to both observers alike.
+      s.host.beforeDelivery = async () => {};
+      s.host.socketOpen = true;
+      s.host.connectionEpoch++;
+      await s.refresh();
+      await s.poll();
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([second]);
+      expect(seen(s, 'B')).toEqual([second]);
+    });
+  });
+
+  it('unobserving a failing observer drops only its backlog', async () => {
+    await withSyntheticHost(async (s) => {
+      const stopA = await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'B')).toEqual([first]);
+      await stopA();
+      s.host.beforeDelivery = async () => {};
+      const after = s.host.calls.length;
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(dispatchedTo(s, 'A', after)).toEqual([]);
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first, second]);
+    });
+  });
+
+  /** Appends `mib` MiB of annotations one MiB at a time, polling after each. */
+  async function grow(s: SyntheticHost, mib: number) {
+    for (let i = 0; i < mib; i++) {
+      await appendFile(s.file, filler(MiB));
+      await s.poll();
+    }
+  }
+  const resumeCursors = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[6] === 'resume')
+      .map((args) => args[7]);
+  const third = { id: recordId(4), text: 'third' };
+  /** Puts the saved PATH back, deleting it when the runner had none. */
+  const restorePath = (saved: string | undefined) => {
+    if (saved === undefined) delete process.env.PATH;
+    else process.env.PATH = saved;
+  };
+
+  it('a failed observer never skips a reply after more than 8 MiB is appended', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      await grow(s, 9);
+      expect(seen(s, 'A')).toEqual([]);
+      failing = false;
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first, second]);
+    });
+  });
+
+  it('a failed observer resumes a partly dispatched page across a large gap', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', (reply) => failing && reply === recordId(3));
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      await grow(s, 9);
+      failing = false;
+      const retry = s.host.calls.length;
+      await appendFile(s.file, lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(
+        dispatchedTo(s, 'A', retry).map((c) => (c.payload.reply as { id: string }).id),
+      ).toEqual([recordId(3), recordId(4)]);
+      expect(seen(s, 'A')).toEqual([first, second, third]);
+    });
+  });
+
+  it('a failed observer past the search budget fails without advancing', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      failing = false;
+      await appendFile(s.file, filler(17 * MiB) + lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      const cursors = resumeCursors(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).toBe(cursors.at(-2));
+    });
+  });
+
+  it('another observer keeps receiving while one is past the budget', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      s.host.beforeDelivery = async () => {};
+      await appendFile(s.file, filler(17 * MiB) + lines(answer(3, 2, 'second')));
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first, second, third]);
+    });
+  });
+
+  it('a healthy observer still accepts a gap over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, 'in gap')) + filler(9 * MiB) + lines(answer(3, 2, 'after gap')),
+      );
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after gap' }]);
+    });
+  });
+
+  /** The cursors of this session's healthy watch reads, oldest first. */
+  const sinceCursors = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[6] === 'since')
+      .map((args) => args[7]);
+
+  it('a healthy pending page waits for a tip instead of skipping', async () => {
+    await withSyntheticHost(async (s) => {
+      const large = 'ü'.repeat(5500); // One reply per bounded page.
+      await observe(s, 'A');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, large), answer(3, 2, large), answer(4, 3, large)),
+      );
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: large }]);
+      // The page left two replies unread; the final window then holds no chain record.
+      await appendFile(s.file, filler(9 * MiB));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(2), text: large }]);
+      const held = sinceCursors(s);
+      expect(held.length).toBeGreaterThanOrEqual(3);
+      expect(held.at(-1)).toBe(held.at(-2));
+      await appendFile(s.file, lines(answer(5, 4, 'after the gap')));
+      for (let i = 0; i < 5; i++) await s.poll();
+      expect(seen(s, 'A')).toEqual([
+        { id: recordId(2), text: large },
+        { id: recordId(3), text: large },
+        { id: recordId(4), text: large },
+        { id: recordId(5), text: 'after the gap' },
+      ]);
+    });
+  });
+
+  it('a healthy full-page cursor still accepts a gap over 8 MiB with no tip', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      await appendFile(s.file, filler(9 * MiB));
+      await s.poll();
+      await s.poll();
+      // The gap read succeeded: the next read starts from the cursor it returned.
+      const cursors = sinceCursors(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).not.toBe(cursors.at(-2));
+      expect(seen(s, 'A')).toEqual([first]);
+    });
+  });
+
+  it('a failed read keeps the gap rule', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let readFails = true;
+      s.host.beforeRead = async () => {
+        if (readFails) throw new Error('read failed');
+      };
+      await appendFile(s.file, lines(answer(2, 1, 'in gap')));
+      await s.poll();
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(3, 2, 'after gap')));
+      readFails = false;
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after gap' }]);
+      expect(resumeCursors(s)).toEqual([]);
+    });
+  });
+
+  it('a replaced transcript restarts a failed observer', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'old file')));
+      await s.poll();
+      await rename(s.file, join(s.root, 'previous'));
+      await writeFile(s.file, lines(answer(5, null, 'new baseline')));
+      await s.poll();
+      failing = false;
+      await s.poll();
+      await appendFile(s.file, lines(answer(6, 5, 'new reply')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(6), text: 'new reply' }]);
+    });
+  });
+
+  it('a long compaction traversal reads each byte at most once', async () => {
+    await withSyntheticHost(async (s) => {
+      const chain: unknown[] = [record(1, null, 'user', 'early prompt'), answer(2, 1, 'early')];
+      for (let n = 3; n < 20_003; n++) chain.push(record(n, n - 1, 'user', 'x'));
+      await writeFile(
+        s.file,
+        lines(...chain) +
+          filler(9 * MiB) +
+          lines(compactBoundary(20_003, 20_002), compactSummary(20_004, 20_003)),
+      );
+      const total = (await stat(s.file)).size;
+      // Reruns the reader with os.pread logged, then hands it the same argv.
+      const wrapper = [
+        'import atexit, json, os, sys',
+        'log, real = [], os.pread',
+        'def pread(fd, n, pos):',
+        '    log.append([pos, n])',
+        '    return real(fd, n, pos)',
+        'os.pread = pread',
+        'atexit.register(lambda: sys.stderr.write(json.dumps(log)))',
+        'source = sys.argv.pop(1)',
+        "exec(compile(source, 'reader', 'exec'), {'__name__': '__main__'})",
+      ].join('\n');
+      let preads: Array<[number, number]> = [];
+      const client = {
+        async call(r: { payload: Record<string, unknown> }) {
+          const args = r.payload.args as string[];
+          const out = spawnSync('python3', [...args.slice(0, 4), wrapper, ...args.slice(4)], {
+            env: { ...(r.payload.env as Record<string, string>), ...runnerPath(), HOME: s.root },
+            cwd: s.root,
+            encoding: 'utf8',
+            maxBuffer: 16 * MiB,
+          });
+          preads = JSON.parse(out.stderr);
+          return { exit_code: out.status, stdout: out.stdout, stderr: '' };
+        },
+      } as unknown as IIIClient;
+      const snapshot = await readTranscript(client, { CLAUDE_CONFIG_DIR: s.root }, id, 'last');
+      expect(snapshot.replies).toContainEqual({ id: recordId(2), text: 'early' });
+      // Bytes before the parsed window: the window read starts one byte before it.
+      const lead = total - 8 * MiB - 1;
+      const before = preads
+        .filter(([pos]) => pos < lead)
+        .map(([pos, n]) => [pos, Math.min(pos + n, lead)] as const)
+        .sort((a, b) => a[0] - b[0]);
+      expect(before.length).toBeGreaterThan(0);
+      for (let i = 1; i < before.length; i++) {
+        expect(before[i][0]).toBeGreaterThanOrEqual(before[i - 1][1]);
+      }
+    });
+  });
+
+  it('the host probe and reader share the PATH rule', async () => {
+    const path = process.env.PATH;
+    delete process.env.PATH;
+    try {
+      expect(runnerPath()).toEqual({});
+      // The same probe the host helper runs: python3 looked up with the runner's PATH.
+      const probe = spawnSync('python3', ['--version'], { env: runnerPath(), encoding: 'utf8' });
+      const defaultPython = !probe.error && probe.status === 0;
+      const run = withSyntheticHost(async (s) => (await lookup(s)).last_reply);
+      if (defaultPython) {
+        await expect(run).resolves.toEqual({ id: recordId(1), text: 'fixture answer' });
+      } else {
+        await expect(run).rejects.toThrow(/python3/);
+      }
+    } finally {
+      restorePath(path);
+    }
+  });
+
+  it('an empty PATH reaches the probe and the reader alike', async () => {
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = '';
+      expect(runnerPath()).toEqual({ PATH: '' });
+      // The probe looks python3 up with the empty PATH and finds nothing.
+      await expect(withSyntheticHost(async () => 'ran')).rejects.toThrow(/python3/);
+      restorePath(path);
+      await withSyntheticHost(async (s) => {
+        process.env.PATH = '';
+        // The reader receives the same empty PATH and cannot start python3.
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      });
+    } finally {
+      restorePath(path);
+    }
+  });
+
+  it('the host tests name python3 when it is missing', async () => {
+    const path = process.env.PATH;
+    const empty = await mkdtemp(join(tmpdir(), 'no-python-'));
+    process.env.PATH = empty;
+    try {
+      await expect(withSyntheticHost(async () => 'ran')).rejects.toThrow(/python3/);
+    } finally {
+      restorePath(path);
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
+});

@@ -34,7 +34,7 @@ claude_executable: ""
 # claude::agents::list reads the terminal host's `claude agents --json`. Off:
 # it lists only this worker's runs and the sessions whose hooks reached it,
 # and counts the rest. On: every Claude Code session on that host, and
-# the background ones there may be opened and stopped.
+# callers can read assistant reply text and open or stop background sessions.
 external_sessions: false
 
 # The console terminal page: what runs when a person opens `claude` in the

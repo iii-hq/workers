@@ -1,14 +1,15 @@
 /**
  * The Sessions rail of the claude page: every Claude Code session this worker
  * can see (`claude::agents::list`), what each is doing, and the one action
- * that applies to it. A row opens its session in the terminal beside it.
+ * that applies to it. Select an original to follow replies without a terminal.
  *
- * Three groups: the sessions open in this console, which a click switches
- * between; the others on the host, mostly watched (only a live background one
- * can be stopped from here); and the worker's own headless runs, which take a
- * message or a stop. The runs come last because they are never pruned, and a
- * session waiting on the operator must not sit below them. Whatever waits
- * comes first in each group.
+ * Four groups: the sessions open in this console; the others on the host,
+ * mostly watched (only a live background one can be stopped from here); the
+ * worker's own headless runs, which take a message or a stop; and the
+ * interactive sessions that ended on the host, which only resume. The runs
+ * come after the live groups because they are never pruned, and a session
+ * waiting on the operator must not sit below them. Whatever waits comes first
+ * in each live group; the ended ones are newest first.
  *
  * Live through the engine: a turn starting or settling writes
  * `claude_sessions` / `claude_turns`, and a hooked terminal reports its
@@ -17,7 +18,9 @@
  */
 import {
   Button,
+  ConfirmDialog,
   EmptyState,
+  type ExtensionIii,
   IconButton,
   List,
   ListGroup,
@@ -30,29 +33,40 @@ import {
   Skeleton,
   StatusBar,
   StatusDot,
-  type StatusDotProps,
   StatusPanel,
-  useConfirm,
 } from '@iii-dev/console-ui';
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format';
 import { useWorkerLive } from '@iii-dev/console-ui/hooks';
 import type { AgentTerminalApi } from '@iii-workers/agent-terminal-ui';
-import { MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
-import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
+import { EyeOff, MessageSquare, RefreshCw, Square, SquareTerminal } from 'lucide-react';
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { SessionDetail, STATUS, type Status, sessionActionNonce } from './session-detail';
 
 /** The console injects an untyped host object; this is the boundary. */
 // biome-ignore lint/suspicious/noExplicitAny: the injected host is untyped
 type Host = any;
-
-type Status = 'busy' | 'idle' | 'waiting' | 'done' | 'error' | 'stopped' | 'unknown';
 
 interface AgentRow {
   id: string;
   kind: 'headless' | 'interactive' | 'background';
   status: Status;
   alive: boolean;
+  /** An interactive session no process runs, read from its transcript on the host. */
+  ended?: boolean;
+  external_only?: boolean;
+  claude_session_id?: string;
   short_id?: string;
   pty_session_id?: string;
+  /** The tmux pane a live interactive session runs in, by tmux's own ids. */
+  tmux?: { session: string; window: string; pane: string };
   name?: string;
   cwd?: string;
   waiting_for?: string;
@@ -60,18 +74,70 @@ interface AgentRow {
   updated_at_ms?: number;
 }
 
+type SessionAnnouncement = LiveAnnouncement & { externalId?: string };
+type SessionFailure = { text: string; externalId?: string };
+type SessionConfirmation = { row: AgentRow; action: 'fork' | 'stop'; generation: number };
+
 interface AgentList {
   agents: AgentRow[];
+  inventory_status?: 'available' | 'unavailable';
+  /** Why host sessions were left out: the setting is off, or access is not yet confirmed. */
+  hidden_reason?: 'off' | 'unconfirmed';
+  config_id?: string;
+  external_visibility?: string | null;
   detail?: string;
 }
 
 const LIST_TIMEOUT_MS = 20_000;
+const WATCH_CHECK_MS = 5_000;
 // Describe prepares the session in its folder, installing the iii plugin there
 // when it is missing (a marketplace clone): longer than a listing.
 const DESCRIBE_TIMEOUT_MS = 180_000;
 const ACTION_TIMEOUT_MS = 30_000;
 /** Above what claude::agents::stop may take: its listing plus `claude stop`. */
 const HOST_STOP_TIMEOUT_MS = 50_000;
+
+/** The CLI's 8-hex background id, the only one `claude attach` is handed. */
+const SHORT_ID = /^[0-9a-f]{8}$/;
+
+/** The pane of a row, when its session, window and pane ids have tmux's own shapes. */
+const tmuxPane = (row: AgentRow) =>
+  row.tmux &&
+  /^\$[0-9]+$/.test(row.tmux.session) &&
+  /^@[0-9]+$/.test(row.tmux.window) &&
+  /^%[0-9]+$/.test(row.tmux.pane)
+    ? row.tmux
+    : undefined;
+
+/** Exactly the argv that attaches a terminal to that pane, and nothing else. */
+function attachesPane(row: AgentRow, args: unknown[]): boolean {
+  const pane = tmuxPane(row);
+  if (!pane) return false;
+  const expected = [
+    'attach-session',
+    '-t',
+    pane.session,
+    ';',
+    'select-window',
+    '-t',
+    pane.window,
+    ';',
+    'select-pane',
+    '-t',
+    pane.pane,
+  ];
+  return args.length === expected.length && expected.every((arg, i) => args[i] === arg);
+}
+
+/** Read by assistive technology, not drawn: why a shown action cannot run. */
+const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+} as const;
 
 const SOURCES = [
   {
@@ -90,19 +156,6 @@ const SOURCES = [
   },
 ];
 
-const STATUS: Record<
-  Status,
-  { word: string; tone: NonNullable<StatusDotProps['tone']>; pulse?: boolean }
-> = {
-  busy: { word: 'Working', tone: 'accent', pulse: true },
-  waiting: { word: 'Waiting', tone: 'warn' },
-  idle: { word: 'Idle', tone: 'ghost' },
-  done: { word: 'Done', tone: 'ok' },
-  error: { word: 'Failed', tone: 'alert' },
-  stopped: { word: 'Stopped', tone: 'ghost' },
-  unknown: { word: 'Unknown', tone: 'ghost' },
-};
-
 /** The last two path segments: enough to tell checkouts apart in a 300px rail. */
 function shortPath(cwd: string): string {
   const parts = cwd.split('/').filter(Boolean);
@@ -116,14 +169,16 @@ function nameOf(row: AgentRow): string {
 
 function describe(row: AgentRow): string {
   const parts = [
-    row.status === 'waiting' && row.waiting_for
-      ? `Waiting for ${row.waiting_for}`
-      : STATUS[row.status].word,
+    row.ended
+      ? 'Ended'
+      : row.status === 'waiting' && row.waiting_for
+        ? `Waiting for ${row.waiting_for}`
+        : STATUS[row.status].word,
   ];
   // The group already says "this worker" for a headless row; on the host the
   // kind is what separates a terminal someone drives from a background agent.
   if (row.kind === 'background') parts.push('Background');
-  if (row.kind === 'interactive') parts.push('Interactive');
+  if (row.kind === 'interactive' && !row.ended) parts.push('Interactive');
   const when = row.started_at_ms ?? row.updated_at_ms;
   if (when) parts.push(formatRelative(when));
   if (row.cwd) parts.push(shortPath(row.cwd));
@@ -149,7 +204,7 @@ const listing: { current: Promise<AgentList> | null; next: Promise<AgentList> | 
 function listAgents(host: Host): Promise<AgentList> {
   const run = (): Promise<AgentList> => {
     const request: Promise<AgentList> = host.iii
-      .call('claude::agents::list', {}, { timeoutMs: LIST_TIMEOUT_MS })
+      .call('claude::agents::list', { include_config_id: true }, { timeoutMs: LIST_TIMEOUT_MS })
       .finally(() => {
         listing.current = null;
       });
@@ -167,32 +222,162 @@ function listAgents(host: Host): Promise<AgentList> {
 }
 
 export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTerminalApi }) {
-  const sessions = useWorkerLive<AgentList>({
-    iii: host.iii,
+  const iii: ExtensionIii = host.iii;
+  const generation = useRef(0);
+  const configPending = useRef(false);
+  const [visibility, setVisibility] = useState(0);
+  const [watch, setWatch] = useState<{
+    iii: ExtensionIii;
+    configId: string;
+    token: string;
+  }>();
+  const sessions = useWorkerLive<AgentList & { generation: number }>({
+    iii,
     sources: SOURCES,
     fetch: async () => {
-      const list = await listAgents(host);
-      for (const row of list.agents) {
-        if (row.pty_session_id) terminal.claim(row.pty_session_id, row.id);
-      }
-      return list;
+      const started = configPending.current ? -1 : generation.current;
+      return { ...(await listAgents(host)), generation: started };
     },
     handlerId: 'iii::claude-ui::sessions',
   });
-  const { confirm, dialog } = useConfirm();
+  const [confirmation, setConfirmation] = useState<SessionConfirmation | null>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
   const [composing, setComposing] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
-  const [opening, setOpening] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null);
+  const [openingFork, setOpening] = useState<string | null>(null);
+  const [failure, setFailure] = useState<SessionFailure | null>(null);
+  const [announcement, setAnnouncement] = useState<SessionAnnouncement | null>(null);
   const seq = useRef(0);
   // Where focus returns when the composer closes: the Message button that opened it.
   const opener = useRef<HTMLElement | null>(null);
   const groupId = useId();
-  const announce = (text: string) =>
-    setAnnouncement({ seq: ++seq.current, text, urgency: 'polite' });
+  const [follow, setFollow] = useState<string | null>(null);
+  const followOpener = useRef<HTMLButtonElement>(null);
 
   const { refresh } = sessions;
+  const configId = sessions.data?.config_id;
+  useEffect(() => {
+    if (!configId) return;
+    const handler = 'iii::claude-ui::inventory-visibility';
+    const settled = `${handler}-settled`;
+    const target = (id: string) => `${id}::${iii.browserId}`;
+    const observerId = sessionActionNonce();
+    const off: (() => void)[] = [];
+    let connected = true;
+    let watched: string | null = null;
+    let checking = false;
+    let probe = 0;
+    const invalidate = () => {
+      setVisibility(++generation.current);
+      setAnnouncement((current) => (current?.externalId ? null : current));
+      setFailure((current) => (current?.externalId ? null : current));
+    };
+    const acceptWatch = (token: string | null) => {
+      const confirmedChange = token !== null && configPending.current;
+      if (confirmedChange) configPending.current = false;
+      if (watched === token && !confirmedChange) return;
+      watched = token;
+      invalidate();
+      setWatch(token ? { iii, configId, token } : undefined);
+      // Never reopen from cached rows: get a list stamped with the new permission.
+      if (token) refresh();
+    };
+    const checkWatch = async () => {
+      if (!connected || checking) return;
+      checking = true;
+      const current = probe;
+      const confirmLiveConfig = configPending.current;
+      let token: string | null = null;
+      try {
+        const [watch, visibility] = await Promise.all([
+          iii.call<{
+            id?: string;
+            function_id?: string;
+            target?: { function_id?: string };
+            state?: string;
+          }>('engine::observers::get', { id: observerId }, { timeoutMs: WATCH_CHECK_MS }),
+          iii.call<{ external_visibility?: unknown; live_config_confirmed?: unknown }>(
+            'claude::agents::visibility',
+            confirmLiveConfig ? { confirm_live_config: true } : {},
+            { timeoutMs: WATCH_CHECK_MS },
+          ),
+        ]);
+        const snapshot = visibility?.external_visibility;
+        if (
+          watch?.id === observerId &&
+          watch.function_id === 'configuration::on-updated' &&
+          watch.target?.function_id === target(handler) &&
+          watch.state === 'active' &&
+          (!confirmLiveConfig || visibility?.live_config_confirmed === true) &&
+          typeof snapshot === 'string' &&
+          snapshot
+        ) {
+          token = snapshot;
+        }
+      } catch {
+        // Neither a missing browser watch nor an unconfirmed worker snapshot can authorize data.
+      }
+      if (current !== probe) return;
+      checking = false;
+      acceptWatch(token);
+    };
+    const change = {
+      function_id: 'configuration::on-updated',
+      filters: { 'input.id': { $eq: configId } },
+      capture: [],
+    };
+    try {
+      off.push(
+        iii.on(handler, () => {
+          configPending.current = true;
+          probe++;
+          checking = false;
+          invalidate();
+          void checkWatch();
+        }),
+      );
+      off.push(
+        iii.on(settled, () => {
+          // A probe started before the reload cannot settle its result.
+          probe++;
+          checking = false;
+          invalidate();
+          refresh();
+          void checkWatch();
+        }),
+      );
+      off.push(iii.observe(change, target(handler), { id: observerId }));
+      off.push(iii.observe('claude::on-config-change', target(settled)));
+      off.push(
+        iii.addConnectionStateListener((state) => {
+          connected = state === 'connected';
+          if (!connected) {
+            probe++;
+            checking = false;
+            acceptWatch(null);
+          } else {
+            refresh();
+            void checkWatch();
+          }
+        }),
+      );
+      // ADE returns only a disposer, not the SDK's asynchronous admission state.
+      // Check both sides without rerunning the terminal host inventory on every heartbeat.
+      const timer = window.setInterval(() => void checkWatch(), WATCH_CHECK_MS);
+      off.push(() => window.clearInterval(timer));
+      void checkWatch();
+    } catch {
+      connected = false;
+      probe++;
+      acceptWatch(null);
+    }
+    return () => {
+      connected = false;
+      probe++;
+      setWatch(undefined);
+      for (const dispose of off.reverse()) dispose();
+    };
+  }, [iii, configId, refresh]);
   useEffect(() => {
     // A session no hook reaches changes without any write this page can see.
     const onFocus = () => {
@@ -217,53 +402,126 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     setStopping(null);
   }, [sessions.data]);
 
-  const rows = sessions.data?.agents ?? [];
+  const currentVisibility =
+    !!configId &&
+    watch?.iii === iii &&
+    watch.configId === configId &&
+    sessions.data?.external_visibility === watch.token &&
+    sessions.data?.generation === visibility &&
+    !sessions.error;
+  const listed = sessions.data?.agents ?? [];
+  // What an action that awaits reads to learn whether its row is still shown and authorized.
+  // Updated after commit, so an action reads the rail the operator last saw, not a discarded render.
+  const latest = useRef({ visible: false, visibility: 0, listed: [] as AgentRow[] });
+  useLayoutEffect(() => {
+    latest.current = { visible: currentVisibility, visibility, listed };
+  });
+  const noticeVisible = (externalId?: string) =>
+    !externalId || (currentVisibility && listed.some((row) => row.id === externalId));
+  const liveAnnouncement = noticeVisible(announcement?.externalId) ? announcement : null;
+  const liveFailure = noticeVisible(failure?.externalId) ? failure : null;
+  const reportFailure = (row: AgentRow, text: string) => {
+    if (row.external_only && (!currentVisibility || visibility !== generation.current)) return;
+    setFailure({ text, externalId: row.external_only ? row.id : undefined });
+  };
+  const announce = (row: AgentRow, text: string) => {
+    // An action may finish after the visibility that authorized its row is gone.
+    if (row.external_only && (!currentVisibility || visibility !== generation.current)) return;
+    setAnnouncement({
+      seq: ++seq.current,
+      text,
+      urgency: 'polite',
+      externalId: row.external_only ? row.id : undefined,
+    });
+  };
+  const rows = currentVisibility
+    ? listed
+    : listed
+        .filter((row) => !row.external_only)
+        .map((row) => ({ ...row, short_id: undefined, tmux: undefined }));
+  const activeConfirmation =
+    confirmation &&
+    ((!confirmation.row.external_only &&
+      !(confirmation.action === 'stop' && confirmation.row.kind === 'background')) ||
+      (currentVisibility &&
+        confirmation.generation === visibility &&
+        rows.some((row) => row.id === confirmation.row.id)))
+      ? confirmation
+      : null;
+  useEffect(() => {
+    if (confirmation && !activeConfirmation) {
+      setConfirmation(null);
+      refreshButton.current?.focus();
+    }
+  }, [confirmation, activeConfirmation]);
+  const opening =
+    openingFork ?? (activeConfirmation?.action === 'fork' ? activeConfirmation.row.id : null);
+
   const here = byAttention(rows.filter((row) => row.pty_session_id));
-  const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
+  const hosted = byAttention(
+    rows.filter((row) => !row.pty_session_id && row.kind !== 'headless' && !row.ended),
+  );
+  // When each last wrote its transcript, newest first.
+  const ended = rows
+    .filter((row) => !row.pty_session_id && row.ended)
+    .sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
-  // A copy on screen is its own row once listed; until then, the one it was opened from.
-  const onScreen =
-    rows.find((row) => row.pty_session_id && row.pty_session_id === terminal.current)?.id ??
-    terminal.currentKey;
+  const onScreen = rows.find(
+    (row) => row.pty_session_id && row.pty_session_id === terminal.current,
+  )?.id;
 
   const closeComposer = () => {
     setComposing(null);
     opener.current?.focus();
   };
 
-  const openRow = async (row: AgentRow) => {
-    if (opening) return;
+  // Whether the row is still listed under the same conversation, and, for an external
+  // row, still shown by the permission that showed it when the action started.
+  const stillShown = (row: AgentRow, requireListed: boolean) => {
+    const now = latest.current;
+    const listedNow = now.listed.some(
+      (listedRow) =>
+        listedRow.id === row.id && listedRow.claude_session_id === row.claude_session_id,
+    );
+    if (!row.external_only) return !requireListed || listedNow;
+    return (
+      now.visible && now.visibility === visibility && visibility === generation.current && listedNow
+    );
+  };
+
+  const forkRow = async (row: AgentRow) => {
+    if (openingFork || !row.claude_session_id) return;
     const name = nameOf(row);
     setFailure(null);
     setOpening(row.id);
+    // An external row forks only while the permission that showed it holds and it is still listed.
+    const stillCurrent = () => stillShown(row, false);
     try {
-      const shown =
-        (row.pty_session_id && (await terminal.open({ key: row.id, pty: row.pty_session_id }))) ||
-        (terminal.has(row.id) && (await terminal.open({ key: row.id })));
-      if (!shown) {
-        const spec = await host.iii.call(
-          'claude::terminal::describe',
-          { session: row.id },
-          { timeoutMs: DESCRIBE_TIMEOUT_MS },
-        );
-        const ok =
-          !spec.copy ||
-          (await confirm({
-            title: `Open a copy of ${name}?`,
-            description: `${
-              row.kind === 'headless'
-                ? 'A turn is running on it now, and a terminal on the same session would mix its conversation.'
-                : 'It is running in another terminal, and two terminals on one session would mix its conversation.'
-            } The copy starts with the conversation so far; the original is not touched.`,
-            confirmLabel: 'Open copy',
-          }));
-        if (!ok) return;
-        await terminal.open({ key: row.id, spec });
-      }
-      setComposing((open) => (open === row.id ? null : open));
-      announce(`Opened ${name}`);
+      const spec = await host.iii.call(
+        'claude::terminal::describe',
+        { session: row.id, mode: 'fork', claude_session_id: row.claude_session_id },
+        { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      );
+      if (!stillCurrent()) return;
+      if (
+        spec.claude_session_id !== row.claude_session_id ||
+        spec.copy !== true ||
+        !spec.program ||
+        !Array.isArray(spec.args) ||
+        spec.args.at(-3) !== '--resume' ||
+        spec.args.at(-2) !== row.claude_session_id ||
+        spec.args.at(-1) !== '--fork-session'
+      )
+        throw new Error('The fork could not be verified. Refresh the list and try again.');
+      const key = `fork:${row.claude_session_id}:${sessionActionNonce()}`;
+      if (!stillCurrent()) return;
+      if (!(await terminal.open({ key, spec })))
+        throw new Error('This terminal is no longer available. Refresh the list and try again.');
+      setFollow(null);
+      // The fork is a new conversation: every open draft, the original's included, stays.
+      announce(row, `Opened a fork of ${name}`);
     } catch (err) {
-      setFailure(errorMessage(err));
+      reportFailure(row, errorMessage(err));
     } finally {
       setOpening(null);
       // After a refusal too: the row was probably out of date.
@@ -271,17 +529,60 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     }
   };
 
+  // Reopens the original conversation, never a copy: the worker refuses while another
+  // process has it, and only a resume or attach of this conversation is opened.
+  const resumeRow = async (row: AgentRow) => {
+    const claudeId = row.claude_session_id;
+    if (openingFork || !claudeId) return;
+    const name = nameOf(row);
+    setFailure(null);
+    // Every row: a resume writes to the original, so it must still be the listed one.
+    const stillCurrent = () => stillShown(row, true);
+    if (!stillCurrent()) return;
+    setOpening(row.id);
+    try {
+      const spec = await host.iii.call(
+        'claude::terminal::describe',
+        { session: row.id, mode: 'resume', claude_session_id: claudeId },
+        { timeoutMs: DESCRIBE_TIMEOUT_MS },
+      );
+      if (!stillCurrent()) return;
+      const args: unknown[] = Array.isArray(spec?.args) ? spec.args : [];
+      const resumes =
+        args.at(-2) === '--resume' && args.at(-1) === claudeId && !args.includes('--fork-session');
+      const attaches =
+        row.kind === 'background' &&
+        args.length === 2 &&
+        args[0] === 'attach' &&
+        args[1] === row.short_id;
+      // A live tmux session opens as one more client of its own pane.
+      const tmux = spec?.program === 'tmux';
+      const joinsPane = tmux && row.kind === 'interactive' && row.alive && attachesPane(row, args);
+      if (
+        spec?.claude_session_id !== claudeId ||
+        spec.copy !== undefined ||
+        !spec.program ||
+        (tmux ? !joinsPane : !(resumes || attaches))
+      )
+        throw new Error('The resume could not be verified. Refresh the list and try again.');
+      const key = `resume:${claudeId}`;
+      if (!stillCurrent()) return;
+      if (!(await terminal.open({ key, spec })))
+        throw new Error('This terminal is no longer available. Refresh the list and try again.');
+      setFollow(null);
+      announce(row, `Resumed ${name}`);
+    } catch (err) {
+      reportFailure(row, errorMessage(err));
+    } finally {
+      setOpening(null);
+      refresh();
+    }
+  };
+
   const stop = async (row: AgentRow) => {
     const background = row.kind === 'background';
-    const ok = await confirm({
-      title: `Stop ${nameOf(row)}?`,
-      description: background
-        ? `Its conversation is kept; resume it later with claude attach ${row.short_id}.`
-        : 'The turn ends now; the conversation is kept and takes the next message.',
-      confirmLabel: 'Stop',
-      tone: 'danger',
-    });
-    if (!ok) return;
+    // Even a worker-known background row uses a permission-gated host action.
+    const noticeRow = background ? { ...row, external_only: true } : row;
     setFailure(null);
     setStopping(row.id);
     try {
@@ -297,13 +598,21 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
             { timeoutMs: ACTION_TIMEOUT_MS },
           );
       if (res?.stopped === false) {
-        setFailure(res.reason ?? 'The session was not running.');
+        reportFailure(
+          noticeRow,
+          background
+            ? 'Could not stop the host session. Refresh and try again.'
+            : (res.reason ?? 'The session was not running.'),
+        );
         setStopping(null);
       } else {
-        announce(`Stopped ${nameOf(row)}`);
+        announce(noticeRow, `Stopped ${nameOf(row)}`);
       }
     } catch (err) {
-      setFailure(errorMessage(err));
+      reportFailure(
+        noticeRow,
+        background ? 'Could not stop the host session. Refresh and try again.' : errorMessage(err),
+      );
       setStopping(null);
     }
     refresh();
@@ -318,16 +627,16 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         { timeoutMs: ACTION_TIMEOUT_MS },
       );
       if (res?.started === false) {
-        setFailure(res.reason ?? 'The session is busy; send again when it settles.');
+        reportFailure(row, res.reason ?? 'The session is busy; send again when it settles.');
         return false;
       }
-      announce(`Message sent to ${nameOf(row)}`);
+      announce(row, `Message sent to ${nameOf(row)}`);
       // Another row may have opened its own composer while this one was sending.
       setComposing((open) => (open === row.id ? null : open));
       refresh();
       return true;
     } catch (err) {
-      setFailure(errorMessage(err));
+      reportFailure(row, errorMessage(err));
       return false;
     }
   };
@@ -335,17 +644,34 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   const renderRow = (row: AgentRow) => {
     const status = STATUS[row.status];
     const isStopping = stopping === row.id;
-    // Open in the terminal, or about to be: a message would put a second writer on its transcript.
-    const inTerminal = row.id === onScreen || row.id === opening;
+    // A message to the same transcript would put a second writer on it.
+    const inTerminal = row.id === onScreen;
+    // A fork being confirmed or opened only holds the row's actions; its draft stays.
+    const isOpening = row.id === opening;
     const canMessage =
       row.kind === 'headless' && !row.alive && row.status !== 'unknown' && !inTerminal;
     // A background session is stoppable where the list gives it a short id.
     const canStop =
       row.alive && (row.kind === 'headless' || (row.kind === 'background' && !!row.short_id));
     const name = nameOf(row);
-    const opensCopy =
-      row.alive && !row.pty_session_id && row.kind !== 'background' && !terminal.has(row.id);
-    const openLabel = `Open ${opensCopy ? 'a copy of ' : ''}${name}`;
+    const openLabel = `Open original: ${name}`;
+    // An ended row only resumes: it has no reply feed to follow, and no fork here.
+    const canFork = !!row.claude_session_id && !row.ended;
+    // Never on a row already in this console's terminal: that terminal is its writer.
+    const canResume =
+      (row.kind === 'interactive' || row.kind === 'background') &&
+      !!row.claude_session_id &&
+      !row.pty_session_id &&
+      !inTerminal;
+    const attachable = row.kind === 'background' && SHORT_ID.test(row.short_id ?? '');
+    const joinable = row.kind === 'interactive' && !!tmuxPane(row);
+    const resumeBlocked =
+      !row.alive || attachable || joinable
+        ? undefined
+        : row.kind === 'background'
+          ? 'This background session has no short id to attach by.'
+          : 'This session is open in another terminal. Close it there to resume it.';
+    const resumeReasonId = `${groupId}-resume-${row.id}`;
     return (
       // biome-ignore lint/a11y/useSemanticElements: ListGroup is the console's div, so its rows are too
       <div key={`${row.kind}:${row.id}`} role="listitem">
@@ -356,27 +682,93 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           aria-selected={undefined}
           leading={<StatusDot tone={status.tone} pulse={status.pulse} aria-hidden />}
           label={
-            <button
-              type="button"
-              className="claude-sessions-open"
-              aria-label={openLabel}
-              aria-current={row.id === onScreen ? 'true' : undefined}
-              title={[openLabel, row.cwd, row.id].filter(Boolean).join('\n')}
-              onClick={() => void openRow(row)}
-            >
-              {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
-            </button>
+            // A headless run or an ended session has no conversation to follow: its name is just text.
+            row.kind === 'headless' || row.ended ? (
+              <span title={[name, row.cwd, row.id].filter(Boolean).join('\n')}>
+                {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="claude-sessions-open"
+                aria-label={openLabel}
+                aria-current={row.id === onScreen ? 'true' : undefined}
+                title={[openLabel, row.cwd, row.id].filter(Boolean).join('\n')}
+                aria-disabled={!!opening}
+                onClick={(event) => {
+                  if (opening) return;
+                  setFailure(null);
+                  if (!row.claude_session_id) {
+                    reportFailure(row, 'The original conversation is not available yet.');
+                    return;
+                  }
+                  followOpener.current = event.currentTarget;
+                  setFollow(row.claude_session_id);
+                }}
+              >
+                {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
+              </button>
+            )
           }
           description={opening === row.id ? 'Opening…' : isStopping ? 'Stopping…' : describe(row)}
           trailing={
-            canMessage || canStop ? (
+            canMessage || canStop || canFork || canResume ? (
               <span className="claude-sessions-actions">
+                {canResume ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Resume ${name}`}
+                    aria-disabled={!!opening || !!resumeBlocked}
+                    aria-describedby={resumeBlocked ? resumeReasonId : undefined}
+                    title={
+                      resumeBlocked ??
+                      (joinable && row.alive
+                        ? `Join ${name} in its tmux session here, sharing its view`
+                        : `Reopen ${name} here, with input`)
+                    }
+                    style={resumeBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                    onClick={() => {
+                      if (opening) return;
+                      if (resumeBlocked) {
+                        reportFailure(row, resumeBlocked);
+                        return;
+                      }
+                      void resumeRow(row);
+                    }}
+                  >
+                    Resume
+                  </Button>
+                ) : null}
+                {canResume && resumeBlocked ? (
+                  <span id={resumeReasonId} style={VISUALLY_HIDDEN}>
+                    {resumeBlocked}
+                  </span>
+                ) : null}
+                {canFork ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Fork ${name}`}
+                    aria-disabled={!!opening}
+                    onClick={() => {
+                      if (!opening)
+                        setConfirmation({ row, action: 'fork', generation: visibility });
+                    }}
+                  >
+                    Fork
+                  </Button>
+                ) : null}
                 {canMessage ? (
                   <IconButton
                     variant="ghost"
                     label={`Message ${name}`}
                     aria-expanded={composing === row.id}
+                    aria-disabled={isOpening}
                     onClick={(event) => {
+                      if (isOpening) return;
                       opener.current = event.currentTarget;
                       setComposing((open) => (open === row.id ? null : row.id));
                     }}
@@ -389,7 +781,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                     variant="ghost"
                     label={`Stop ${name}`}
                     disabled={isStopping}
-                    onClick={() => void stop(row)}
+                    onClick={() => setConfirmation({ row, action: 'stop', generation: visibility })}
                   >
                     <Square aria-hidden />
                   </IconButton>
@@ -415,6 +807,20 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       </ListGroup>
     ) : null;
 
+  const hostUnavailable = sessions.data?.inventory_status === 'unavailable';
+  // The worker counts the host sessions it left out. Only with the setting off
+  // does the hint say how to list them; while access is being confirmed it
+  // keeps the count in a neutral line. A worker that gives no reason is off.
+  const hiddenCount =
+    sessions.data?.inventory_status === 'available' && !sessions.data.external_visibility
+      ? sessions.data.detail?.match(/\d+ sessions? on the terminal host (?:is|are) hidden/)?.[0]
+      : undefined;
+  const hiddenUnconfirmed = sessions.data?.hidden_reason === 'unconfirmed';
+  const hiddenHint = hiddenCount
+    ? hiddenUnconfirmed
+      ? `${hiddenCount} while access is being confirmed`
+      : `${hiddenCount}; set external_sessions: true to list them`
+    : undefined;
   let body: React.ReactNode;
   if (sessions.error && !sessions.data) {
     body = (
@@ -422,7 +828,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         role="alert"
         variant="alert"
         headline="Could not list sessions"
-        detail={sessions.error}
+        detail="Refresh to try again."
         action={
           <Button size="sm" variant="ghost" onClick={refresh}>
             Retry
@@ -449,6 +855,17 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         ))}
       </div>
     );
+  } else if (rows.length === 0 && hostUnavailable) {
+    body = null; // The inventory warning below replaces the successful empty state.
+  } else if (rows.length === 0 && hiddenHint) {
+    body = (
+      <EmptyState
+        compact
+        icon={EyeOff}
+        title={hiddenUnconfirmed ? 'Host sessions are hidden' : 'External sessions are off'}
+        description={hiddenHint}
+      />
+    );
   } else if (rows.length === 0) {
     body = (
       <EmptyState
@@ -465,6 +882,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         {group('here', 'In this console', here)}
         {group('host', 'On this host', hosted)}
         {group('own', 'This worker', own)}
+        {group('ended', 'Ended', ended)}
       </List>
     );
   }
@@ -484,18 +902,59 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       ? 'Sessions unavailable'
       : 'Reading sessions…';
 
+  const target = activeConfirmation?.row;
+  const isFork = activeConfirmation?.action === 'fork';
+  const confirmationDescription = !target
+    ? undefined
+    : isFork
+      ? 'Start a separate conversation with the history so far. New messages in the fork won’t change the original.'
+      : target.kind === 'background'
+        ? `Its conversation is kept; resume it later with claude attach ${target.short_id}.`
+        : 'The turn ends now; the conversation is kept and takes the next message.';
   return (
     <div className="claude-sessions">
-      {dialog}
-      <LiveRegion announcement={announcement} />
-      {failure || (sessions.error && sessions.data) ? (
+      <ConfirmDialog
+        open={!!target}
+        onOpenChange={(open) => {
+          if (!open) setConfirmation(null);
+        }}
+        title={target ? `${isFork ? 'Fork' : 'Stop'} ${nameOf(target)}?` : ''}
+        description={confirmationDescription}
+        confirmLabel={target ? (isFork ? 'Create fork' : 'Stop') : undefined}
+        tone={target && !isFork ? 'danger' : 'default'}
+        onConfirm={() => {
+          if (!target || (target.external_only && visibility !== generation.current)) return;
+          if (isFork) void forkRow(target);
+          else void stop(target);
+        }}
+      />
+      {follow ? (
+        <SessionDetail
+          key={follow}
+          iii={host.iii}
+          id={follow}
+          configId={configId}
+          // The gated reply snapshot can still find originals that finish and leave the rail.
+          available={currentVisibility}
+          opener={{
+            get current() {
+              return followOpener.current?.isConnected
+                ? followOpener.current
+                : refreshButton.current;
+            },
+          }}
+          onClose={() => setFollow(null)}
+        />
+      ) : null}
+      <LiveRegion announcement={liveAnnouncement} />
+      {liveFailure || (sessions.error && sessions.data) ? (
         <div className="claude-sessions-notices">
-          {failure ? (
+          {liveFailure ? (
             <StatusPanel
               role="alert"
               variant="alert"
               headline="That did not go through"
-              detail={failure}
+              detail={liveFailure.text}
               action={
                 <Button size="sm" variant="ghost" onClick={() => setFailure(null)}>
                   Dismiss
@@ -508,7 +967,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
               role="alert"
               variant="warn"
               headline="Sessions may be out of date"
-              detail={sessions.error}
+              detail="Refresh to try again."
               action={
                 <Button size="sm" variant="ghost" onClick={refresh}>
                   Retry
@@ -520,7 +979,18 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       ) : null}
       <div className="claude-sessions-scroll">
         {body}
-        {sessions.data?.detail ? (
+        {hostUnavailable ? (
+          <StatusPanel
+            role="status"
+            variant="warn"
+            headline="Host sessions unavailable"
+            detail="Refresh to try reading the terminal host again."
+          />
+        ) : hiddenHint ? (
+          rows.length > 0 ? (
+            <p className="claude-sessions-note">{hiddenHint}</p>
+          ) : null
+        ) : currentVisibility && sessions.data?.detail ? (
           <p className="claude-sessions-note">{sessions.data.detail}</p>
         ) : null}
       </div>
@@ -530,6 +1000,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           <ShadcnButton
             variant="ghost"
             size="icon-sm"
+            ref={refreshButton}
             aria-label="Refresh sessions"
             title="Refresh sessions"
             onClick={refresh}

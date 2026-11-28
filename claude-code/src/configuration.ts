@@ -8,7 +8,7 @@
  * former `events_stream` / `raw_events_stream` keys are accepted and ignored.
  */
 
-import type { IIIClient } from 'iii-sdk';
+import type { IIIClient, ObserverHandle } from 'iii-sdk';
 import {
   type Config,
   type RuntimeConfig,
@@ -18,7 +18,7 @@ import {
 } from './config.js';
 
 const DEFAULT_CONFIG_ID = 'claude-code';
-const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
+export const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'claude::on-config-change';
 const ON_UPDATED_FN = 'configuration::on-updated';
 const TIMEOUT_MS = 5_000;
@@ -104,6 +104,186 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
+export type WatchBoundary = {
+  id: string;
+  epoch: number;
+  env: Record<string, string>;
+  cursor: string;
+};
+
+type ConfirmOptions = { waitForWatchCheckpoint?: boolean };
+export type ReplyAccess = {
+  readonly epoch: number | null;
+  confirm(options?: ConfirmOptions): Promise<number | null>;
+  offerWatchBoundary?(boundary: WatchBoundary): void;
+  /** Settles once a pending retained-watch checkpoint is captured; no config read. */
+  watchCheckpointSettled?(): Promise<void>;
+  /** Whether a retained-watch checkpoint for the current grant is still being captured. */
+  readonly watchCheckpointPending?: boolean;
+};
+
+/** Bind a series of reads to one grant. Even a rejected inventory lookup can
+ * disclose whether a session exists; check the grant before and after each read. */
+export function replyLease(access: ReplyAccess, epoch: number | null) {
+  const check = () => {
+    if (epoch === null || epoch !== access.epoch) throw new Error('reply access disabled');
+    return epoch;
+  };
+  return {
+    epoch: check(),
+    check,
+    async read<T>(read: () => Promise<T>) {
+      check();
+      try {
+        return await read();
+      } finally {
+        check();
+      }
+    },
+  };
+}
+
+/** A lease on a confirmed live value, never on a seed or a fallback. Starting a
+ * refresh revokes outstanding leases before waiting on the configuration worker. */
+export class ReplyPermission {
+  private generation = 0;
+  private currentEpoch: number | null = null;
+  private refreshConnection: number | null = null;
+  private reloading = false;
+  private confirmation?: Promise<number | null>;
+  private watchCheckpoint?: Promise<void>;
+  private recoverWatches?: (epoch: number) => Promise<void>;
+  private acceptWatchBoundary?: (boundary: WatchBoundary) => void;
+  private watch?: { iii: IIIClient; handle: ObserverHandle };
+
+  trackWatch(iii: IIIClient, handle: ObserverHandle) {
+    this.invalidate();
+    this.watch = { iii, handle };
+    handle.onStateChange((state) => {
+      if (state === 'active') void this.refresh(iii);
+      else this.invalidate();
+    });
+  }
+
+  private watchConnection() {
+    if (!this.watch) return null;
+    const { iii, handle } = this.watch;
+    // SDK 0.27 preserves the handle state across socket loss and sends no
+    // state change for active-to-active replay. Check its connection and
+    // replay acknowledgement too; a missing SDK signal fails closed.
+    if (
+      handle.state !== 'active' ||
+      !('answered' in handle && handle.answered === true) ||
+      !('observeOnline' in iii && typeof iii.observeOnline === 'function' && iii.observeOnline()) ||
+      !('connectionEpoch' in iii && typeof iii.connectionEpoch === 'number')
+    ) {
+      return null;
+    }
+    return iii.connectionEpoch;
+  }
+
+  get epoch() {
+    const connection = this.watchConnection();
+    if (connection !== this.refreshConnection) this.invalidate();
+    return this.currentEpoch;
+  }
+
+  invalidate() {
+    this.generation++;
+    this.currentEpoch = null;
+    this.refreshConnection = null;
+    this.reloading = false;
+    this.confirmation = undefined;
+    this.watchCheckpoint = undefined;
+  }
+
+  onConfirmedRecovery(
+    recover: (epoch: number) => Promise<void>,
+    acceptBoundary: (boundary: WatchBoundary) => void,
+  ) {
+    this.recoverWatches = recover;
+    this.acceptWatchBoundary = acceptBoundary;
+  }
+
+  offerWatchBoundary(boundary: WatchBoundary) {
+    if (boundary.epoch === this.epoch) this.acceptWatchBoundary?.(boundary);
+  }
+
+  async watchCheckpointSettled() {
+    await this.watchCheckpoint;
+  }
+
+  get watchCheckpointPending() {
+    return this.watchCheckpoint !== undefined;
+  }
+
+  // Set the epoch and start the retained-watch checkpoint in one synchronous
+  // step, so no reader sees a grant whose checkpoint is not yet pending. The
+  // checkpoint runs apart from the live config read: a slow checkpoint must
+  // not cache a positive config probe. A session whose boundary cannot be
+  // read holds back only its own watches, which its next poll baselines; an
+  // unexpected recovery failure still revokes the grant unreported.
+  private grant(generation: number) {
+    this.currentEpoch = generation;
+    if (this.watchCheckpoint || !this.recoverWatches) return;
+    this.watchCheckpoint = this.recoverWatches(generation)
+      .then(
+        () => {},
+        () => {
+          if (generation === this.generation) this.invalidate();
+        },
+      )
+      .finally(() => {
+        if (generation === this.generation) this.watchCheckpoint = undefined;
+      });
+  }
+
+  // An explicit probe, admission or poll can recover on the same connection.
+  // Concurrent readers share a probe; a config event always supersedes it.
+  async confirm({ waitForWatchCheckpoint = true }: ConfirmOptions = {}): Promise<number | null> {
+    const connection = this.watchConnection();
+    if (connection !== this.refreshConnection) this.invalidate();
+    if (!this.watch || connection === null || this.reloading) return null;
+    if (!this.confirmation) {
+      const generation = this.generation;
+      this.refreshConnection = connection;
+      this.confirmation = fetchRuntime(this.watch.iii).then((runtime) => {
+        if (generation !== this.generation) return null;
+        this.confirmation = undefined;
+        if (connection !== this.watchConnection() || runtime?.external_sessions !== true) {
+          this.invalidate();
+          return null;
+        }
+        this.grant(generation);
+        return generation;
+      });
+    }
+    const epoch = await this.confirmation;
+    if (epoch === null || epoch !== this.epoch) return null;
+    if (waitForWatchCheckpoint) await this.watchCheckpoint;
+    return epoch === this.epoch ? epoch : null;
+  }
+
+  async refresh(iii: IIIClient) {
+    this.invalidate();
+    const generation = this.generation;
+    const connection = this.watchConnection();
+    this.refreshConnection = connection;
+    this.reloading = true;
+    const runtime = await fetchRuntime(iii);
+    if (generation === this.generation) this.reloading = false;
+    if (
+      generation === this.generation &&
+      runtime?.external_sessions === true &&
+      connection !== null &&
+      connection === this.watchConnection()
+    ) {
+      this.grant(generation);
+    }
+    return runtime;
+  }
+}
+
 /** Fetch the live runtime config; null when unset/unreachable. */
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
@@ -125,17 +305,21 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
 /**
  * Register the change handler and observe `configuration::on-updated` for this
  * entry. `onChange` is called once now (reconcile) and on every
- * `configuration:updated`.
+ * `configuration:updated`. When tracking reply permission, also reconcile it
+ * on registration and deletion without reconfiguring unrelated settings.
  */
 export async function observeConfigChanges(
   iii: IIIClient,
-  onChange: () => Promise<void>,
+  onChange: (reloadSettings?: boolean) => Promise<void>,
+  trackWatch?: (handle: ObserverHandle) => void,
 ): Promise<void> {
-  await onChange();
   iii.registerFunction(
     CONFIG_FN_ID,
-    async () => {
-      await onChange();
+    async ({ output }: { output?: { event_type?: string } }) => {
+      const lifecycle =
+        output?.event_type === 'configuration:deleted' ||
+        output?.event_type === 'configuration:registered';
+      await onChange(!lifecycle);
       return null;
     },
     {
@@ -145,15 +329,37 @@ export async function observeConfigChanges(
       response_format: { type: 'null' },
     },
   );
-  iii.observe(
+  const watch = iii.observe(
     {
       function_id: ON_UPDATED_FN,
       filters: {
         'input.id': { $eq: CONFIG_ID },
-        'input.event_type': { $eq: 'configuration:updated' },
+        ...(trackWatch ? {} : { 'input.event_type': { $eq: 'configuration:updated' } }),
       },
       capture: ['output'],
     },
     CONFIG_FN_ID,
+  );
+  trackWatch?.(watch);
+  await onChange();
+}
+
+/** Settings and reply permission share a read, but not a supersession policy.
+ * Lifecycle events and watch gaps revoke reply leases without changing which
+ * configuration update is eligible to apply ordinary settings. */
+export function observeReplyConfig(
+  iii: IIIClient,
+  permission: ReplyPermission,
+  applySettings: (runtime: RuntimeConfig | null) => void,
+) {
+  let settingsGeneration = 0;
+  return observeConfigChanges(
+    iii,
+    async (reloadSettings = true) => {
+      const generation = reloadSettings ? ++settingsGeneration : undefined;
+      const runtime = await permission.refresh(iii);
+      if (generation !== undefined && generation === settingsGeneration) applySettings(runtime);
+    },
+    (watch) => permission.trackWatch(iii, watch),
   );
 }

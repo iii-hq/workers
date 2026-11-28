@@ -1,6 +1,28 @@
+import { spawnSync } from 'node:child_process';
+import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
+import {
+  type AgentRow,
+  type CliRow,
+  mergeInventory,
+  parseAgentsJson,
+  registerAgents,
+} from '../src/agents.js';
+import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
+import {
+  compactBoundary,
+  compactSummary,
+  deferred,
+  filler,
+  MiB,
+  record as transcriptRecord,
+  recordId,
+  runnerPath,
+  withSyntheticHost,
+} from './_helpers/external-replies-host.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
 
 // The runs this worker holds, without driving a real one.
@@ -96,7 +118,7 @@ describe('mergeInventory', () => {
 
   it('maps background sessions, alive only with a pid', () => {
     const { agents } = merge([
-      background('b-work', 'working', { pid: 7, status: 'busy' }),
+      background('b-work', 'working', { id: 'abcdef01', pid: 7, status: 'busy' }),
       background('b-block', 'blocked', { pid: 8, waitingFor: 'input' }),
       background('b-done', 'done'),
       background('b-fail', 'failed'),
@@ -107,7 +129,7 @@ describe('mergeInventory', () => {
       kind: 'background',
       status: 'busy',
       alive: true,
-      short_id: 'b-work',
+      short_id: 'abcdef01',
     });
     expect(byId(agents, 'b-block')).toMatchObject({ status: 'waiting', waiting_for: 'input' });
     expect(byId(agents, 'b-done')).toMatchObject({ status: 'done', alive: false });
@@ -252,12 +274,13 @@ const prepared = {
 };
 
 function host(
-  exec: (command: string) => unknown,
+  exec: (command: string, args?: string[]) => unknown,
   options: {
     external?: boolean;
     prepared?: typeof prepared;
     tracked?: string[];
     ptys?: () => unknown;
+    visibilityEpoch?: () => number | null;
   } = {},
 ): FakeIii & ReturnType<typeof registerAgents> {
   const fake = fakeIii();
@@ -266,17 +289,25 @@ function host(
     function_id: string;
     payload: Record<string, unknown>;
   }) => {
-    if (req.function_id === 'shell::pty::sessions' && options.ptys) return options.ptys();
+    if (req.function_id === 'shell::pty::sessions') return options.ptys?.() ?? { sessions: [] };
     if (req.function_id !== 'shell::exec') return realCall(req as never);
     fake.calls.push({ function_id: req.function_id, payload: req.payload });
-    return exec(String(req.payload.command));
+    const args = req.payload.args;
+    return exec(String(req.payload.command), Array.isArray(args) ? args.map(String) : undefined);
   };
   const tracked = new Set(options.tracked ?? []);
   const agents = registerAgents(
     fake.iii,
     () => options.prepared ?? prepared,
-    () => options.external ?? false,
     { has: (id) => tracked.has(id) },
+    {
+      get epoch() {
+        return options.visibilityEpoch ? options.visibilityEpoch() : options.external ? 1 : null;
+      },
+      async confirm() {
+        return this.epoch;
+      },
+    },
   );
   return { ...fake, ...agents };
 }
@@ -286,19 +317,262 @@ const ok = (rows: unknown) => () => ({ stdout: JSON.stringify(rows), stderr: '',
 async function list(fake: FakeIii, payload: unknown = {}) {
   return (await fake.registered.get('claude::agents::list')?.(payload)) as {
     agents: Array<{ id: string; pty_session_id?: string }>;
+    config_id?: string;
+    external_visibility?: string | null;
     detail?: string;
   };
 }
 
 describe('claude::agents::list', () => {
+  it('only returns the effective configuration entry ID when requested', async () => {
+    const fake = host(ok([]), { external: true });
+    expect(await list(fake)).not.toHaveProperty('config_id');
+    const { config_id } = await list(fake, { include_config_id: true });
+    expect(config_id).toBe(process.env.III_CONFIG_NAME?.trim() || 'claude-code');
+    await observeConfigChanges(fake.iii, async () => {});
+    expect(fake.observed).toContainEqual(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          function_id: 'configuration::on-updated',
+          filters: expect.objectContaining({ 'input.id': { $eq: config_id } }),
+        }),
+      }),
+    );
+  });
+
+  it('binds opt-in inventory to the current visibility snapshot without inventory reads on probe', async () => {
+    let epoch: number | null = null;
+    const makeWorker = () =>
+      host(ok([interactive('external', 'idle')]), { visibilityEpoch: () => epoch });
+    const fake = makeWorker();
+    const probe = (worker: FakeIii = fake) =>
+      worker.registered.get('claude::agents::visibility')?.({});
+
+    expect(await probe()).toEqual({ external_visibility: null });
+    epoch = 1;
+    const visible = await probe();
+    expect(visible).toEqual({ external_visibility: expect.any(String) });
+    expect(await probe(makeWorker())).not.toEqual(visible);
+    expect(fake.calls).toEqual([]);
+    expect(await list(fake)).not.toHaveProperty('external_visibility');
+    const { external_visibility } = await list(fake, { include_config_id: true });
+    expect(visible).toEqual({ external_visibility });
+
+    epoch = null;
+    expect(await probe()).toEqual({ external_visibility: null });
+    expect(await list(fake, { include_config_id: true })).toMatchObject({
+      external_visibility: null,
+      agents: [],
+    });
+    epoch = 2;
+    expect(await probe()).not.toEqual(visible);
+  });
+
+  it('reconfirms the live setting without inventory and never restores a superseded lease', async () => {
+    await withSyntheticHost(async (s) => {
+      const probe = (confirm = true) =>
+        s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: { confirm_live_config: confirm },
+        });
+      const lease = await probe(false);
+      expect(lease).toEqual({ external_visibility: expect.any(String) });
+      expect(await probe()).toEqual({ ...lease, live_config_confirmed: true });
+      for (const value of [null, { external_sessions: false }, { external_sessions: 'true' }]) {
+        s.host.config = async () => value;
+        expect(await probe()).toEqual({ external_visibility: null });
+      }
+      s.host.config = async () => ({ external_sessions: true });
+      const recovered = await probe();
+      expect(recovered).toEqual({
+        external_visibility: expect.any(String),
+        live_config_confirmed: true,
+      });
+      expect(recovered).not.toEqual({ ...lease, live_config_confirmed: true });
+      const response = deferred<unknown>();
+      s.host.config = () => response.promise;
+      const stale = probe();
+      s.host.config = async () => ({ external_sessions: false });
+      await s.refresh();
+      response.resolve({ external_sessions: true });
+      expect(await stale).toEqual({ external_visibility: null });
+      expect(await probe(false)).toEqual({ external_visibility: null });
+      expect(
+        s.host.calls.filter(
+          (c) =>
+            c.function_id !== 'configuration::get' &&
+            c.function_id !== 'claude::agents::visibility',
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  it.each([
+    true,
+    false,
+  ])('returns visibility before a slow retained watch recovers (explicit confirmation: %s)', async (confirm_live_config) => {
+    await withSyntheticHost(async (s) => {
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      s.host.config = async () => ({ external_sessions: true });
+      const other = recordId(99);
+      s.host.cli.push(interactive(other, 'idle'));
+
+      vi.useFakeTimers();
+      try {
+        let inventoryReads = 0;
+        s.host.beforeInventory = async () => {
+          if (++inventoryReads === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 21_000));
+          }
+        };
+        const response = s.client.call({
+          function_id: 'claude::agents::visibility',
+          payload: confirm_live_config ? { confirm_live_config } : {},
+        });
+        const browser = Promise.race([
+          response,
+          new Promise((resolve) =>
+            setTimeout(() => resolve('visibility deadline exceeded'), 5_000),
+          ),
+        ]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(inventoryReads).toBe(1); // The recovery read, not a rail inventory read.
+        const railResponse = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        await vi.advanceTimersByTimeAsync(5_000);
+        const result = await browser;
+        await vi.advanceTimersByTimeAsync(16_000);
+        await response;
+        const rail = (await railResponse) as unknown as { external_visibility: string };
+
+        expect(rail).toMatchObject({
+          agents: expect.arrayContaining([
+            expect.objectContaining({ id: other, external_only: true }),
+          ]),
+          external_visibility: expect.any(String),
+        });
+        expect(result).toEqual({
+          external_visibility: rail.external_visibility,
+          ...(confirm_live_config ? { live_config_confirmed: true } : {}),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('distinguishes empty and unavailable listings without external permission', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.cli.length = 0;
+      expect(await s.list()).toMatchObject({ agents: [], inventory_status: 'available' });
+      s.host.inventoryOK = false;
+      expect(await s.list()).toMatchObject({
+        agents: [],
+        inventory_status: 'unavailable',
+        detail: 'Terminal host inventory unavailable',
+      });
+      s.host.records.push(record('owned', 'done'));
+      const partial = await s.list();
+      expect(partial).toMatchObject({ agents: [{ id: 'owned' }], inventory_status: 'unavailable' });
+      expect(JSON.stringify(partial)).not.toContain('host diagnostic');
+    }, false);
+  });
+
+  it.each([
+    15_300, 45_000,
+  ])('retains worker rows before the rail deadline for a %ims host failure', async (delay) => {
+    await withSyntheticHost(async (s) => {
+      vi.useFakeTimers();
+      try {
+        s.host.records.push(record('owned', 'done'));
+        s.host.config = () => new Promise((resolve) => setTimeout(() => resolve(null), 5_000));
+        s.host.beforeInventory = () => new Promise((resolve) => setTimeout(resolve, delay));
+        s.host.inventoryOK = false;
+        const response = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        const rail = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('rail deadline exceeded'), 20_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(20_300);
+        expect(await rail).toMatchObject({
+          agents: [{ id: 'owned' }],
+          inventory_status: 'unavailable',
+          detail: 'Terminal host inventory unavailable',
+          external_visibility: null,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('returns partial rail inventory while a retained reply watch is still recovering', async () => {
+    await withSyntheticHost(async (s) => {
+      const appendReply = (n: number, text: string) =>
+        appendFile(s.file, `${JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text))}\n`);
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      await appendReply(2, 'during outage');
+      s.host.records.push(record('owned', 'done'));
+      s.host.config = async () => ({ external_sessions: true });
+      s.host.inventoryOK = false;
+
+      vi.useFakeTimers();
+      try {
+        s.host.beforeInventory = () => new Promise((resolve) => setTimeout(resolve, 21_000));
+        const response = s.client.call({
+          function_id: 'claude::agents::list',
+          payload: { include_config_id: true },
+        });
+        const rail = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('rail deadline exceeded'), 20_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(20_000);
+        const result = await rail;
+        await vi.advanceTimersByTimeAsync(1_000);
+        await response;
+        expect(result).toMatchObject({
+          agents: [{ id: 'owned' }],
+          inventory_status: 'unavailable',
+          detail: 'Terminal host inventory unavailable',
+          external_visibility: expect.any(String),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      s.host.beforeInventory = async () => {};
+      s.host.inventoryOK = true;
+      await s.poll(); // Rebaseline after the failed recovery; do not replay the outage.
+      expect(s.host.deliveries).toEqual([]);
+      await appendReply(3, 'after recovery');
+      await s.poll();
+      expect(s.host.deliveries).toMatchObject([
+        { observer: 'retained', event: { reply: { id: recordId(3), text: 'after recovery' } } },
+      ]);
+    });
+  });
+
   it('runs claude agents --json on the terminal host, --all when asked', async () => {
     const fake = host(ok([]), { external: true });
     await list(fake);
     await list(fake, { all: true });
     const execs = fake.calls.filter((c) => c.function_id === 'shell::exec');
+    // With the grant on, the ended-session transcript reader runs beside each listing.
     expect(execs.map((c) => c.payload.command)).toEqual([
       "'/opt/claude bin/claude' agents --json",
+      'python3',
       "'/opt/claude bin/claude' agents --json --all",
+      'python3',
     ]);
     expect(execs[0].payload).toMatchObject({ env: { HOME: '/home/u' }, timeout_ms: 15_000 });
   });
@@ -316,11 +590,95 @@ describe('claude::agents::list', () => {
     fake.state.set('claude_turns/hooked', { id: 'hooked', source: 'hook', status: 'completed' });
     fake.state.set('claude_turns/ran', { id: 'ran', source: 'run', status: 'completed' });
     fake.state.set('claude_sessions/h', record('h', 'done'));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: false });
     const res = await list(fake);
     expect(res.agents.map((a) => a.id)).toEqual(['h', 'tracked', 'hooked']);
     expect(res.detail).toBe(
       '2 sessions on the terminal host are hidden; set external_sessions: true to list them',
     );
+  });
+
+  it('the session list reports hidden rows as unconfirmed while the setting is on', async () => {
+    const fake = host(ok([interactive('stranger', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: true });
+    const res = (await list(fake)) as { agents: unknown[]; hidden_reason?: string };
+    expect(res.agents).toEqual([]);
+    expect(res.hidden_reason).toBe('unconfirmed');
+  });
+
+  it('the session list reports hidden rows as off when the setting is off', async () => {
+    const fake = host(ok([interactive('stranger', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: false });
+    const res = (await list(fake)) as { agents: unknown[]; hidden_reason?: string };
+    expect(res.agents).toEqual([]);
+    expect(res.hidden_reason).toBe('off');
+  });
+
+  it('the session list reads the setting alongside the inventory', async () => {
+    let settingReadFirst: boolean | undefined;
+    const fake: FakeIii = host(() => {
+      // The inventory has not finished: its host command is only now running.
+      settingReadFirst = fake.calls.some((c) => c.function_id === 'configuration::get');
+      return { stdout: JSON.stringify([]), stderr: '', exit_code: 0 };
+    });
+    await list(fake);
+    expect(settingReadFirst).toBe(true);
+  });
+
+  it('an unconfirmed list detail does not ask to enable the setting', async () => {
+    const fake = host(ok([interactive('stranger', 'idle'), interactive('other', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: true });
+    const res = (await list(fake)) as { detail?: string; hidden_reason?: string };
+    expect(res.hidden_reason).toBe('unconfirmed');
+    expect(res.detail).toContain('2 sessions on the terminal host are hidden');
+    expect(res.detail).not.toContain('set external_sessions: true');
+  });
+
+  it('keeps external names and directories hidden until live permission is confirmed', async () => {
+    let epoch: number | null = null;
+    const fake = host(
+      ok([
+        interactive('known', 'idle'),
+        interactive('external', 'idle', { cwd: '/fixture/external-only' }),
+      ]),
+      { external: true, tracked: ['known'], visibilityEpoch: () => epoch },
+    );
+    const read = () => list(fake, { include_config_id: true });
+    expect((await read()).agents.map((row) => row.id)).toEqual(['known']);
+    epoch = 1;
+    expect((await read()).agents).toMatchObject([
+      { id: 'known' },
+      { id: 'external', external_only: true, name: 'n-external', cwd: '/fixture/external-only' },
+    ]);
+    epoch = null;
+    const revoked = await read();
+    expect(revoked.agents.map((row) => row.id)).toEqual(['known']);
+    expect(JSON.stringify(revoked)).not.toMatch(/n-external|external-only/);
+  });
+
+  it('withholds external rows from an inventory read spanning a permission change', async () => {
+    let epoch = 1;
+    let inventoryStarted!: () => void;
+    let releaseInventory!: () => void;
+    const started = new Promise<void>((resolve) => {
+      inventoryStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseInventory = resolve;
+    });
+    const fake = host(
+      async () => {
+        inventoryStarted();
+        await release;
+        return ok([interactive('external', 'idle')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const pending = list(fake, { include_config_id: true });
+    await started;
+    epoch++;
+    releaseInventory();
+    expect(await pending).toMatchObject({ agents: [], external_visibility: null });
   });
 
   it('reads the console terminal of a session, only from the claude page', async () => {
@@ -424,7 +782,7 @@ describe('claude::agents::stop', () => {
       'external_sessions is off',
       [background(BG, 'working', { pid: 7 })],
       false,
-      'external_sessions is off',
+      'Terminal host inventory unavailable',
     ],
     ['an unknown id', [], true, 'no background session with that id'],
     [
@@ -446,6 +804,141 @@ describe('claude::agents::stop', () => {
     expect(res.stopped).toBe(false);
     expect(res.reason).toContain(reason);
     expect(commands(fake).some((c) => String(c).includes(' stop '))).toBe(false);
+  });
+
+  it('stops the live background row advertised after a stopped duplicate', async () => {
+    const snapshot = [
+      background(BG, 'stopped', { id: 'deadbeef' }),
+      background(BG, 'working', { pid: 7, id: 'abcdef01' }),
+    ];
+    const fake = host(
+      (command) =>
+        command.includes('agents --json')
+          ? ok(snapshot)()
+          : { stdout: '', stderr: '', exit_code: 0 },
+      { external: true },
+    );
+    expect((await list(fake)).agents).toMatchObject([
+      { id: BG, alive: true, short_id: 'abcdef01' },
+    ]);
+    expect(await stop(fake)).toEqual({ id: BG, stopped: true });
+    // The listing also reads ended sessions; stop reads only a fresh CLI listing.
+    expect(commands(fake)).toEqual([
+      "'/opt/claude bin/claude' agents --json",
+      'python3',
+      "'/opt/claude bin/claude' agents --json",
+      "'/opt/claude bin/claude' stop abcdef01",
+    ]);
+  });
+
+  it('lists and acts on a fresh grant even if ordinary settings still say off', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.config = async () => ({ external_sessions: false });
+      await s.configEvent('configuration:updated');
+      s.host.config = async () => ({ external_sessions: true });
+      expect(s.externalSetting).toBe(false);
+      s.host.cli[0] = {
+        kind: 'background',
+        sessionId: s.claude_session_id,
+        pid: 7,
+        id: 'deadbeef',
+      };
+      expect(await s.list()).toMatchObject({ agents: [{ short_id: 'deadbeef' }] });
+      const action = () =>
+        s.client.call({
+          function_id: 'claude::agents::stop',
+          payload: { id: s.claude_session_id },
+        });
+      expect(await action()).toMatchObject({ stopped: true });
+      s.host.config = async () => null;
+      s.host.calls.length = 0;
+      expect(await action()).toMatchObject({
+        stopped: false,
+        reason: 'Terminal host inventory unavailable',
+      });
+      expect(s.host.calls.map((c) => c.function_id)).toEqual([
+        'claude::agents::stop',
+        'configuration::get',
+      ]);
+      expect((await s.list()).agents).toEqual([]);
+    });
+  });
+
+  it('refuses before inventory when live permission is unconfirmed', async () => {
+    const fake = host(ok([]), { external: true, visibilityEpoch: () => null });
+    expect(await stop(fake)).toEqual({
+      id: BG,
+      stopped: false,
+      reason: 'Terminal host inventory unavailable',
+    });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it.each([
+    [null, 'Terminal host inventory unavailable'],
+    [2, 'Terminal host inventory unavailable'],
+    [1, 'claude agents --json failed: exit 1: inventory unavailable at /fixture/diagnostic'],
+  ])('publishes inventory failure with final permission epoch %s', async (finalEpoch, reason) => {
+    let epoch: number | null = 1;
+    const started = deferred<void>();
+    const inventory = deferred<{ stdout: string; stderr: string; exit_code: number }>();
+    const fake = host(
+      () => {
+        started.resolve();
+        return inventory.promise;
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const pending = stop(fake);
+    await started.promise;
+    epoch = finalEpoch;
+    inventory.resolve({
+      stdout: '',
+      stderr: 'inventory unavailable at /fixture/diagnostic',
+      exit_code: 1,
+    });
+    expect(await pending).toEqual({ id: BG, stopped: false, reason });
+    expect(fake.calls).toMatchObject([
+      {
+        function_id: 'shell::exec',
+        payload: { command: "'/opt/claude bin/claude' agents --json" },
+      },
+    ]);
+  });
+
+  it('does not stop a session after permission changes during inventory', async () => {
+    let epoch = 1;
+    const fake = host(
+      () => {
+        epoch++;
+        return ok([background(BG, 'working', { pid: 7 })])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    expect(await stop(fake)).toEqual({
+      id: BG,
+      stopped: false,
+      reason: 'Terminal host inventory unavailable',
+    });
+    expect(commands(fake)).toEqual(["'/opt/claude bin/claude' agents --json"]);
+  });
+
+  it.each([
+    'exit failure',
+    'exception',
+  ])('returns a generic stop failure after permission changes: %s', async (failure) => {
+    let epoch: number | null = 1;
+    const fake = host(
+      (command) => {
+        if (command.endsWith('agents --json')) return ok([background(BG, 'working', { pid: 7 })])();
+        epoch = null;
+        const detail = 'stop unavailable at /fixture/diagnostic';
+        if (failure === 'exception') throw new Error(detail);
+        return { stdout: '', stderr: detail, exit_code: 1 };
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    expect(await stop(fake)).toEqual({ id: BG, stopped: false, reason: 'claude stop failed' });
   });
 
   it('never reads a killed claude stop as stopped', async () => {
@@ -479,6 +972,320 @@ describe('claude::agents::stop', () => {
   });
 });
 
+describe('claude::agents::follow-snapshot', () => {
+  const function_id = 'claude::agents::follow-snapshot';
+
+  it('accepts the caller id the engine adds to the payload, and no other unknown key', async () => {
+    await withSyntheticHost(async (s) => {
+      s.host.config = async () => ({ external_sessions: true });
+      const call = (extra: Record<string, unknown>) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...extra },
+        });
+      expect(await call({ _caller_worker_id: 'console-client' })).toMatchObject({
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(call({ unexpected: true })).rejects.toThrow();
+    });
+  });
+
+  it.each([
+    0, 21_000,
+  ])('returns the latest reply before the viewer deadline with a %ims retained checkpoint', async (checkpointDelay) => {
+    await withSyntheticHost(async (s) => {
+      await s.client.observe('claude::agents::on-reply', 'retained', s.claude_session_id);
+      s.host.config = async () => null;
+      await s.poll();
+      await appendFile(
+        s.file,
+        JSON.stringify(transcriptRecord(2, 1, 'assistant', 'latest fixture reply')) + '\n',
+      );
+      s.host.config = async () => ({ external_sessions: true });
+
+      vi.useFakeTimers();
+      try {
+        let reads = 0;
+        s.host.beforeInventory = () =>
+          new Promise((resolve) => setTimeout(resolve, ++reads === 1 ? 21_000 : 10_000));
+        let transcripts = 0;
+        s.host.beforeRead = () =>
+          new Promise((resolve) => setTimeout(resolve, ++transcripts === 1 ? checkpointDelay : 0));
+        const response = s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id },
+        });
+        const viewer = Promise.race([
+          response,
+          new Promise((resolve) => setTimeout(() => resolve('viewer deadline exceeded'), 30_000)),
+        ]);
+        await vi.advanceTimersByTimeAsync(31_200 + checkpointDelay);
+        expect(await response).toMatchObject({
+          last_reply: { id: recordId(2), text: 'latest fixture reply' },
+        });
+        expect(await viewer).toMatchObject({
+          last_reply: { id: recordId(2), text: 'latest fixture reply' },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('returns the latest reply before the viewer deadline with slow successful host RPCs', async () => {
+    await withSyntheticHost(async (s) => {
+      vi.useFakeTimers();
+      try {
+        const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+        s.host.config = async () => {
+          await delay(4_500);
+          return { external_sessions: true };
+        };
+        s.host.beforeInventory = () => delay(22_000);
+        s.host.beforeRead = () => delay(4_500);
+        const response = s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id },
+        });
+        const viewer = Promise.race([
+          response,
+          delay(30_000).then(() => 'viewer deadline exceeded'),
+        ]);
+        await vi.advanceTimersByTimeAsync(31_200);
+        const expected = { last_reply: { id: recordId(1), text: 'fixture answer' } };
+        expect(await response).toMatchObject(expected);
+        expect(await viewer).toMatchObject(expected);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('does not disclose a viewer transcript when fresh inventory fails or permission changes', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = () =>
+        s.client.call({ function_id, payload: { claude_session_id: s.claude_session_id } });
+      s.host.inventoryOK = false;
+      await expect(snapshot()).rejects.toThrow(/^inventory unavailable$/);
+      s.host.inventoryOK = true;
+      s.host.cli.length = 0;
+      await expect(snapshot()).rejects.toThrow(/^session not listed$/);
+
+      s.host.cli.push(interactive(s.claude_session_id, 'idle'));
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      s.host.beforeInventory = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const denied = expect(snapshot()).rejects.toThrow(/^reply access disabled$/);
+      await entered.promise;
+      try {
+        s.host.config = async () => ({ external_sessions: false });
+        await s.refresh();
+      } finally {
+        release.resolve();
+        await denied;
+      }
+    });
+  });
+
+  it('returns the newest replies of a transcript over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string; text: string } | null;
+          replies: Array<{ id: string; text: string }>;
+        }>;
+      const row = (n: number, text: string) =>
+        `${JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text))}\n`;
+      await appendFile(s.file, filler(9 * MiB) + row(2, 'before view'));
+      const first = await snapshot();
+      expect(first).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(2), text: 'before view' },
+      });
+      // The viewed tip ends up before the parsed final 8 MiB.
+      await appendFile(s.file, row(3, 'early') + filler(9 * MiB) + row(4, 'newest'));
+      const page = await snapshot(first.cursor);
+      expect(page.last_reply).toEqual({ id: recordId(4), text: 'newest' });
+      expect(page.replies).toEqual([{ id: recordId(4), text: 'newest' }]);
+      expect(await snapshot(page.cursor)).toMatchObject({
+        replies: [],
+        last_reply: page.last_reply,
+      });
+    });
+  });
+  it('returns the replies written after a compaction boundary', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string; text: string } | null;
+          replies: Array<{ id: string; text: string }>;
+        }>;
+      const rows = (...records: unknown[]) => records.map((r) => `${JSON.stringify(r)}\n`).join('');
+      const first = await snapshot();
+      expect(first.last_reply).toEqual({ id: recordId(1), text: 'fixture answer' });
+      await appendFile(
+        s.file,
+        rows(
+          compactBoundary(2, 1),
+          compactSummary(3, 2),
+          transcriptRecord(4, 3, 'user', 'synthetic prompt'),
+        ),
+      );
+      const compacted = await snapshot(first.cursor);
+      // No reply follows the compaction yet: the viewer keeps the one before it.
+      expect(compacted).toMatchObject({ replies: [], last_reply: first.last_reply });
+      await appendFile(
+        s.file,
+        rows(
+          transcriptRecord(5, 4, 'assistant', 'first after'),
+          transcriptRecord(6, 5, 'assistant', 'second after'),
+        ),
+      );
+      const page = await snapshot(compacted.cursor);
+      expect(page.replies).toEqual([
+        { id: recordId(5), text: 'first after' },
+        { id: recordId(6), text: 'second after' },
+      ]);
+      expect(page.last_reply).toEqual({ id: recordId(6), text: 'second after' });
+    });
+  });
+
+  it('returns the newest bounded suffix and a tip cursor even when the burst needs several watch pages', async () => {
+    await withSyntheticHost(async (s) => {
+      const snapshot = (cursor?: string) =>
+        s.client.call({
+          function_id,
+          payload: { claude_session_id: s.claude_session_id, cursor },
+        }) as Promise<{
+          cursor: string;
+          last_reply: { id: string };
+          replies: Array<{ id: string }>;
+        }>;
+      const baseline = await snapshot();
+      const text = 'x'.repeat(30000);
+      await appendFile(
+        s.file,
+        [2, 3, 4]
+          .map((n) => JSON.stringify(transcriptRecord(n, n - 1, 'assistant', text)))
+          .join('\n') +
+          '\n' +
+          JSON.stringify(transcriptRecord(5, 4, 'assistant', 'latest')) +
+          '\n',
+      );
+      const page = await snapshot(baseline.cursor);
+      expect(page.last_reply).toEqual({ id: recordId(5), text: 'latest' });
+      expect(page.replies.map((r) => r.id)).toEqual([recordId(4), recordId(5)]);
+      expect(await snapshot(page.cursor)).toMatchObject({
+        replies: [],
+        last_reply: page.last_reply,
+      });
+      expect(s.host.snapshots.every((packet) => Buffer.byteLength(packet) <= 48 * 1024)).toBe(true);
+    });
+  });
+
+  it('reads an ordered burst and excludes a branch abandoned since the first view', async () => {
+    await withSyntheticHost(async ({ client, claude_session_id, file }) => {
+      const append = (...records: ReturnType<typeof transcriptRecord>[]) =>
+        appendFile(file, records.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      const snapshot = (cursor?: string) =>
+        client.call({
+          function_id,
+          payload: { claude_session_id, ...(cursor ? { cursor } : {}) },
+        }) as Promise<{
+          cursor: string;
+          replies: Array<{ id: string; text: string }>;
+          last_reply: { id: string; text: string } | null;
+        }>;
+      await append(transcriptRecord(2, 1, 'assistant', 'initial latest'));
+      const initial = await snapshot();
+      expect(initial).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(2), text: 'initial latest' },
+      });
+      const burst = Array.from({ length: 21 }, (_, i) => ({
+        id: recordId(i + 3),
+        text: 'Reply ' + (i + 1),
+      }));
+      await append(
+        ...burst.map(({ text }, i) => transcriptRecord(i + 3, i + 2, 'assistant', text)),
+      );
+      const updated = await snapshot(initial.cursor);
+      expect(updated.replies).toEqual(burst);
+      expect(updated.last_reply).toEqual(burst.at(-1));
+      expect((await snapshot(updated.cursor)).replies).toEqual([]);
+      await append(transcriptRecord(24, 1, 'user', 'switch branch'));
+      expect(await snapshot(initial.cursor)).toMatchObject({
+        replies: [],
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      await expect(snapshot('bad-' + initial.cursor)).rejects.toThrow('invalid follow cursor');
+    });
+  });
+
+  it.each([
+    'interactive',
+    'background',
+    'finished',
+  ] as const)('follows a synthetic %s conversation without using a terminal', async (kind) => {
+    await withSyntheticHost(async ({ host, client, claude_session_id, refresh }) => {
+      const backgroundRow = kind !== 'interactive';
+      host.cli[0] = {
+        ...host.cli[0],
+        kind: backgroundRow ? 'background' : 'interactive',
+        pid: kind === 'finished' ? undefined : 42,
+        ...(backgroundRow ? { state: kind === 'finished' ? 'done' : 'working' } : {}),
+      };
+      host.calls.length = 0;
+      const snapshot = () => client.call({ function_id, payload: { claude_session_id } });
+      expect(await snapshot()).toMatchObject({
+        claude_session_id,
+        last_reply: { id: recordId(1), text: 'fixture answer' },
+      });
+      expect(host.calls.filter((call) => call.function_id.startsWith('shell::pty::'))).toEqual([]);
+      expect(
+        host.calls
+          .filter((call) => call.function_id === 'shell::exec')
+          .map((call) => call.payload.command),
+      ).toEqual(["'fixture-cli' agents --json --all", 'python3']);
+
+      host.config = async () => ({ external_sessions: false });
+      await refresh();
+      await expect(snapshot()).rejects.toThrow('reply access disabled');
+    });
+  });
+
+  it('does not read transcript data after a lookup loses its live visibility epoch', async () => {
+    let epoch: number | null = 1;
+    const id = '7e64247f-5095-4a53-9b54-2d8d61b20356';
+    const fake = host(
+      () => {
+        epoch = null;
+        return ok([interactive(id, 'idle')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    const snapshot = fake.registered.get(function_id);
+    if (!snapshot) throw new Error('follow snapshot was not registered');
+    await expect(snapshot({ claude_session_id: id })).rejects.toThrow('reply access disabled');
+    expect(
+      fake.calls
+        .filter((call) => call.function_id === 'shell::exec')
+        .map((call) => call.payload.command),
+    ).toEqual(["'/opt/claude bin/claude' agents --json --all"]);
+  });
+});
+
 describe('opening a listed session', () => {
   const ID = '7e64247f-5095-4a53-9b54-2d8d61b20356';
   const RESUME = ['--plugin-dir', '/p', '--resume', ID];
@@ -492,9 +1299,52 @@ describe('opening a listed session', () => {
     return fake.resolveOpen(id);
   };
 
-  it('resumes a finished run in its own directory', async () => {
+  const fork = { mode: 'fork' as const, claude_session_id: ID };
+
+  it('resolves an explicit fork separately from the live interactive original', async () => {
+    const fake = host(ok([interactive(ID, 'idle')]), { external: true });
+    expect(await fake.resolveOpen(ID, fork)).toEqual({
+      args: [...RESUME, '--fork-session'],
+      cwd: '/repo',
+      copy: true,
+    });
+    expect(await fake.heldElsewhere(ID)).toBe(true);
+  });
+
+  it('refuses a fork on hidden, changed, missing or unavailable inventory', async () => {
+    await expect(host(ok([interactive(ID, 'busy')])).resolveOpen(ID, fork)).rejects.toThrow(
+      'no session with that id is listed',
+    );
+    const fake = host(ok([]));
+    fake.state.set(
+      'claude_sessions/h',
+      record('h', 'done', '11223344-0000-4000-8000-000000000000'),
+    );
+    await expect(fake.resolveOpen('h', fork)).rejects.toThrow(/changed/);
+    await expect(fake.resolveOpen(ID, fork)).rejects.toThrow('no session with that id is listed');
+    await expect(
+      host(() => ({ exit_code: 1, stderr: 'failed', stdout: '' })).resolveOpen(ID, fork),
+    ).rejects.toThrow('session inventory unavailable');
+  });
+
+  it('does not grant an explicit fork across an off/on refresh', async () => {
+    let epoch = 1;
+    const fake = host(
+      () => {
+        epoch++;
+        return ok([interactive(ID, 'busy')])();
+      },
+      { external: true, visibilityEpoch: () => epoch },
+    );
+    await expect(fake.resolveOpen(ID, fork)).rejects.toThrow(/visibility changed/);
+  });
+
+  it('resumes a finished worker run in its own directory with external visibility closed', async () => {
     const records = [record('h', 'done', ID)];
-    expect(await open([], 'h', { records })).toEqual({ args: RESUME, cwd: '/work' });
+    expect(await open([], 'h', { records, external: false })).toEqual({
+      args: RESUME,
+      cwd: '/work',
+    });
   });
 
   it('opens a copy of a run that is live here', async () => {
@@ -579,12 +1429,16 @@ describe('opening a listed session', () => {
     await expect(open(rows, id, options)).rejects.toThrow(reason);
   });
 
-  it('refuses while the CLI listing fails: the session may be open elsewhere', async () => {
-    const fake = host(() => ({ stdout: '', stderr: 'boom', exit_code: 2 }));
-    fake.state.set('claude_sessions/h', record('h', 'done', ID));
-    await expect(fake.resolveOpen('h')).rejects.toThrow(
-      'claude agents --json failed: exit 2: boom',
+  it.each([
+    [1, 'claude agents --json failed: exit 2: could not read /fixture/private-directory'],
+    [null, 'session inventory unavailable'],
+  ])('refuses to open when the listing fails, with diagnostics gated by epoch %s', async (epoch, reason) => {
+    const fake = host(
+      () => ({ stdout: '', stderr: 'could not read /fixture/private-directory', exit_code: 2 }),
+      { external: true, visibilityEpoch: () => epoch },
     );
+    fake.state.set('claude_sessions/h', record('h', 'done', ID));
+    await expect(fake.resolveOpen('h')).rejects.toThrow(new Error(reason));
   });
 
   describe('before the CLI lists the process', () => {
@@ -606,6 +1460,129 @@ describe('opening a listed session', () => {
   });
 });
 
+describe('resuming a live session in a tmux pane', () => {
+  const ID = '7e64247f-5095-4a53-9b54-2d8d61b20356';
+  const ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+  const resume = { mode: 'resume' as const, claude_session_id: ID, guard: 'g' };
+  const ATTACH = [
+    'attach-session',
+    '-t',
+    '$0',
+    ';',
+    'select-window',
+    '-t',
+    '@4',
+    ';',
+    'select-pane',
+    '-t',
+    '%25',
+  ];
+  type Out = { stdout: string; stderr: string; exit_code: number };
+  const out = (stdout: string, exit_code = 0): Out => ({ stdout, stderr: '', exit_code });
+  // The session's claude runs as pid 42; pid 40 is the shell of pane `%25`.
+  const PANES = '7 $1 @1 %1\n40 $0 @4 %25\n';
+  const PS = '1 0\n7 1\n40 7\n42 40\n';
+  const tmuxHost = (
+    over: { tmux?: () => Out; ps?: () => Out; rows?: CliRow[] } = {},
+    options: Parameters<typeof host>[1] = { external: true },
+  ) =>
+    host((command) => {
+      if (command === 'tmux') return over.tmux ? over.tmux() : out(PANES);
+      if (command === 'ps') return over.ps ? over.ps() : out(PS);
+      return ok(over.rows ?? [interactive(ID, 'idle')])();
+    }, options);
+  const programs = (fake: FakeIii) =>
+    fake.calls.filter((c) => c.function_id === 'shell::exec').map((c) => c.payload.command);
+  const listed = async (fake: FakeIii) =>
+    ((await list(fake)) as { agents: Array<{ id: string; tmux?: unknown }> }).agents;
+
+  it('attaches to the tmux pane of a live interactive session, directly and through a wrapper', async () => {
+    const plan = { program: 'tmux', args: ATTACH, cwd: '/repo', env: { TMUX: '' } };
+    const fake = tmuxHost();
+    expect(await fake.resolveOpen(ID, resume)).toEqual(plan);
+    expect(fake.calls.find((c) => c.payload.command === 'tmux')?.payload.args).toEqual([
+      'list-panes',
+      '-a',
+      '-F',
+      '#{pane_pid} #{session_id} #{window_id} #{pane_id}',
+    ]);
+    expect(fake.calls.find((c) => c.payload.command === 'ps')?.payload.args).toEqual([
+      '-A',
+      '-o',
+      'pid=,ppid=',
+    ]);
+    // A wrapper process between the pane shell and claude.
+    const wrapped = tmuxHost({ ps: () => out('1 0\n40 1\n41 40\n42 41\n') });
+    expect(await wrapped.resolveOpen(ID, resume)).toEqual(plan);
+  });
+
+  it('lists the tmux pane of a live interactive session', async () => {
+    expect((await listed(tmuxHost()))[0].tmux).toEqual({
+      session: '$0',
+      window: '@4',
+      pane: '%25',
+    });
+  });
+
+  it('refuses a live session outside tmux with OPEN_ELSEWHERE', async () => {
+    const fake = tmuxHost({ ps: () => out('1 0\n7 1\n40 7\n30 1\n42 30\n') });
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    expect((await listed(fake))[0]).not.toHaveProperty('tmux');
+  });
+
+  it.each<[string, () => Out]>([
+    ['no server', () => ({ stdout: '', stderr: 'no server running', exit_code: 1 })],
+    ['no binary', () => ({ stdout: '', stderr: 'tmux: not found', exit_code: 127 })],
+    ['killed', () => ({ stdout: PANES, stderr: '', exit_code: -1 })],
+    [
+      'a failed call',
+      () => {
+        throw new Error('shell::exec timed out');
+      },
+    ],
+  ])('refuses with OPEN_ELSEWHERE when tmux unavailable: %s', async (_name, tmux) => {
+    await expect(tmuxHost({ tmux }).resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+  });
+
+  // 70 ancestors between claude and the pane shell: past the 64-step walk.
+  const longChain = [
+    '42 100',
+    ...Array.from({ length: 70 }, (_, i) => `${100 + i} ${101 + i}`),
+    '170 40',
+    '40 1',
+  ].join('\n');
+  it.each<[string, () => Out]>([
+    ['ps exits non-zero', () => ({ stdout: '', stderr: 'ps: not permitted', exit_code: 1 })],
+    ['an ancestor loop', () => out('42 43\n43 44\n44 42\n')],
+    ['pid 1 without a pane', () => out('1 0\n30 1\n42 30\n')],
+    ['a chain over 64 steps', () => out(longChain)],
+  ])('refuses with OPEN_ELSEWHERE when the process tree unavailable: %s', async (_name, ps) => {
+    await expect(tmuxHost({ ps }).resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+  });
+
+  it.each([
+    ['a session', '40 $0;x @4 %25'],
+    ['a window', '40 $0 @4 x %25'],
+    ['a pane', '40 $0 @4 %1;kill'],
+    ['a pane pid listed twice', '40 $0 @4 %25\n40 $1 @5 %26'],
+  ])('never puts a malformed tmux id in argv: %s', async (_name, panes) => {
+    const fake = tmuxHost({ tmux: () => out(`${panes}\n`) });
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    expect((await listed(fake))[0]).not.toHaveProperty('tmux');
+  });
+
+  it('keeps tmux hidden when off: no tmux field, and its resume refused', async () => {
+    const fake = tmuxHost({}, { external: false, tracked: [ID] });
+    const agents = await listed(fake);
+    expect(agents.map((a) => a.id)).toEqual([ID]);
+    expect(agents[0]).not.toHaveProperty('tmux');
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    // Neither tmux nor the process tree is read without the grant.
+    expect(programs(fake)).not.toContain('tmux');
+    expect(programs(fake)).not.toContain('ps');
+  });
+});
+
 describe('a conversation open on the terminal host', () => {
   it('is held by a live process, and by nothing else', async () => {
     const rows = [interactive('live', 'idle'), background('done', 'done')];
@@ -618,5 +1595,201 @@ describe('a conversation open on the terminal host', () => {
   it('is held by nothing where the host cannot be read', async () => {
     const fake = host(() => ({ stdout: '', stderr: 'boom', exit_code: 2 }));
     expect(await fake.heldElsewhere('live')).toBe(false);
+  });
+});
+
+describe('ended interactive sessions from transcripts', () => {
+  const ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+  const DAY = 86_400_000;
+  const uuid = (n: number) => `e0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'claude-ended-'));
+  });
+  afterEach(() => rm(root, { recursive: true, force: true }));
+
+  /** A transcript the CLI wrote for session `id`, last modified `ageMs` ago. */
+  async function transcript(
+    name: string,
+    records: unknown[],
+    ageMs = DAY,
+    project = '-work-a',
+  ): Promise<void> {
+    const dir = join(root, 'projects', project);
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, name);
+    await writeFile(file, records.map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const at = new Date(Date.now() - ageMs);
+    await utimes(file, at, at);
+  }
+  const recordsOf = (id: string, { cwd = '/work/a', entrypoint = 'cli', title = '' } = {}) => [
+    { type: 'mode', mode: 'normal', sessionId: id },
+    ...(title ? [{ type: 'ai-title', aiTitle: title, sessionId: id }] : []),
+    {
+      type: 'user',
+      uuid: recordId(1),
+      parentUuid: null,
+      sessionId: id,
+      entrypoint,
+      cwd,
+      message: { role: 'user', content: 'private prompt' },
+    },
+  ];
+  const session = (id: string, ageMs = DAY, options: Parameters<typeof recordsOf>[1] = {}) =>
+    transcript(`${id}.jsonl`, recordsOf(id, options), ageMs);
+
+  type Reader = 'real' | 'stall' | 'fail';
+  /** A terminal host whose transcripts the real python reader reads from `root`, its CLAUDE_CONFIG_DIR. */
+  function endedHost(
+    rows: () => CliRow[],
+    options: Parameters<typeof host>[1] & { reader?: () => Reader } = {},
+  ) {
+    return host(
+      (command, args) => {
+        if (command !== 'python3') return ok(rows())();
+        const reader = options.reader?.() ?? 'real';
+        if (reader === 'stall') return new Promise(() => {});
+        if (reader === 'fail') return { stdout: '', stderr: 'private diagnostic', exit_code: 1 };
+        const r = spawnSync('python3', args ?? [], {
+          env: { ...runnerPath(), CLAUDE_CONFIG_DIR: root },
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        return { stdout: r.stdout, stderr: r.stderr, exit_code: r.status ?? -1 };
+      },
+      { external: true, ...options },
+    );
+  }
+  const agentsOf = async (fake: FakeIii) =>
+    ((await list(fake, { all: true })) as unknown as { agents: AgentRow[] }).agents;
+  const endedIds = async (fake: FakeIii) =>
+    (await agentsOf(fake)).filter((a) => a.ended).map((a) => a.id);
+
+  it('ended session listed with its recorded cwd and title', async () => {
+    await session(uuid(1), DAY, { title: 'Plan the release' });
+    const agents = await agentsOf(endedHost(() => []));
+    expect(agents).toEqual([
+      {
+        id: uuid(1),
+        kind: 'interactive',
+        status: 'stopped',
+        alive: false,
+        ended: true,
+        external_only: true,
+        claude_session_id: uuid(1),
+        name: 'Plan the release',
+        cwd: '/work/a',
+        updated_at_ms: expect.any(Number),
+      },
+    ]);
+    expect(Math.abs(Date.now() - DAY - (agents[0].updated_at_ms ?? 0))).toBeLessThan(60_000);
+    // Metadata only: no message text leaves the host.
+    expect(JSON.stringify(agents)).not.toContain('private prompt');
+  });
+
+  it('lists the first recorded cwd of a transcript with two', async () => {
+    await transcript(`${uuid(1)}.jsonl`, [
+      ...recordsOf(uuid(1), { cwd: '/work/first' }),
+      { ...recordsOf(uuid(1), { cwd: '/work/second' })[1], uuid: recordId(2) },
+    ]);
+    const [row] = await agentsOf(endedHost(() => []));
+    expect(row).toMatchObject({ id: uuid(1), cwd: '/work/first' });
+  });
+
+  it('does not list a transcript older than 7 days', async () => {
+    await session(uuid(1), 8 * DAY);
+    await session(uuid(2), 6 * DAY);
+    expect(await endedIds(endedHost(() => []))).toEqual([uuid(2)]);
+  });
+
+  it('lists the 20 newest of 25 qualifying transcripts, newest first', async () => {
+    for (let n = 0; n < 25; n++) await session(uuid(n), (n + 1) * 3_600_000);
+    expect(await endedIds(endedHost(() => []))).toEqual(
+      Array.from({ length: 20 }, (_, n) => uuid(n)),
+    );
+  });
+
+  it('does not list a headless transcript as ended', async () => {
+    await session(uuid(1), DAY, { entrypoint: 'sdk-ts' });
+    await session(uuid(2), DAY);
+    expect(await endedIds(endedHost(() => []))).toEqual([uuid(2)]);
+  });
+
+  it('does not list a non-uuid transcript name', async () => {
+    await transcript('notes.jsonl', recordsOf(uuid(1)));
+    await transcript(`${uuid(2)}-copy.jsonl`, recordsOf(uuid(2)));
+    await transcript(`${uuid(3)}.json`, recordsOf(uuid(3)));
+    expect(await endedIds(endedHost(() => []))).toEqual([]);
+  });
+
+  it('lists a live id not ended, only as its live row', async () => {
+    await session(uuid(1));
+    const agents = await agentsOf(endedHost(() => [interactive(uuid(1), 'idle')]));
+    expect(agents.filter((a) => a.claude_session_id === uuid(1))).toEqual([
+      expect.objectContaining({ id: uuid(1), alive: true }),
+    ]);
+    expect(agents.some((a) => a.ended)).toBe(false);
+  });
+
+  it('lists a finished background not ended, only as its background row', async () => {
+    await session(uuid(1));
+    const agents = await agentsOf(endedHost(() => [background(uuid(1), 'done')]));
+    expect(agents).toEqual([expect.objectContaining({ id: uuid(1), kind: 'background' })]);
+    expect(agents[0]).not.toHaveProperty('ended');
+  });
+
+  it.each<Reader>([
+    'stall',
+    'fail',
+  ])('lists no ended rows on an ended reader failure (%s) and keeps the live ones', async (reader) => {
+    await session(uuid(1));
+    const fake = endedHost(() => [interactive(uuid(9), 'busy')], { reader: () => reader });
+    const result = (await list(fake, { all: true })) as unknown as {
+      agents: AgentRow[];
+      inventory_status: string;
+      detail?: string;
+    };
+    expect(result.agents.map((a) => a.id)).toEqual([uuid(9)]);
+    expect(result.inventory_status).toBe('available');
+    expect(result.detail ?? '').not.toContain('private diagnostic');
+  });
+
+  it('keeps ended sessions hidden with external_sessions off, without reading transcripts', async () => {
+    await session(uuid(1));
+    const fake = endedHost(() => [], { external: false });
+    expect(await agentsOf(fake)).toEqual([]);
+    await expect(
+      fake.resolveOpen(uuid(1), { mode: 'resume', claude_session_id: uuid(1), guard: 'g' }),
+    ).rejects.toThrow('no session with that id is listed');
+    expect(fake.calls.map((c) => c.payload.command)).not.toContain('python3');
+  });
+
+  it('resume ended gives --resume <id> in its recorded folder', async () => {
+    await session(uuid(1), DAY, { cwd: '/work/ended' });
+    const fake = endedHost(() => []);
+    expect(await endedIds(fake)).toEqual([uuid(1)]);
+    const spec = await fake.resolveOpen(uuid(1), {
+      mode: 'resume',
+      claude_session_id: uuid(1),
+      guard: 'g',
+    });
+    expect(spec).toMatchObject({
+      args: ['--plugin-dir', '/p', '--resume', uuid(1)],
+      cwd: '/work/ended',
+    });
+    expect(spec).not.toHaveProperty('copy');
+    // Not a reply source: the reply and follow lookups do not find it.
+    await expect(fake.replyRow(uuid(1))).rejects.toThrow('session not listed');
+  });
+
+  it('refuses with OPEN_ELSEWHERE a resume when ended running again', async () => {
+    await session(uuid(1));
+    let rows: CliRow[] = [];
+    const fake = endedHost(() => rows);
+    expect(await endedIds(fake)).toEqual([uuid(1)]);
+    rows = [interactive(uuid(1), 'idle')];
+    await expect(
+      fake.resolveOpen(uuid(1), { mode: 'resume', claude_session_id: uuid(1), guard: 'g' }),
+    ).rejects.toThrow(new Error(ELSEWHERE));
   });
 });

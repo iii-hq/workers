@@ -16,12 +16,13 @@ import { registerWorker } from 'iii-sdk';
 import { type Config, loadConfig } from './config.js';
 import {
   type ConfigHolder,
-  fetchRuntime,
-  observeConfigChanges,
+  ReplyPermission,
+  observeReplyConfig,
   registerClaudeConfig,
 } from './configuration.js';
 import { registerAgentFeeds } from './agent-feed.js';
 import { registerAgents } from './agents.js';
+import { registerExternalReplies } from './external-replies.js';
 import { pluginSourceLine } from './iii-plugin/install.js';
 import { resolveClaudeExecutable } from './executable.js';
 import { ranSinceStart, register, startupScanDone } from './run.js';
@@ -109,8 +110,8 @@ const reconcileTerminal = () => {
     });
 };
 
-const refresh = async () => {
-  const runtime = (await fetchRuntime(iii)) ?? undefined;
+const replyPermission = new ReplyPermission();
+await observeReplyConfig(iii, replyPermission, (runtime) => {
   const merged: Config = runtime
     ? { engine_url: bootConfig.engine_url, ...runtime }
     : { ...bootConfig };
@@ -118,9 +119,7 @@ const refresh = async () => {
   holder.current = merged;
   // A new workspace or binary applies to the next session, without a restart.
   reconcileTerminal();
-};
-
-await observeConfigChanges(iii, refresh);
+});
 
 // The two event feeds: claude::on-agent-event (AgentEvent frames) and
 // claude::on-raw-event (verbatim Claude Code messages), each with its own
@@ -150,17 +149,14 @@ void settleStaleTurns(iii, ranSinceStart);
 // sink's sessions), what a session runs, who pays for it, and
 // the console page that opens it.
 const tracker = registerActivity(iii, emit);
-const agents = registerAgents(
-  iii,
-  () => inventoryHost(prepared),
-  () => holder.current.external_sessions,
-  tracker,
-);
+const agents = registerAgents(iii, () => inventoryHost(prepared), tracker, replyPermission);
+registerExternalReplies(iii, replyPermission, agents.replyRow, () => prepared.env);
 registerTerminal(
   iii,
   () => prepared,
   () => holder.current.terminal,
   agents.resolveOpen,
+  agents.openVisibility,
 );
 registerAuth(iii, () => prepared);
 registerUi(iii);
