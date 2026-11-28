@@ -89,6 +89,8 @@ const forkFails = new URLSearchParams(window.location.search).has('fork-fails');
 // none listed (all), hidden below a worker row (worker), or no host session (none).
 const hiddenHost = new URLSearchParams(window.location.search).get('hidden-host');
 if (hiddenHost) allowed = false;
+// Why the worker hid them: the setting is off, or access is not yet confirmed.
+const hiddenReason = new URLSearchParams(window.location.search).get('hidden-reason');
 // After the first snapshot shows 'First reply', a second reply is written and
 // the next cursor read is rejected once.
 const retryFollowOnce = new URLSearchParams(window.location.search).has('retry-follow-once');
@@ -201,6 +203,7 @@ const host = {
           return {
             inventory_status: 'available',
             agents: hiddenHost === 'worker' ? [workerRow] : [],
+            ...(hiddenReason ? { hidden_reason: hiddenReason } : {}),
             ...(hiddenHost === 'none'
               ? {}
               : {

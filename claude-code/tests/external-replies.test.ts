@@ -1,4 +1,5 @@
-import { appendFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync } from 'node:fs';
 import {
   appendFile,
   link,
@@ -29,6 +30,7 @@ import {
   MiB,
   record,
   recordId,
+  runnerPath,
   type SyntheticHost,
   summaryLine,
   withSyntheticHost,
@@ -2552,6 +2554,238 @@ describe('per-observer dispatch failures', () => {
     });
   });
 
+  /** Appends `mib` MiB of annotations one MiB at a time, polling after each. */
+  async function grow(s: SyntheticHost, mib: number) {
+    for (let i = 0; i < mib; i++) {
+      await appendFile(s.file, filler(MiB));
+      await s.poll();
+    }
+  }
+  const resumeCursors = (s: SyntheticHost) =>
+    reads(s)
+      .map((c) => c.payload.args as string[])
+      .filter((args) => args[6] === 'resume')
+      .map((args) => args[7]);
+  const third = { id: recordId(4), text: 'third' };
+  /** Puts the saved PATH back, deleting it when the runner had none. */
+  const restorePath = (saved: string | undefined) => {
+    if (saved === undefined) delete process.env.PATH;
+    else process.env.PATH = saved;
+  };
+
+  it('a failed observer never skips a reply after more than 8 MiB is appended', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      await grow(s, 9);
+      expect(seen(s, 'A')).toEqual([]);
+      failing = false;
+      await appendFile(s.file, lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first, second]);
+    });
+  });
+
+  it('a failed observer resumes a partly dispatched page across a large gap', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', (reply) => failing && reply === recordId(3));
+      await appendFile(s.file, lines(answer(2, 1, 'first'), answer(3, 2, 'second')));
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([first]);
+      await grow(s, 9);
+      failing = false;
+      const retry = s.host.calls.length;
+      await appendFile(s.file, lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      await s.poll();
+      expect(
+        dispatchedTo(s, 'A', retry).map((c) => (c.payload.reply as { id: string }).id),
+      ).toEqual([recordId(3), recordId(4)]);
+      expect(seen(s, 'A')).toEqual([first, second, third]);
+    });
+  });
+
+  it('a failed observer past the search budget fails without advancing', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      failing = false;
+      await appendFile(s.file, filler(17 * MiB) + lines(answer(3, 2, 'second')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      const cursors = resumeCursors(s);
+      expect(cursors.length).toBeGreaterThanOrEqual(2);
+      expect(cursors.at(-1)).toBe(cursors.at(-2));
+    });
+  });
+
+  it('another observer keeps receiving while one is past the budget', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await observe(s, 'B');
+      failFor(s, 'A', () => true);
+      await appendFile(s.file, lines(answer(2, 1, 'first')));
+      await s.poll();
+      s.host.beforeDelivery = async () => {};
+      await appendFile(s.file, filler(17 * MiB) + lines(answer(3, 2, 'second')));
+      await s.poll();
+      await appendFile(s.file, lines(answer(4, 3, 'third')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([]);
+      expect(seen(s, 'B')).toEqual([first, second, third]);
+    });
+  });
+
+  it('a healthy observer still accepts a gap over 8 MiB', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      await appendFile(
+        s.file,
+        lines(answer(2, 1, 'in gap')) + filler(9 * MiB) + lines(answer(3, 2, 'after gap')),
+      );
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after gap' }]);
+    });
+  });
+
+  it('a failed read keeps the gap rule', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let readFails = true;
+      s.host.beforeRead = async () => {
+        if (readFails) throw new Error('read failed');
+      };
+      await appendFile(s.file, lines(answer(2, 1, 'in gap')));
+      await s.poll();
+      await appendFile(s.file, filler(9 * MiB) + lines(answer(3, 2, 'after gap')));
+      readFails = false;
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(3), text: 'after gap' }]);
+      expect(resumeCursors(s)).toEqual([]);
+    });
+  });
+
+  it('a replaced transcript restarts a failed observer', async () => {
+    await withSyntheticHost(async (s) => {
+      await observe(s, 'A');
+      let failing = true;
+      failFor(s, 'A', () => failing);
+      await appendFile(s.file, lines(answer(2, 1, 'old file')));
+      await s.poll();
+      await rename(s.file, join(s.root, 'previous'));
+      await writeFile(s.file, lines(answer(5, null, 'new baseline')));
+      await s.poll();
+      failing = false;
+      await s.poll();
+      await appendFile(s.file, lines(answer(6, 5, 'new reply')));
+      await s.poll();
+      await s.poll();
+      expect(seen(s, 'A')).toEqual([{ id: recordId(6), text: 'new reply' }]);
+    });
+  });
+
+  it('a long compaction traversal reads each byte at most once', async () => {
+    await withSyntheticHost(async (s) => {
+      const chain: unknown[] = [record(1, null, 'user', 'early prompt'), answer(2, 1, 'early')];
+      for (let n = 3; n < 20_003; n++) chain.push(record(n, n - 1, 'user', 'x'));
+      await writeFile(
+        s.file,
+        lines(...chain) +
+          filler(9 * MiB) +
+          lines(compactBoundary(20_003, 20_002), compactSummary(20_004, 20_003)),
+      );
+      const total = (await stat(s.file)).size;
+      // Reruns the reader with os.pread logged, then hands it the same argv.
+      const wrapper = [
+        'import atexit, json, os, sys',
+        'log, real = [], os.pread',
+        'def pread(fd, n, pos):',
+        '    log.append([pos, n])',
+        '    return real(fd, n, pos)',
+        'os.pread = pread',
+        'atexit.register(lambda: sys.stderr.write(json.dumps(log)))',
+        'source = sys.argv.pop(1)',
+        "exec(compile(source, 'reader', 'exec'), {'__name__': '__main__'})",
+      ].join('\n');
+      let preads: Array<[number, number]> = [];
+      const client = {
+        async call(r: { payload: Record<string, unknown> }) {
+          const args = r.payload.args as string[];
+          const out = spawnSync('python3', [...args.slice(0, 4), wrapper, ...args.slice(4)], {
+            env: { ...(r.payload.env as Record<string, string>), ...runnerPath(), HOME: s.root },
+            cwd: s.root,
+            encoding: 'utf8',
+            maxBuffer: 16 * MiB,
+          });
+          preads = JSON.parse(out.stderr);
+          return { exit_code: out.status, stdout: out.stdout, stderr: '' };
+        },
+      } as unknown as IIIClient;
+      const snapshot = await readTranscript(client, { CLAUDE_CONFIG_DIR: s.root }, id, 'last');
+      expect(snapshot.replies).toContainEqual({ id: recordId(2), text: 'early' });
+      // Bytes before the parsed window: the window read starts one byte before it.
+      const lead = total - 8 * MiB - 1;
+      const before = preads
+        .filter(([pos]) => pos < lead)
+        .map(([pos, n]) => [pos, Math.min(pos + n, lead)] as const)
+        .sort((a, b) => a[0] - b[0]);
+      expect(before.length).toBeGreaterThan(0);
+      for (let i = 1; i < before.length; i++) {
+        expect(before[i][0]).toBeGreaterThanOrEqual(before[i - 1][1]);
+      }
+    });
+  });
+
+  it('the host probe and reader share the PATH rule', async () => {
+    const path = process.env.PATH;
+    delete process.env.PATH;
+    try {
+      expect(runnerPath()).toEqual({});
+      const defaultPython = ['/usr/bin/python3', '/bin/python3'].some((p) => existsSync(p));
+      const run = withSyntheticHost(async (s) => (await lookup(s)).last_reply);
+      if (defaultPython) {
+        await expect(run).resolves.toEqual({ id: recordId(1), text: 'fixture answer' });
+      } else {
+        await expect(run).rejects.toThrow(/python3/);
+      }
+    } finally {
+      restorePath(path);
+    }
+  });
+
+  it('an empty PATH reaches the probe and the reader alike', async () => {
+    const path = process.env.PATH;
+    try {
+      process.env.PATH = '';
+      expect(runnerPath()).toEqual({ PATH: '' });
+      // The probe looks python3 up with the empty PATH and finds nothing.
+      await expect(withSyntheticHost(async () => 'ran')).rejects.toThrow(/python3/);
+      restorePath(path);
+      await withSyntheticHost(async (s) => {
+        process.env.PATH = '';
+        // The reader receives the same empty PATH and cannot start python3.
+        await expect(lookup(s)).rejects.toThrow(/^transcript unavailable$/);
+      });
+    } finally {
+      restorePath(path);
+    }
+  });
+
   it('the host tests name python3 when it is missing', async () => {
     const path = process.env.PATH;
     const empty = await mkdtemp(join(tmpdir(), 'no-python-'));
@@ -2559,7 +2793,7 @@ describe('per-observer dispatch failures', () => {
     try {
       await expect(withSyntheticHost(async () => 'ran')).rejects.toThrow(/python3/);
     } finally {
-      process.env.PATH = path;
+      restorePath(path);
       await rm(empty, { recursive: true, force: true });
     }
   });

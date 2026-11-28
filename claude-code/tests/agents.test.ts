@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
-import { observeConfigChanges } from '../src/configuration.js';
+import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
   compactBoundary,
@@ -581,6 +581,22 @@ describe('claude::agents::list', () => {
     expect(res.detail).toBe(
       '2 sessions on the terminal host are hidden; set external_sessions: true to list them',
     );
+  });
+
+  it('the session list reports hidden rows as unconfirmed while the setting is on', async () => {
+    const fake = host(ok([interactive('stranger', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: true });
+    const res = (await list(fake)) as { agents: unknown[]; hidden_reason?: string };
+    expect(res.agents).toEqual([]);
+    expect(res.hidden_reason).toBe('unconfirmed');
+  });
+
+  it('the session list reports hidden rows as off when the setting is off', async () => {
+    const fake = host(ok([interactive('stranger', 'idle')]));
+    fake.state.set(`configuration/${CONFIG_ID}`, { external_sessions: false });
+    const res = (await list(fake)) as { agents: unknown[]; hidden_reason?: string };
+    expect(res.agents).toEqual([]);
+    expect(res.hidden_reason).toBe('off');
   });
 
   it('keeps external names and directories hidden until live permission is confirmed', async () => {

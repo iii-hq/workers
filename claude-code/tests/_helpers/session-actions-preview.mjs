@@ -114,6 +114,7 @@ async function testSessionActions(code) {
       retryFollowOnce = false,
       forkFails = false,
       hiddenHost,
+      hiddenReason,
     } = {},
   ) {
     const url = new URL('http://127.0.0.1/');
@@ -123,6 +124,7 @@ async function testSessionActions(code) {
     if (retryFollowOnce) url.searchParams.set('retry-follow-once', '');
     if (forkFails) url.searchParams.set('fork-fails', '');
     if (hiddenHost) url.searchParams.set('hidden-host', hiddenHost);
+    if (hiddenReason) url.searchParams.set('hidden-reason', hiddenReason);
     const { window } = new JSDOM('<div id="root"></div>', {
       url: url.href,
       pretendToBeVisual: true,
@@ -883,6 +885,19 @@ async function testSessionActions(code) {
     assert.ok(
       row.compareDocumentPosition(hint) & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  await test('shows a neutral heading while access is unconfirmed', async (t) => {
+    const { document, text } = setup(t, { hiddenHost: 'all', hiddenReason: 'unconfirmed' });
+    await text('Host sessions are hidden');
+    assert.match(document.body.textContent, HINT);
+    assert.doesNotMatch(document.body.textContent, /External sessions are off/);
+  });
+
+  await test('shows External sessions are off when the setting is off', async (t) => {
+    const { document, text } = setup(t, { hiddenHost: 'all', hiddenReason: 'off' });
+    await text('External sessions are off');
+    assert.doesNotMatch(document.body.textContent, /Host sessions are hidden/);
   });
 
   await test('keeps No sessions listed when no host row is hidden', async (t) => {
