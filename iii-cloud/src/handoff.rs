@@ -327,7 +327,22 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         Some(h) if hand_off_alive(ctx, &h).await => Some(h),
         _ => None,
     };
-    let same = same.or(idle);
+    // A real ask of the agent's is open on another hand-off of this environment (another kind, or
+    // one quiet for long): it is not replaced; the answer says it asks, with its chat.
+    let asking = || {
+        ctx.store.read(|s| {
+            s.handoffs
+                .iter()
+                .find(|h| {
+                    h.environment_id == sel.env.id
+                        && h.agent.session_id.is_some()
+                        && h.agent.state == AgentPhase::WaitingForYou
+                        && h.agent.question_source == Some(QuestionSource::Agent)
+                })
+                .cloned()
+        })
+    };
+    let same = same.or(idle).or_else(asking);
     if let Some(h) = same {
         // A real ask of the agent's is open: deliver nothing (the page's own sentence would read as
         // the answer to it).
