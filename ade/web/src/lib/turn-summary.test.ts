@@ -5,6 +5,7 @@ import {
   changedFilesFromCalls,
   formatReplyClock,
   formatTurnDuration,
+  harnessTurnOf,
   turnDurationMs,
 } from './turn-summary'
 
@@ -105,6 +106,81 @@ describe('turnDurationMs', () => {
   it('is null without a preceding user message or with a backwards clock', () => {
     expect(turnDurationMs(messages, 'a2')).toBeNull()
     expect(turnDurationMs(messages.slice(1), 'a1')).toBeNull()
+  })
+
+  // The live acceptance: the turn failed on its account's limit, Continue
+  // re-ran it 27 s later, and the reply came in under a second.
+  const rerun: Message[] = [
+    { id: 'e_idem_m1', role: 'user', content: 'Go', createdAt: 1_000 },
+    {
+      id: 'e_t_1_error',
+      role: 'system',
+      kind: 'turn-failure',
+      content: 'Claude Code usage limit reached.',
+      createdAt: 1_500,
+    },
+    {
+      id: 'e_t_2_0_assistant:0',
+      role: 'assistant',
+      content: 'Done',
+      createdAt: 28_400,
+    },
+  ]
+
+  it('measures a re-run turn from its own start, never the failed turn’s message', () => {
+    const starts = new Map([['t_2', 27_700]])
+    expect(
+      turnDurationMs(rerun, 'e_t_2_0_assistant:0', (t) => starts.get(t)),
+    ).toBe(700)
+    // A re-run this tab didn't time (another client, a reload): no duration.
+    expect(
+      turnDurationMs(rerun, 'e_t_2_0_assistant:0', () => undefined),
+    ).toBeNull()
+    // An earlier turn's reply in between says the same.
+    const afterReply: Message[] = [
+      rerun[0],
+      {
+        id: 'e_t_1_0_assistant:0',
+        role: 'assistant',
+        content: 'Part',
+        createdAt: 1_400,
+      },
+      rerun[2],
+    ]
+    expect(
+      turnDurationMs(afterReply, 'e_t_2_0_assistant:0', () => undefined),
+    ).toBeNull()
+  })
+
+  it("keeps measuring a turn's later steps from its message", () => {
+    const steps: Message[] = [
+      { id: 'e_idem_m1', role: 'user', content: 'Go', createdAt: 1_000 },
+      {
+        id: 'e_t_1_0_assistant:0',
+        role: 'assistant',
+        content: 'Looking',
+        createdAt: 2_000,
+      },
+      {
+        id: 'e_t_1_fc_1',
+        role: 'function-call',
+        functionId: 'shell::exec',
+        input: {},
+        createdAt: 2_100,
+      },
+      {
+        id: 'e_t_1_1_assistant:0',
+        role: 'assistant',
+        content: 'Done',
+        createdAt: 9_000,
+      },
+    ]
+    expect(turnDurationMs(steps, 'e_t_1_1_assistant:0', () => undefined)).toBe(
+      8_000,
+    )
+    expect(harnessTurnOf('e_t_1_1_assistant:0')).toBe('t_1')
+    expect(harnessTurnOf('e_t_1_1_assistant')).toBe('t_1')
+    expect(harnessTurnOf('local-uid')).toBeNull()
   })
 })
 

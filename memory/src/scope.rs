@@ -576,7 +576,10 @@ pub(crate) async fn write_bank(
     let capture = crate::hooks::session_capture_of(deps, session_id)
         .await
         .map_err(MemoryError::SiblingUnavailable)?;
-    if capture == crate::hooks::Capture::Scripted {
+    if matches!(
+        capture,
+        crate::hooks::Capture::Scripted | crate::hooks::Capture::Automation
+    ) {
         return Err(MemoryError::Forbidden(
             "this session is not a user's session or its sub-agent (an automation or test \
              run, or one session-manager does not know); it does not write memory"

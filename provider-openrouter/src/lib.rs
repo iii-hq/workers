@@ -7,6 +7,7 @@
 //! metadata table to maintain).
 //! Spec: tech-specs/2026-06-agentic/llm-router.md § The provider protocol.
 
+pub mod budget;
 pub mod catalog;
 pub mod config;
 pub mod discovery;

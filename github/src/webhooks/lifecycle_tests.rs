@@ -149,7 +149,7 @@ async fn delayed_ready_and_failure_never_regress_current_hook_url_or_generation(
         tunnel("failed", None, "fff-old"),
     ] {
         s.bus.as_ref().unwrap().reply(
-            "quick-tunnel::status",
+            "tunnel::status",
             Ok(serde_json::to_value(&current).unwrap()),
         );
         s.process_tunnel(&stale).await.unwrap();
@@ -195,11 +195,11 @@ async fn queued_tunnel_job_uses_authoritative_status_and_acknowledges_only_succe
     s.bus
         .as_ref()
         .unwrap()
-        .reply("quick-tunnel::status", Err(offline()));
+        .reply("tunnel::status", Err(offline()));
     assert!(s.process(&id).await.is_err());
     assert!(s.store().unwrap().read().unwrap().jobs.contains_key(&id));
     s.bus.as_ref().unwrap().reply(
-        "quick-tunnel::status",
+        "tunnel::status",
         Ok(serde_json::to_value(tunnel("reconnecting", None, "current")).unwrap()),
     );
     s.process(&id).await.unwrap();
@@ -256,7 +256,7 @@ async fn merged_fallback_publishes_and_cleans_up_even_without_queue() {
     )
     .unwrap();
     let bus = s.bus.as_ref().unwrap();
-    bus.reply("quick-tunnel::acquire", Err(offline()));
+    bus.reply("tunnel::acquire", Err(offline()));
     bus.reply("iii::durable::publish", Err(offline()));
     let request = serde_json::from_value(json!({"watch_id":"merged","repo":"owner/repo","number":1,"expires_at":Utc::now()+chrono::Duration::days(1)})).unwrap();
     assert!(s.watch(request).await.is_err());
@@ -339,7 +339,7 @@ async fn cleanup_failure_does_not_block_other_repositories_or_releases() {
     s.bus
         .as_ref()
         .unwrap()
-        .reply("quick-tunnel::release", Ok(Value::Null));
+        .reply("tunnel::release", Ok(Value::Null));
     assert!(matches!(s.cleanup().await, Err(Failure::AmbiguousHook)));
     let data = s.store().unwrap().read().unwrap();
     assert!(data.repos.contains_key("owner/repo"));
@@ -367,8 +367,8 @@ async fn release_failure_does_not_block_next_watch_and_closed_retry_restores_com
         })
         .unwrap();
     let bus = s.bus.as_ref().unwrap();
-    bus.reply("quick-tunnel::release", Err(offline()));
-    bus.reply("quick-tunnel::release", Ok(Value::Null));
+    bus.reply("tunnel::release", Err(offline()));
+    bus.reply("tunnel::release", Ok(Value::Null));
     assert!(s.cleanup().await.is_err());
     assert_eq!(s.status("w1").unwrap().status, WatchState::CleanupPending);
     assert!(
@@ -376,7 +376,7 @@ async fn release_failure_does_not_block_next_watch_and_closed_retry_restores_com
             .lease_id
             .is_none()
     );
-    bus.reply("quick-tunnel::release", Ok(Value::Null));
+    bus.reply("tunnel::release", Ok(Value::Null));
     s.cleanup().await.unwrap();
     assert_eq!(s.status("w1").unwrap().status, WatchState::Completed);
     s.iii.shutdown_async().await;
@@ -464,7 +464,7 @@ async fn zero_grace_stops_watch_releases_lease_and_deletes_hook_at_once() {
     s.bus
         .as_ref()
         .unwrap()
-        .reply("quick-tunnel::release", Ok(Value::Null));
+        .reply("tunnel::release", Ok(Value::Null));
     let stopped = s.drop_subscribers(&["chat".into()]).await.unwrap();
     assert_eq!(stopped, ["w1"]);
     let data = s.store().unwrap().read().unwrap();
@@ -516,7 +516,7 @@ async fn watch_expiry_follows_configured_max_watch_days() {
     let request = serde_json::from_value(json!({"watch_id":"long","repo":"owner/repo","number":1,"expires_at":Utc::now()+chrono::Duration::days(3)})).unwrap();
     let error = s.watch(request).await.unwrap_err().to_string();
     assert!(error.contains("at most 2 days"), "{error}");
-    assert!(error.contains("quick-tunnel"));
+    assert!(error.contains("tunnel"));
     assert!(!crate::webhooks::valid_watch_days(0));
     assert!(!crate::webhooks::valid_watch_days(31));
     assert!(crate::webhooks::valid_watch_days(30));
@@ -583,7 +583,7 @@ async fn watch_without_listeners_past_grace_is_stopped_and_released() {
     s.bus
         .as_ref()
         .unwrap()
-        .reply("quick-tunnel::release", Ok(Value::Null));
+        .reply("tunnel::release", Ok(Value::Null));
     s.maintain().await.unwrap();
     let data = s.store().unwrap().read().unwrap();
     assert_eq!(data.watches["w1"].status, WatchState::Stopped);
@@ -604,7 +604,7 @@ async fn rewatching_the_same_spec_resumes_a_stopped_watch() {
         .unwrap()
     };
     let bus = s.bus.as_ref().unwrap();
-    bus.reply("quick-tunnel::acquire", Err(offline()));
+    bus.reply("tunnel::acquire", Err(offline()));
     let _ = s.watch(request()).await;
     s.store()
         .unwrap()
@@ -614,7 +614,7 @@ async fn rewatching_the_same_spec_resumes_a_stopped_watch() {
             Ok(())
         })
         .unwrap();
-    bus.reply("quick-tunnel::acquire", Err(offline()));
+    bus.reply("tunnel::acquire", Err(offline()));
     let _ = s.watch(request()).await;
     let data = s.store().unwrap().read().unwrap();
     assert!(data.watches["resume"].live(), "stopped watch resumed");
@@ -637,7 +637,7 @@ fn listener_on() -> Value {
 }
 /// Queue the three reads of a fully ready setup-status.
 fn reply_ready(bus: &MockBus) {
-    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("tunnel::status", Ok(ready_tunnel()));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));
     bus.reply(
@@ -667,7 +667,7 @@ async fn enabling_the_http_listener_writes_it_and_keeps_other_http_settings() {
         "http::webhook-listener::status",
         Ok(applied("127.0.0.1", 3112)),
     );
-    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("tunnel::status", Ok(ready_tunnel()));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply(
         "configuration::get",
@@ -701,10 +701,7 @@ async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing()
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     let bus = s.bus.as_ref().unwrap();
-    bus.reply(
-        "quick-tunnel::status",
-        Err(not_found("quick-tunnel::status")),
-    );
+    bus.reply("tunnel::status", Err(not_found("tunnel::status")));
     bus.reply(
         "compose::status",
         Ok(json!({"containers": [{"container": "http"}]})),
@@ -719,7 +716,7 @@ async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing()
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("quick-tunnel worker"), "{error}");
+    assert!(error.contains("tunnel worker"), "{error}");
     assert!(error.contains("http webhook listener"), "{error}");
     assert!(
         bus.calls()
@@ -730,14 +727,11 @@ async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing()
 }
 
 #[tokio::test]
-async fn watch_gate_refuses_a_missing_quick_tunnel_with_the_fix() {
+async fn watch_gate_refuses_a_missing_tunnel_with_the_fix() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     let bus = s.bus.as_ref().unwrap();
-    bus.reply(
-        "quick-tunnel::status",
-        Err(not_found("quick-tunnel::status")),
-    );
+    bus.reply("tunnel::status", Err(not_found("tunnel::status")));
     bus.reply("compose::status", Ok(json!({"containers": []})));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));
@@ -746,24 +740,21 @@ async fn watch_gate_refuses_a_missing_quick_tunnel_with_the_fix() {
         Ok(applied("127.0.0.1", 3112)),
     );
     let error = s.require_setup().await.unwrap_err().to_string();
-    assert!(error.contains("quick-tunnel worker"), "{error}");
+    assert!(error.contains("tunnel worker"), "{error}");
     assert!(error.contains("github::setup::webhooks-status"), "{error}");
     s.iii.shutdown_async().await;
 }
 
 #[tokio::test]
-async fn watch_gate_passes_while_quick_tunnel_restarts_or_http_is_old() {
+async fn watch_gate_passes_while_tunnel_restarts_or_http_is_old() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     let bus = s.bus.as_ref().unwrap();
     // Declared in compose but its functions are briefly gone: restarting.
-    bus.reply(
-        "quick-tunnel::status",
-        Err(not_found("quick-tunnel::status")),
-    );
+    bus.reply("tunnel::status", Err(not_found("tunnel::status")));
     bus.reply(
         "compose::status",
-        Ok(json!({"containers": [{"container": "quick-tunnel", "state": "starting"}]})),
+        Ok(json!({"containers": [{"container": "tunnel", "state": "starting"}]})),
     );
     // An http older than the webhook listener cannot be verified. Compose
     // confirms it is declared, so the checklist offers Update rather than Install.
@@ -784,7 +775,7 @@ async fn missing_http_is_classified_from_compose_and_offers_install() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     let bus = s.bus.as_ref().unwrap();
-    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("tunnel::status", Ok(ready_tunnel()));
     bus.reply(
         "http::configuration-id",
         Err(not_found("http::configuration-id")),
@@ -908,11 +899,8 @@ async fn watch_gate_passes_when_compose_cannot_be_asked() {
     let dir = tempfile::tempdir().unwrap();
     let s = service(dir.path()).await;
     let bus = s.bus.as_ref().unwrap();
-    bus.reply(
-        "quick-tunnel::status",
-        Err(not_found("quick-tunnel::status")),
-    );
-    // An unreachable compose is never proof that quick-tunnel is absent.
+    bus.reply("tunnel::status", Err(not_found("tunnel::status")));
+    // An unreachable compose is never proof that tunnel is absent.
     bus.reply("compose::status", Err(not_found("compose::status")));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));

@@ -151,7 +151,7 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 15
+    assert bundles == 14
 
 
 def test_claude_code_release_builds_its_ui_from_the_root_workspace():
@@ -261,7 +261,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "code-runner",
         "context-manager",
         "lsp",
-        "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
+        "tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
         "sandbox-libkrun",  # microVMs need KVM or Hypervisor.framework; neither exists on Windows.
         "ide",

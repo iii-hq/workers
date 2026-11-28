@@ -364,6 +364,10 @@ impl Backend for GcsBackend {
         Ok(PresignResp { url, expires_at })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn provider(&self) -> &'static str {
         "gcs"
     }

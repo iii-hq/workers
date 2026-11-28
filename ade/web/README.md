@@ -101,7 +101,9 @@ normal auto-lock resumes after all activity finishes or is cancelled.
   Transcripts hydrate from `session::messages` and stream live from
   `session::on-message-added` / `session::on-message-updated` snapshots —
   localStorage keeps only UI affordances (active id, last model).
-  Double-click a row to rename inline (writes through `session::set-meta`);
+  Double-click a row (or F2) to open Conversation details: name,
+  description and project, written with one `session::patch-meta`
+  (`session::set-meta` on an engine without it);
   hover to reveal the delete affordance (`session::delete`).
 - **Worktree surface** backed by the optional
   [worktree](../../worktree) worker: a worktrees tab in the

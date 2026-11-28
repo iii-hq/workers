@@ -139,6 +139,7 @@ rules:
   - '!session::create'
   - '!session::ensure'
   - '!session::set-meta'
+  - '!session::patch-meta'
   - '!session::set-draft'
   - '!session::set-status'
   - '!session::delete'
@@ -225,6 +226,9 @@ rules:
   # options.orchestrator). The internal config/cron/session-deleted handlers
   # and the observer delivery hop must never be agent-callable.
   - '!harness::send'
+  # Re-runs a failed turn on another Claude Code account: the person's
+  # call from the limit card (chat-projects phase 4).
+  - '!harness::retry'
   - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
@@ -243,15 +247,46 @@ rules:
   # discovery: iii delivers to them, agents never call them.
   - '!harness::on-engine-change'
   - '!harness::on-compose-operation'
+  # Chat projects (chat-projects phase 1): the apps and the console create,
+  # change, delete and assign projects, save folders and change the Chat
+  # settings on the person's behalf; agents only read the projects
+  # (harness::projects::list, allowed below) and keep their own conversation's
+  # description (harness::set-description, intercepted in the turn). The two
+  # change events are delivered by iii, never called by agents.
+  - '!harness::projects::create'
+  - '!harness::projects::update'
+  - '!harness::projects::delete'
+  - '!harness::projects::assign'
+  - '!harness::projects::upsert'
+  - '!harness::projects::on-changed'
+  - '!harness::folders::upsert'
+  - '!harness::folders::delete'
+  - '!harness::chat-settings::set'
+  - '!harness::chat-settings::on-changed'
+  # Side chats (chat-projects phase 2): the person opens, closes, keeps and
+  # summarizes them from the apps and the console; agents never do.
+  - '!harness::side-chat::open'
+  - '!harness::side-chat::close'
+  - '!harness::side-chat::keep'
+  - '!harness::side-chat::summarize'
+  # The accounts' week split by project reads tmux's measure of the usage
+  # outside the Chat, which agents are denied (chat-projects phase 4).
+  - '!harness::metrics::account-split'
+  # Autocompact (chat-projects phase 3): the settings page's models with
+  # their limits and the engine's log of automatic compactions, which names
+  # every conversation's title; the person reads them, agents never do.
+  - '!harness::autocompact::models'
+  - '!harness::autocompact::log'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is
   # the human's call too: agents file tickets under a project or release but
   # never create, rename, ship or convert them. One exception: the deepwork
-  # orchestrator files each run under its own project, so a create whose
-  # `lead` is `deepwork` is allowed. Rules cannot see the caller, so this is
-  # scoped by argument (an agent could spoof it; the worst case is a stray
-  # project). Any other create matches no rule and waits for a person.
+  # and workflow orchestrators file each run under its own project, so a
+  # create whose `lead` is `deepwork` or `workflow` is allowed. Rules cannot
+  # see the caller, so this is scoped by argument (an agent could spoof it;
+  # the worst case is a stray project). Any other create matches no rule and
+  # waits for a person.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
   - '!kanban::dispatch::on-turn-completed'
@@ -262,6 +297,11 @@ rules:
     rule_id: deepwork-run-project
     args:
       lead: { equals: deepwork }
+  - function: kanban::project::create
+    action: allow
+    rule_id: workflow-run-project
+    args:
+      lead: { equals: workflow }
   - '!kanban::project::update'
   - '!kanban::project::archive'
   - '!kanban::project::restore'
@@ -387,7 +427,7 @@ rules:
   # trusted engine plumbing, never direct agent calls. Starting/stopping a
   # watch or acquiring/releasing a public tunnel stays approval-gated.
   - '!github::webhooks::*'
-  - '!quick-tunnel::on-config-change'
+  - '!tunnel::on-config-change'
   # openwiki: internal observer targets. cron::refresh-due is the per-wiki
   # cron::on-tick target; on-turn-started/completed observe
   # harness::on-turn-started/completed, and a direct call could forge
@@ -401,6 +441,11 @@ rules:
   # pdf: internal target. The hot-reload hook follows the same pattern as the
   # other on-config-change denies.
   - '!pdf::on-config-change'
+
+  # image-resize: internal hot-reload hook, same pattern as the other
+  # on-config-change denies, and the console UI's asset server.
+  - '!image-resize::on-config-change'
+  - '!image-resize::ui-content'
 
   # document: internal target. The hot-reload hook follows the same pattern as
   # the other on-config-change denies.
@@ -450,6 +495,12 @@ rules:
   # enforces ownership; the standalone teardown stays behind the
   # needs_approval default for the console's privileged path.
   - harness::status
+  # harness::set-description writes only the calling turn's own conversation
+  # (the turn loop answers it with the trusted session id; a direct call
+  # fails). harness::projects::list is a read; its description asks for
+  # `version: 2` (without it, the D26 shim answers the saved folders).
+  - harness::set-description
+  - harness::projects::list
   - eval::status
   - eval::result
   - harness::observers::list
@@ -522,9 +573,13 @@ rules:
   # renaming, selecting (switches the person's own terminal) and killing stay
   # approval-gated. The Console terminal types into the person's sessions and
   # is driven only by the page; config reload and Console asset are internal.
+  # `accounts::credential` returns an account's token, for
+  # provider-claude-code alone; `usage::claude_outside` is the devices'.
   - '!tmux::terminal::*'
   - '!tmux::on-config-change'
   - '!tmux::ui-content'
+  - '!tmux::accounts::credential'
+  - '!tmux::usage::claude_outside'
   - tmux::status
   - tmux::sessions::list
   - tmux::ports::list
@@ -606,7 +661,7 @@ rules:
   # Read-only webhook prerequisite checklist; enable-http-listener and
   # enable-webhooks change configuration and keep needs_approval.
   - github::setup::webhooks-status
-  - quick-tunnel::status
+  - tunnel::status
   - github::issue::list
   - github::issue::view
   - github::repo::view

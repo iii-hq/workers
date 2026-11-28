@@ -69,7 +69,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "approval-gate"
-version = "1.1.9"
+version = "1.1.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "fp"
-version = "0.3.7"
+version = "0.4.0"
 dependencies = [
  "aho-corasick",
  "anyhow",

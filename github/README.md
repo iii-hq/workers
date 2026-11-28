@@ -9,11 +9,12 @@ criado ao registrar a interface com a configuração padrão.
 
 Antes de habilitá-lo, abra **GitHub → Webhooks** no Console ou chame
 `github::setup::webhooks-status`. A lista verifica se o worker opcional
-`quick-tunnel` está instalado, se o `cloudflared` está disponível e se o
-listener restrito do `http` foi realmente aberto. Quando o quick-tunnel usa o
-provider `opentunnel`, a linha do `cloudflared` dá lugar a `tunnel_provider`,
-sempre `ok`: não há binário para instalar. O Console só instala
-`quick-tunnel` depois da confirmação do operador; ele nunca instala
+`tunnel` está instalado, qual provider de túnel ele usa e se o
+listener restrito do `http` foi realmente aberto. Instalações novas do
+tunnel usam o provider `opentunnel` (endereço fixo, sem binário): a linha
+`tunnel_provider` fica sempre `ok`. Quem já usava cloudflared continua nele, e
+então a linha `cloudflared` verifica o binário. O Console só instala
+`tunnel` depois da confirmação do operador; ele nunca instala
 `cloudflared` e, quando necessário, mostra o
 [guia oficial de instalação](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
 Use `github::setup::enable-http-listener` e
@@ -22,6 +23,14 @@ exige todos os itens confirmados e requer reiniciar o worker `github` para
 abrir o armazenamento. `github::pr::watch` recusa apenas pré-requisitos
 sabidamente ausentes ou bloqueados; uma verificação temporariamente
 `unknown` não gera um falso bloqueio.
+
+Sempre que cria ou atualiza o webhook de um repositório, o worker apaga os
+webhooks desse repositório que apontam para a rota `/webhooks/github/` do
+endereço público atual mas que ele não rastreia (sobras de estado perdido ou de
+uma limpeza interrompida). Só uma instalação atende essa rota no listener, então
+esses webhooks só geram entregas com falha. Com OpenTunnel o endereço é fixo e
+as sobras continuam reconhecíveis entre reinícios; falhas dessa limpeza só vão
+para o log.
 
 # github
 
@@ -152,7 +161,7 @@ The worker observes, for its own plumbing:
 | `configuration::on-updated` | filters `input.id` = this worker's entry, `input.event_type` = `configuration:updated` | `github::on-config-change` |
 | `http::on-request` | args `{ method: POST, path: /webhooks/github/:endpoint_id, public_webhook: true }` | `github::webhooks::receive` |
 | `queue::on-message` | args `{ topic: webhooks.queue, group: github-webhooks, max_retries: 5, backoff_ms: 1000 }`, observer id `<worker name>:webhooks:<webhooks.queue>` | `github::webhooks::process` |
-| `quick-tunnel::on-changed` | filter `input.tunnel_id` = `webhooks.tunnel_id` | `github::webhooks::tunnel-changed` |
+| `tunnel::on-changed` | filter `input.tunnel_id` = `webhooks.tunnel_id` | `github::webhooks::tunnel-changed` |
 | `cron::on-tick` | args `{ expression: "*/10 * * * * *" }` | `github::webhooks::maintain` |
 
 The four webhook observers exist only when `webhooks.enabled` is true. Each

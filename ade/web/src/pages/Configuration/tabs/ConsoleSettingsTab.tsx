@@ -1,7 +1,11 @@
 import { ArrowUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AutocompactDialog } from '@/components/chat/AutocompactDialog'
+import { ClaudeAccountsDialog } from '@/components/chat/ClaudeAccountsDialog'
 import { FullModeConfirmDialog } from '@/components/permissions/FullModeConfirmDialog'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
+import { ProjectDialog } from '@/components/projects/ProjectDialog'
+import { ProjectDot } from '@/components/projects/ProjectDot'
 import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
@@ -19,10 +23,16 @@ import {
   SelectValue,
 } from '@/components/shadcn/select'
 import { Switch } from '@/components/shadcn/switch'
+import { useChatProjects } from '@/hooks/use-chat-projects'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { useTabLimit } from '@/hooks/use-tab-limit'
 import type { ThemePreference } from '@/hooks/use-theme'
+import {
+  SETTINGS_TITLE as AUTOCOMPACT_TITLE,
+  settingsRowText as autocompactRowText,
+} from '@/lib/autocompact'
 import { getDefaultBackend } from '@/lib/backend'
 import {
   autoAllowSeedFromRules,
@@ -30,6 +40,9 @@ import {
   saveApprovalGateDefaults,
 } from '@/lib/backend/approval-gate-config'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import { type ChatProject, tildePath } from '@/lib/backend/projects'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
+import { INTRO_PHONE, SCREEN_TITLE } from '@/lib/claude-accounts-words'
 import {
   loadCompletionBellEnabled,
   playCompletionBell,
@@ -52,7 +65,6 @@ import {
   saveUiSoundsEnabled,
   subscribeUiSoundsPreference,
 } from '@/lib/ui-sounds'
-import { settingsFade } from '../components/motion'
 import {
   SettingsList,
   SettingsPageBody,
@@ -133,6 +145,25 @@ export function ConsoleSettingsTab({
   const ctx = useConversationsCtxOptional()
   const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
   const tabLimit = useTabLimit()
+  // Chat › Projects and Session descriptions (chat-projects §1.3.7): only on
+  // an engine that has them.
+  const realBackend = getDefaultBackend().id === 'real'
+  const chatCaps = useChatCapabilities(realBackend)
+  const chatProjects = useChatProjects(realBackend)
+  const chatSettings = useChatSettings(realBackend)
+  const [projectDialog, setProjectDialog] = useState<{
+    project: ChatProject | null
+  } | null>(null)
+  const [descriptionsError, setDescriptionsError] = useState<string | null>(
+    null,
+  )
+  // Chat › Claude Code accounts (chat-projects §4.3.1): on an engine with
+  // `harness::retry`; the dialog says what tmux needs short of the whole
+  // feature (§4.3.6).
+  const [claudeAccountsOpen, setClaudeAccountsOpen] = useState(false)
+  // Chat › Auto-compact (chat-projects §3.3.1): on a phase-3 harness that
+  // also has the chat settings, where the global value is written.
+  const [autocompactOpen, setAutocompactOpen] = useState(false)
   const newChatMode = useNewChatMode()
   const sendKey = useSendKey()
   const sendKeyOptions = useMemo(buildSendKeyOptions, [])
@@ -140,6 +171,9 @@ export function ConsoleSettingsTab({
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
+  // True only once the saved defaults are in hand. Until then (and after a
+  // failed load) the mode and allowlist stay read-only: a write made against
+  // the placeholders would replace the real allowlist with an empty one.
   const [loaded, setLoaded] = useState(false)
   const [pendingFull, setPendingFull] = useState(false)
   const [completionBellEnabled, setCompletionBellEnabled] = useState(
@@ -185,13 +219,12 @@ export function ConsoleSettingsTab({
         if (cancelled) return
         setDefaultMode(cfg.defaultMode)
         setAllowlist(cfg.allowlist)
+        setLoaded(true)
       } catch (err) {
         console.error(
           '[console-settings] failed to load approval-gate config',
           err,
         )
-      } finally {
-        if (!cancelled) setLoaded(true)
       }
     })()
     return () => {
@@ -361,9 +394,135 @@ export function ConsoleSettingsTab({
       <SettingsSection
         id={GENERAL_ANCHOR.chat}
         title="Chat"
-        description="How the chat composer behaves in this browser."
+        description="How the chat composer behaves in this browser, and the engine's projects and descriptions."
       >
+        <ProjectDialog
+          open={projectDialog !== null}
+          onOpenChange={(open) => {
+            if (!open) setProjectDialog(null)
+          }}
+          project={projectDialog?.project ?? null}
+          projects={chatProjects.projects}
+          conversations={ctx?.conversations ?? []}
+        />
+        <ClaudeAccountsDialog
+          open={claudeAccountsOpen}
+          onOpenChange={setClaudeAccountsOpen}
+        />
+        {chatCaps.autocompact && chatCaps.chatSettings ? (
+          <AutocompactDialog
+            open={autocompactOpen}
+            onOpenChange={setAutocompactOpen}
+          />
+        ) : null}
         <SettingsList>
+          {chatProjects.available ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.projects}
+              label="Projects"
+              description="A project groups folders and the conversations started in them."
+              layout="stacked"
+              control={
+                <ul className="flex w-full flex-col gap-0.5">
+                  {chatProjects.projects.map((project) => (
+                    <li key={project.id}>
+                      <button
+                        type="button"
+                        onClick={() => setProjectDialog({ project })}
+                        aria-label={`Edit project ${project.name}`}
+                        className="flex min-h-11 w-full items-center gap-2.5 rounded-md px-2 text-left hover:bg-surface-hover focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50"
+                      >
+                        <ProjectDot color={project.color} />
+                        <span className="shrink-0 text-sm font-medium text-ink">
+                          {project.name}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-faint">
+                          {project.folders.map(tildePath).join(', ')}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                  <li className="pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setProjectDialog({ project: null })}
+                    >
+                      New project
+                    </Button>
+                  </li>
+                </ul>
+              }
+            />
+          ) : null}
+          {chatCaps.harnessRetry ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.claudeAccounts}
+              label={SCREEN_TITLE}
+              description={INTRO_PHONE}
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setClaudeAccountsOpen(true)}
+                >
+                  Open
+                </Button>
+              }
+            />
+          ) : null}
+          {chatCaps.autocompact && chatCaps.chatSettings ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.autocompact}
+              label={AUTOCOMPACT_TITLE}
+              description={autocompactRowText(
+                chatSettings.loaded ? chatSettings.autocompact : undefined,
+              )}
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAutocompactOpen(true)}
+                >
+                  Open
+                </Button>
+              }
+            />
+          ) : null}
+          {chatCaps.chatSettings && chatCaps.setDescription ? (
+            <SettingsRow
+              id={GENERAL_ANCHOR.sessionDescriptions}
+              label="Session descriptions"
+              description={
+                descriptionsError ??
+                'Agents write a one-line description inside the turn they are running. A conversation whose description you edited keeps yours.'
+              }
+              control={
+                <span className="flex items-center gap-3 text-sm text-ink">
+                  <label
+                    htmlFor={`${GENERAL_ANCHOR.sessionDescriptions}-switch`}
+                  >
+                    Agents keep descriptions up to date
+                  </label>
+                  <Switch
+                    id={`${GENERAL_ANCHOR.sessionDescriptions}-switch`}
+                    aria-label="Agents keep descriptions up to date"
+                    checked={chatSettings.agentWrites}
+                    onCheckedChange={(checked) => {
+                      setDescriptionsError(null)
+                      void chatSettings
+                        .setAgentWrites(checked === true)
+                        .catch((err: unknown) =>
+                          setDescriptionsError(
+                            `Not saved: ${err instanceof Error ? err.message : String(err)}`,
+                          ),
+                        )
+                    }}
+                  />
+                </span>
+              }
+            />
+          ) : null}
           <SettingsRow
             id={GENERAL_ANCHOR.sendKey}
             label="Send messages with"
@@ -411,6 +570,7 @@ export function ConsoleSettingsTab({
               control={
                 <Select
                   value={loaded ? defaultMode : 'manual'}
+                  disabled={!loaded}
                   onValueChange={(value) =>
                     handleModeChange(value as PermissionMode)
                   }
@@ -432,30 +592,28 @@ export function ConsoleSettingsTab({
                 </Select>
               }
             />
-            {defaultMode === 'auto' ? (
-              <SettingsRow
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={settingsFade}
-                id={GENERAL_ANCHOR.allowlist}
-                label="Auto-mode allowlist"
-                description="Functions that new conversations can run without asking."
-                meta={
-                  allowlist.length === 0
-                    ? 'No functions selected'
-                    : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
-                }
-                action={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setAllowlistOpen(true)}
-                  >
-                    Manage
-                  </Button>
-                }
-              />
-            ) : null}
+            {/* Always on view: a chat switched to Auto from its composer
+                runs this list too, whatever the default mode is. */}
+            <SettingsRow
+              id={GENERAL_ANCHOR.allowlist}
+              label="Auto-mode allowlist"
+              description="Functions a chat in Auto mode runs without asking."
+              meta={
+                allowlist.length === 0
+                  ? 'No functions selected'
+                  : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
+              }
+              action={
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!loaded}
+                  onClick={() => setAllowlistOpen(true)}
+                >
+                  Manage
+                </Button>
+              }
+            />
           </SettingsList>
         </SettingsSection>
       ) : null}

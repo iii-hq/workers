@@ -136,7 +136,8 @@ pub struct Bank {
     pub name: String,
     dir: PathBuf,
     pub description: String,
-    inner: RwLock<BankInner>,
+    /// Shared with the handle a reload replaced: both read and write one state.
+    inner: Arc<RwLock<BankInner>>,
 }
 
 struct BankInner {
@@ -255,9 +256,9 @@ struct VectorLine<'a> {
 }
 
 /// Serializes every vector sidecar replay+compaction with every append.
-/// During `memory::reload` (or a `data_dir` swap) the OLD store's banks can
-/// still append while the NEW store's bank compacts the same file: an
-/// append landing on the inode the rename replaces would be lost.
+/// During a `data_dir` swap the OLD store's banks can still append while the
+/// NEW store's bank compacts the same file: an append landing on the inode
+/// the rename replaces would be lost.
 static SIDECAR: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn sidecar_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1460,13 +1461,35 @@ impl Store {
 
     /// Drop all in-RAM state and reload from disk (the recovery hatch after
     /// hand-editing files). The full-disk replay runs off the async worker
-    /// thread on the multi-thread runtime.
+    /// thread on the multi-thread runtime, with the map and every bank locked:
+    /// no write or bank creation lands between a file's replay and its
+    /// publication, and a handle taken before the reload sees the new state.
+    /// A bank still on disk that does not load keeps its last good state.
+    // shortcut: every memory call waits for the whole replay, 1.2 s at 50,000
+    // memories with vectors; lock one bank at a time past that.
     pub async fn reload(&self) -> Result<usize, MemoryError> {
+        let mut banks = self.banks.write().await;
+        let mut held = Vec::with_capacity(banks.len());
+        for bank in banks.values() {
+            held.push((bank, bank.inner.write().await));
+        }
         let root = self.root.clone();
-        let fresh = run_blocking(move || Store::open(root)).await?;
-        let loaded = fresh.banks.into_inner();
-        let count = loaded.values().len();
-        *self.banks.write().await = loaded;
+        let mut loaded = run_blocking(move || Store::open(root))
+            .await?
+            .banks
+            .into_inner();
+        let count = loaded.len();
+        for (bank, mut inner) in held {
+            if let Some(fresh) = loaded.get_mut(&bank.name).and_then(Arc::get_mut)
+                && let Some(replayed) = Arc::get_mut(&mut fresh.inner)
+            {
+                std::mem::swap(&mut *inner, replayed.get_mut());
+                fresh.inner = bank.inner.clone();
+            } else if bank.dir.is_dir() {
+                loaded.insert(bank.name.clone(), bank.clone());
+            }
+        }
+        *banks = loaded;
         Ok(count)
     }
 }
@@ -1568,13 +1591,13 @@ impl Bank {
             name: name.to_string(),
             dir,
             description,
-            inner: RwLock::new(BankInner {
+            inner: Arc::new(RwLock::new(BankInner {
                 memories,
                 index,
                 retired,
                 vectors,
                 receipts,
-            }),
+            })),
         })
     }
 
@@ -4088,6 +4111,112 @@ mod tests {
         let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["added", "style"]);
         assert_eq!(rules[1].content, "# Edited by hand");
+    }
+
+    #[tokio::test]
+    async fn a_handle_from_before_a_reload_writes_where_the_store_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (old, _) = store.ensure_bank("main", None).await.unwrap();
+        let (other, _) = store.ensure_bank("other", None).await.unwrap();
+        store.ensure_bank("gone", None).await.unwrap();
+        let first = memory("the release branch is cut on Monday");
+        old.commit(first.clone()).await.unwrap();
+        let by_hand = memory("an operator added this line to the log");
+        let mut line = Vec::new();
+        push_line(&mut line, &by_hand).unwrap();
+        append_log(&dir.path().join("main").join(MEMORIES_FILE), &line).unwrap();
+        std::fs::write(dir.path().join("main/bank.yaml"), "description: edited\n").unwrap();
+        std::fs::remove_dir_all(dir.path().join("gone")).unwrap();
+        assert_eq!(store.reload().await.unwrap(), 2);
+
+        assert!(store.bank("gone").await.is_err());
+        let found = old.lexical("operator", 1, false).await;
+        assert_eq!(found[0].0, by_hand);
+        for (handle, name) in [(&old, "main"), (&other, "other")] {
+            let late = memory(&format!("written to {name} through the old handle"));
+            handle.commit(late.clone()).await.unwrap();
+            let bank = store.bank(name).await.unwrap();
+            assert_eq!(bank.get(&late.id).await, Some(late));
+        }
+
+        // An edit through the store's handle is the one the old handle's
+        // guarded write compares with: it conflicts and reverts nothing.
+        let bank = store.bank("main").await.unwrap();
+        assert_eq!(bank.description, "edited");
+        let mut edited = first.clone();
+        edited.pinned = true;
+        edited.revision += 1;
+        bank.commit(edited.clone()).await.unwrap();
+        let stale = old.commit_expected(first.clone(), Some(&first)).await;
+        assert_eq!(stale.unwrap(), None);
+        assert_eq!(bank.get(&first.id).await, Some(edited));
+    }
+
+    #[tokio::test]
+    async fn a_bank_a_reload_cannot_read_keeps_its_last_good_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (old, _) = store.ensure_bank("main", Some("notes")).await.unwrap();
+        let kept = memory("the release branch is cut on Monday");
+        old.commit(kept.clone()).await.unwrap();
+        let log = dir.path().join("main").join(MEMORIES_FILE);
+        append_log(&log, b"\xff\n").unwrap();
+        assert_eq!(store.reload().await.unwrap(), 0);
+
+        // Not created again: that would empty the description on disk and
+        // give the bank a second state.
+        let (bank, created) = store.ensure_bank("main", None).await.unwrap();
+        assert!(!created);
+        assert_eq!(bank.get(&kept.id).await, Some(kept));
+        let late = memory("the staging database is restored every night");
+        old.commit(late.clone()).await.unwrap();
+        assert_eq!(bank.get(&late.id).await, Some(late.clone()));
+
+        // Once the file is repaired, a reload reads it into that same state.
+        let mut bytes = std::fs::read(&log).unwrap();
+        bytes.retain(|b| *b != 0xff);
+        std::fs::write(&log, bytes).unwrap();
+        assert_eq!(store.reload().await.unwrap(), 1);
+        let bank = store.bank("main").await.unwrap();
+        assert_eq!(bank.description, "notes");
+        assert_eq!(bank.get(&late.id).await, Some(late));
+        let last = memory("the old handle still writes to the same bank");
+        old.commit(last.clone()).await.unwrap();
+        assert_eq!(bank.get(&last.id).await, Some(last));
+    }
+
+    #[tokio::test]
+    async fn a_reload_loses_neither_the_write_ahead_of_it_nor_the_one_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let ahead = memory("the write queued before the reload");
+        let behind = memory("the write queued after the reload");
+        // `join!` polls in order: each call queues behind the held lock.
+        let held = bank.inner.write().await;
+        let (first, reloaded, second, created, ()) = tokio::join!(
+            biased;
+            bank.commit(ahead.clone()),
+            store.reload(),
+            bank.commit(behind.clone()),
+            store.ensure_bank("new", None),
+            async { drop(held) },
+        );
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(reloaded.unwrap(), 1);
+
+        let main = store.bank("main").await.unwrap();
+        assert_eq!(main.get(&ahead.id).await, Some(ahead));
+        assert_eq!(main.get(&behind.id).await, Some(behind));
+
+        // The bank created meanwhile is the one the store reads.
+        let (created, _) = created.unwrap();
+        let line = memory("a line in the bank created during the reload");
+        created.commit(line.clone()).await.unwrap();
+        let new = store.bank("new").await.unwrap();
+        assert_eq!(new.get(&line.id).await, Some(line));
     }
 
     #[tokio::test]

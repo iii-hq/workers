@@ -368,7 +368,10 @@ async fn release_unplanned_ancestors(deps: &Deps, op: &Operation) -> Result<(), 
 
 /// Bidirectional conflict check BEFORE a root tombstone. The lock order is
 /// operation -> topology; regular session work never acquires an operation lock.
-/// Planned members supplement the live tree on partial-delete recovery.
+/// Planned members supplement the live tree on partial-delete recovery. An
+/// attempt refused before it planned never owned its candidates (P29): they
+/// are left out, or a side chat's tombstone, kept once its own deletion
+/// completed, would refuse every retry of its conversation's deletion.
 async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
     release_unplanned_ancestors(deps, op).await?;
     let mut conflict = guard_owner_uncached(deps, &op.snapshot.session_id)
@@ -383,7 +386,7 @@ async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
             .sessions
             .into_iter()
             .map(|node| node.session_id)
-            .chain(op.members.iter().cloned())
+            .chain(op.members.iter().filter(|_| op.planned).cloned())
             .collect();
         let timeout = deps.cfg().await.session_timeout_ms;
         for id in ids {
@@ -495,7 +498,11 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
         if metadata.is_some() && !tree.complete {
             return Err(failure("incomplete durable session tree"));
         }
-        op.members = tree.sessions.into_iter().map(|n| n.session_id).collect();
+        let members = tree.sessions.into_iter().map(|n| n.session_id).collect();
+        // A conversation's side chats go with it (chat-projects §2.2). They
+        // become the operation's members only once validated below: a
+        // refused attempt records no members it does not own (P29).
+        let members = with_side_chats(deps, members).await?;
         op.parent = metadata
             .as_ref()
             .and_then(|m| m.get("parent_session_id"))
@@ -511,12 +518,13 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
             .unwrap_or_else(|| op.snapshot.session_id.clone());
         // Validate the whole set before claiming descendants: overlapping
         // operations fail observably rather than erase or notify twice.
-        for id in &op.members {
+        for id in &members {
             let guard = state::state_get(&deps.iii, GUARDS, id, timeout).await?;
             if !guard.is_null() && guard.as_str() != Some(&op.snapshot.operation_id) {
                 return Err(failure(format!("overlapping deletion of {id}: {guard}")));
             }
         }
+        op.members = members;
         op.planned = true;
         save(deps, op).await?;
     }
@@ -715,6 +723,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
     crate::context_snapshot::delete(&deps.iii, id, timeout).await?;
     crate::ask_settlement::purge(deps, id, timeout).await?;
     crate::ask_store::purge(deps, id).await?;
+    crate::side_chat::delete_lock(deps, id).await?;
     // Approval owns its data. Its existing purge is best effort; explicitly
     // read the inbox afterwards so a failed purge cannot be reported completed.
     // No approval gate on this stack: nothing of it to purge (as the
@@ -729,7 +738,7 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         .iii
         .call(CallRequest {
             function_id: "approval::on-session-deleted".into(),
-            payload: json!({"session_id": id}),
+            payload: approval_purge_payload(id),
             action: None,
             timeout_ms: Some(timeout),
         })
@@ -780,6 +789,74 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
         }
     }
     Ok(())
+}
+
+/// What `approval::on-session-deleted` is called with (P14). Since Observe v2
+/// it is an observer target of `session::on-deleted` and reads the
+/// `Observed` envelope its observer delivers (approval-gate 1.1.7:
+/// `observer_id`, `activation_id`, `function_id`, `invocation_id`,
+/// `status`, `started_at_ms`, `duration_ms` required, the event in
+/// `output`); a gate from before reads the bare event. This payload is both:
+/// the envelope of a successful `session::on-deleted` whose output is the
+/// event, with the event's `session_id` beside it, which neither shape
+/// rejects (neither denies unknown fields).
+pub(crate) fn approval_purge_payload(session_id: &str) -> Value {
+    json!({
+        "observer_id": "harness::delete-session-tree",
+        "activation_id": format!("harness-delete-{session_id}"),
+        "function_id": "session::on-deleted",
+        "invocation_id": format!("harness-delete-{session_id}"),
+        "status": "success",
+        "started_at_ms": AgentMessage::now_ms().max(0),
+        "duration_ms": 0.0,
+        "output": { "session_id": session_id },
+        "session_id": session_id,
+    })
+}
+
+/// The sessions to delete with `members`: each session whose `side_chat_of`
+/// names one of them, with its own subtree, and theirs in turn. They come
+/// after `members`, so the erase (children first, from the end) deletes them
+/// before the conversation they belong to.
+async fn with_side_chats(
+    deps: &Deps,
+    mut members: Vec<String>,
+) -> Result<Vec<String>, HarnessError> {
+    use futures_util::{StreamExt, stream};
+    let session = deps.session().await;
+    let mut seen: BTreeSet<String> = members.iter().cloned().collect();
+    let mut next = 0;
+    while next < members.len() {
+        let level: Vec<String> = members[next..].to_vec();
+        next = members.len();
+        let listed = stream::iter(level.into_iter().map(|id| {
+            let session = session.clone();
+            async move { crate::side_chat::side_chats_of(&session, &id).await }
+        }))
+        .buffered(16)
+        .collect::<Vec<_>>()
+        .await;
+        for side_chats in listed {
+            for side_chat in side_chats? {
+                if seen.contains(&side_chat.session_id) {
+                    continue;
+                }
+                let tree = super::session_tree::collect(deps, &side_chat.session_id).await?;
+                if !tree.complete && !tree.sessions.is_empty() {
+                    return Err(failure(format!(
+                        "incomplete durable session tree of side chat {}",
+                        side_chat.session_id
+                    )));
+                }
+                for node in tree.sessions {
+                    if seen.insert(node.session_id.clone()) {
+                        members.push(node.session_id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(members)
 }
 
 fn notification(op: &Operation) -> String {

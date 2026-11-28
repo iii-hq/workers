@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub mod buckets;
+pub mod copy_object;
 pub mod delete_object;
 pub mod get_object;
 pub mod head_object;

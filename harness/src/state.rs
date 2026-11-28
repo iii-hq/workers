@@ -392,6 +392,9 @@ async fn store_prompt_body(
     text: &str,
     timeout_ms: u64,
 ) -> Result<(), HarnessError> {
+    // Before the skip below: a body this process does not write again must
+    // still read back here if the store has lost it since.
+    remember_body(digest, text);
     let now = AgentMessage::now_ms();
     let fresh = |known: &BTreeMap<String, i64>| {
         known
@@ -447,7 +450,10 @@ pub(crate) async fn collect_prompt_bodies(
     Ok(collected)
 }
 
-/// Bodies read back. They never change, so an entry never goes stale.
+/// Bodies this process wrote or read back. They never change, so an entry
+/// never goes stale. A written body enters too: [`store_prompt_body`] skips
+/// a body this process wrote minutes ago, and the records written since must
+/// still read back here when the store has lost it.
 // ponytail: FIFO, not LRU; the live stack has ~40 distinct bodies.
 static BODY_CACHE: std::sync::Mutex<VecDeque<(String, String)>> =
     std::sync::Mutex::new(VecDeque::new());
@@ -483,12 +489,20 @@ async fn load_prompt_body(
             "prompt body {digest} for {session_id} does not match its digest"
         )));
     }
+    remember_body(digest, &body);
+    Ok(body)
+}
+
+/// Enter a body into [`BODY_CACHE`], once.
+fn remember_body(digest: &str, body: &str) {
     let mut cache = BODY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.iter().any(|(d, _)| d == digest) {
+        return;
+    }
     if cache.len() >= BODY_CACHE_CAP {
         cache.pop_front();
     }
-    cache.push_back((digest.to_owned(), body.clone()));
-    Ok(body)
+    cache.push_back((digest.to_owned(), body.to_owned()));
 }
 
 /// Whether a [`hydrate`] error says a body is gone for good (absent, or not the
@@ -799,8 +813,7 @@ async fn claim_private_namespace(iii: &IIIClient, timeout_ms: u64) -> Result<(),
             function_id: CLAIM_NAMESPACE_ID.into(),
             payload: json!({
                 "functions_prefix": NAMESPACE_PREFIX,
-                "scopes": [crate::ask_store::SCOPE, IDEM_SCOPE, BINDING_SCOPE, BINDING_OWNER_SCOPE, crate::hooks::recall::SCOPE, crate::functions::delete_session_tree::OPERATIONS,
-                    crate::functions::delete_session_tree::GUARDS, crate::functions::delete_session_tree::DISPATCHES],
+                "scopes": PRIVATE_SCOPES,
             }),
             action: None,
             timeout_ms: Some(timeout_ms),
@@ -858,15 +871,25 @@ fn is_unregistered_accessor(error: &HarnessError) -> bool {
     message.contains("function_not_found") || message.contains("not found")
 }
 
+/// Every scope the private namespace claims, and so every scope the
+/// `harness::state::*` accessors serve: one list, so the claim and the
+/// routing ([`is_binding_scope`]) cannot drift apart.
+const PRIVATE_SCOPES: [&str; 9] = [
+    crate::ask_store::SCOPE,
+    IDEM_SCOPE,
+    BINDING_SCOPE,
+    BINDING_OWNER_SCOPE,
+    crate::hooks::recall::SCOPE,
+    crate::functions::delete_session_tree::OPERATIONS,
+    crate::functions::delete_session_tree::GUARDS,
+    crate::functions::delete_session_tree::DISPATCHES,
+    // One ring every harness instance updates with compare-and-set; it names
+    // every conversation's title, so agents' public state reads never see it.
+    crate::autocompact::LOG_SCOPE,
+];
+
 fn is_binding_scope(scope: &str) -> bool {
-    matches!(
-        scope,
-        BINDING_SCOPE
-            | BINDING_OWNER_SCOPE
-            | IDEM_SCOPE
-            | crate::hooks::recall::SCOPE
-            | crate::ask_store::SCOPE
-    ) || is_deletion_scope(scope)
+    PRIVATE_SCOPES.contains(&scope)
 }
 
 fn is_deletion_scope(scope: &str) -> bool {
@@ -1359,12 +1382,24 @@ mod tests {
             BINDING_OWNER_SCOPE,
             IDEM_SCOPE,
             crate::ask_store::SCOPE,
+            crate::autocompact::LOG_SCOPE,
         ] {
             assert!(
                 is_binding_scope(scope),
                 "{scope} must route to the accessors"
             );
+            assert!(PRIVATE_SCOPES.contains(&scope), "{scope} must be claimed");
         }
+        for scope in [
+            crate::functions::delete_session_tree::OPERATIONS,
+            crate::functions::delete_session_tree::GUARDS,
+            crate::functions::delete_session_tree::DISPATCHES,
+        ] {
+            assert!(is_deletion_scope(scope) && is_binding_scope(scope));
+        }
+        // The back-off and the models index are public, like the turn's.
+        assert!(!is_binding_scope(crate::autocompact::BACKOFF_SCOPE));
+        assert!(!is_binding_scope(crate::autocompact::MODELS_SCOPE));
         assert!(!is_binding_scope(TURN_SCOPE));
         assert!(!is_binding_scope(QUEUE_SCOPE));
     }
@@ -1764,6 +1799,35 @@ mod tests {
         assert_eq!(body_keys(&store), [digest]);
         let read = get_turn(&iii, "lb_1", 2_000).await.unwrap().unwrap();
         assert_eq!(read.options.system_prompt.as_deref(), Some(prompt));
+        iii.shutdown();
+        server.abort();
+    }
+
+    /// The store can lose a body this process wrote minutes ago, while the
+    /// process still trusts that write and skips writing the body again. The
+    /// records written before and since reference it: this process still
+    /// reads them back (a turn's next step, a side chat opened on it).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_the_store_lost_still_reads_back_in_the_process_that_wrote_it() {
+        let (iii, store, calls, server) = fake_state().await;
+        let prompt = "store_lost_body prompt";
+        let digest = prompt_digest(prompt);
+        put_turn(&iii, &prompt_record("sl_1", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .remove(&(PROMPT_SCOPE.to_owned(), digest.clone()));
+        put_turn(&iii, &prompt_record("sl_2", Some(prompt), None), 2_000)
+            .await
+            .unwrap();
+        assert_eq!(body_writes(&calls), 1, "not written again within minutes");
+        assert!(body_keys(&store).is_empty());
+        for sid in ["sl_1", "sl_2"] {
+            let read = get_turn(&iii, sid, 2_000).await.unwrap().unwrap();
+            assert_eq!(read.options.system_prompt.as_deref(), Some(prompt), "{sid}");
+        }
         iii.shutdown();
         server.abort();
     }

@@ -194,3 +194,36 @@ describe('helpers', () => {
     )
   })
 })
+
+// chat-projects §3.3.1: Settings › Chat › Auto-compact is searchable where
+// the row renders (a harness with `harness::autocompact::models`).
+describe('the Auto-compact row', () => {
+  const generalWith = (autocompact: boolean) =>
+    buildSettingsSearchIndex([
+      {
+        id: 'general',
+        name: 'General',
+        aliases: [],
+        description: 'ADE appearance.',
+        fields: generalSearchFields(true, { autocompact }),
+      },
+    ])
+
+  it('is found by its name and its words when it renders', () => {
+    const labels = (query: string) =>
+      searchSettings(generalWith(true), query)[0]?.fields.map(
+        (hit) => hit.field.label,
+      )
+    expect(labels('auto-compact')).toContain('Auto-compact')
+    expect(labels('compact')).toContain('Auto-compact')
+    expect(labels('summary')).toContain('Auto-compact')
+  })
+
+  it('is absent without it', () => {
+    expect(
+      searchSettings(generalWith(false), 'autocompact').flatMap((r) =>
+        r.fields.map((hit) => hit.field.label),
+      ),
+    ).not.toContain('Auto-compact')
+  })
+})

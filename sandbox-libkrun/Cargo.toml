@@ -4,7 +4,7 @@ members = ["crates/*"]
 [package]
 name = "sandbox-libkrun"
 # 0.5.0 and later implement sandbox contract 1.4 (worker.binary, worker.prune); iii-compose's ADAPTER_RANGE must be "^0.5" to install them.
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "Elastic-2.0"
 publish = false

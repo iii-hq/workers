@@ -1,0 +1,108 @@
+import { Plus } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import {
+  Dialog,
+  DialogDescription,
+  DialogTitle,
+} from '@/components/shadcn/dialog'
+import {
+  PanelDialogContent,
+  PanelDialogHeader,
+} from '@/components/ui/FormDialog'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { upsertSavedFolder } from '@/lib/backend/folders'
+import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
+import { FolderBrowser } from './FolderBrowser'
+
+interface AddFolderDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The worker-echoed canonical path of the folder just added. */
+  onAdded: (path: string) => void
+}
+
+/**
+ * "Add folder" on its own, outside the directory picker: the folder
+ * browser in a dialog. A chosen folder is validated against the live shell
+ * worker and remembered in the folder catalogue before `onAdded` fires with the
+ * canonical path, the same contract the picker's own Add folder keeps.
+ *
+ * The dialog is the shadcn one: a titled header that says what choosing
+ * does, the browser as the body, and the browser's own footer (keys on the
+ * left, Cancel and Use on the right) as the dialog's footer.
+ */
+export function AddFolderDialog({
+  open,
+  onOpenChange,
+  onAdded,
+}: AddFolderDialogProps) {
+  const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
+  const phone = useMediaQuery('(max-width: 767px)')
+  const [validating, setValidating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const use = useCallback(
+    async (raw: string) => {
+      const dir = raw.trim().replace(/\/+$/, '') || '/'
+      setError(null)
+      setValidating(true)
+      const res = await validateWorkspaceDir(dir)
+      if (!res.ok) {
+        setError(`Can't use ${dir}: ${res.error}`)
+        setValidating(false)
+        return
+      }
+      try {
+        await upsertSavedFolder(res.path)
+      } catch (err) {
+        setError(`Can't save this folder: ${errMsg(err)}`)
+        setValidating(false)
+        return
+      }
+      setValidating(false)
+      onOpenChange(false)
+      onAdded(res.path)
+    },
+    [onAdded, onOpenChange],
+  )
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setError(null)
+        onOpenChange(next)
+      }}
+    >
+      <PanelDialogContent
+        className="flex h-[min(38rem,calc(100dvh-2rem))] w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col overflow-hidden"
+        // No keyboard to type with: don't raise the on-screen one.
+        initialFocus={pointerFine ? undefined : () => false}
+      >
+        <PanelDialogHeader className="flex-row items-start">
+          <span
+            aria-hidden
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground"
+          >
+            <Plus className="size-4" />
+          </span>
+          <div className="flex min-w-0 flex-col gap-1">
+            <DialogTitle>Add folder</DialogTitle>
+            <DialogDescription>
+              Choose a folder for the chat to work in. It is remembered, so the
+              next chat can pick it in one click.
+            </DialogDescription>
+          </div>
+        </PanelDialogHeader>
+        <FolderBrowser
+          wide={!phone}
+          keyboard={pointerFine}
+          busy={validating}
+          error={error}
+          onUse={(dir) => void use(dir)}
+          onCancel={() => onOpenChange(false)}
+        />
+      </PanelDialogContent>
+    </Dialog>
+  )
+}

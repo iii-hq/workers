@@ -24,7 +24,7 @@ fn function_prefix(function_id: &str) -> &str {
         .unwrap_or(function_id)
 }
 
-fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bool {
+pub(crate) fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bool {
     let items: Vec<&Value> = match raw {
         Value::Array(items) => items.iter().collect(),
         Value::Object(map) => map

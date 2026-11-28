@@ -16,7 +16,7 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/join"
 )
 
-// tunnelRPC fakes quick-tunnel's acquire/status/release contract.
+// tunnelRPC fakes tunnel's acquire/status/release contract.
 type tunnelRPC struct {
 	mu                                sync.Mutex // the hub's loop calls while a test changes the answers
 	calls                             []string
@@ -44,12 +44,12 @@ func (f *tunnelRPC) Call(_ context.Context, r iii.CallRequest) (json.RawMessage,
 	defer f.mu.Unlock()
 	f.calls, f.payloads = append(f.calls, r.FunctionID), append(f.payloads, p)
 	switch r.FunctionID {
-	case "quick-tunnel::acquire":
+	case "tunnel::acquire":
 		if f.acquireErr != nil {
 			return nil, f.acquireErr
 		}
 		return json.Marshal(map[string]any{"lease_id": f.leaseID(p["tunnel_id"].(string)), "tunnel_id": p["tunnel_id"], "status": "starting", "generation": "1"})
-	case "quick-tunnel::status":
+	case "tunnel::status":
 		if f.onStatus != nil {
 			f.onStatus()
 		}
@@ -73,7 +73,7 @@ func (f *tunnelRPC) Call(_ context.Context, r iii.CallRequest) (json.RawMessage,
 			res["provider"] = f.provider
 		}
 		return json.Marshal(res)
-	case "quick-tunnel::release":
+	case "tunnel::release":
 		if f.releaseErr != nil {
 			return nil, f.releaseErr
 		}
@@ -128,7 +128,7 @@ func TestTunnelReadyBecomesPublicURL(t *testing.T) {
 	h, f := tunnelHub(t, true)
 	ctx := context.Background()
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::acquire", "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::acquire", "tunnel::status")
 	acquire := f.payloads[0]
 	expires, _ := time.Parse(time.RFC3339Nano, acquire["expires_at"].(string))
 	if c := acquire["consumer_id"].(string); !strings.HasPrefix(c, "mesh:") || len(c) != 37 || acquire["tunnel_id"] != "mesh" || time.Until(expires) < 9*time.Minute {
@@ -143,7 +143,7 @@ func TestTunnelReadyBecomesPublicURL(t *testing.T) {
 
 	f.state, f.url = "ready", "https://abc234.opentunnel.xyz"
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::status")
 	if s := h.Status(); s.PublicURL != f.url || s.Tunnel.State != "ready" || s.Tunnel.URL != f.url {
 		t.Fatalf("ready status %+v %+v", s, s.Tunnel)
 	}
@@ -179,10 +179,10 @@ func TestTunnelExplicitPublicURLWins(t *testing.T) {
 	h.config.PublicURL = ""
 	f.state, f.url = "ready", "https://abc234.opentunnel.xyz"
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::acquire", "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::acquire", "tunnel::status")
 	h.config.PublicURL = "https://hub.example"
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release")
+	wantCalls(t, f, "tunnel::release")
 	if s := h.Status(); s.PublicURL != "https://hub.example" || s.Tunnel.State != "overridden" || s.Tunnel.URL != "" {
 		t.Fatalf("status after override %+v %+v", s, s.Tunnel)
 	}
@@ -202,16 +202,16 @@ func TestTunnelLeaseRenewal(t *testing.T) {
 	f.take()
 	h.tunnel.expires = time.Now().Add(6 * time.Minute)
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::status")
 	h.tunnel.expires = time.Now().Add(4 * time.Minute)
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::acquire", "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::acquire", "tunnel::status")
 
-	f.dropLease = true // quick-tunnel lost the lease
+	f.dropLease = true // tunnel lost the lease
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::status")
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::acquire", "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::acquire", "tunnel::status")
 }
 
 func TestTunnelIDChangeReleasesThenAcquires(t *testing.T) {
@@ -221,7 +221,7 @@ func TestTunnelIDChangeReleasesThenAcquires(t *testing.T) {
 	f.take()
 	h.config.Tunnel.TunnelID = "hub"
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::release", "quick-tunnel::acquire", "quick-tunnel::status")
+	wantCalls(t, f, "tunnel::release", "tunnel::acquire", "tunnel::status")
 	if n := len(f.payloads); f.payloads[n-3]["lease_id"] != "lease-mesh" || f.payloads[n-2]["tunnel_id"] != "hub" {
 		t.Fatalf("payloads %v", f.payloads[n-3:])
 	}
@@ -232,22 +232,22 @@ func TestTunnelUnavailable(t *testing.T) {
 		err  error
 		want string
 	}{
-		{iii.ErrTimeout, "quick-tunnel is not installed or not responding"},
-		{&iii.InvocationError{Code: "function_not_found", Message: "quick-tunnel::acquire"}, "quick-tunnel is not installed or not responding"},
-		{errors.New("invalid consumer_id or unauthorized tunnel_id"), `quick-tunnel has no target "mesh"; add "mesh: http://127.0.0.1:49180" to its targets`},
-		{&iii.InvocationError{Code: "invocation_failed", Message: "expires_at must be in the future within max_lease_seconds"}, "quick-tunnel refused: expires_at must be in the future within max_lease_seconds"},
+		{iii.ErrTimeout, "tunnel is not installed or not responding"},
+		{&iii.InvocationError{Code: "function_not_found", Message: "tunnel::acquire"}, "tunnel is not installed or not responding"},
+		{errors.New("invalid consumer_id or unauthorized tunnel_id"), `tunnel has no target "mesh"; add "mesh: http://127.0.0.1:49180" to its targets`},
+		{&iii.InvocationError{Code: "invocation_failed", Message: "expires_at must be in the future within max_lease_seconds"}, "tunnel refused: expires_at must be in the future within max_lease_seconds"},
 	} {
 		h, f := tunnelHub(t, false)
 		f.acquireErr = tc.err
 		h.reconcileTunnel(context.Background())
-		wantCalls(t, f, "quick-tunnel::acquire")
+		wantCalls(t, f, "tunnel::acquire")
 		if s := h.Status(); s.PublicURL != "" || s.Tunnel.State != "unavailable" || s.Tunnel.Error != tc.want {
 			t.Fatalf("%v: %+v", tc.err, s.Tunnel)
 		}
 	}
 }
 
-// A blip in quick-tunnel's RPCs must not unpublish a tunnel that still serves.
+// A blip in tunnel's RPCs must not unpublish a tunnel that still serves.
 func TestTunnelKeepsURLWhileLeaseHolds(t *testing.T) {
 	h, f := tunnelHub(t, true)
 	ctx := context.Background()
@@ -263,7 +263,7 @@ func TestTunnelKeepsURLWhileLeaseHolds(t *testing.T) {
 	h.tunnel.expires = time.Now().Add(time.Minute) // renewal due, and it fails too
 	f.acquireErr = iii.ErrTimeout
 	h.reconcileTunnel(ctx)
-	wantCalls(t, f, "quick-tunnel::status", "quick-tunnel::acquire")
+	wantCalls(t, f, "tunnel::status", "tunnel::acquire")
 	if s := h.Status(); s.PublicURL != f.url {
 		t.Fatalf("renewal error dropped the URL: %+v", s)
 	}
@@ -306,11 +306,11 @@ func TestTunnelLeaseIsRenewedByItsDeadline(t *testing.T) {
 	shortLease(t, 600*time.Millisecond, 400*time.Millisecond)
 	h, f := tunnelLoop(t, time.Hour)
 	h.kickTunnel() // the only event
-	within(t, "the lease was not renewed when it was due", func() bool { return f.count("quick-tunnel::acquire") >= 2 })
+	within(t, "the lease was not renewed when it was due", func() bool { return f.count("tunnel::acquire") >= 2 })
 	var ends []time.Time // of each lease asked for
 	f.set(func() {
 		for i, id := range f.calls {
-			if end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(f.payloads[i]["expires_at"])); id == "quick-tunnel::acquire" && err == nil {
+			if end, err := time.Parse(time.RFC3339Nano, fmt.Sprint(f.payloads[i]["expires_at"])); id == "tunnel::acquire" && err == nil {
 				ends = append(ends, end)
 			}
 		}
@@ -321,7 +321,7 @@ func TestTunnelLeaseIsRenewedByItsDeadline(t *testing.T) {
 }
 
 func TestTunnelRetriesOnlyWhatNoEventEnds(t *testing.T) {
-	const acquire, status, url = "quick-tunnel::acquire", "quick-tunnel::status", "https://abc234.opentunnel.xyz"
+	const acquire, status, url = "tunnel::acquire", "tunnel::status", "https://abc234.opentunnel.xyz"
 	t.Run("an acquire that times out", func(t *testing.T) {
 		h, f := tunnelLoop(t, 5*time.Millisecond)
 		f.set(func() { f.acquireErr, f.state, f.url = iii.ErrTimeout, "ready", url })
@@ -339,15 +339,15 @@ func TestTunnelRetriesOnlyWhatNoEventEnds(t *testing.T) {
 		h.kickTunnel()
 		within(t, "a timed out status was not tried again", func() bool { return f.count(status) >= 3 })
 	})
-	t.Run("a lease quick-tunnel dropped", func(t *testing.T) {
+	t.Run("a lease tunnel dropped", func(t *testing.T) {
 		h, f := tunnelLoop(t, 5*time.Millisecond)
 		f.set(func() { f.dropLease = true })
 		h.kickTunnel()
 		within(t, "a lease that status does not list was not acquired again", func() bool { return f.count(acquire) >= 2 })
 	})
 	for name, err := range map[string]error{
-		"quick-tunnel is not installed":   &iii.InvocationError{Code: "function_not_found", Message: acquire},
-		"quick-tunnel has no such target": errors.New("invalid consumer_id or unauthorized tunnel_id"),
+		"tunnel is not installed":   &iii.InvocationError{Code: "function_not_found", Message: acquire},
+		"tunnel has no such target": errors.New("invalid consumer_id or unauthorized tunnel_id"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, f := tunnelLoop(t, 5*time.Millisecond)
@@ -356,17 +356,17 @@ func TestTunnelRetriesOnlyWhatNoEventEnds(t *testing.T) {
 			within(t, "the event did not run a pass", func() bool { return f.count(acquire) > 0 })
 			time.Sleep(200 * time.Millisecond)
 			if n := f.count(acquire); n != 1 {
-				t.Fatalf("%d acquires in 200 ms for a failure quick-tunnel starting ends, want 1", n)
+				t.Fatalf("%d acquires in 200 ms for a failure tunnel starting ends, want 1", n)
 			}
-			h.functionsChanged() // what quick-tunnel starting causes
+			h.functionsChanged() // what tunnel starting causes
 			within(t, "a function change did not run the tunnel pass", func() bool { return f.count(acquire) == 2 })
 		})
 	}
 }
 
-// A lease the hub no longer wants is released by the retry: nothing announces that quick-tunnel answers again.
+// A lease the hub no longer wants is released by the retry: nothing announces that tunnel answers again.
 func TestTunnelRetriesFailedRelease(t *testing.T) {
-	const acquire, release = "quick-tunnel::acquire", "quick-tunnel::release"
+	const acquire, release = "tunnel::acquire", "tunnel::release"
 	for name, change := range map[string]func(*Config){
 		"the tunnel is turned off": func(c *Config) { c.Tunnel.Enabled = false },
 		"the tunnel id changes":    func(c *Config) { c.Tunnel.TunnelID = "hub" },
@@ -374,7 +374,7 @@ func TestTunnelRetriesFailedRelease(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h, f := tunnelLoop(t, 5*time.Millisecond)
 			h.kickTunnel()
-			within(t, "no lease", func() bool { return f.count("quick-tunnel::status") == 1 })
+			within(t, "no lease", func() bool { return f.count("tunnel::status") == 1 })
 			f.set(func() { f.releaseErr = iii.ErrTimeout })
 			h.mu.Lock()
 			change(&h.config)
@@ -393,7 +393,7 @@ func TestTunnelRetriesFailedRelease(t *testing.T) {
 			held := func() string { h.tunnelMu.Lock(); defer h.tunnelMu.Unlock(); return h.tunnel.tunnelID }
 			within(t, "the retry did not release the lease", func() bool { return held() != "mesh" })
 			if h.Config().Tunnel.Enabled { // the new target waited for the old lease's release
-				within(t, "the new target was not acquired", func() bool { return held() == "hub" && f.count("quick-tunnel::status") == 2 })
+				within(t, "the new target was not acquired", func() bool { return held() == "hub" && f.count("tunnel::status") == 2 })
 			}
 			n := f.count("")
 			if time.Sleep(100 * time.Millisecond); f.count("") != n {
@@ -420,16 +420,16 @@ func TestTunnelPassThatEndsStopsItsRetry(t *testing.T) {
 	}
 }
 
-// A lease that ends while quick-tunnel is away has no event: its deadline stops the URL, with one pass and no spin.
+// A lease that ends while tunnel is away has no event: its deadline stops the URL, with one pass and no spin.
 func TestTunnelStopsPublishingWhenTheLeaseEnds(t *testing.T) {
-	const acquire, status, url = "quick-tunnel::acquire", "quick-tunnel::status", "https://abc234.opentunnel.xyz"
+	const acquire, status, url = "tunnel::acquire", "tunnel::status", "https://abc234.opentunnel.xyz"
 	for _, tc := range []struct {
 		name  string
 		event bool
 		want  []string
 	}{
-		{"an event finds quick-tunnel gone", true, []string{acquire, status, status, acquire}},
-		{"the renewal finds quick-tunnel gone", false, []string{acquire, status, acquire, acquire}},
+		{"an event finds tunnel gone", true, []string{acquire, status, status, acquire}},
+		{"the renewal finds tunnel gone", false, []string{acquire, status, acquire, acquire}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shortLease(t, time.Second, 400*time.Millisecond)
@@ -472,7 +472,7 @@ func TestReleaseTunnelOnce(t *testing.T) {
 	f.take()
 	h.releaseTunnel()
 	h.releaseTunnel()
-	wantCalls(t, f, "quick-tunnel::release")
+	wantCalls(t, f, "tunnel::release")
 }
 
 // B6: only a status that lists the hub's own lease as v2 lets the front door read

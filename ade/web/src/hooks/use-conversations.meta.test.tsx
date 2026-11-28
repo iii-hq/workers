@@ -7,6 +7,7 @@ import {
   fetchTranscriptTail,
   getSession,
   listSessions,
+  patchSessionMeta,
   setSessionMeta,
 } from '@/lib/sessions/api'
 import {
@@ -28,6 +29,7 @@ vi.mock('@/lib/sessions/api', async (original) => ({
   getSession: vi.fn(),
   fetchTranscriptTail: vi.fn(),
   setSessionMeta: vi.fn(),
+  patchSessionMeta: vi.fn(),
 }))
 vi.mock('@/lib/sessions/events', () => ({
   subscribeSessionDirectory: vi.fn(),
@@ -105,6 +107,36 @@ afterEach(async () => {
 })
 
 describe('session metadata writes', () => {
+  // "Continue in Work" on the limit card: the account alone, never the
+  // conversation's other fields from a stale draft, never through set-meta.
+  it("pins a conversation's Claude Code account with a patch of that key alone", async () => {
+    vi.mocked(patchSessionMeta).mockResolvedValue(undefined as never)
+    await act(() => api.setClaudeAccount(id, 'default'))
+    expect(patchSessionMeta).toHaveBeenCalledExactlyOnceWith({
+      session_id: id,
+      set: { claude_account: 'default' },
+    })
+    expect(setSessionMeta).not.toHaveBeenCalled()
+    const conv = () => api.conversations.find((c) => c.id === id)
+    expect(conv()?.sessionMetadata?.claude_account).toBe('default')
+    expect(conv()?.title).toBe('Saved chat')
+
+    await act(() => api.setClaudeAccount(id, null))
+    expect(patchSessionMeta).toHaveBeenLastCalledWith({
+      session_id: id,
+      unset: ['claude_account'],
+    })
+    expect(conv()?.sessionMetadata).not.toHaveProperty('claude_account')
+
+    // A refused patch puts the local value back and says why.
+    vi.mocked(patchSessionMeta).mockRejectedValueOnce(new Error('refused'))
+    await act(() =>
+      expect(api.setClaudeAccount(id, 'personal')).rejects.toThrow('refused'),
+    )
+    expect(conv()?.sessionMetadata).not.toHaveProperty('claude_account')
+    expect(setSessionMeta).not.toHaveBeenCalled()
+  })
+
   // ModelPicker.selectModel: onChange(next), then onThinkingLevelChange.
   it('sends a model pick and its effort as one write', async () => {
     await act(async () => {
@@ -208,6 +240,44 @@ describe('session metadata writes', () => {
     })
     await vi.waitFor(() => expect(setSessionMeta).toHaveBeenCalledTimes(1))
     expect(vi.mocked(setSessionMeta).mock.calls[0]?.[0].session_id).toBe(id)
+  })
+})
+
+describe('the time of a conversation is its session updated_at (D50)', () => {
+  const time = () => api.conversations.find((c) => c.id === id)?.updatedAt
+  const projectEvent = (projectId: string, timestamp: number) =>
+    handlers.onMetaUpdated?.({
+      session_id: id,
+      title: meta.title,
+      description: '',
+      metadata: { ...meta.metadata, project_id: projectId },
+      timestamp,
+    })
+
+  const reads = () =>
+    vi.mocked(getSession).mock.calls.filter(([s]) => s === id).length
+
+  it('keeps the age and the place when a move keeps updated_at', async () => {
+    expect(time()).toBe(2)
+    const before = reads()
+    // Move to project, then No project: patch-meta touch:false, the event
+    // arrives now, the session's updated_at stays 2.
+    await act(async () => projectEvent('prj_acme', 1_795_463_536_081))
+    await act(async () => projectEvent('none', 1_795_463_536_090))
+    expect(api.conversations.find((c) => c.id === id)?.projectId).toBe('none')
+    expect(time()).toBe(2)
+    // One read for the burst.
+    await vi.waitFor(() => expect(reads()).toBe(before + 1))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(reads()).toBe(before + 1)
+    expect(time()).toBe(2)
+  })
+
+  it('takes a newer updated_at from the read, not from the event', async () => {
+    vi.mocked(getSession).mockResolvedValue({ ...meta, updated_at: 40 })
+    await act(async () => projectEvent('prj_acme', 99))
+    expect(time()).toBe(2)
+    await vi.waitFor(() => expect(time()).toBe(40))
   })
 })
 

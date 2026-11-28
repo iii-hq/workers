@@ -15,6 +15,10 @@ export const GENERAL_ANCHOR = {
   soundCheck: 'settings-general-sound-check',
   chat: 'settings-general-chat',
   sendKey: 'settings-general-send-key',
+  projects: 'settings-general-projects',
+  sessionDescriptions: 'settings-general-session-descriptions',
+  claudeAccounts: 'settings-general-claude-accounts',
+  autocompact: 'settings-general-autocompact',
   permissions: 'settings-general-permissions',
   defaultMode: 'settings-general-default-mode',
   allowlist: 'settings-general-allowlist',
@@ -103,6 +107,79 @@ const BASE_FIELDS: SettingsSearchField[] = [
       'composer',
     ],
     anchor: A.sendKey,
+  },
+]
+
+/** Chat › Projects, on an engine with chat projects (chat-projects §1.3.7). */
+const PROJECT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'projects',
+    label: 'Projects',
+    trail: ['Chat'],
+    description:
+      'Named, coloured groups of folders and the conversations started in them.',
+    keywords: ['project', 'folders', 'group', 'new project', 'colour', 'color'],
+    anchor: A.projects,
+  },
+]
+
+/** Chat › Session descriptions, on an engine with the chat settings. */
+const DESCRIPTION_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'session-descriptions',
+    label: 'Session descriptions',
+    trail: ['Chat'],
+    description:
+      'Agents write a one-line description inside the turn they are running.',
+    keywords: [
+      'description',
+      'agent',
+      'summary',
+      'set-description',
+      'up to date',
+    ],
+    anchor: A.sessionDescriptions,
+  },
+]
+
+/** Chat › Claude Code accounts, on an engine with `harness::retry` (chat-projects §4.3.1). */
+const CLAUDE_ACCOUNT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'claude-accounts',
+    label: 'Claude Code accounts',
+    trail: ['Chat'],
+    description:
+      'The same accounts as tmux. A project follows the global account or is pinned to one.',
+    keywords: [
+      'claude code',
+      'account',
+      'usage',
+      'limit',
+      'global account',
+      'tmux',
+      'sign in',
+    ],
+    anchor: A.claudeAccounts,
+  },
+]
+
+/** Chat › Auto-compact, on a harness with `harness::autocompact::models` (chat-projects §3.3.1). */
+const AUTOCOMPACT_FIELDS: SettingsSearchField[] = [
+  {
+    key: 'autocompact',
+    label: 'Auto-compact',
+    trail: ['Chat'],
+    description:
+      "Compact conversations by themselves at a size, or at the model's limit.",
+    keywords: [
+      'compact',
+      'autocompact',
+      'context',
+      'tokens',
+      'summary',
+      'limit',
+    ],
+    anchor: A.autocompact,
   },
 ]
 
@@ -206,12 +283,25 @@ const TRAILING_FIELDS: SettingsSearchField[] = [
   },
 ]
 
-/** The General page's searchable fields; Permissions only when it renders. */
+/**
+ * The General page's searchable fields; Permissions, Projects, Session
+ * descriptions, Claude Code accounts and Auto-compact only when they render.
+ */
 export function generalSearchFields(
   approvalGateAvailable: boolean,
+  chat: {
+    projects?: boolean
+    descriptions?: boolean
+    claudeAccounts?: boolean
+    autocompact?: boolean
+  } = {},
 ): SettingsSearchField[] {
   return [
     ...BASE_FIELDS,
+    ...(chat.projects ? PROJECT_FIELDS : []),
+    ...(chat.descriptions ? DESCRIPTION_FIELDS : []),
+    ...(chat.claudeAccounts ? CLAUDE_ACCOUNT_FIELDS : []),
+    ...(chat.autocompact ? AUTOCOMPACT_FIELDS : []),
     ...(approvalGateAvailable ? PERMISSION_FIELDS : []),
     ...TRAILING_FIELDS,
   ]

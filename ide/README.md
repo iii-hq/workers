@@ -400,6 +400,49 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
+## Turn history retention
+
+The IDE reconciles its private turn snapshot repositories at startup, after
+`session::on-deleted`, and every five minutes. It removes refs that no retained
+turn references, and removes a repository when it has no retained snapshots or
+other refs. Session records are removed only when `session::get` confirms the
+session is absent. A missing workspace alone does not discard its history.
+Unavailable session lookups preserve history and are retried; corrupt local
+records defer reconciliation, including records that omit the `turns` field.
+Lookup failures are limited to three per pass, and subsequent passes resume
+after the last checked session. A failed repository is left for retry while
+other repositories are processed. Foreign refs and their symbolic target chains
+are preserved, including root refs such as a detached `HEAD` and `ORIG_HEAD`.
+An unborn `HEAD` does not prevent orphan repository cleanup.
+
+Pruning a turn or changing its root commits the updated record immediately;
+background maintenance releases the obsolete refs without adding Git cleanup
+to the session update. The worker logs the number of records, refs and
+repositories removed, and reports repository failures separately.
+
+`turns.max_blob_bytes` limits the separate pre-image blob store under `objects/`.
+It is not a quota for the Git repositories under `repos/`: valid snapshots remain
+available for review and revert. Objects released from a shared repository are
+reclaimed by Git's normal garbage collection; an orphan repository is removed
+with all of its packs and indexes.
+
+The real-engine regression requires Git 2.45 or newer on `PATH` for its
+`for-each-ref --include-root-refs` inventory. It checks this capability before
+creating fixtures or starting the engine. This is a test-only requirement;
+production reconciliation does not use that option.
+
+To run the startup and session-deletion regression with a real engine and worker:
+
+```sh
+cargo build --locked --release --bin ide
+III_BIN="$(command -v iii)" III_IDE_BIN="$PWD/target/release/ide" \
+  cargo test --locked --test turn_retention -- --ignored --nocapture
+```
+
+The test starts an isolated engine and uses temporary repositories and a controlled
+session catalog. Set `III_IDE_BIN` to the actual binary path if Cargo's target
+directory is overridden.
+
 ## Observable functions
 
 The worker hosts four event functions. Each is private (only this worker

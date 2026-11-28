@@ -1,6 +1,0 @@
-width: 200
-height: 200
-strategy: scale-to-fit
-quality:
-  jpeg: 85
-  webp: 80

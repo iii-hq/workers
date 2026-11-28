@@ -421,16 +421,16 @@ async fn start_compaction(
         let _ = crate::state::put_idem(&deps.iii, key, &record, cfg.session_timeout_ms).await;
     }
     let request = crate::compaction::Request {
-        session_id: session_id.clone(),
-        model,
-        provider,
         instructions: command.instructions,
         entry_id: Some(entry_id.clone()),
         mark_working: true,
+        ..crate::compaction::Request::command(session_id.clone(), model, provider)
     };
     let background = deps.clone();
     let id = compaction_id.clone();
     tokio::spawn(async move {
+        // The account is resolved in the background: tmux may take a while.
+        let request = request.on_conversation_account(&background).await;
         crate::compaction::run(&background, request, id).await;
     });
     Ok(SendResponse {
@@ -488,6 +488,23 @@ async fn start_with_delivery_lock(
             "require_existing_session needs an existing session_id".into(),
         ));
     }
+    // A side chat runs on its conversation's options (chat-projects D14):
+    // its lock is enforced, and written into what the send leaves out,
+    // before anything below reads the request.
+    let mut req = req;
+    let side_chat = match (req.session_id.clone(), existing_metadata.as_ref()) {
+        (Some(id), Some(metadata)) => {
+            crate::side_chat::prepare_send(
+                deps,
+                &id,
+                metadata,
+                &mut req,
+                caller_holds_target_session_lock,
+            )
+            .await?
+        }
+        _ => None,
+    };
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -765,6 +782,41 @@ async fn start_with_delivery_lock(
     )?;
 
     drop(topology);
+    // Membership on send (D8): a conversation without `project_id` whose
+    // working folder belongs to a project joins it before its turn, through
+    // session::patch-meta. `"none"` (kept out on purpose) is never stamped.
+    let stamp_root = options
+        .filesystem_root()
+        .map(str::to_string)
+        .or_else(|| {
+            prev.as_ref()
+                .and_then(|record| record.options.filesystem_root())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            existing_metadata
+                .as_ref()
+                .and_then(|m| m.get(crate::types::turn::FS_SCOPE_KEY))
+                .and_then(|scope| scope.get("root"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            prev.is_none()
+                .then(|| cfg.resolved_default_filesystem_root())
+                .flatten()
+        });
+    let known_metadata = existing_metadata
+        .as_ref()
+        .or(metadata.as_ref().and_then(Value::as_object));
+    super::projects::stamp_on_send(
+        deps,
+        &session,
+        &session_id,
+        known_metadata,
+        stamp_root.as_deref(),
+    )
+    .await;
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
@@ -810,6 +862,9 @@ async fn start_with_delivery_lock(
             ts: AgentMessage::now_ms(),
         };
         let _ = crate::state::put_idem(&deps.iii, key, &rec, cfg.session_timeout_ms).await;
+    }
+    if let Some(prepared) = side_chat {
+        crate::side_chat::after_send(deps, &session_id, prepared).await;
     }
 
     Ok(StartOutcome {
@@ -1489,7 +1544,15 @@ fn build_options(
     let opts = req.options.clone().unwrap_or_default();
     let mut thinking_level = opts.thinking_level;
     // `{}` is the explicit reset; it reaches the router as no options at all.
-    let mut provider_options = opts.provider_options.filter(|map| !map.is_empty());
+    // The Claude Code account is the harness's to resolve when the turn
+    // starts (chat-projects D139): a client's is dropped.
+    let mut provider_options = opts
+        .provider_options
+        .map(|mut map| {
+            crate::accounts::strip_account_option(&mut map);
+            map
+        })
+        .filter(|map| !map.is_empty());
     if let Some(agent) = agent {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -1534,6 +1597,45 @@ fn build_options(
         // Resolved in `start` once the message is normalised.
         response_language: None,
     }
+}
+
+/// The options a send that names nothing would start the session's next
+/// turn on, after `prev`: its model, provider, reasoning, prompt, agent
+/// identity, skills, policy, budget and language, with the configured
+/// per-turn limits and none of the last send's own metadata (`seed_new`
+/// keeps its working folder). `harness::retry` runs a failed turn again on
+/// them (chat-projects §4.2.4), with the failed turn's output contract, the
+/// part of the exchange it re-runs. The Claude Code account is left for the
+/// turn's first step to resolve.
+pub(crate) async fn next_turn_options(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    prev: &TurnRecord,
+) -> Result<TurnOptions, HarnessError> {
+    let req = SendRequest {
+        session_id: Some(prev.session_id.clone()),
+        message: MessageInput::Text(String::new()),
+        model: None,
+        provider: None,
+        idempotency_key: None,
+        session: None,
+        options: None,
+    };
+    let functions = send_functions(cfg, &req, prev.options.functions.as_ref()).cloned();
+    let (model, provider) = resolve_model_route(None, &req, Some(&prev.options), None)?;
+    // The prompt is inherited below: no identity is resolved for it.
+    let mut options = build_options(cfg, &req, model, provider, None, "");
+    options.functions = functions;
+    inherit_prior_system_prompt(&mut options, &prev.options);
+    inherit_prior_reasoning(&mut options, &prev.options);
+    prepare_skill_context(deps, &mut options, Some(&prev.options), None, true).await?;
+    options.response_language = prev.options.response_language.clone();
+    options.output = prev.options.output.clone();
+    crate::budget::prepare_root(deps, &prev.session_id, &mut options, Some(prev)).await?;
+    if let Some(provider_options) = options.provider_options.as_mut() {
+        crate::accounts::strip_account_option(provider_options);
+    }
+    Ok(options)
 }
 
 /// Merge the frozen agent display/configuration snapshot into session
@@ -2085,12 +2187,18 @@ pub(crate) async fn seed_new(
         result_error: None,
         stop_reason: None,
         failure: None,
+        account: None,
+        // Resolved at the first step.
+        autocompact: None,
+        compacting: None,
+        compaction_stopped: false,
         dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         native_names: Default::default(),
         validation_retries: 0,
         transient_resumes: 0,
         ask_step: None,
         ask_seen_step: None,
+        kept_reply: None,
         created_at: now,
         updated_at: now,
     };
@@ -2824,12 +2932,17 @@ mod tests {
             result_error: None,
             stop_reason: None,
             failure: None,
+            account: None,
+            autocompact: None,
+            compacting: None,
+            compaction_stopped: false,
             dispatch_only_functions: Vec::new(),
             native_names: Default::default(),
             validation_retries: 0,
             transient_resumes: 0,
             ask_step: None,
             ask_seen_step: None,
+            kept_reply: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -3444,6 +3557,51 @@ mod tests {
         assert!(compiled.allows("state::set"));
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("shell::run"));
+    }
+
+    #[test]
+    fn build_options_drops_a_clients_claude_code_account() {
+        let cfg = WorkerConfig::default();
+        let request = |provider_options: serde_json::Value| SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: Some("claude-code/claude-opus-4-8".into()),
+            provider: Some("claude-code".into()),
+            idempotency_key: None,
+            session: None,
+            options: Some(SendOptions {
+                provider_options: Some(serde_json::from_value(provider_options).unwrap()),
+                ..Default::default()
+            }),
+        };
+        let build = |req: &SendRequest| {
+            build_options(
+                &cfg,
+                req,
+                "claude-code/claude-opus-4-8".into(),
+                Some("claude-code".into()),
+                None,
+                crate::prompt::DEFAULT,
+            )
+        };
+        let opts = build(&request(serde_json::json!({
+            "claude-code": { "account": "personal", "effort": "high" },
+            "acme": { "account": "kept" }
+        })));
+        let provider_options = opts.provider_options.unwrap();
+        assert_eq!(
+            provider_options["claude-code"],
+            serde_json::json!({ "effort": "high" })
+        );
+        assert_eq!(
+            provider_options["acme"],
+            serde_json::json!({ "account": "kept" })
+        );
+        // Naming only an account names no options: the turn inherits as usual.
+        let opts = build(&request(serde_json::json!({
+            "claude-code": { "account": "personal" }
+        })));
+        assert_eq!(opts.provider_options, None);
     }
 
     #[test]

@@ -1,17 +1,17 @@
 //! Webhook prerequisites as one checklist shared by the GitHub console page
-//! and agents: the quick-tunnel worker, the cloudflared binary it runs (or,
+//! and agents: the tunnel worker, the cloudflared binary it runs (or,
 //! with OpenTunnel, the provider), and the http worker's restricted webhook
 //! listener. Nothing here installs software;
-//! the page installs the quick-tunnel worker only after the operator confirms.
+//! the page installs the tunnel worker only after the operator confirms.
 
 use super::*;
 
-pub const QUICK_TUNNEL_WORKER: &str = "quick-tunnel";
-/// quick-tunnel's default `webhooks` target is http://127.0.0.1:3112.
+pub const TUNNEL_WORKER: &str = "tunnel";
+/// tunnel's default `webhooks` target is http://127.0.0.1:3112.
 pub const DEFAULT_LISTENER_PORT: u16 = 3112;
 /// Polls (300 ms apart) waiting for http to apply a new listener: about 3 s.
 const LISTENER_APPLY_POLLS: usize = 10;
-/// Shown when quick-tunnel cannot report its own install pointer.
+/// Shown when tunnel cannot report its own install pointer.
 pub const CLOUDFLARED_INSTALL_URL: &str =
     "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
@@ -43,7 +43,7 @@ pub enum SetupFix {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SetupCheck {
-    /// quick_tunnel | cloudflared | tunnel_provider | http_listener
+    /// tunnel | cloudflared | tunnel_provider | http_listener
     pub id: String,
     pub title: String,
     pub state: CheckState,
@@ -70,7 +70,7 @@ pub struct SetupStatus {
     pub storage_error: Option<String>,
 }
 
-/// How `quick-tunnel::status` failed.
+/// How `tunnel::status` failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TunnelProbe {
     /// The function does not exist and compose does not declare the worker.
@@ -135,7 +135,7 @@ pub struct SetupStatusRequest {}
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnableListenerRequest {
-    /// Restricted listener port; defaults to quick-tunnel's target, 3112.
+    /// Restricted listener port; defaults to tunnel's target, 3112.
     #[serde(default)]
     pub port: Option<u16>,
 }
@@ -175,47 +175,47 @@ pub fn evaluate(
 ) -> Vec<SetupCheck> {
     let quick = match tunnel {
         Ok(_) => check(
-            "quick_tunnel",
-            "quick-tunnel worker",
+            "tunnel",
+            "tunnel worker",
             CheckState::Ok,
             "Installed.".into(),
             None,
         ),
         Err(TunnelProbe::NotInstalled) => check(
-            "quick_tunnel",
-            "quick-tunnel worker",
+            "tunnel",
+            "tunnel worker",
             CheckState::Missing,
-            "PR webhooks need the quick-tunnel worker to publish a temporary public URL.".into(),
+            "PR webhooks need the tunnel worker to publish a public URL (OpenTunnel by default: stable, no binary to install).".into(),
             Some(SetupFix::InstallWorker {
-                worker: QUICK_TUNNEL_WORKER.into(),
-                command: "compose::add { worker: \"quick-tunnel\" }".into(),
+                worker: TUNNEL_WORKER.into(),
+                command: "compose::add { worker: \"tunnel\" }".into(),
             }),
         ),
         Err(TunnelProbe::NotResponding(e)) => check(
-            "quick_tunnel",
-            "quick-tunnel worker",
+            "tunnel",
+            "tunnel worker",
             CheckState::Unknown,
-            format!("quick-tunnel did not answer: {e}"),
+            format!("tunnel did not answer: {e}"),
             None,
         ),
         Err(TunnelProbe::Unconfirmed) => check(
-            "quick_tunnel",
-            "quick-tunnel worker",
+            "tunnel",
+            "tunnel worker",
             CheckState::Unknown,
-            "quick-tunnel is not registered, and compose could not confirm whether it is installed.".into(),
+            "tunnel is not registered, and compose could not confirm whether it is installed.".into(),
             Some(SetupFix::InstallWorker {
-                worker: QUICK_TUNNEL_WORKER.into(),
-                command: "compose::add { worker: \"quick-tunnel\" }".into(),
+                worker: TUNNEL_WORKER.into(),
+                command: "compose::add { worker: \"tunnel\" }".into(),
             }),
         ),
     };
     let cloudflared = match tunnel {
-        // OpenTunnel runs inside quick-tunnel: there is no binary to find.
+        // OpenTunnel runs inside tunnel: there is no binary to find.
         Ok(status) if status["provider"] == "opentunnel" => check(
             "tunnel_provider",
             "tunnel provider",
             CheckState::Ok,
-            "quick-tunnel uses OpenTunnel; no cloudflared binary is needed.".into(),
+            "tunnel uses OpenTunnel; no cloudflared binary is needed.".into(),
             None,
         ),
         Ok(status) => match status.pointer("/prerequisites/cloudflared") {
@@ -249,26 +249,28 @@ pub fn evaluate(
                 "cloudflared",
                 "cloudflared binary",
                 CheckState::Unknown,
-                "This quick-tunnel version does not report cloudflared; update it.".into(),
+                "This tunnel version does not report cloudflared; update it.".into(),
                 Some(SetupFix::UpdateWorker {
-                    worker: QUICK_TUNNEL_WORKER.into(),
-                    command: "compose::update { worker: \"quick-tunnel\" }".into(),
+                    worker: TUNNEL_WORKER.into(),
+                    command: "compose::update { worker: \"tunnel\" }".into(),
                 }),
             ),
         },
+        // Without a status the provider is unknown. A fresh tunnel
+        // install defaults to OpenTunnel, so name the provider, not cloudflared.
         Err(TunnelProbe::NotInstalled) => check(
-            "cloudflared",
-            "cloudflared binary",
+            "tunnel_provider",
+            "tunnel provider",
             CheckState::Blocked,
-            "Install quick-tunnel first: it is the worker that runs cloudflared.".into(),
+            "Install tunnel first: it runs the tunnel provider (OpenTunnel by default, no binary needed).".into(),
             None,
         ),
-        // quick-tunnel exists but did not answer: unverifiable, never a blocker.
+        // tunnel exists but did not answer: unverifiable, never a blocker.
         Err(TunnelProbe::NotResponding(_) | TunnelProbe::Unconfirmed) => check(
-            "cloudflared",
-            "cloudflared binary",
+            "tunnel_provider",
+            "tunnel provider",
             CheckState::Unknown,
-            "quick-tunnel did not answer, so cloudflared could not be checked.".into(),
+            "tunnel did not answer, so its tunnel provider could not be checked.".into(),
             None,
         ),
     };
@@ -278,7 +280,7 @@ pub fn evaluate(
                 "http_listener",
                 "http webhook listener",
                 CheckState::Missing,
-                "The http worker's restricted webhook listener is off; quick-tunnel forwards GitHub deliveries to it.".into(),
+                "The http worker's restricted webhook listener is off; tunnel forwards GitHub deliveries to it.".into(),
                 Some(SetupFix::EnableHttpListener {
                     port: DEFAULT_LISTENER_PORT,
                 }),
@@ -287,7 +289,7 @@ pub fn evaluate(
                 "http_listener",
                 "http webhook listener",
                 CheckState::Missing,
-                "The listener uses port 0 (ephemeral); quick-tunnel forwards to a fixed port, so set one.".into(),
+                "The listener uses port 0 (ephemeral); tunnel forwards to a fixed port, so set one.".into(),
                 Some(SetupFix::EnableHttpListener {
                     port: DEFAULT_LISTENER_PORT,
                 }),
@@ -465,12 +467,12 @@ impl Service {
     pub(super) async fn setup_status(&self, _req: SetupStatusRequest) -> Result<SetupStatus> {
         let live = self.cell.read().await.webhooks.clone();
         let tunnel = match self
-            .invoke("quick-tunnel::status", json!({"tunnel_id": live.tunnel_id}))
+            .invoke("tunnel::status", json!({"tunnel_id": live.tunnel_id}))
             .await
         {
             Ok(status) => Ok(status),
             Err(e) if function_missing(&e) => {
-                Err(match self.worker_declared(QUICK_TUNNEL_WORKER).await {
+                Err(match self.worker_declared(TUNNEL_WORKER).await {
                     Some(true) => TunnelProbe::NotResponding(
                         "declared in compose but not answering (restarting or stopped)".into(),
                     ),
@@ -542,7 +544,7 @@ impl Service {
             .unwrap_or("127.0.0.1")
             .to_owned();
         let port = req.port.unwrap_or(DEFAULT_LISTENER_PORT);
-        // Never save what the checklist itself rejects: quick-tunnel forwards
+        // Never save what the checklist itself rejects: tunnel forwards
         // to a fixed port, so an ephemeral 0 is refused before writing.
         if port == 0 {
             return Err(Failure::Invalid(

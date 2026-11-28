@@ -171,7 +171,7 @@ export function SedResultsTable({
   totalReplacements,
 }: SedResultsTableProps) {
   return (
-    <Table density="compact">
+    <Table density="compact" inset>
       <TableHeader>
         <TableRow>
           <TableHead>path</TableHead>

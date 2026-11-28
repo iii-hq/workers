@@ -13,7 +13,9 @@ use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
-use crate::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
+use crate::types::{
+    AgentFunction, AgentMessage, Failure, FailureKind, Model, ProviderOptions, ThinkingLevel,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBudget {
@@ -72,6 +74,9 @@ pub struct SummarizeRequest {
     /// Model id the summary runs on (same model as the request).
     pub model: String,
     pub provider: Option<String>,
+    /// The caller's `router::chat` `provider_options` (e.g. the
+    /// conversation's account), forwarded verbatim.
+    pub provider_options: Option<ProviderOptions>,
 }
 
 /// Why a summariser call produced no summary.
@@ -84,9 +89,10 @@ pub enum SummarizeError {
     Unavailable(String),
 
     /// The summariser ran and failed (provider error, stream error,
-    /// or the summariser itself overflowed).
+    /// timeout, or a history the pipeline cannot fit), with its cause.
+    /// A plain string converts to a cause of kind `other`.
     #[error("summariser failed: {0}")]
-    Failed(String),
+    Failed(Failure),
 
     /// The provider rejected the request as larger than the model's
     /// context window (`router/context_overflow`); a smaller fragment
@@ -97,6 +103,30 @@ pub enum SummarizeError {
     /// The summariser returned an empty summary.
     #[error("summariser returned an empty summary")]
     Empty,
+}
+
+/// What a context-window refusal tells a caller: the input did not fit.
+pub const INPUT_TOO_LARGE_MESSAGE: &str =
+    "the conversation is too large for the model to summarise";
+
+impl SummarizeError {
+    /// The cause a caller shows (`compaction.failure`, compact's `overflow`).
+    pub fn failure(&self) -> Failure {
+        match self {
+            SummarizeError::Unavailable(detail) => Failure::new(
+                FailureKind::Unavailable,
+                format!("the summariser is unavailable: {detail}"),
+            ),
+            SummarizeError::Failed(failure) => failure.clone(),
+            SummarizeError::ContextOverflow(_) => {
+                Failure::new(FailureKind::InputTooLarge, INPUT_TOO_LARGE_MESSAGE)
+            }
+            SummarizeError::Empty => Failure::new(
+                FailureKind::Other,
+                "the summariser returned an empty summary",
+            ),
+        }
+    }
 }
 
 /// A `{nonce, ts}` lease claim (harness `runtime/lease.ts` semantics:

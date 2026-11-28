@@ -2,7 +2,7 @@
 
 [package]
 name = "workflow"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2024"
 publish = false
 

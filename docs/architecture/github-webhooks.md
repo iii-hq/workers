@@ -4,7 +4,7 @@
 
 GitHub monitoring uses three independently reusable worker surfaces:
 
-1. `quick-tunnel` owns `cloudflared` processes and expiring consumer leases. It
+1. `tunnel` owns `cloudflared` processes and expiring consumer leases. It
    exposes only operator-configured local targets, not arbitrary caller URLs.
 2. `http` owns HTTP ingress. Its optional webhook listener serves only routes
    explicitly registered with `public_webhook: true`. The ordinary listener,
@@ -25,16 +25,21 @@ repository hooks. Existing one-shot GitHub functions remain available.
 
 ## Guided setup and readiness
 
-`quick-tunnel` is an optional, on-demand prerequisite of GitHub webhook
+`tunnel` is an optional, on-demand prerequisite of GitHub webhook
 monitoring, not a fixed dependency of the `github` worker. The Console asks for
-operator confirmation before installing it. The `cloudflared` executable is
-owned by the operator: setup checks whether it is available and links to
-Cloudflare's official installation instructions, but never downloads it.
+operator confirmation before installing it. New `tunnel` installs use the
+in-process OpenTunnel provider, which needs no binary. With
+`provider: cloudflared` the `cloudflared` executable is owned by the operator:
+setup checks whether it is available and links to Cloudflare's official
+installation instructions, but never downloads it.
 
 `github::setup::webhooks-status` is the shared checklist for the Console's
-**GitHub → Webhooks** page and for agents. It reports `quick_tunnel`,
-`cloudflared`, and `http_listener` as `ok`, `missing`, `blocked`, or `unknown`,
-with a remediation when one is known. A transient failure, an older worker, or
+**GitHub → Webhooks** page and for agents. It reports three checks as
+`ok`, `missing`, `blocked`, or `unknown`, with a remediation when one is known:
+`tunnel` (the worker is installed); then `tunnel_provider` when the tunnel worker
+uses OpenTunnel, is missing (`blocked`) or does not answer (`unknown`), or
+`cloudflared` (the binary was found) when it uses cloudflared; and
+`http_listener`. A transient failure, an older worker, or
 an unavailable Compose status is `unknown`, never proof that a dependency is
 absent. `github::pr::watch` therefore rejects only definite `missing` and
 `blocked` checks. Enabling webhooks is stricter: every prerequisite must be
@@ -71,7 +76,12 @@ hands to that observer's target; the target's result acks the job, and an error
 retries it. A watch stays alive while an observer listens to it.
 
 The provider manages one hook per installation/repository, shared by all
-interested watches. It must not adopt or remove hooks belonging to other tools.
+interested watches. It must not adopt or remove hooks belonging to other tools. The one exception
+is a hook that targets this worker's own `/webhooks/github/` route on its
+current public URL without being tracked: only this installation serves that
+route and such a hook can never be delivered, so it is a leftover of this worker
+(lost state, interrupted cleanup) and is deleted when the repository hook is
+created or updated.
 The hook's event selection covers only required event categories. A hook receives
 repository-wide events; PR filtering belongs in the provider.
 
@@ -112,7 +122,7 @@ another worker's public endpoint.
 ## Tunnel URL rotation and outages
 
 A recreated Quick Tunnel may receive a new URL. Consumers observe
-`quick-tunnel::on-changed` before acquiring a lease and read its status once
+`tunnel::on-changed` before acquiring a lease and read its status once
 afterward. A generation identifies a process incarnation; stale events must not
 overwrite the current endpoint. URL updates preserve the existing hook secret.
 

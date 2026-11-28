@@ -7,10 +7,31 @@ import {
   fetchTranscriptTail,
   isInvalidCursorError,
   isMissingFunctionError,
+  listSessions,
+  sessionListHasMore,
   setSessionDraft,
 } from './api'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
+
+describe('listSessions', () => {
+  // The Projects tab counts from this one page: "N+" when more are left.
+  it('says whether the page stopped short of the whole list', async () => {
+    const call = vi.fn()
+    vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
+    call.mockResolvedValueOnce({ sessions: [], next_cursor: 'c2' })
+    await listSessions()
+    expect(call).toHaveBeenCalledWith(
+      'session::list',
+      { limit: 200, order: 'updated_desc' },
+      { timeoutMs: 10_000 },
+    )
+    expect(sessionListHasMore()).toBe(true)
+    call.mockResolvedValueOnce({ sessions: [], next_cursor: null })
+    await listSessions()
+    expect(sessionListHasMore()).toBe(false)
+  })
+})
 
 describe('setSessionDraft', () => {
   const call = vi.fn()

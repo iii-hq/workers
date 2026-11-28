@@ -45,6 +45,8 @@ import {
   useWorkersConfigurationRoute,
 } from '@/hooks/use-hash-route'
 import type { ThemePreference } from '@/hooks/use-theme'
+import { getDefaultBackend } from '@/lib/backend'
+import { useChatCapabilities } from '@/lib/chat-capabilities'
 import {
   configurationFormFamily,
   resolveConfigurationFamily,
@@ -62,6 +64,7 @@ import {
 } from './components/SettingsNavigation'
 import { isOperatorConfiguration } from './lib/configuration-catalog'
 import { generalSearchFields } from './lib/general-settings-index'
+import { revealGeneralRow } from './lib/reveal-general-row'
 import {
   buildSettingsSearchIndex,
   type SettingsSearchDoc,
@@ -319,6 +322,23 @@ export function Configuration({
   const approvalGateAvailable = conversations
     ? conversations.approvalGateAvailable
     : true
+  // Chat › Projects and Session descriptions render on engines that have them.
+  const chatCaps = useChatCapabilities(getDefaultBackend().id === 'real')
+  const chatSearch = useMemo(
+    () => ({
+      projects: chatCaps.projects,
+      descriptions: chatCaps.chatSettings && chatCaps.setDescription,
+      claudeAccounts: chatCaps.harnessRetry,
+      autocompact: chatCaps.autocompact && chatCaps.chatSettings,
+    }),
+    [
+      chatCaps.projects,
+      chatCaps.chatSettings,
+      chatCaps.setDescription,
+      chatCaps.harnessRetry,
+      chatCaps.autocompact,
+    ],
+  )
   const searchIndex = useMemo(() => {
     const prefixes = sharedIdPrefixes(entries.map((entry) => entry.id))
     const docs: SettingsSearchDoc[] = [
@@ -328,7 +348,7 @@ export function Configuration({
         aliases: ['preferences'],
         description:
           'ADE appearance, permissions, providers, and filesystem access.',
-        fields: generalSearchFields(approvalGateAvailable),
+        fields: generalSearchFields(approvalGateAvailable, chatSearch),
       },
       ...entries.map((entry) => ({
         id: entry.id,
@@ -342,7 +362,7 @@ export function Configuration({
       })),
     ]
     return buildSettingsSearchIndex(docs)
-  }, [entries, approvalGateAvailable])
+  }, [entries, approvalGateAvailable, chatSearch])
 
   const selectSearchResult = useCallback(
     (docId: string, field?: SettingsSearchField) => {
@@ -518,35 +538,6 @@ function ConfigurationUnavailable({
       <EditorEmptyState title={title} description={description} />
     </div>
   )
-}
-
-/**
- * Scroll a General row into view and flash it, once it is mounted (the page
- * may still be transitioning in). The first id that exists wins, so a hidden
- * row falls back to its neighbour.
- */
-function revealGeneralRow(anchors: string[]) {
-  if (anchors.length === 0 || typeof window === 'undefined') return
-  const reduceMotion = window.matchMedia?.(
-    '(prefers-reduced-motion: reduce)',
-  ).matches
-  let frames = 0
-  const tick = () => {
-    const target = anchors
-      .map((anchor) => document.getElementById(anchor))
-      .find((element): element is HTMLElement => element !== null)
-    if (!target) {
-      if (++frames < 60) window.requestAnimationFrame(tick)
-      return
-    }
-    target.scrollIntoView({
-      block: 'center',
-      behavior: reduceMotion ? 'auto' : 'smooth',
-    })
-    target.setAttribute('data-search-flash', '')
-    window.setTimeout(() => target.removeAttribute('data-search-flash'), 1600)
-  }
-  window.requestAnimationFrame(tick)
 }
 
 function iconForConfiguration(

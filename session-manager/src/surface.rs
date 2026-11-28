@@ -26,8 +26,8 @@ use crate::events::{
 use crate::functions::{
     append, append_many, attachment_mention, create, delete, delete_attachment, ensure, fork, get,
     get_attachment, get_message, list, list_attachments, mention, messages, messages_range,
-    messages_tail, put_attachment, read_attachment, search, set_active_leaf, set_draft, set_meta,
-    set_status, store_protocol, update_message,
+    messages_tail, patch_meta, put_attachment, read_attachment, search, set_active_leaf, set_draft,
+    set_meta, set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
 use mention_contract::{
@@ -104,6 +104,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<get::GetRequest, Option<get::GetResponse>>("session::get"),
         spec::<list::ListRequest, list::ListResponse>("session::list"),
         spec::<set_meta::SetMetaRequest, set_meta::SetMetaResponse>("session::set-meta"),
+        spec::<patch_meta::PatchMetaRequest, patch_meta::PatchMetaResponse>("session::patch-meta"),
         spec::<set_draft::SetDraftRequest, set_draft::SetDraftResponse>("session::set-draft"),
         spec::<set_status::SetStatusRequest, set_status::SetStatusResponse>("session::set-status"),
         spec::<delete::DeleteRequest, delete::DeleteResponse>("session::delete"),

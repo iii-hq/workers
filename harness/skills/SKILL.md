@@ -103,6 +103,41 @@ Consumer-facing:
   `Header: answer` line per question (`(skipped)` for a question the user
   passed on; a dismissed card sends a notice instead). Refused in
   sub-agents, structured-output turns, and for a second ask in one step.
+- `harness::set-description` — keep the conversation's one-line description
+  (and, once, its name) up to date. Offered as a tool of its own in every turn
+  while the Chat setting `descriptions.agent_writes` is on; answered by the
+  turn loop for the turn's own session, so a direct call fails. Call it with
+  other calls or after the reply text: a step whose only call it is, beside
+  reply text, asks the model once more (end with no text when the reply was
+  the answer; that reply is then the turn's result). A description the
+  user wrote is never replaced (`The user wrote this description; leave it.`).
+- `harness::projects::list { version: 2 }` — the chat projects: named,
+  coloured groups of folders; a conversation's `metadata.project_id` names
+  its project (`"none"` = kept out on purpose). Always send `version: 2`;
+  without it the call answers the saved folders for apps released before
+  projects. Internal like every harness control-plane function (off the
+  default `engine::functions::list`), but agents may call it by id.
+
+Console and app control-plane (internal, list them with
+`engine::functions::list { include_internal: true }`): `harness::folders::list`
+/ `upsert` / `delete` (the saved-folder catalogue, formerly
+`harness::projects::*`), `harness::projects::create` / `update` / `delete` /
+`assign` (refusals are one JSON object in the error: `{code, message}` with
+`name_taken`, `folder_taken`, `bad_name`, `bad_color`, `no_folders`,
+`too_many_folders`, `folder_not_absolute`, `not_found`), `harness::context-items`
+(the context pane: subagents, pull requests, links, attachments, images and side
+chats of a conversation, newest first), `harness::chat-settings::get` / `set`,
+and the side chats: `harness::side-chat::open { session_id, entry_id?, quote? }`
+(fork a conversation at an entry into a side chat that runs on its model,
+effort and account, locked by `harness::send`: a send naming other options
+fails `side_chat_locked`), `harness::side-chat::close { session_id }`
+(`deleted: true` when nothing was sent in it), `harness::side-chat::keep
+{ session_id }` (an ordinary conversation in the conversation's project) and
+`harness::side-chat::summarize { session_id }` (a fixed summary prompt; the
+reply's entry id joins `side_chat_summaries`). Their refusals:
+`nested_side_chat`, `nothing_to_fork`, `side_chat_locked`, `side_chat_busy`,
+`not_side_chat`, `not_found`. Agents are denied the writes and the side-chat
+functions.
 
 Internal — the harness drives these; never call them directly:
 `harness::turn` (the durable loop step), `harness::function::call` /
@@ -187,6 +222,11 @@ them (see [Agent observers](#agent-observers)).
 - `harness::on-message-queued`, `harness::on-observers-changed`,
   `harness::on-compaction`, `harness::on-session-tree-deletion` and
   `harness::on-ready` — see the worker README for their events.
+- `harness::projects::on-changed` — a chat project was created, updated or
+  deleted (`{ revision, project_id, change }`); refetch
+  `harness::projects::list { version: 2 }`.
+- `harness::chat-settings::on-changed` — the Chat settings changed
+  (`{ settings }`).
 
 None takes args: filter on `input.session_id`, or on
 `input.parent_session_id` / `input.parent.session_id` to watch the children a

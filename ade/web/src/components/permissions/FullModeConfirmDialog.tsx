@@ -37,12 +37,11 @@ export function FullModeConfirmContent({
   return (
     <div className={cn('font-sans', className)}>
       <p className="text-base leading-relaxed text-ink">
-        Full permissions let the agent run any function in {target} without
-        asking — including writing files, executing shell commands, sending
-        messages, and reading secrets.
+        In full mode every function runs in {target} with no prompt, including
+        file writes, shell commands and messages.
       </p>
       <p className="mt-2 text-base leading-relaxed text-ink-faint">
-        You can revert from the banner at the top of the chat at any time.
+        Switch back to manual or auto from the mode picker at any time.
       </p>
       <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <Button
@@ -54,10 +53,9 @@ export function FullModeConfirmContent({
         >
           Cancel
         </Button>
-        {/* Full mode drops every safety prompt, so enabling it reads as danger. */}
         <Button
           type="button"
-          variant="destructive"
+          variant="default"
           size="lg"
           onClick={onConfirm}
           className="min-h-12 sm:min-h-9"
@@ -78,7 +76,7 @@ export function FullModeConfirmDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
-        <DialogTitle className="text-sm">enable full permissions</DialogTitle>
+        <DialogTitle className="text-sm">Enable full permissions</DialogTitle>
         <FullModeConfirmContent
           scope={scope}
           className="mt-3"

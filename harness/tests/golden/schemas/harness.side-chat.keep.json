@@ -1,0 +1,31 @@
+{
+  "function_id": "harness::side-chat::keep",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`close`, `keep` and `summarize` name the side chat.",
+    "properties": {
+      "session_id": {
+        "description": "The side chat's session id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "SideChatRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "meta": {
+        "description": "The conversation's session record after the write."
+      }
+    },
+    "required": [
+      "meta"
+    ],
+    "title": "SideChatKeepResponse",
+    "type": "object"
+  }
+}

@@ -519,6 +519,11 @@ export interface SessionChipProps {
   modelId?: string
   /** Context window (tokens) of the resolved model, from the catalog. */
   contextWindow?: number
+  /**
+   * A turn is running in this session (the chat's working indicator).
+   * Absent from older consoles.
+   */
+  isStreaming?: boolean
 }
 
 /**
@@ -714,6 +719,12 @@ export interface ComposerControlRegistration {
    * control in the footer.
    */
   placement?: 'footer' | 'project'
+  /**
+   * The control's name when the composer folds its pickers into a list
+   * (a row too narrow for every pill): "Judge" beside the judge's own pill.
+   * A control without one fills its row alone.
+   */
+  label?: string
 }
 
 /**

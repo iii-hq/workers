@@ -1,9 +1,6 @@
+import type { SnapshotAutocompact } from '@/lib/autocompact'
 import type { ModelId } from '@/types/chat'
-import type {
-  HarnessFileBlock,
-  HarnessImageBlock,
-  TurnRest,
-} from './harness-send'
+import type { HarnessFileBlock, HarnessImageBlock } from './harness-send'
 import type { SessionObserverInfo } from './observers'
 
 /**
@@ -225,6 +222,13 @@ export interface ChatStreamOptions {
    * delivering the same pending card while that watcher is active.
    */
   approvalEventsExternallyManaged?: boolean
+  /**
+   * A side chat on an engine with side chats (chat-projects §2.2): the send
+   * names no model, provider, effort, functions, skills, prompt, agent or
+   * folder. The harness runs it on the side chat's lock, and refuses a
+   * different value with `side_chat_locked`.
+   */
+  sideChatLocked?: boolean
 }
 
 /** Events that an approval watcher can deliver outside a running turn. */
@@ -296,6 +300,12 @@ export interface ContextUsageReport {
   total: number
   usable: number
   free: number
+  /**
+   * The snapshot's auto-compact (chat-projects phase 3, contract C): the
+   * size, the effective threshold and the rule as the last turn resolved
+   * them. Absent from an older harness.
+   */
+  autocompact?: SnapshotAutocompact | null
 }
 
 export interface ChatBackend {
@@ -360,11 +370,6 @@ export interface ChatBackend {
    */
   contextUsage?(sessionId: string): Promise<ContextUsageReport | null>
   /**
-   * Whether the session's last turn waits for a wake or is over
-   * (`harness::status`); `null` in any other state and with no turn.
-   */
-  turnRest?(sessionId: string): Promise<TurnRest | null>
-  /**
    * Remove a still-parked message from the server-side queue by its entry id
    * (`harness::unqueue`). Lets the composer pull a queued message back for
    * editing without the old version also draining into the transcript. A row
@@ -394,6 +399,31 @@ export interface ChatBackend {
    * to refetch `listQueued`. Returns an unsubscribe.
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
+  /**
+   * Observe a session's context snapshot while a turn runs: each step's
+   * `autocompact`, the value the turn froze (chat-projects §3.2.3). The
+   * meter, its label and the header chip read it until the turn ends.
+   * Returns an unsubscribe.
+   */
+  onTurnAutocompact?(
+    sessionId: string,
+    onValue: (value: SnapshotAutocompact) => void,
+  ): () => void
+  /**
+   * What the harness knows about the session's question cards
+   * (`harness::ask`), by question id: `true` while one still waits on the
+   * person, `false` once settled. Read from `harness::ask::list` (open or
+   * expired entries wait) and `harness::ask::settlements` (a card answered
+   * or dismissed through the chat). A card in neither is not in the map.
+   * Rejects when neither can be read.
+   */
+  askStates?(sessionId: string): Promise<ReadonlyMap<string, boolean>>
+  /**
+   * Observe `harness::on-ask` / `harness::on-ask-settled` and
+   * `harness::ask::settle` for a session: the signal to refetch `askStates`. Also fires on every reconnect, since
+   * events rung during an outage are gone. Returns an unsubscribe.
+   */
+  onAskChanged?(sessionId: string, onEvent: () => void): () => void
   /**
    * The observers the session created — the harness's durable rows
    * (`harness::observers::list`), source-generic: the observed function

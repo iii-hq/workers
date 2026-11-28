@@ -234,7 +234,14 @@ max_result_bytes: 262144         # function-result byte cap at capture; oversize
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
-projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
+projects_file_path: ~/.iii/data/harness/projects.json  # chat projects store, harness::projects (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
+folders_file_path: ~/.iii/data/harness/folders.json    # saved-folder catalogue, harness::folders (default: data/harness-folders.json)
+descriptions:
+  agent_writes: true             # offer harness::set-description to agents (harness::chat-settings::set changes it)
+autocompact:                     # the global autocompact setting (harness::chat-settings::set changes it); absent: off
+  mode: tokens                   # off | tokens
+  tokens: 400000                 # 20,000-2,000,000
+  instructions: keep the ticket ids  # up to 1,000 characters, sent with every automatic compaction
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
@@ -531,7 +538,13 @@ repeats and recovery retain the attempt.
 
 The durable queue operation closes admission, cancels every durable descendant,
 waits for terminal turns/in-flight tools, delivers one consolidated message to
-the surviving direct parent, and deletes child-first. Unconfirmed work fails
+the surviving direct parent, and deletes child-first. The side chats of every
+session it deletes (`side_chat_of`, see [Side chats](#side-chats)) go with it,
+with their own subtrees, before the session they belong to. With
+approval-gate on the stack, each deleted session's approval records are
+purged through `approval::on-session-deleted`, called with a payload both
+the Observe v2 gate (the `Observed` envelope of `session::on-deleted`) and an
+older one (the bare `{ session_id }`) read. Unconfirmed work fails
 closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
 
 ## Compacting a conversation (`/compact`)
@@ -545,6 +558,9 @@ background. `harness::compact { session_id, model?, provider?, instructions? }`
 runs the same compaction and returns its outcome (`ok` / `busy` / `empty` /
 `failed`, the user-facing `message`, the token counts and the `entry_ids` it
 wrote) for a caller that has to wait, such as the console's model switch.
+Both run the summary on the conversation's Claude Code account, resolved at
+the call as a turn's would be (a side chat uses its lock's); see
+[Claude Code accounts](#claude-code-accounts).
 
 Every device watching the session learns about it, not only the one that asked:
 
@@ -554,7 +570,8 @@ Every device watching the session learns about it, not only the one that asked:
 - a `/compact` send shows the session `working` / "compacting context" while it
   runs (a live turn keeps its own status line);
 - it ends with one row: the `compaction` record (the marker), or a `notice`
-  saying why there is none;
+  saying why there is none (a failure names its cause, from context-manager's
+  `failure`: "a larger context window" only when the input did not fit);
 - `harness::on-compaction` is called with `phase: started` and `phase: completed`;
 - the `harness_context` snapshot is rewritten for the compacted window, so the
   `context` chip and `harness::status` (which returns the newer snapshot) stop
@@ -566,6 +583,102 @@ limits; and a live turn's unanswered calls stay in the verbatim tail with
 their results. It runs under the session's context-manager lease, so it is
 safe beside a running turn, and it does not depend on the requester staying
 connected.
+
+## Autocompact
+
+A conversation compacts by itself when its context passes a number of tokens
+(chat-projects phase 3). The setting comes from three levels, and the first
+that is not `inherit` decides:
+
+| Level | Where | Shape | Default |
+|---|---|---|---|
+| Conversation | `metadata.autocompact` (a side chat reads its conversation's) | `{ mode: "inherit" \| "tokens" \| "off", tokens? }` | absent or malformed: inherit |
+| Project | the project's `autocompact` | the same | `{ mode: "inherit" }` |
+| Global | the configuration's `autocompact`, through `harness::chat-settings` | `{ mode: "off" \| "tokens", tokens?, instructions? }` | off |
+
+`tokens` is 20,000 to 2,000,000 and `instructions` up to 1,000 characters;
+`harness::chat-settings::set` and `harness::projects::create|update` refuse
+anything else with `bad_setting`, `bad_tokens` or `bad_instructions` (a
+rejection, `{code, message, field, ...}`, with ready copy such as "Between 20k
+and 2M tokens"). At every level, `tokens` stays stored with `mode: "off"`,
+inert, so turning it back on restores the size (a bad one is still refused);
+`instructions: ""` clears them; a project's `{mode: "inherit"}` clears its
+value. A sub-agent has no setting of its own: it follows its project and the
+global.
+Each turn resolves the setting at its first step and keeps it on its record
+(`autocompact`), and the end of the turn resolves it again.
+
+**The numbers.** `effective_tokens` is the setting when it is below the
+model's `usable` (the input budget `context::assemble` measures), else null:
+the model's own limit applies, as before. `cap_tokens` is
+`setting + max(10 %, 20k)`. The context snapshot (`harness::status` verbose,
+`harness_context`, `harness::on-turn-completed.context`) carries
+`autocompact { setting_tokens, effective_tokens, cap_tokens, rule }`, where
+`rule` is `{ scope: "global" | "project" | "session", project_id?,
+project_name? }`.
+
+**At the end of a turn**, at the top of its finalize, the conversation
+compacts once the last step's billed input (`input + cache_read +
+cache_write`, else the snapshot's `total` when the step reported none) plus
+its output reaches `effective_tokens` (the same number is the record's
+`context_before`), unless a compaction already runs, the back-off holds, or
+the session is a sub-agent. It is `/compact`'s path with `trigger: "auto"`,
+the threshold, the rule, the global `instructions` and the turn's own
+provider options (its Claude Code account). The start notice
+(`reason: "compacting"`, as `/compact`'s) reads "Auto-compacting at 160k…"
+and the record "Auto-compacted at 160k · 161k →
+34k tokens · acme-web rule". The turn record stays `running` with
+`compacting: <compaction_id>` meanwhile: a send queues and runs after it,
+`harness::side-chat::open` takes the turn's reply as final, and
+`harness::side-chat::summarize` on a compacting side chat answers
+`side_chat_busy`. `harness::on-turn-completed` carries the refreshed
+snapshot. A Stop abandons the summary (`status: "cancelled"`, no record:
+"Auto-compact stopped. The conversation goes on and compacts again after a
+later turn.", with no back-off) and answers `stopping: true`; the reply is
+already final, so the Stop stops the compaction only: a message queued during
+it keeps its turn (the record marks `compaction_stopped: true` and keeps
+`continues`). The Stop ends only the harness's wait: context-manager finishes
+the summary it was asked for and holds the conversation's lease until then,
+so a turn that ends meanwhile is skipped as busy ("Auto-compact skipped:
+another compaction of this conversation is in progress.").
+
+**Inside a turn** every `context::assemble` carries `compaction_budget:
+cap_tokens` with `compaction_instructions` and the turn's
+`provider_options`; context-manager 1.3.0 compacts inline at
+`min(usable, cap)` and echoes the budget it applied. Such a compaction is
+recorded with `trigger: "inline"` ("Auto-compacted during the turn at
+160k · …"), or `trigger: "limit"` when the model's `usable` fired it
+("Compacted at the model's limit · …"); both get a `compaction_id` and emit
+only their `completed` phase. A failed or busy inline attempt writes no
+notice and drops the budget for the rest of the turn (so does one that
+gained less than 10 %). A context-manager without the echo is older: the
+turn runs without the budget, and the end of the turn still compacts.
+
+**Failures and the back-off.** A failed automatic compaction says why:
+"Auto-compact failed: <cause>. The conversation goes on and compacts at the
+model's limit." A usage limit names the account and no clock time
+("Auto-compact failed: Personal reached its usage limit. The conversation goes
+on and compacts again after its next turn."); the completed event and the
+notice carry context-manager's `failure { kind, message, error_details? }`
+for a client to format the reset. After a failure, or a compaction that
+gained less than 10 %, the next attempt waits until the context grew by
+another 10 % of `effective_tokens` (`harness_autocompact/<session_id>`); a
+usage limit starts no back-off.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::autocompact::models` | `{}` | `[{ provider, model, name, context_window, usable, last_used_ms }]` |
+| `harness::autocompact::log` | `{ limit?: 20 }` | `[{ session_id, title, at_ms, trigger, threshold_tokens, context_before, context_after, rule }]` |
+
+`harness::autocompact::models` lists the models that ran a turn on this
+engine in the last 7 days (an index written with each snapshot,
+`harness_autocompact_models`), named from the router catalog
+(`context_window` is null for a model the router does not list). It is also
+how a surface detects phase 3. `harness::autocompact::log` lists the last
+automatic compactions (`auto` and `inline`), newest first, from one ring of
+50 in `harness_autocompact_log` updated with compare-and-swap. Both are
+internal and denied to agents. Deleting a session drops its back-off and its
+log entries.
 
 ## Asking the user (`harness::ask`)
 
@@ -760,6 +873,283 @@ with a valid default instead of ending `blocked`. Neither `harness::ask::answer`
 `kanban::question::answer` can be granted to an agent by policy; only a person
 through a console/operator surface answers.
 
+## Chat projects, saved folders and descriptions
+
+**Saved folders** (`harness::folders::list | upsert | delete`) are the
+folders the IDE's recent folders, the Chat's folder selector and the
+console's folder pickers list: `{ path, name, last_used_at }`, most recently
+used first, in the JSON file at `folders_file_path`. Until chat projects this
+catalogue was `harness::projects::*`, in the file at `projects_file_path`; at
+start the harness moves such a file to `folders_file_path` once (an
+operator's `projects_file_path` is honoured for that move and logged as
+deprecated). For apps released before projects, `harness::projects::list`
+without `version: 2` still answers the folders as `{ projects: [...] }` (the
+deprecation is logged once per connection), `harness::projects::upsert
+{ path, name? }` forwards to `harness::folders::upsert`, and
+`harness::projects::delete { path }` without an `id` to
+`harness::folders::delete`.
+
+**Projects** (`harness::projects::*`) group folders and the conversations
+started in them: `{ id: "prj_<ULID>", name, color, folders, account,
+autocompact, created_at_ms, updated_at_ms }`. A name has 1-40 characters and
+is unique without regard to case; the colour is one of `blue`, `purple`,
+`teal`, `green`, `amber`, `rose`; a project has 1-20 absolute folders (`~` is
+expanded) and a folder sits in one project only (a folder nested in another
+project's folder is allowed). A path belongs to the project whose folder is
+the longest prefix of it, equal or followed by `/`. The store is
+`{ version: 2, revision, projects }` at `projects_file_path`, replaced
+atomically; `revision` goes up on every change, and a write keeps the fields
+it does not know.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::projects::list` | `{ version: 2 }` | `{ version: 2, revision, projects }` |
+| `harness::projects::create` | `{ name, color, folders, account?, autocompact?, bring_existing? }` | `{ project, moved }` |
+| `harness::projects::update` | `{ id, name?, color?, folders?, account?, autocompact?, bring_existing? }` | `{ project, moved }` |
+| `harness::projects::delete` | `{ id }` | `{ released }` |
+| `harness::projects::assign` | `{ session_ids, project: <id> \| "none" }` | `{ updated }` |
+
+Like every harness control-plane function these are internal: they stay
+off the default `engine::functions::list` (list them with
+`include_internal: true`). Agents may call `harness::projects::list` by id;
+the writes are denied to them.
+
+A conversation belongs to a project through `metadata.project_id`; `"none"`
+keeps it out on purpose. `bring_existing` stamps the root conversations whose
+`metadata.fs_scope.root` falls in the project's folders (only the folders an
+`update` adds) and whose `project_id` is missing or `"none"`; `delete` removes
+`project_id` from its conversations; `assign` moves each conversation with its
+sub-agents (`parent_session_id`) and side chats (`side_chat_of`).
+`harness::send` stamps `project_id` on a conversation that has none when its
+working folder belongs to a project, and a sub-agent copies its parent's.
+Every write goes through `session::patch-meta`, with `touch: false`: moving
+a conversation in or out of a project keeps its `updated_at`, so the lists
+sorted by it keep their order. A refusal is one JSON object
+in the error message, `{ code, message, ... }`: `name_taken`, `folder_taken`
+(with `project_id`, `project_name`), `bad_name`, `bad_color`, `no_folders`,
+`too_many_folders`, `folder_not_absolute`, `not_found`, `bad_request`,
+`invalid_account`, `bad_setting`, `bad_tokens`. A project's `account` is
+`{ mode: "global" }` (the default) or `{ mode: "pinned", account_id }`: the
+Claude Code account its conversations run on (see
+[Claude Code accounts](#claude-code-accounts)). Its `autocompact` is
+`{ mode: "inherit" }` (the default), `{ mode: "off", tokens? }` (the size
+kept, inert) or `{ mode: "tokens", tokens }` (see [Autocompact](#autocompact)).
+
+**Descriptions.** `harness::set-description { description, title? }` is a
+tool the model gets in every turn (with its own description, in the cached
+tools block) while `descriptions.agent_writes` is on and the dispatch policy
+allows it. The turn loop answers it for the turn's own session, next to
+`harness::ask`; a direct call fails. The description is trimmed, its
+whitespace collapsed and cut at 140 characters; one `session::patch-meta`
+writes `description`, `description_by: "agent"`, `description_at_ms` and
+`description_history` (the previous one pushed in, newest first, five kept).
+`title` is written once, while `title_manual` is not set and the agent never
+named the conversation (`title_by: "agent"`), else the result carries
+`title_ignored: true`. A description the user wrote (`description_manual`)
+is refused with `The user wrote this description; leave it.`, an empty one
+with `empty`, and the same text is a no-op. A step whose only calls are
+`harness::set-description`, in a reply that already has text, never ends the
+turn: the result adds a `next` note and the model is asked again; when that
+step ends with no text, the reply beside the description is the turn's
+answer.
+
+**Chat settings.** `harness::chat-settings::get {}` answers `{ descriptions:
+{ agent_writes }, autocompact: { mode, tokens?, instructions? } }`;
+`harness::chat-settings::set { patch }` merges the patch into the stored
+`harness` configuration on the server (an `autocompact` field set to `null`
+is removed; `tokens` and `instructions` stay while the mode is `off`; the
+default, off with neither, is not stored). A harness older than 1.13 refuses
+a configuration that holds `autocompact`.
+
+**Context pane.** `harness::context-items { session_id }` answers what a
+conversation gathered, newest first: `subagents` (direct children, with
+`status` running / done / failed, the `display` label and a `descendants`
+count), `pull_requests` (GitHub PR URLs in user and assistant text and in
+function results, `source: created` for `github::pr::create`; `state` and
+`checks` read through `github::exec` when the github worker is present,
+cached 120 s, at most 3 s per call; `context_dismissed_prs` left out), `links`
+(http(s) URLs in user and assistant text, with a `count` and the Markdown link
+text as `title`), `attachments` and `images` (`direction: sent` in a user
+message, `received` otherwise; files the agent wrote outside its working
+folder count as received), and `side_chats` (see [Side chats](#side-chats)). Links,
+attachments and images stop at 200 / 100 / 200 and `truncated` says so. The
+transcript is read in pages through `session::messages-range` and indexed in
+memory per session (the 64 most recent), so a later call scans only the new
+entries.
+
+## Side chats
+
+A side chat is a side conversation forked from a point of a conversation. It
+knows the conversation up to that point, runs on the conversation's model,
+effort and account (so its first request reads the conversation's prompt
+cache), and writes nothing into the conversation. A conversation can have
+several. Like the rest of the control plane these functions are internal
+(`engine::functions::list { include_internal: true }`); agents are denied
+them.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::side-chat::open` | `{ session_id, entry_id?, quote?: { message_id, text, agent? } }` | `{ session_id, meta }` |
+| `harness::side-chat::close` | `{ session_id }` | `{ deleted, operation_id? }` |
+| `harness::side-chat::keep` | `{ session_id }` | `{ meta }` |
+| `harness::side-chat::summarize` | `{ session_id }` | `{ turn_id }` |
+
+**`open`** names the conversation and the entry to fork at (default: its last
+user or assistant message; a reply still streaming is skipped, so a side chat
+can open while the conversation's turn runs). It calls
+`session::fork { title: "Side chat" }`, then writes on the fork with one
+`session::patch-meta`: `side_chat_of` (the conversation), `side_chat_from`
+(the fork's own copy of the entry, as the ADE writes it), `side_chat_lock`
+(`{ model, provider?, thinking_level?, account? }`, for display),
+`side_chat_fork_point` (`{ entry_id, message_count }`: the conversation's
+entry, for the mark under it, and the messages the fork copied) and
+`side_chat_quotes` (`[quote]`, when given). It removes the spawn links a fork
+copies (`parent_session_id`, `parent_turn_id`, `function_call_id`,
+`parent_function_call_id`, `depth`, `spawned_by`, `root_session_id`) and who
+named or described the conversation (`title_manual`, `title_by`,
+`description_*`; the description is emptied). `meta` is the side chat's
+session record after that write. The full lock goes to harness state
+`harness_side_chat/<side chat id>`: `{ session_id, parent_session_id,
+parent_entry_id, model, provider, thinking_level, provider_options (the
+account among them), functions, skills, fs_scope, created_at_ms, source }`.
+The conversation's turn record is copied onto the side chat as a finished
+turn, so its first send continues from the conversation's own system prompt,
+skills, dispatch policy, working folder and language; the fork also copies
+the conversation's frozen `runtime_context` entry, so the system prompt is
+the conversation's byte for byte and the session id change reaches the model
+as a notice after it. Refusals: `nested_side_chat` (the session is a side
+chat), `nothing_to_fork` (no turn yet), `not_found` (unknown session or
+entry).
+
+**The lock.** `harness::send` on a side chat runs on the lock. A send that
+names a different `model`, `provider`, `thinking_level`, `provider_options`,
+`reasoning`, `functions`, `skills` or `metadata.fs_scope`, or any
+`system_prompt`, `system_prompt_strategy` or `agent`, fails with
+`side_chat_locked` (`{ code, message, field, sent, locked }`); naming the
+lock's own value is accepted, and clients send none. The Claude Code
+account is not part of that comparison: a side chat runs on the account its
+lock stored (the conversation's at the fork) and resolves none of its own. A side chat the ADE forked
+before side chats (no lock in state) is locked at its next send to the
+conversation's options then (`source: "lazy"`), and starts from the
+conversation's turn record when it has none of its own. The first send names
+the side chat after its message (whitespace collapsed, cut at 60 characters
+with `…`), unless `title_manual` is set.
+
+**`close`** deletes a side chat in which nothing was sent since the fork
+(through `harness::delete-session-tree`, whose `operation_id` it returns) and
+answers `deleted: true`; one with messages stays (`deleted: false`). Clients
+call it when the person closes an empty side chat. **`keep`** removes
+`side_chat_of`, `side_chat_from`, `side_chat_lock`, `side_chat_fork_point` and
+the lock, and puts the conversation's `project_id` on it (`touch: false`): it
+becomes an ordinary conversation in the conversation's project.
+**`summarize`** sends, in the side chat, `Summarize what we concluded in this
+side conversation for the main conversation, in at most five short lines.
+Plain text, no preamble.` as a turn with `options.metadata.side_chat_summary:
+true`; when that turn completes, the entry id of its reply is appended to the
+side chat's `side_chat_summaries` (the newest 20) before
+`harness::on-turn-completed`. It is refused with `side_chat_busy` while a turn
+runs in the side chat. `close`, `keep` and `summarize` answer `not_found` for
+an unknown session and `not_side_chat` for one that is not a side chat. Every
+refusal is one JSON object in the error message, as for projects.
+
+`harness::context-items` lists a conversation's side chats in `side_chats`,
+from `session::list` filtered on `side_chat_of`, most recently active first:
+`{ session_id, title, message_count, created_at_ms, updated_at_ms,
+from_entry_id?, status, running }`. `message_count` counts the messages added
+since the fork (all of them for a side chat forked before side chats),
+`from_entry_id` is the conversation's entry it was forked at, `status` is
+`running`, `done` or `failed` as for subagents, and `running` is true while a
+turn runs. Deleting a conversation deletes its side chats.
+
+## Claude Code accounts
+
+A turn on the `claude-code` provider runs on one of the Claude Code accounts
+the tmux worker signs in (chat-projects phase 4). When the turn starts, the
+harness resolves the account once and freezes it on the turn:
+
+1. the conversation's `metadata.claude_account` (an account id, or `"global"`
+   for the global account), written by clients through `session::patch-meta`;
+2. else its project's `account`, when it is `{ mode: "pinned", account_id }`;
+3. else the global account, read from `tmux::accounts::list` (`global`).
+
+The id goes into `provider_options["claude-code"].account` after the preset,
+the inherited options and any named options, and a client's own `account`
+there is dropped. The turn record keeps `account { id, source }`, `source`
+being `session`, `project` or `global`. A sub-agent runs on the account of
+its parent's current turn, whatever it inherited when it was spawned (only a
+parent with no turn record leaves it the inherited id), and a side chat on
+its lock's. A pin, a parent's or a lock's account that tmux no longer lists
+fails the turn before any model call with `harness.unknown_account`. With no
+tmux worker (or tmux reporting Claude unavailable) no account is set, an
+inherited one is dropped, and the provider keeps its single sign-in.
+
+When tmux is there but cannot answer (an error or a timeout), or the projects
+file cannot be read for a conversation whose project may pin its account, the
+account cannot be decided: the turn's first step runs again after a short
+pause, spending one of its transient resumes (a `recovery` entry with `code:
+"harness.accounts_unavailable"`, phase `pre_turn`). When they run out, the
+turn fails with `harness.accounts_unavailable`, retryable, before any model
+call, and `harness::retry` can run it again. A side chat whose lock holds an
+account, and a sub-agent whose parent's turn has one, keep it while tmux
+cannot answer.
+
+The verbose `harness::status` and `harness::on-turn-started` /
+`harness::on-turn-completed` carry `account { id, source }`; the lean status
+does not.
+
+**The usage limit.** The router reports an account's plan limit as a
+`rate_limited` error whose `error_details` are `{ usage_limit: true, window?:
+"five_hour" | "week", resets_at_ms? }`, on the response, on its terminal
+message, or on the error of a call that could not be dispatched (its message
+then a JSON object carrying them). The turn is not resumed (no transient
+resume runs) and fails with `llm.usage_limit`, not retryable; the turn's
+`failure.details` and the transcript's error entry carry `{ usage_limit,
+window?, resets_at_ms?, account }`. The lean status leaves `details` out.
+
+| Function | Request | Response |
+|---|---|---|
+| `harness::retry` | `{ session_id }` | `{ turn_id }` |
+| `harness::metrics::account-split` | `{}` | `[{ account, week_percent, resets_at_ms?, outside_measured, segments }]` |
+
+Both are internal, and agents are denied them.
+
+**`harness::retry`** runs a session's failed last turn again, as a new turn
+with the same user message (no second one is appended), on the session's
+current options and a newly resolved account, so a client that wrote
+`claude_account` first ("Continue in …") runs it there. The options are
+those a send naming nothing would take: the last turn's model, provider,
+reasoning, prompt, skills and policy, the configured per-turn limits, and its
+working folder but none of its send's own metadata; the failed turn's output
+contract stays. A sub-agent's account resolves from its parent's current turn. A turn that had streamed part of an answer continues with the
+same nudge as a transient resume. Refusals: `nothing_to_retry` (no turn, or
+the last one did not fail) and `busy` (a turn is running).
+
+**The ledger.** `claude-code` turns have no price, so each model response's
+tokens (`input`, `output`, `cache_read`, `cache_write`) are added to the
+`state` scope `harness_account_usage`, one document per day, account and
+project (`<day>:<account>:<project id | none>`), by hour and Anthropic model.
+A response whose prompt (input, cache reads and cache writes) passes its
+model's long-prompt threshold (Haiku 5.5: 100,000 tokens) counts under
+`<model>#long`, priced on the long-prompt card. A day is kept for 35 days (the
+day and the 34 after it), then deleted. A day's document that cannot be read
+is moved to `harness_account_usage_unreadable` (`<key>@<unix ms>`) before the
+day is counted again, and the split skips one it cannot read.
+
+**`harness::metrics::account-split`** answers, for each account
+`tmux::usage::read` lists, its weekly percentage split into `segments`:
+`{ kind: "project", project_id, name, color, percent }`, `{ kind:
+"no_project", percent }` and `{ kind: "outside", percent }`. The week starts
+seven days before its reset. The Chat's tokens since then (the ledger) and the
+tokens tmux measured outside the Chat (`tmux::usage::claude_outside`) are
+priced at the Anthropic list price (`router::models::get`, else a built-in
+table, else the nearest model of the same family, else Sonnet 5.5's, logged
+once per model), and each segment gets `week_percent × its cost ÷ the total
+cost`. A project deleted since counts as no project. A week that reset after
+tmux read it is at 0% with no segments; when tmux no longer knows its reset,
+it starts now. When tmux cannot measure the outside, `outside_measured` is false
+and the Chat's segments share the whole week. With no tmux worker the answer
+is `[]`; a failing tmux is `tmux_unavailable`.
+
 ## Observable functions
 
 The harness hosts these functions. Every one is private: observers observe it,
@@ -773,12 +1163,14 @@ observes only `harness::on-timer` and its own post-turn validator.
 | `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-ask` | none | `input.session_id`, `input.question_id` | The whole durable ask entry when a question is accepted. |
 | `harness::on-ask-settled` | none | `input.session_id`, `input.question_id` | The whole durable ask entry after it closes. |
-| `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
-| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, open_asks, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
+| `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id?, account? }`: a turn began executing (first loop step); `depth` is 0 at the top level. `account` is `{ id, source }` on a `claude-code` turn (see [Claude Code accounts](#claude-code-accounts)). |
+| `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, open_asks, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context?, account? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake (a claimed one counts until its delivery has seeded the woken turn, and never for the turn that took it, drained from that turn's queue or merged into it), or when the turn's finalize drained a queued message and reseeds the session, so consumers finalize an exchange on `terminal: true`. `harness::status` reports the same as `expects_wake: true`. A turn that ended with a wake armed and was then stopped completes twice: `terminal: false`, then `terminal: true` when its last wake is gone. A turn whose reseed fails also completes twice, the second time with the terminal decision its finalize deferred. A reseed continues the exchange in a new turn, so its terminal completion can carry another `turn_id` than the one `harness::send` returned: correlate on `session_id`. A finalize interrupted before its reseed (the process died), or whose reseed and settle both failed, is finished by a redelivery of the same step: the queue's, or the orphan redrive's, which re-delivers a finished turn that still promises a continuation, or still owes the completion a failed settle or stop left unsent, as it does a running one. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
-| `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
+| `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, trigger, source, threshold_tokens?, rule?, ... }`: a compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed/cancelled, the user-facing `message`, `tokens_before` / `tokens_after`, `context_before` / `context_after`, `failure?` and the transcript `entry_ids`). `trigger` is `command`, `auto`, `inline` or `limit`; `inline` and `limit` emit only `completed`. |
 | `harness::on-session-tree-deletion` | none | `input.session_id`, `input.operation_id` | `{ operation_id, attempt, session_id, status, deleted_session_ids, error? }`: a subtree deletion changed status; terminal statuses are `completed` and `failed`. |
+| `harness::projects::on-changed` | none | `input.project_id`, `input.change` | `{ revision, project_id, change }`: a chat project was `created`, `updated` or `deleted`; refetch `harness::projects::list { version: 2 }`. |
+| `harness::chat-settings::on-changed` | none | — | `{ settings }`: the Chat settings changed, from a device or the configuration entry. |
 | `harness::on-timer` | `{ at }` (epoch ms) | — | `{ scheduled_at, actual_at }`: called once at `at`; an observer receives the call for its own `at`. `at` more than 7 days out is refused (`CONFIG_ERROR`). An `at` already past (an observer added again after the harness was down) is called once, as soon as the observers of that instant added together are active. |
 
 An observer whose target is `harness::spawn` is refused (`FORBIDDEN`) on the

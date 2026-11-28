@@ -118,6 +118,125 @@ struct ListSessionsResponse {
     next_cursor: Option<String>,
 }
 
+/// One session as `session::get` / `session::list` report it: the fields
+/// the projects, descriptions and context pane read.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    pub message_count: u64,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+impl SessionSummary {
+    /// A top-level metadata string, when set and non-empty.
+    pub fn meta_str(&self, key: &str) -> Option<&str> {
+        self.metadata
+            .as_ref()?
+            .get(key)?
+            .as_str()
+            .filter(|value| !value.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SummaryPage {
+    sessions: Vec<SessionSummary>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+}
+
+/// A `session::patch-meta` request: `set` replaces each named top-level
+/// metadata key whole, `unset` removes keys, every other key stays.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaPatch {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub set: serde_json::Map<String, Value>,
+    pub unset: Vec<String>,
+    /// Bump the session's `updated_at` (the default). `false` for writes that
+    /// are not activity and must not re-order lists sorted by it: project
+    /// membership (chat-projects D50). A session-manager without
+    /// `session::patch-meta` gets a `set-meta`, which always bumps it.
+    pub touch: bool,
+}
+
+impl Default for MetaPatch {
+    fn default() -> Self {
+        Self {
+            title: None,
+            description: None,
+            set: serde_json::Map::new(),
+            unset: Vec::new(),
+            touch: true,
+        }
+    }
+}
+
+impl MetaPatch {
+    /// The same patch, keeping the session's `updated_at` (`touch: false`).
+    pub fn quiet(mut self) -> Self {
+        self.touch = false;
+        self
+    }
+
+    /// A patch that writes one key.
+    pub fn set(key: &str, value: Value) -> Self {
+        let mut patch = Self::default();
+        patch.set.insert(key.to_string(), value);
+        patch
+    }
+
+    /// A patch that removes one key.
+    pub fn unset(key: &str) -> Self {
+        Self {
+            unset: vec![key.to_string()],
+            ..Self::default()
+        }
+    }
+
+    fn payload(&self, session_id: &str) -> Value {
+        let mut payload = json!({ "session_id": session_id });
+        if let Some(title) = &self.title {
+            payload["title"] = json!(title);
+        }
+        if let Some(description) = &self.description {
+            payload["description"] = json!(description);
+        }
+        if !self.set.is_empty() {
+            payload["set"] = Value::Object(self.set.clone());
+        }
+        if !self.unset.is_empty() {
+            payload["unset"] = json!(self.unset);
+        }
+        if !self.touch {
+            payload["touch"] = json!(false);
+        }
+        payload
+    }
+
+    /// The metadata map after this patch (the fallback's merge).
+    pub fn apply(&self, metadata: &mut serde_json::Map<String, Value>) {
+        for key in &self.unset {
+            metadata.remove(key);
+        }
+        for (key, value) in &self.set {
+            metadata.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// See [`SessionClient::turn_hints`].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TurnHints {
@@ -172,6 +291,113 @@ impl SessionClient {
         TurnHints {
             title,
             judge_provider,
+        }
+    }
+
+    /// Call a `session::*` function and return its raw response.
+    pub(crate) async fn call_raw(
+        &self,
+        function_id: &str,
+        payload: Value,
+    ) -> Result<Value, HarnessError> {
+        self.call(function_id, payload).await
+    }
+
+    /// One session's summary, or `None` when it does not exist.
+    pub async fn summary(&self, session_id: &str) -> Result<Option<SessionSummary>, HarnessError> {
+        let response = self
+            .call("session::get", json!({ "session_id": session_id }))
+            .await?;
+        if response.is_null() {
+            return Ok(None);
+        }
+        let meta = response.get("meta").cloned().unwrap_or(Value::Null);
+        serde_json::from_value(meta).map(Some).map_err(|error| {
+            HarnessError::Dependency(format!(
+                "session::get returned malformed metadata for {session_id}: {error}"
+            ))
+        })
+    }
+
+    /// Every session `session::list` reports for `metadata` (a subset
+    /// filter; `None` lists all), across all pages.
+    pub async fn list_summaries(
+        &self,
+        metadata: Option<Value>,
+    ) -> Result<Vec<SessionSummary>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
+        loop {
+            let mut payload = json!({ "limit": PAGE_LIMIT, "order": "created_asc" });
+            if let Some(filter) = &metadata {
+                payload["metadata"] = filter.clone();
+            }
+            if let Some(value) = &cursor {
+                payload["cursor"] = json!(value);
+            }
+            let response = self.call("session::list", payload).await?;
+            let page: SummaryPage = serde_json::from_value(response).map_err(|error| {
+                HarnessError::Dependency(format!(
+                    "session::list returned a malformed page: {error}"
+                ))
+            })?;
+            out.extend(page.sessions);
+            match page.next_cursor.filter(|value| !value.is_empty()) {
+                Some(next) => {
+                    if !seen_cursors.insert(next.clone()) {
+                        return Err(HarnessError::Dependency(
+                            "session::list repeated a cursor".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Merge `patch` into the session's metadata on the server
+    /// (`session::patch-meta`, D9). A session-manager that predates it gets a
+    /// read-merge-write through `session::set-meta` instead. Returns the
+    /// session's meta after the write.
+    pub async fn patch_meta(
+        &self,
+        session_id: &str,
+        patch: &MetaPatch,
+    ) -> Result<Value, HarnessError> {
+        let request = CallRequest {
+            function_id: "session::patch-meta".to_string(),
+            payload: patch.payload(session_id),
+            action: None,
+            timeout_ms: Some(self.timeout_ms),
+        };
+        match self.iii.call(request).await {
+            Ok(response) => Ok(response.get("meta").cloned().unwrap_or(response)),
+            Err(iii_sdk::errors::Error::Remote { code, .. }) if code == "function_not_found" => {
+                tracing::debug!(
+                    session_id,
+                    "session::patch-meta is not registered; merging through session::set-meta"
+                );
+                let mut metadata = self.metadata_of(session_id).await?.ok_or_else(|| {
+                    HarnessError::Dependency(format!("session {session_id} does not exist"))
+                })?;
+                patch.apply(&mut metadata);
+                let mut payload = json!({ "session_id": session_id, "metadata": metadata });
+                if let Some(title) = &patch.title {
+                    payload["title"] = json!(title);
+                }
+                if let Some(description) = &patch.description {
+                    payload["description"] = json!(description);
+                }
+                let response = self.call("session::set-meta", payload).await?;
+                Ok(response.get("meta").cloned().unwrap_or(response))
+            }
+            Err(error) => Err(HarnessError::Dependency(format!(
+                "session::patch-meta: {error}"
+            ))),
         }
     }
 

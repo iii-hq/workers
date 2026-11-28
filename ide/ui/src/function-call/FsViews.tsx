@@ -62,7 +62,7 @@ export function FsLsView({ input, output }: ViewProps) {
 /** Directory-listing table shared by the ls view. */
 export function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
   return (
-    <Table density="compact">
+    <Table density="compact" inset aria-label="Directory entries">
       <TableBody>
         {entries.map((e) => {
           const Icon = e.is_symlink

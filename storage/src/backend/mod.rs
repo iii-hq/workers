@@ -76,6 +76,23 @@ pub trait Backend: Send + Sync {
         ))
     }
 
+    /// Copy `req.source_key` of `source` (another configured bucket, or this
+    /// one) into `req.key` of this bucket without the bytes passing through
+    /// the worker. `Ok(None)` when this pair of buckets cannot copy that way
+    /// (another provider, account or endpoint); `storage::copyObject` then
+    /// copies through the worker.
+    async fn copy_from(
+        &self,
+        _source: &dyn Backend,
+        _req: &CopyReq,
+    ) -> Result<Option<CopyResp>, BackendError> {
+        Ok(None)
+    }
+
+    /// The concrete backend behind a `dyn Backend`, so `copy_from` can tell
+    /// whether the source is one it can copy from.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Provider tag used in error envelopes.
     fn provider(&self) -> &'static str;
 
@@ -243,6 +260,33 @@ pub struct GetResp {
     pub size: u64,
     /// Where `body` starts in the object (0 for a whole read).
     pub offset: u64,
+}
+
+/// A copy into this bucket (`Backend::copy_from`). A `None` field keeps the
+/// source object's value; setting any of them replaces the destination's
+/// content type, cache control and metadata together (S3's `REPLACE`), the
+/// unset content type and metadata taken from the source.
+#[derive(Debug, Clone, Default)]
+pub struct CopyReq {
+    pub source_key: String,
+    pub key: String,
+    pub content_type: Option<String>,
+    pub cache_control: Option<String>,
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+impl CopyReq {
+    /// Whether the destination keeps the source's headers as they are.
+    pub fn keeps_headers(&self) -> bool {
+        self.content_type.is_none() && self.cache_control.is_none() && self.metadata.is_none()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CopyResp {
+    pub etag: String,
+    pub size: u64,
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -521,6 +565,10 @@ pub mod mock {
                         expires_at: Utc::now() + chrono::Duration::seconds(expires_in as i64),
                     })
                 })
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
 
         fn provider(&self) -> &'static str {

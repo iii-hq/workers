@@ -496,7 +496,8 @@ pub struct ClaudeAccount {
     pub tier: Option<String>,
     /// It holds a Claude sign-in.
     pub signed_in: bool,
-    /// Its sign-in expired; running Claude Code there renews it.
+    /// Its access token expired. Claude Code renews it when it runs there,
+    /// and so does the worker when `tmux::accounts::credential` asks for it.
     pub token_expired: bool,
     /// The groups its folder shares with `~/.claude`: `settings`,
     /// `extensions`, `plugins`, `conversations`.
@@ -618,6 +619,50 @@ pub struct AccountSwitch {
     pub back_at_ms: Option<u64>,
 }
 
+/// One change of the global account, as `global_history` keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GlobalChange {
+    /// The account that became global.
+    pub account: String,
+    /// When. 0 on the first entry, which names the account global before
+    /// the oldest change kept.
+    pub at_ms: u64,
+}
+
+/// The tokens of one model's replies, from Claude Code's transcripts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelSpend {
+    /// The model's id as Claude Code recorded it, e.g. `claude-opus-4-5`.
+    pub model: String,
+    /// Input tokens not read from the cache.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Input tokens read from the prompt cache.
+    pub cache_read: u64,
+    /// Input tokens written to the prompt cache.
+    pub cache_write: u64,
+    /// Replies counted.
+    pub messages: u64,
+}
+
+/// An account's Claude Code spend outside the Chat
+/// (`tmux::usage::claude_outside`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutsideSpend {
+    /// The account (the one global now when `global` was asked).
+    pub account: String,
+    /// Replies from this time on are counted.
+    pub since_ms: u64,
+    /// When Claude Code's transcripts were read (at most five minutes ago).
+    pub as_of_ms: u64,
+    /// Replies of sessions tmux never ran, counted here because this
+    /// account was global when they were written.
+    pub attributed: u64,
+    /// The spend by model, by model id.
+    pub by_model: Vec<ModelSpend>,
+}
+
 /// Claude Code's accounts as the worker sees them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaudeSnapshot {
@@ -640,6 +685,12 @@ pub struct ClaudeSnapshot {
     /// The latest change of the global account.
     #[serde(default)]
     pub last_switch: Option<AccountSwitch>,
+    /// Which account was global when, oldest first: the account global
+    /// before the oldest change kept (at 0), then the last 49 changes
+    /// (`tmux::usage::claude_outside` dates the spend of sessions tmux
+    /// never ran with it).
+    #[serde(default)]
+    pub global_history: Vec<GlobalChange>,
     /// A switch of the global account that waits for windows on the new
     /// account's folder to finish their turn.
     #[serde(default)]

@@ -190,7 +190,7 @@ func (t *DevelopmentTunnel) call(ctx context.Context, id string, input, output a
 }
 func (t *DevelopmentTunnel) snapshot(ctx context.Context) (tunnelSnapshot, error) {
 	var snapshot tunnelSnapshot
-	err := t.call(ctx, "quick-tunnel::status", map[string]any{"tunnel_id": "webhooks"}, &snapshot)
+	err := t.call(ctx, "tunnel::status", map[string]any{"tunnel_id": "webhooks"}, &snapshot)
 	if err == nil && snapshot.TunnelID != "webhooks" {
 		err = errors.New("unexpected tunnel target")
 	}
@@ -225,7 +225,7 @@ func (t *DevelopmentTunnel) preflight(ctx context.Context) bool {
 		return false
 	}
 	if listener.Applied == nil || listener.Applied.Port < 1 || listener.Applied.Port > 65535 || (listener.Applied.Host != "localhost" && !net.ParseIP(listener.Applied.Host).IsLoopback()) {
-		t.fail("unavailable", "Enable the HTTP worker's restricted webhook listener on a loopback address and configure the quick-tunnel webhooks target to forward to it")
+		t.fail("unavailable", "Enable the HTTP worker's restricted webhook listener on a loopback address and configure the tunnel webhooks target to forward to it")
 		return false
 	}
 	return true
@@ -235,7 +235,7 @@ const dnsLabel = `[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`
 
 // One label under trycloudflare.com (cloudflared), or <route>.<id> under
 // opentunnel.xyz (OpenTunnel). The bare <id>.opentunnel.xyz is never served.
-var quickTunnelOrigin = regexp.MustCompile(`^https://(?:` + dnsLabel + `\.trycloudflare\.com|` + dnsLabel + `\.` + dnsLabel + `\.opentunnel\.xyz)$`)
+var tunnelWorkerOrigin = regexp.MustCompile(`^https://(?:` + dnsLabel + `\.trycloudflare\.com|` + dnsLabel + `\.` + dnsLabel + `\.opentunnel\.xyz)$`)
 
 func (t *DevelopmentTunnel) apply(snapshot tunnelSnapshot, lease *tunnelLease) {
 	t.state.Enabled = t.intent.Enabled
@@ -250,10 +250,10 @@ func (t *DevelopmentTunnel) apply(snapshot tunnelSnapshot, lease *tunnelLease) {
 	case "starting", "reconnecting", "stopped":
 		t.state.Status = snapshot.Status
 	case "failed":
-		t.fail("failed", "The quick tunnel failed; check the quick-tunnel worker and cloudflared connection")
+		t.fail("failed", "The quick tunnel failed; check the tunnel worker and cloudflared connection")
 	case "ready":
-		if snapshot.PublicURL == nil || !quickTunnelOrigin.MatchString(*snapshot.PublicURL) {
-			t.fail("failed", "The quick-tunnel worker returned an invalid public HTTPS URL")
+		if snapshot.PublicURL == nil || !tunnelWorkerOrigin.MatchString(*snapshot.PublicURL) {
+			t.fail("failed", "The tunnel worker returned an invalid public HTTPS URL")
 			return
 		}
 		origin := *snapshot.PublicURL
@@ -262,7 +262,7 @@ func (t *DevelopmentTunnel) apply(snapshot tunnelSnapshot, lease *tunnelLease) {
 		t.state.PublicURL = &origin
 		t.state.WebhookURL = &webhook
 	default:
-		t.fail("unavailable", "The quick-tunnel worker returned an unsupported status; update the worker")
+		t.fail("unavailable", "The tunnel worker returned an unsupported status; update the worker")
 	}
 }
 func (t *DevelopmentTunnel) reconcile(ctx context.Context, renew bool) {
@@ -285,11 +285,11 @@ func (t *DevelopmentTunnel) reconcile(ctx context.Context, renew bool) {
 	}
 	snapshot, err := t.snapshot(ctx)
 	if err != nil {
-		t.fail("unavailable", "The quick-tunnel worker is unavailable; start or update it and try again")
+		t.fail("unavailable", "The tunnel worker is unavailable; start or update it and try again")
 		return
 	}
 	if snapshot.Prerequisites != nil && !snapshot.Prerequisites.Cloudflared.Found {
-		t.fail("unavailable", "Install cloudflared and configure its executable in the quick-tunnel worker before starting the tunnel")
+		t.fail("unavailable", "Install cloudflared and configure its executable in the tunnel worker before starting the tunnel")
 		return
 	}
 	lease := t.ownLease(snapshot)
@@ -300,7 +300,7 @@ func (t *DevelopmentTunnel) reconcile(ctx context.Context, renew bool) {
 		// Persist the requested intent before acquiring. Even if the reply is lost,
 		// a restart can recover the lease by this stable consumer identity.
 		expiry := t.now().Add(developmentTunnelTTL).UTC().Format(time.RFC3339Nano)
-		acquireErr := t.call(ctx, "quick-tunnel::acquire", map[string]any{"consumer_id": t.intent.ConsumerID, "tunnel_id": "webhooks", "expires_at": expiry}, nil)
+		acquireErr := t.call(ctx, "tunnel::acquire", map[string]any{"consumer_id": t.intent.ConsumerID, "tunnel_id": "webhooks", "expires_at": expiry}, nil)
 		snapshot, err = t.snapshot(ctx)
 		if err != nil {
 			t.fail("unavailable", "Unable to confirm the development tunnel lease; automatic recovery will retry")
@@ -309,9 +309,9 @@ func (t *DevelopmentTunnel) reconcile(ctx context.Context, renew bool) {
 		lease = t.ownLease(snapshot)
 		if lease == nil {
 			if acquireErr != nil {
-				t.fail("failed", "Unable to acquire the development tunnel lease; check quick-tunnel availability and permissions")
+				t.fail("failed", "Unable to acquire the development tunnel lease; check tunnel availability and permissions")
 			} else {
-				t.fail("failed", "The quick-tunnel worker did not confirm an active lease for this worker")
+				t.fail("failed", "The tunnel worker did not confirm an active lease for this worker")
 			}
 			return
 		}
@@ -334,7 +334,7 @@ func (t *DevelopmentTunnel) release(ctx context.Context) {
 	}
 	lease := t.ownLease(snapshot)
 	if lease != nil {
-		if t.call(ctx, "quick-tunnel::release", map[string]any{"lease_id": lease.LeaseID}, nil) != nil {
+		if t.call(ctx, "tunnel::release", map[string]any{"lease_id": lease.LeaseID}, nil) != nil {
 			t.intent.LeaseID = lease.LeaseID
 			t.persist()
 			t.fail("unavailable", "Unable to release the development tunnel lease; automatic cleanup will retry")
@@ -484,7 +484,7 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 		return err
 	}
 	if err := observeFunction(client, iii.Source{
-		FunctionID: "quick-tunnel::on-changed",
+		FunctionID: "tunnel::on-changed",
 		Filters:    iii.Filters{"input.tunnel_id": iii.Op{"$eq": "webhooks"}},
 		Capture:    []iii.Capture{iii.CaptureOutput},
 	}, "whatsapp::cloud::tunnel::changed"); err != nil {

@@ -1,0 +1,60 @@
+{
+  "function_id": "harness::autocompact::models",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ModelsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AutocompactModel": {
+        "description": "One model `harness::autocompact::models` lists.",
+        "properties": {
+          "context_window": {
+            "description": "The catalog's window; `null` when the router does not list it.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_used_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The catalog's display name, else the model id.",
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "usable": {
+            "description": "The input budget context-manager measured on its last turn: where it compacts at its own limit.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "last_used_ms",
+          "model",
+          "name",
+          "provider",
+          "usable"
+        ],
+        "type": "object"
+      }
+    },
+    "items": {
+      "$ref": "#/definitions/AutocompactModel"
+    },
+    "title": "Array_of_AutocompactModel",
+    "type": "array"
+  }
+}

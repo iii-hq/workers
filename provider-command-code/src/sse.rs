@@ -32,6 +32,7 @@ fn message(
         native_stop_reason: None,
         error_message: None,
         error_kind: None,
+        error_details: None,
         warnings: (!warnings.is_empty()).then(|| warnings.to_vec()),
         usage,
         model: model.to_string(),

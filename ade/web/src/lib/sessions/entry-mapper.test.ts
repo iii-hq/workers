@@ -767,6 +767,19 @@ describe('entrySegments', () => {
     })
   })
 
+  it('skips a thinking block with empty text', () => {
+    const segments = entrySegments(
+      assistantItem('e-a', [
+        { type: 'thinking', text: '' },
+        { type: 'text', text: 'the answer' },
+      ]),
+      'sess-1',
+    )
+    expect(segments.map((s) => [s.id, s.role])).toEqual([
+      ['e-a:1', 'assistant'],
+    ])
+  })
+
   it('unwraps an agent_trigger call recorded before 0.26', () => {
     const [call] = entrySegments(
       assistantItem('e-a', [
@@ -873,6 +886,80 @@ describe('entrySegments', () => {
       summaryText: 'older turns',
       tokensBefore: 1200,
     })
+  })
+
+  // chat-projects §3.3.5 (contract C): the record says what fired it.
+  it.each([
+    [
+      'auto',
+      {
+        trigger: 'auto',
+        threshold_tokens: 160_000,
+        rule: { scope: 'project', project_id: 'p', project_name: 'acme-web' },
+        context_before: 161_000,
+        context_after: 34_000,
+      },
+      'Auto-compacted at 160k · 161k → 34k tokens · acme-web rule',
+    ],
+    [
+      'inline',
+      {
+        trigger: 'inline',
+        threshold_tokens: 160_000,
+        rule: { scope: 'global' },
+        context_before: 183_000,
+        context_after: 31_000,
+      },
+      'Auto-compacted during the turn at 160k · 183k → 31k tokens · global rule',
+    ],
+    [
+      'limit',
+      { trigger: 'limit', context_before: 116_000, context_after: 30_000 },
+      "Compacted at the model's limit · 116k → 30k tokens",
+    ],
+  ])('writes the %s marker from the record', (trigger, fields, text) => {
+    const [marker] = entrySegments({
+      entry_id: `e-${trigger}`,
+      custom: {
+        custom_type: 'compaction',
+        data: {
+          summary: 'older turns',
+          tokens_before: 161_000,
+          source: 'auto',
+          timestamp: 9,
+          ...fields,
+        },
+      },
+    })
+    expect(marker).toMatchObject({
+      role: 'system',
+      kind: 'compaction',
+      content: text,
+      summaryText: 'older turns',
+      compaction: { trigger },
+    })
+  })
+
+  it('keeps /compact and an older record as they read today', () => {
+    for (const data of [
+      {
+        summary: 's',
+        tokens_before: 1200,
+        trigger: 'command',
+        source: 'command',
+      },
+      { summary: 's', tokens_before: 1200 },
+    ]) {
+      const [marker] = entrySegments({
+        entry_id: 'e-c',
+        custom: { custom_type: 'compaction', data },
+      })
+      expect(marker).toMatchObject({
+        kind: 'compaction',
+        content: 'compacted 1,200 tokens',
+      })
+      expect(marker).not.toHaveProperty('compaction')
+    }
   })
 
   it('maps a called reaction outcome as info, never the failed fallback', () => {
@@ -2468,5 +2555,65 @@ describe('thought timing', () => {
       createdAt: 0,
     }
     expect(timeThought({ ...prior, durationMs: 0 }, prior).durationMs).toBe(900)
+  })
+})
+
+describe('Claude Code account failures (chat-projects D147)', () => {
+  const failureOf = (data: Record<string, unknown>) => {
+    const [notice] = entrySegments({
+      entry_id: 'e-limit-error',
+      custom: { custom_type: 'error', data: { status: 'error', ...data } },
+    })
+    if (notice.role !== 'system') throw new Error('expected a system notice')
+    return notice.failure
+  }
+
+  it('reads the usage limit out of the details', () => {
+    expect(
+      failureOf({
+        code: 'llm.usage_limit',
+        class: 'llm.usage_limit',
+        summary: 'Claude Code usage limit reached.',
+        details: {
+          usage_limit: true,
+          window: 'five_hour',
+          resets_at_ms: 1_764_000_000_000,
+          account: 'personal',
+        },
+      })?.usageLimit,
+    ).toEqual({
+      window: 'five_hour',
+      resetsAtMs: 1_764_000_000_000,
+      account: 'personal',
+    })
+  })
+
+  it("reads the router's error_details and a class without its window", () => {
+    expect(
+      failureOf({
+        code: 'router/provider_rejected',
+        class: 'llm.usage_limit',
+        error_details: { usage_limit: true, window: 'month', account: 'work' },
+      })?.usageLimit,
+    ).toEqual({ window: null, resetsAtMs: null, account: 'work' })
+  })
+
+  it('names the removed account of harness.unknown_account', () => {
+    const failure = failureOf({
+      code: 'harness.unknown_account',
+      details: { account: 'old-team' },
+    })
+    expect(failure?.unknownAccount).toBe('old-team')
+    expect(failure?.usageLimit).toBeUndefined()
+  })
+
+  it('leaves other failures alone', () => {
+    const failure = failureOf({
+      code: 'llm.permanent',
+      class: 'llm.permanent',
+      detail: 'usage limit',
+    })
+    expect(failure?.usageLimit).toBeUndefined()
+    expect(failure?.unknownAccount).toBeUndefined()
   })
 })

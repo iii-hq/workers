@@ -42,6 +42,11 @@ pub struct ScenarioFixture {
     /// that produces no session turn — a call-mode reaction's dispatch,
     /// including a trailing coalesced fire.
     pub await_target_calls: Option<usize>,
+    /// After every terminal turn arrived, await until the router served
+    /// every scripted generation: the only way to wait for a turn in a
+    /// session the run does not track — a side chat the Console opened and
+    /// sent in (UI-007), whose completion reaches no observer of the run.
+    pub await_generations: bool,
     /// Session-trace-count override for the floor. `None` keeps the driver
     /// formula. Needed when probe actions trip CALL-mode reactions, which
     /// dispatch a function without seeding any session turn — no extra trace
@@ -58,6 +63,31 @@ pub struct ScenarioFixture {
     /// `(relative path, content)`, e.g. `("harness/alpha.md", …)` for the
     /// skill id `harness/alpha`.
     pub skill_files: Vec<(String, String)>,
+    /// Functions the probe registers before the harness starts, standing in
+    /// for workers the stack does not run.
+    pub stand_in_functions: Vec<StandInFunction>,
+    /// Calls the runner makes once the harness is ready, before the send.
+    pub setup_calls: Vec<SetupCall>,
+}
+
+/// A function of a worker the stack does not run (the tmux worker's
+/// `tmux::accounts::list`), registered by the probe: every call answers
+/// `response`.
+#[derive(Debug, Clone)]
+pub struct StandInFunction {
+    pub function_id: String,
+    pub response: serde_json::Value,
+}
+
+/// A call made before the send (`harness::projects::create`), so the send's
+/// turn starts from that state. `{{run_id}}`/`{{session_id}}` in the payload
+/// expand.
+#[derive(Debug, Clone)]
+pub struct SetupCall {
+    pub function_id: String,
+    pub payload: serde_json::Value,
+    /// Required subset of the response.
+    pub expected_output: Option<crate::types::script::JsonMatcherV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +114,12 @@ pub enum ScenarioIntervention {
 /// `{ function_id, args?, filters?, target }`, and the probe creates that
 /// observer and waits until it is active.
 pub const OBSERVE_ACTION: &str = "probe::observe";
+
+/// The probe action that opens a side chat of the run's session
+/// (`harness::side-chat::open`), sends its payload's `message` in it and
+/// waits until that turn is terminal. A side chat is no child of the
+/// session, so the completion observers never see its turn.
+pub const SIDE_CHAT_ACTION: &str = "probe::side-chat";
 
 /// Race two identical human answers and require one winner and one refusal.
 pub const ANSWER_RACE_ACTION: &str = "probe::answer-race";
@@ -174,6 +210,25 @@ impl ScenarioFixture {
                     "a probe action gated on target calls needs a controlled function to count"
                 );
             }
+        }
+        for function in &self.stand_in_functions {
+            anyhow::ensure!(
+                !function.function_id.is_empty()
+                    && !function.function_id.starts_with("harness::")
+                    && self
+                        .scenario
+                        .target
+                        .as_ref()
+                        .is_none_or(|target| target.function_id != function.function_id),
+                "stand-in {:?} must name a function outside the harness and the controlled one",
+                function.function_id
+            );
+        }
+        for call in &self.setup_calls {
+            anyhow::ensure!(
+                !call.function_id.is_empty(),
+                "a setup call needs a function id"
+            );
         }
         if let Some(intervention) = &self.intervention {
             match intervention {

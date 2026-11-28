@@ -62,7 +62,7 @@ itself: a due date, an alarm, a source system.
 - Deleting and restoring tickets is the human's action; agents move tickets.
 - Creating, shipping or archiving projects and releases, and converting a
   label into one, are console actions; agents list them and file tickets under them.
-  The one exception is the deepwork orchestrator, which creates its run's project.
+  The one exception is the deepwork or workflow orchestrator, which creates its run's project.
 - Agent profiles are resolved through `iii-directory` (with the configured
   agents folder as the fallback); this worker does not create profiles.
 - The harness owns live question state. Agents ask from a root session with

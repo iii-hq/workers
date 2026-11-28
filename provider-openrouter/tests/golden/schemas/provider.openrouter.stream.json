@@ -59,6 +59,17 @@
             },
             "type": "array"
           },
+          "error_details": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What `error_kind` alone does not say, such as an account's usage limit. Omitted when absent; readers that don't know it ignore it."
+          },
           "error_kind": {
             "anyOf": [
               {
@@ -363,6 +374,37 @@
           "custom"
         ],
         "type": "string"
+      },
+      "ErrorDetails": {
+        "description": "What an error's kind alone does not say. Optional on the assistant message and on the router's `ErrorShape`, and serialized only when present, so every reader that does not know it ignores it: `ErrorKind` itself keeps its five values, because its copies elsewhere deserialize it strictly.",
+        "properties": {
+          "resets_at_ms": {
+            "description": "When that limit resets, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "usage_limit": {
+            "default": false,
+            "description": "The account's usage limit is reached: a `rate_limited` that waiting a moment does not fix, so the router never retries it.",
+            "type": "boolean"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/UsageWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which limit was reached, when the provider said so. An unknown value reads as absent."
+          }
+        },
+        "type": "object"
       },
       "ErrorKind": {
         "enum": [
@@ -770,6 +812,25 @@
           }
         },
         "type": "object"
+      },
+      "UsageWindow": {
+        "description": "The usage window an account's limit belongs to.",
+        "oneOf": [
+          {
+            "description": "The rolling five-hour window.",
+            "enum": [
+              "five_hour"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The weekly window (any of the plan's seven-day limits).",
+            "enum": [
+              "week"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "UserMessage": {
         "properties": {

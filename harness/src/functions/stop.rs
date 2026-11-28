@@ -181,6 +181,16 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     if record.status.is_terminal() {
         let turn_id = record.turn_id.clone();
         let continues = record.continues;
+        // A Stop already abandoned this turn's end-of-turn compaction (D158):
+        // that stopped the compaction only, and the messages queued during
+        // it keep their continuation (the turn it seeds runs).
+        if continues && record.compaction_stopped {
+            crate::session_status::spawn_project(deps, record);
+            return Ok(StopOutcome {
+                stopping: true,
+                ..Default::default()
+            });
+        }
         crate::session_status::spawn_project(deps, record);
         if req.quiet_deadlines || continues {
             let guard = deps.locks.guard(&req.session_id).await;
@@ -221,6 +231,9 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // Pin the turn we observed so the write under the lock can't land on a newer
     // turn that started in between (matters when `turn_id` was omitted).
     let target_turn = record.turn_id.clone();
+    // Only compacting at its end (D158): the reply is final, and this stop
+    // stops the compaction only.
+    let compacting = record.compacting.is_some();
 
     // In-process cancel signal, fired lock-free BEFORE anything that awaits:
     // it cuts the in-flight `router.chat` await (backstop when router::abort
@@ -267,7 +280,12 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     };
     if record.turn_id != target_turn {
         // A newer turn started between the pre-read and the lock — don't flag it.
-        return Ok(StopOutcome::default());
+        // When this stop came for a compacting turn, the compaction it
+        // abandoned was the stop, and the newer turn runs a queued message.
+        return Ok(StopOutcome {
+            stopping: compacting,
+            ..Default::default()
+        });
     }
     outcome.stopping = true;
     if record.status.is_terminal() {
@@ -278,7 +296,11 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
         // finalize whose reseed and settle both failed left its promised turn
         // stored: take it back, or the orphan redrive seeds it after this stop.
         if record.continues {
-            cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+            // Unless the stop abandoned the turn's compaction: the queued
+            // messages keep their continuation.
+            if !record.compaction_stopped {
+                cancel_continuation(deps, &mut record, cfg.session_timeout_ms).await?;
+            }
         } else if req.quiet_deadlines {
             flag_parked_turn(deps, &mut record, cfg.session_timeout_ms).await?;
         }

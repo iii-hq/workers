@@ -7,10 +7,12 @@
 //! function calls, and repeat until the turn stops — as durable enqueued steps
 //! so a crash resumes mid-turn.
 
+pub mod accounts;
 pub mod agents;
 pub mod ask;
 pub mod ask_settlement;
 pub mod ask_store;
+pub mod autocompact;
 pub mod bindings;
 pub mod budget;
 pub mod call;
@@ -19,21 +21,25 @@ pub mod compaction;
 pub mod conditions;
 pub mod config;
 pub mod configuration;
+pub mod context_items;
 pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
 pub mod deletion_events;
 pub mod deps;
+pub mod description;
 pub mod discovery;
 pub mod engine_events;
 pub mod error;
 pub mod events;
 pub mod filesystem_grants;
 pub mod filesystem_scope;
+pub mod folders;
 pub mod functions;
 pub mod hooks;
 pub mod ids;
 pub mod inflight;
+pub mod json_file;
 pub mod judge;
 pub mod language;
 pub mod liveness;
@@ -47,6 +53,7 @@ pub mod prompt;
 pub mod queue;
 pub mod reconcile;
 pub mod session_status;
+pub mod side_chat;
 pub mod skills;
 pub mod state;
 pub mod subagent;

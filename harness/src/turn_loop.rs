@@ -23,11 +23,11 @@ use crate::policy::{self, CallKind, CompiledPolicy};
 pub use crate::queue::TURN_QUEUE;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
-use crate::types::message::{AgentMessage, AssistantMessage, empty_assistant};
+use crate::types::message::{AgentMessage, AssistantMessage, ErrorDetails, empty_assistant};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
     CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnFailure,
-    TurnRecord, TurnStatus,
+    TurnFailureDetails, TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -39,6 +39,8 @@ struct FailureInfo<'a> {
     detail: Option<&'a str>,
     provider: Option<&'a str>,
     model: Option<&'a str>,
+    /// The usage limit a `rate_limited` generation hit (D147).
+    limit: Option<&'a ErrorDetails>,
 }
 
 impl FailureInfo<'_> {
@@ -47,9 +49,45 @@ impl FailureInfo<'_> {
         TurnFailure {
             code: self.code.to_string(),
             retryable: self.retryable,
+            details: self.limit.map(|limit| TurnFailureDetails {
+                usage_limit: limit.usage_limit,
+                window: limit.window.clone(),
+                resets_at_ms: limit.resets_at_ms,
+                account: None,
+            }),
         }
     }
 }
+
+/// tmux, or the projects a pin may come from, could not be read when the
+/// turn started, and the transient resumes ran out. Retryable.
+const ACCOUNTS_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: crate::accounts::ACCOUNTS_UNAVAILABLE_CODE,
+    phase: "pre_turn",
+    retryable: true,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+    limit: None,
+};
+
+/// A turn pinned (by its conversation, project or side chat lock) to a
+/// Claude Code account that tmux no longer has.
+const UNKNOWN_ACCOUNT_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: crate::accounts::UNKNOWN_ACCOUNT_CODE,
+    phase: "pre_turn",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+    limit: None,
+};
+
+/// Pause before the first step runs again after tmux (or the projects)
+/// could not be read, per attempt.
+const ACCOUNT_RETRY_BACKOFF_MS: u64 = 500;
 
 const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.turn_internal",
@@ -59,6 +97,7 @@ const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -69,6 +108,7 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// An assembly overflow on a model the router catalog does not list: the
@@ -82,6 +122,7 @@ const UNKNOWN_MODEL_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -92,6 +133,7 @@ const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
@@ -102,6 +144,7 @@ const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// Provider adapters add framing outside the fields visible to the harness.
@@ -678,6 +721,11 @@ async fn generate_step(
         crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
     }
     drain?;
+    // A user message this step reads is this step's to answer: the kept
+    // reply is no longer the turn's answer.
+    if record.kept_reply.is_some() && has_user_after_watermark(&session, &record).await? {
+        record.kept_reply = None;
+    }
 
     // First-step bookkeeping: mark working + emit turn-started + pre_turn hook.
     // The reason is the live phase detail UIs render while the shimmer shows;
@@ -686,6 +734,35 @@ async fn generate_step(
         .set_status(&record.session_id, "working", Some("preparing context"))
         .await;
     if payload.step == 0 && record.turn_count == 0 {
+        // The Claude Code account, resolved once and frozen on the turn
+        // (chat-projects D139): its first step is where every way a turn
+        // starts (a send, a reseed, a wake, `harness::retry`) meets.
+        let resolution =
+            Box::pin(crate::accounts::resolve_turn(deps, &session, &mut record)).await?;
+        if let crate::accounts::TurnResolution::Unavailable(detail) = &resolution
+            && transient_resume_allowed(
+                true,
+                record.transient_resumes,
+                record.options.max_transient_resumes,
+                record.turn_count,
+                record.options.max_turns,
+            )
+        {
+            return Box::pin(retry_account_resolution(
+                deps,
+                &session,
+                &mut record,
+                detail,
+            ))
+            .await
+            .map(PreparedStep::Finished);
+        }
+        if matches!(
+            resolution,
+            crate::accounts::TurnResolution::Changed | crate::accounts::TurnResolution::Unknown
+        ) {
+            crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+        }
         deps.events
             .emit_started(
                 &record.session_id,
@@ -694,8 +771,43 @@ async fn generate_step(
                 record.display_parent_session_id.as_deref(),
                 record.message_preview.as_deref(),
                 record.depth,
+                record.account.as_ref(),
             )
             .await;
+        match &resolution {
+            crate::accounts::TurnResolution::Unknown => {
+                let id = record
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.clone())
+                    .unwrap_or_default();
+                return Box::pin(finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &crate::accounts::unknown_account_message(&id),
+                    UNKNOWN_ACCOUNT_FAILURE,
+                ))
+                .await
+                .map(PreparedStep::Finished);
+            }
+            // The resumes ran out: a retryable failure `harness::retry` can rerun.
+            crate::accounts::TurnResolution::Unavailable(detail) => {
+                return Box::pin(finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    crate::accounts::ACCOUNTS_UNAVAILABLE_MESSAGE,
+                    FailureInfo {
+                        detail: Some(detail),
+                        ..ACCOUNTS_UNAVAILABLE_FAILURE
+                    },
+                ))
+                .await
+                .map(PreparedStep::Finished);
+            }
+            _ => {}
+        }
         if let Err(reason) = Box::pin(deps.hooks.run_pre_turn(&record, payload.step)).await {
             return finalize_failed(
                 deps,
@@ -710,11 +822,22 @@ async fn generate_step(
                     detail: None,
                     provider: None,
                     model: None,
+                    limit: None,
                 },
             )
             .await
             .map(PreparedStep::Finished);
         }
+    }
+
+    // Autocompact (chat-projects phase 3), resolved once per turn next to
+    // its account and kept on the record: the budget every assembly of the
+    // turn sends and the threshold its snapshots mark. A record from before
+    // 1.13 resolves at its next step.
+    if record.autocompact.is_none() {
+        record.autocompact =
+            Some(Box::pin(crate::autocompact::for_turn(deps, &session, &record)).await);
+        crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
     }
 
     // max_turns guard: cap runaway loops with a synthetic notice.
@@ -763,6 +886,7 @@ async fn generate_step(
                         detail: None,
                         provider: None,
                         model: None,
+                        limit: None,
                     },
                 )
                 .await
@@ -808,7 +932,7 @@ async fn generate_step(
         prev_watermark.as_deref(),
         Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
     );
-    if crate::window::binds_thinking(&record.options.model) {
+    if crate::window::strips_thinking_at_compaction(&record.options.model) {
         crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
     }
 
@@ -929,13 +1053,22 @@ async fn generate_step(
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
     // Stored by the pre-generate turn write below, so a replayed reply resolves the same.
-    let (decision_tools, native_names) = concrete_allowed_tools(
+    let (mut decision_tools, native_names) = concrete_allowed_tools(
         &policy,
         &functions.functions,
         &record.dispatch_only_functions,
         expose,
     );
     record.native_names = native_names;
+    // `harness::set-description` is offered in every exposure mode, with its
+    // own description, while the policy allows it and the Chat setting
+    // `descriptions.agent_writes` is on (chat-projects §1.2.3).
+    let set_description = description_tool(&policy, cfg.descriptions.agent_writes);
+    decision_tools.retain(|tool| tool.name != crate::description::SET_DESCRIPTION_ID);
+    if let (Some(tool), ExposeMode::Native) = (&set_description, expose) {
+        decision_tools.push(tool.clone());
+        decision_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    }
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -947,6 +1080,9 @@ async fn generate_step(
         &decision_tools,
         record.options.response_language.as_ref(),
     );
+    if let (Some(tool), ExposeMode::AgentCall) = (set_description, expose) {
+        tools.push(tool);
+    }
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -979,6 +1115,7 @@ async fn generate_step(
         record.pre_generate_hook_tokens,
     );
     let mut reassembled = false;
+    let mut inline_emitted = false;
     let (
         gen_system_prompt,
         gen_annotations,
@@ -1007,7 +1144,10 @@ async fn generate_step(
         )
         .await
         {
-            Ok(assembled) => assembled,
+            Ok(assembled) => {
+                after_assembly(deps, &session, &mut record, &assembled, &mut inline_emitted).await;
+                assembled
+            }
             Err(HarnessError::ContextOverflow(reason)) => {
                 let failure = overflow_failure(deps, &record).await;
                 return finalize_failed(deps, &session, &mut record, &reason, failure)
@@ -1053,6 +1193,7 @@ async fn generate_step(
                             detail: None,
                             provider: None,
                             model: None,
+                            limit: None,
                         },
                     )
                     .await
@@ -1173,6 +1314,7 @@ async fn generate_step(
                     detail: None,
                     provider: None,
                     model: None,
+                    limit: None,
                 },
             )
             .await
@@ -1580,6 +1722,8 @@ async fn generate_step(
     if let Some(reservation) = budget_reservation.as_ref() {
         crate::budget::reconcile(deps, reservation, outcome.message.usage.as_ref()).await?;
     }
+    // The account ledger (D133): `claude-code` usage carries no cost.
+    crate::accounts::record_usage(deps, &record, &outcome.message).await;
 
     // A stop mid-generation truncates tool-call blocks before their arguments
     // stream. An argument-less call can never execute (the turn is cancelled)
@@ -1687,6 +1831,14 @@ async fn generate_step(
                 "context snapshot store failed"
             );
         }
+        // The models index `harness::autocompact::models` lists (D165).
+        crate::autocompact::note_model(
+            deps,
+            snapshot.provider.as_deref(),
+            &snapshot.model,
+            snapshot.usable,
+        )
+        .await;
     }
 
     // Capture mode only: origin on the update event names the current
@@ -1869,7 +2021,11 @@ async fn finish_step(
             message: "The provider rejected this request.".into(),
             detail: Some("generation failed".into()),
             kind: outcome.message.error_kind,
-            retryable: outcome.message.error_kind.map(ErrorKind::is_retryable),
+            retryable: crate::clients::router::retryable(
+                outcome.message.error_kind,
+                outcome.message.error_details.as_ref(),
+            ),
+            error_details: outcome.message.error_details.clone(),
         });
         let failure = llm_failure_info(
             Some(&generation_error),
@@ -1927,24 +2083,14 @@ async fn finish_step(
                 .await;
             // With no output, the transcript already ends at the input to retry.
             if has_partial {
-                let nudge = AgentMessage::user_text(format!(
-                    "The provider/router ended transiently after streaming the previous partial \
-                     response: {reason}. Resume from the transcript and return the complete deliverable, \
-                     incorporating the previous partial even if it was already nearly complete. Do not \
-                     repeat function calls that already have successful results."
-                ));
-                let _ = session
-                    .append(
-                        &record.session_id,
-                        &nudge,
-                        Some(&ids::transient_resume_nudge_entry_id(
-                            &record.turn_id,
-                            attempt,
-                        )),
-                        None,
-                        Some(&origin(&record.turn_id)),
-                    )
-                    .await?;
+                append_resume_nudge(
+                    &session,
+                    &record.session_id,
+                    &record.turn_id,
+                    attempt,
+                    &reason,
+                )
+                .await?;
             }
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
@@ -2001,6 +2147,20 @@ async fn finish_step(
         .filter(|c| c.kind == CallKind::Call)
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
+    // A description beside reply text never ends the turn: the text
+    // can announce more work; it stays the answer if the next step writes none.
+    let keeps_reply = crate::description::describes_beside_reply(
+        dispatch_calls.iter().map(|call| call.function_id.as_str()),
+        crate::description::has_reply_text(&outcome.message.content),
+        submit_call.is_some(),
+    );
+    if keeps_reply {
+        record.kept_reply = Some(ContentBlock::join_text(&outcome.message.content));
+    } else if crate::description::did_other_work(
+        dispatch_calls.iter().map(|call| call.function_id.as_str()),
+    ) {
+        record.kept_reply = None;
+    }
 
     if !dispatch_calls.is_empty() {
         crate::session_status::write_phase(deps, &record, "running tools").await;
@@ -2236,6 +2396,52 @@ async fn finish_step(
                     &data,
                     &entry_id,
                     &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                call::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
+            // harness::set-description is answered here too, like the ask:
+            // the turn's own session is the only one it writes (D1, D13),
+            // through one session::patch-meta. Never parks.
+            if call.function_id == crate::description::SET_DESCRIPTION_ID && namespace == implicit {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                let mut data = Box::pin(set_description_result(
+                    &session,
+                    &record.session_id,
+                    call_args,
+                ))
+                .await;
+                if keeps_reply {
+                    data = crate::description::with_go_on(data);
+                }
+                let mut annotations = serde_json::Map::new();
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &namespace,
+                    &call.function_id,
+                    call_args,
+                    crate::reconcile::contract_in_context(&record, &namespace, &call.function_id),
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &annotations),
                 )
                 .await?;
                 call::apply_contract_updates_after_append(
@@ -2682,6 +2888,17 @@ async fn finish_step(
             ))
             .await;
         }
+        // At the step cap the next step would end on the max_turns notice: end on the kept reply.
+        if keeps_reply && record.turn_count >= record.options.max_turns {
+            return Box::pin(finalize_with_contract(
+                deps,
+                &session,
+                &mut record,
+                &strategy,
+                &outcome.message,
+            ))
+            .await;
+        }
         return advance(deps, &mut record).await;
     }
 
@@ -2698,6 +2915,33 @@ async fn finish_step(
         &outcome.message,
     ))
     .await
+}
+
+/// Answer one in-turn `harness::set-description` for the turn's own session:
+/// read the conversation, decide, and write with one `session::patch-meta`.
+async fn set_description_result(
+    session: &SessionClient,
+    session_id: &str,
+    args: &Value,
+) -> call::ResultData {
+    let current = match session.summary(session_id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => {
+            return crate::description::write_failed(&HarnessError::Dependency(format!(
+                "session {session_id} does not exist"
+            )));
+        }
+        Err(error) => return crate::description::write_failed(&error),
+    };
+    match crate::description::decide(args, &current, AgentMessage::now_ms()) {
+        crate::description::Decision::Answer(response) => crate::description::result(&response),
+        crate::description::Decision::Write { patch, response } => {
+            match session.patch_meta(session_id, &patch).await {
+                Ok(_) => crate::description::result(&response),
+                Err(error) => crate::description::write_failed(&error),
+            }
+        }
+    }
 }
 
 /// Decide one in-turn `harness::ask` against the record's per-step markers
@@ -2925,6 +3169,7 @@ async fn settle_unreseeded(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     // A failed write leaves the marker: the completion can repeat, never be lost.
@@ -3017,7 +3262,12 @@ async fn finalize_with_contract(
     strategy: &crate::contract::OutputStrategy,
     message: &AssistantMessage,
 ) -> Result<TurnStepResult, HarnessError> {
-    let text = ContentBlock::join_text(&message.content);
+    let mut text = ContentBlock::join_text(&message.content);
+    if let Some(kept) = record.kept_reply.take()
+        && text.trim().is_empty()
+    {
+        text = kept;
+    }
     match strategy {
         crate::contract::OutputStrategy::Text => {
             complete_validated(deps, session, record, json!(text)).await
@@ -3101,6 +3351,7 @@ async fn retry_or_giveup_with(
                 detail: None,
                 provider: None,
                 model: None,
+                limit: None,
             },
         )
         .await
@@ -3192,6 +3443,11 @@ async fn finalize_completed(
         ))
         .await;
     }
+    // Autocompact at the end of the turn (D158), before the first drain: the
+    // record stays `running` while it summarises, so a send queues and runs
+    // after it; the refreshed snapshot rides on-turn-completed. A Stop
+    // abandons the summary and the turn still completes.
+    Box::pin(crate::autocompact::at_turn_end(deps, session, record)).await;
     let woke = drain_queued_best_effort(deps, session, record).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
@@ -3219,6 +3475,9 @@ async fn finalize_completed(
         }
     }
     let woke = woke || late;
+    // A side chat's summary turn (chat-projects §2.2): its reply joins
+    // `side_chat_summaries` before clients hear the turn completed.
+    crate::side_chat::record_summary_reply(session, record).await;
     // One decision for the proof and the event: a wake can retire in between.
     let terminal = !woke && turn_is_terminal(deps, record).await;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
@@ -3236,6 +3495,7 @@ async fn finalize_completed(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     // An exhausted step cap is reported as its own outcome: `completed` alone
@@ -3434,6 +3694,27 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider rejected this request.",
             &["Review the selected model and provider settings, then try again."],
         ),
+        crate::accounts::USAGE_LIMIT_CODE => (
+            "This Claude Code account reached its usage limit.",
+            &[
+                "Continue on another Claude Code account.",
+                "Or wait until the limit resets, then retry the turn.",
+            ],
+        ),
+        crate::accounts::ACCOUNTS_UNAVAILABLE_CODE => (
+            "The Claude Code accounts could not be read.",
+            &[
+                "Check that the tmux worker is running and the projects file is readable.",
+                "Then retry the turn.",
+            ],
+        ),
+        crate::accounts::UNKNOWN_ACCOUNT_CODE => (
+            "The Claude Code account this conversation runs on no longer exists.",
+            &[
+                "Choose another account for the conversation or its project.",
+                "Then retry the turn.",
+            ],
+        ),
         _ => match failure.kind {
             Some(ErrorKind::AuthExpired) => (
                 "The provider authentication needs attention.",
@@ -3473,6 +3754,18 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
     }
 }
 
+/// The failure the record keeps: a usage limit, and a pin to a gone
+/// account, name the account (contract D).
+fn stored_failure(record: &TurnRecord, failure: FailureInfo<'_>) -> TurnFailure {
+    let mut stored = failure.stored();
+    if let Some(account) = record.account.as_ref()
+        && (stored.details.is_some() || failure.code == UNKNOWN_ACCOUNT_FAILURE.code)
+    {
+        stored.details.get_or_insert_with(Default::default).account = Some(account.id.clone());
+    }
+    stored
+}
+
 async fn finalize_failed(
     deps: &Deps,
     session: &SessionClient,
@@ -3490,7 +3783,7 @@ async fn finalize_failed(
     record.exchange_finished = terminal;
     record.continues = woke;
     record.result_error = Some(summary.clone());
-    record.failure = Some(failure.stored());
+    record.failure = Some(stored_failure(record, failure));
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
     record.slim_finished();
@@ -3512,35 +3805,43 @@ async fn finalize_failed(
     let woke = woke || late;
     crate::hooks::recall::finish_extraction(deps, record, terminal).await;
     deps.cancels.clear(&record.turn_id);
+    let mut entry = json!({
+        "status": "error",
+        "summary": summary,
+        "reason": detail,
+        "code": failure.code,
+        "class": failure_class(failure),
+        "message": public_message,
+        "detail": detail,
+        "provider": failure.provider.or(record.options.provider.as_deref()),
+        "model": failure.model.unwrap_or(&record.options.model),
+        "retryable": failure.retryable,
+        "phase": failure.phase,
+        "partial_result_available": record.result.is_some(),
+        "recovery": {
+            "attempted": record.transient_resumes,
+            "max_attempts": record.options.max_transient_resumes,
+            "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
+        },
+        "next_actions": presentation.next_actions,
+        "artifacts": {
+            "session_id": record.session_id,
+            "turn_id": record.turn_id,
+        },
+        "timestamp": AgentMessage::now_ms(),
+    });
+    if let Some(details) = record
+        .failure
+        .as_ref()
+        .and_then(|failure| failure.details.as_ref())
+    {
+        entry["details"] = json!(details);
+    }
     let _ = session
         .append_custom(
             &record.session_id,
             "error",
-            json!({
-                "status": "error",
-                "summary": summary,
-                "reason": detail,
-                "code": failure.code,
-                "class": failure_class(failure),
-                "message": public_message,
-                "detail": detail,
-                "provider": failure.provider.or(record.options.provider.as_deref()),
-                "model": failure.model.unwrap_or(&record.options.model),
-                "retryable": failure.retryable,
-                "phase": failure.phase,
-                "partial_result_available": record.result.is_some(),
-                "recovery": {
-                    "attempted": record.transient_resumes,
-                    "max_attempts": record.options.max_transient_resumes,
-                    "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
-                },
-                "next_actions": presentation.next_actions,
-                "artifacts": {
-                    "session_id": record.session_id,
-                    "turn_id": record.turn_id,
-                },
-                "timestamp": AgentMessage::now_ms(),
-            }),
+            entry,
             &format!("e_{}_error", record.turn_id),
             Some(&origin(&record.turn_id)),
         )
@@ -3559,6 +3860,7 @@ async fn finalize_failed(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
@@ -3613,20 +3915,57 @@ fn llm_failure_info<'a>(
         Some(ErrorKind::Permanent) => "llm.permanent",
         None => "llm.generation_failed",
     };
+    // A usage limit stays `rate_limited` on the wire (D147), but no retry
+    // can pass it before its reset: the transient resume skips it.
+    let limit = ErrorDetails::usage_limit(error.and_then(|error| error.error_details.as_ref()));
     FailureInfo {
-        code: error
-            .and_then(|error| error.code.as_deref())
-            .filter(|code| !code.is_empty())
-            .unwrap_or(fallback_code),
+        code: if limit.is_some() {
+            crate::accounts::USAGE_LIMIT_CODE
+        } else {
+            error
+                .and_then(|error| error.code.as_deref())
+                .filter(|code| !code.is_empty())
+                .unwrap_or(fallback_code)
+        },
         phase: "generation",
-        retryable: error
-            .and_then(|error| error.retryable)
-            .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
+        retryable: limit.is_none()
+            && error
+                .and_then(|error| error.retryable)
+                .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
         kind,
         detail: error.and_then(|error| error.detail.as_deref()),
         provider,
         model,
+        limit,
     }
+}
+
+/// The message that resumes a generation cut after streaming part of its
+/// answer: the transient resume's, and `harness::retry`'s when the failed
+/// turn left partial output.
+pub(crate) async fn append_resume_nudge(
+    session: &SessionClient,
+    session_id: &str,
+    turn_id: &str,
+    attempt: u32,
+    reason: &str,
+) -> Result<(), HarnessError> {
+    let nudge = AgentMessage::user_text(format!(
+        "The provider/router ended transiently after streaming the previous partial \
+         response: {reason}. Resume from the transcript and return the complete deliverable, \
+         incorporating the previous partial even if it was already nearly complete. Do not \
+         repeat function calls that already have successful results."
+    ));
+    session
+        .append(
+            session_id,
+            &nudge,
+            Some(&ids::transient_resume_nudge_entry_id(turn_id, attempt)),
+            None,
+            Some(&origin(turn_id)),
+        )
+        .await?;
+    Ok(())
 }
 
 fn record_recovery_telemetry(record: &TurnRecord, reason: &str, attempt: u32) {
@@ -3701,6 +4040,73 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
     }
 }
 
+/// The first step could not decide the turn's Claude Code account (tmux or
+/// the projects could not be read): spend one transient resume and run the
+/// first step again, after a pause. Nothing was generated, so the turn
+/// starts over from the transcript as it is.
+async fn retry_account_resolution(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    detail: &str,
+) -> Result<TurnStepResult, HarnessError> {
+    let cfg = deps.cfg().await;
+    let attempt = record.transient_resumes + 1;
+    tracing::warn!(
+        session_id = %record.session_id,
+        turn_id = %record.turn_id,
+        attempt,
+        detail,
+        "the turn's Claude Code account could not be decided; trying again"
+    );
+    record_recovery_telemetry(record, detail, attempt);
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "recovery",
+            json!({
+                "status": "recovering",
+                "summary": format!(
+                    "Reading the Claude Code accounts again ({attempt}/{}).",
+                    record.options.max_transient_resumes
+                ),
+                "reason": crate::accounts::ACCOUNTS_UNAVAILABLE_MESSAGE,
+                "detail": detail,
+                "code": crate::accounts::ACCOUNTS_UNAVAILABLE_CODE,
+                "phase": "pre_turn",
+                "attempt": attempt,
+                "max_attempts": record.options.max_transient_resumes,
+                "partial_result_available": false,
+                "timestamp": AgentMessage::now_ms(),
+            }),
+            &ids::transient_recovery_entry_id(&record.turn_id, attempt, "recovering"),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
+    record.transient_resumes = attempt;
+    record.updated_at = AgentMessage::now_ms();
+    crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        ACCOUNT_RETRY_BACKOFF_MS * u64::from(attempt),
+    ))
+    .await;
+    enqueue_step(
+        &deps.iii,
+        &record.session_id,
+        &record.turn_id,
+        record.step,
+        record.message_preview.as_deref(),
+        record.depth,
+    )
+    .await?;
+    Ok(TurnStepResult {
+        session_id: record.session_id.clone(),
+        status: TurnStatus::Running,
+        next_step: Some(record.step),
+        skipped: false,
+    })
+}
+
 fn transient_resume_allowed(
     retryable: bool,
     resumes: u32,
@@ -3745,6 +4151,7 @@ pub(crate) async fn finalize_cancelled(
             terminal,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     crate::usage_report::report(deps, record, "cancelled", None).await;
@@ -3887,6 +4294,7 @@ pub(crate) async fn end_stopped_exchange(
             true,
             record.context_snapshot.as_ref(),
             crate::ask_store::open_count(deps, &record.session_id).await?,
+            record.account.as_ref(),
         )
         .await;
     record.exchange_finished = true;
@@ -3904,6 +4312,7 @@ const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
     detail: None,
     provider: None,
     model: None,
+    limit: None,
 };
 
 /// Finalise a freshly seeded turn whose first step could not be enqueued.
@@ -4236,6 +4645,24 @@ async fn assemble_context(
         .collect();
 
     let context = deps.context().await;
+    // Autocompact (D159, D160): the soft budget, with the global
+    // instructions, while the setting is set and nothing paused it; the
+    // turn's provider options always, so an inline compaction runs on the
+    // conversation's account (D161).
+    let compaction_budget = record
+        .autocompact
+        .as_ref()
+        .and_then(|autocompact| autocompact.budget(record.context_snapshot.as_ref()));
+    let compaction_instructions = match compaction_budget {
+        Some(_) => crate::autocompact::global_instructions(&deps.cfg().await.autocompact),
+        None => None,
+    };
+    let provider_options = record
+        .options
+        .provider_options
+        .as_ref()
+        .filter(|options| !options.is_empty())
+        .and_then(|options| serde_json::to_value(options).ok());
     let params = crate::clients::AssembleParams {
         messages: candidate_values,
         model_id: record.options.model.clone(),
@@ -4259,6 +4686,9 @@ async fn assemble_context(
         // of every later step. Compaction still bounds the window.
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
         provenance: capture,
+        compaction_budget,
+        compaction_instructions,
+        provider_options,
     };
 
     let mut out = match context.assemble(params).await {
@@ -4315,7 +4745,20 @@ async fn assemble_context(
             ),
         }
     }
+    // The budget context-manager applied: `min(usable, budget)`, or none. A
+    // response without the echo comes from a context-manager older than
+    // 1.3.0, which dropped the budget: the turn runs at the model's limit.
+    let applied_budget = match out.compaction_budget {
+        Some(echo) => echo,
+        None => {
+            if compaction_budget.is_some() {
+                warn_no_budget_echo(&record.session_id);
+            }
+            None
+        }
+    };
     let mut summary_persisted = false;
+    let mut inline = None;
     if out.applied.compacted
         && let Some(summary) = &out.applied.summary
     {
@@ -4325,7 +4768,22 @@ async fn assemble_context(
             .and_then(|i| usize::try_from(i).ok())
             .and_then(|i| candidate.get(i))
             .map(|(id, _)| id.clone());
-        let data = json!({
+        // `budget`: the autocompact budget fired it (below `usable`);
+        // otherwise the model's own limit did, as before autocompact.
+        let by_budget = out
+            .compaction
+            .as_ref()
+            .is_some_and(crate::clients::context::AssembleCompaction::by_budget);
+        let (trigger, threshold_tokens, rule) = match (by_budget, record.autocompact.as_ref()) {
+            (true, Some(autocompact)) => (
+                crate::compaction::Trigger::Inline,
+                crate::autocompact::effective_tokens(autocompact.setting_tokens, out.usable),
+                Some(autocompact.rule.clone()),
+            ),
+            _ => (crate::compaction::Trigger::Limit, None, None),
+        };
+        let compaction_id = ids::inline_compaction_id(&record.turn_id, step);
+        let mut data = json!({
             "summary": summary,
             "tail_start_entry_id": tail_entry,
             "tokens_before": out.applied.tokens_before,
@@ -4334,6 +4792,28 @@ async fn assemble_context(
             "assembled_token_count": out.token_count,
             "usable_input_tokens": out.usable,
             "effective_max_output_tokens": out.effective_max_output_tokens,
+            "compaction_id": compaction_id,
+            "model": record.options.model,
+            "trigger": trigger,
+            "source": trigger.source(),
+            "context_before": out.applied.initial_token_count,
+            "context_after": out.token_count,
+        });
+        if let Some(threshold) = threshold_tokens {
+            data["threshold_tokens"] = json!(threshold);
+        }
+        if let Some(rule) = &rule {
+            data["rule"] = json!(rule);
+        }
+        inline = Some(InlineCompaction {
+            compaction_id,
+            entry_id: ids::compaction_entry_id(&record.turn_id, step),
+            trigger,
+            threshold_tokens,
+            rule,
+            tokens_before: out.applied.tokens_before,
+            context_before: out.applied.initial_token_count,
+            context_after: out.token_count,
         });
         summary_persisted = session
             .append_custom(
@@ -4345,6 +4825,9 @@ async fn assemble_context(
             )
             .await
             .is_ok();
+        if !summary_persisted {
+            inline = None;
+        }
     }
 
     // The snapshot's "compacted" means the context carries a summary: this
@@ -4432,19 +4915,22 @@ async fn assemble_context(
         summarized,
         summarized_head_tokens,
         breakdown: out.breakdown,
+        applied_budget,
+        compaction: out.compaction,
+        inline,
         pruned: out.applied.pruned,
     })
 }
 
 /// Everything a compacting step kept was produced before its own compaction:
-/// on a binding model strip its thinking, the same strip every later step
+/// on a model that strips thinking at compaction strip it, the same strip every later step
 /// applies (crate::window::strip_thinking_logged_before). True when it
 /// stripped, so the caller re-counts.
 fn strip_compacted_thinking(
     out: &mut crate::clients::context::AssembleOutput,
     model: &str,
 ) -> bool {
-    if !(out.applied.compacted && crate::window::binds_thinking(model)) {
+    if !(out.applied.compacted && crate::window::strips_thinking_at_compaction(model)) {
         return false;
     }
     out.messages
@@ -4578,6 +5064,10 @@ fn build_context_snapshot(
         prompt_surface_digest: None,
         prompt_sections_fallback: None,
         prefix_divergences: Vec::new(),
+        autocompact: record
+            .autocompact
+            .as_ref()
+            .map(|autocompact| autocompact.snapshot(assembled.usable)),
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -4770,6 +5260,111 @@ struct Assembled {
     /// context-manager pruned or reduced function results to fit the budget
     /// this step, rewriting rows an earlier request may have sent.
     pruned: bool,
+    /// The autocompact budget context-manager applied (its echo): `None`
+    /// when none was sent, or from a context-manager older than 1.3.0.
+    applied_budget: Option<u64>,
+    /// The compaction this assembly tried, when it tried one (1.3.0).
+    compaction: Option<crate::clients::context::AssembleCompaction>,
+    /// The compaction this assembly persisted.
+    inline: Option<InlineCompaction>,
+}
+
+/// A compaction `context::assemble` ran inside a turn (contract C):
+/// `inline` at the autocompact budget, `limit` at the model's own.
+#[derive(Debug, Clone)]
+struct InlineCompaction {
+    compaction_id: String,
+    entry_id: String,
+    trigger: crate::compaction::Trigger,
+    threshold_tokens: Option<u64>,
+    rule: Option<crate::autocompact::Rule>,
+    tokens_before: Option<u64>,
+    context_before: u64,
+    context_after: u64,
+}
+
+/// A context-manager older than 1.3.0 ignores `compaction_budget`; said
+/// once per process.
+fn warn_no_budget_echo(session_id: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::warn!(
+            session_id,
+            "context::assemble did not echo compaction_budget (context-manager older than 1.3.0): turns run without the autocompact cap; the end of a turn still compacts"
+        );
+    }
+}
+
+/// After an assembly (D160): an inline attempt that failed or was busy
+/// pauses the budget for the rest of the turn (no notice, no back-off), as
+/// does one that gained less than 10 % (it would fire again every step); a
+/// persisted inline or limit compaction emits its completed phase (no
+/// started phase) once, and an inline one joins the autocompact log.
+///
+/// The pause covers a failed or busy attempt at the model's own limit
+/// (`trigger: "usable"`) on purpose: that context is past the budget too,
+/// so every later step of the turn would call the summariser again at the
+/// budget on the same context. Without the budget, context-manager still
+/// compacts at `usable` as it did before autocompact.
+async fn after_assembly(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    assembled: &Assembled,
+    emitted: &mut bool,
+) {
+    let small_gain = assembled.inline.as_ref().is_some_and(|inline| {
+        inline.trigger == crate::compaction::Trigger::Inline
+            && !crate::autocompact::gained_enough(inline.context_before, inline.context_after)
+    });
+    let failed = assembled
+        .compaction
+        .as_ref()
+        .is_some_and(crate::clients::context::AssembleCompaction::failed_or_busy);
+    if (failed || small_gain)
+        && assembled.applied_budget.is_some()
+        && let Some(autocompact) = record.autocompact.as_mut()
+        && !autocompact.paused
+    {
+        autocompact.paused = true;
+        if let Some(compaction) = &assembled.compaction {
+            tracing::info!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                status = %compaction.status,
+                failure = ?compaction.failure,
+                small_gain,
+                "inline autocompact paused for the rest of the turn"
+            );
+        }
+        // Stored now: a redelivered step keeps the pause.
+        let timeout = deps.cfg().await.session_timeout_ms;
+        if let Err(error) = crate::state::put_turn(&deps.iii, record, timeout).await {
+            tracing::warn!(session_id = %record.session_id, %error, "the inline autocompact pause was not stored");
+        }
+    }
+    let Some(inline) = assembled.inline.as_ref().filter(|_| !*emitted) else {
+        return;
+    };
+    *emitted = true;
+    let outcome = crate::compaction::inline_outcome(
+        &record.session_id,
+        &inline.compaction_id,
+        inline.trigger,
+        inline.threshold_tokens,
+        inline.rule.clone(),
+        inline.tokens_before,
+        Some(inline.context_before),
+        Some(inline.context_after),
+        vec![inline.entry_id.clone()],
+    );
+    deps.events
+        .emit_compaction(
+            &record.session_id,
+            crate::compaction::event_payload("completed", &outcome),
+        )
+        .await;
+    crate::autocompact::log_compaction(deps, session, &outcome).await;
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -5170,6 +5765,16 @@ fn concrete_allowed_tools(
     }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     (tools, names)
+}
+
+/// The `harness::set-description` tool for a turn, or `None` when its policy
+/// denies it or the Chat setting `descriptions.agent_writes` is off.
+fn description_tool(
+    policy: &CompiledPolicy,
+    agent_writes: bool,
+) -> Option<crate::types::model::AgentFunction> {
+    (agent_writes && policy.allows(crate::description::SET_DESCRIPTION_ID))
+        .then(crate::description::tool)
 }
 
 /// The native tool name of `function_id` in a namespace other than its
@@ -5643,12 +6248,14 @@ mod tests {
                 _ => false,
             })
         };
-        let mut out = assembled(true);
-        assert!(super::strip_compacted_thinking(
-            &mut out,
-            "claude-sonnet-5-5"
-        ));
-        assert!(!thinking(&out), "stale thinking would reach the request");
+        for model in ["claude-sonnet-5-5", "codex/gpt-6.2-sol"] {
+            let mut out = assembled(true);
+            assert!(super::strip_compacted_thinking(&mut out, model));
+            assert!(
+                !thinking(&out),
+                "{model}: stale thinking would reach the request"
+            );
+        }
         for (compacted, model) in [(false, "claude-opus-5-5"), (true, "claude-sonnet-4-6")] {
             let mut out = assembled(compacted);
             assert!(!super::strip_compacted_thinking(&mut out, model));
@@ -6564,6 +7171,7 @@ mod tests {
             detail: Some("provider openai stream function was not found".into()),
             kind: Some(ErrorKind::Transient),
             retryable: Some(true),
+            error_details: None,
         };
         let failure = super::llm_failure_info(
             Some(&error),
@@ -6585,6 +7193,87 @@ mod tests {
     }
 
     #[test]
+    fn a_usage_limit_fails_the_turn_without_a_resume_and_names_the_account() {
+        let limit = crate::types::message::ErrorDetails {
+            usage_limit: true,
+            window: Some("five_hour".into()),
+            resets_at_ms: Some(1_700_000_000_000),
+        };
+        let error = ChatError {
+            code: Some("router/provider_rate_limited".into()),
+            message: "Limited.".into(),
+            detail: None,
+            kind: Some(ErrorKind::RateLimited),
+            retryable: Some(true),
+            error_details: Some(limit),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, None);
+        assert_eq!(failure.code, "llm.usage_limit");
+        assert!(!failure.retryable, "a usage limit is never resumed");
+        assert!(!transient_resume_allowed(failure.retryable, 0, 3, 1, 16));
+        assert_eq!(super::failure_class(failure), "llm.rate_limited");
+        assert_eq!(
+            super::failure_presentation("Limited.", failure).summary,
+            "This Claude Code account reached its usage limit."
+        );
+
+        let mut record = crate::types::turn::tests::record();
+        record.account = Some(crate::accounts::TurnAccount {
+            id: "work".into(),
+            source: crate::accounts::AccountSource::Project,
+            project_id: None,
+        });
+        assert_eq!(
+            serde_json::to_value(super::stored_failure(&record, failure)).unwrap(),
+            serde_json::json!({
+                "code": "llm.usage_limit",
+                "retryable": false,
+                "details": {
+                    "usage_limit": true,
+                    "window": "five_hour",
+                    "resets_at_ms": 1_700_000_000_000u64,
+                    "account": "work"
+                }
+            })
+        );
+
+        // A plain rate limit (no usage limit) stays retryable and detail-less.
+        let plain = ChatError {
+            error_details: Some(crate::types::message::ErrorDetails::default()),
+            ..error
+        };
+        let failure = super::llm_failure_info(Some(&plain), None, None, None);
+        assert_eq!(failure.code, "router/provider_rate_limited");
+        assert!(failure.retryable);
+        assert_eq!(super::stored_failure(&record, failure).details, None);
+    }
+
+    #[test]
+    fn a_pin_to_a_gone_account_names_it_in_the_failure() {
+        let mut record = crate::types::turn::tests::record();
+        record.account = Some(crate::accounts::TurnAccount {
+            id: "old".into(),
+            source: crate::accounts::AccountSource::Session,
+            project_id: None,
+        });
+        let stored = super::stored_failure(&record, super::UNKNOWN_ACCOUNT_FAILURE);
+        assert_eq!(stored.code, "harness.unknown_account");
+        assert!(!stored.retryable);
+        assert_eq!(
+            stored
+                .details
+                .and_then(|details| details.account)
+                .as_deref(),
+            Some("old")
+        );
+        // Any other failure of an account's turn carries no details.
+        assert_eq!(
+            super::stored_failure(&record, super::INTERNAL_FAILURE).details,
+            None
+        );
+    }
+
+    #[test]
     fn a_stored_failure_keeps_the_code_and_whether_a_retry_may_succeed() {
         let error = ChatError {
             code: Some("router/provider_transient".into()),
@@ -6592,6 +7281,7 @@ mod tests {
             detail: None,
             kind: Some(ErrorKind::Transient),
             retryable: None,
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, None, None);
         assert_eq!(
@@ -6599,6 +7289,7 @@ mod tests {
             crate::types::turn::TurnFailure {
                 code: "router/provider_transient".into(),
                 retryable: true,
+                details: None,
             }
         );
         assert_eq!(
@@ -6606,6 +7297,7 @@ mod tests {
             crate::types::turn::TurnFailure {
                 code: "harness.turn_internal".into(),
                 retryable: false,
+                details: None,
             }
         );
     }
@@ -6618,6 +7310,7 @@ mod tests {
             detail: Some("legacy raw provider text".into()),
             kind: Some(ErrorKind::Transient),
             retryable: Some(true),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, Some("openai"), Some("gpt-test"));
         let presentation = super::failure_presentation(&error.message, failure);
@@ -6645,6 +7338,7 @@ mod tests {
             detail: None,
             kind: Some(ErrorKind::Permanent),
             retryable: Some(false),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, Some("openai-codex"), Some("m"));
         assert!(!transient_resume_allowed(failure.retryable, 0, 3, 1, 16));
@@ -6703,6 +7397,7 @@ mod tests {
             detail: Some("raw rejection with upstream diagnostics".into()),
             kind: Some(ErrorKind::Permanent),
             retryable: Some(false),
+            error_details: None,
         };
         let failure = super::llm_failure_info(Some(&error), None, None, Some("m"));
         let presentation = super::failure_presentation(&error.message, failure);

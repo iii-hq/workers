@@ -5,6 +5,7 @@ import {
   Bot,
   ChevronRight,
   Ellipsis,
+  FolderInput,
   Pencil,
   Pin,
   PinOff,
@@ -13,19 +14,30 @@ import {
 import type { CSSProperties, DragEvent } from 'react'
 import { useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
+import { ConversationDetailsDialog } from '@/components/chat/ConversationDetailsDialog'
+import { ProjectDot } from '@/components/projects/ProjectDot'
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuRadioGroup,
   DropdownMenuSeparator,
+  DropdownMenuSub,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import {
+  ChatMenuContent,
+  ChatMenuItem,
+  ChatMenuRadioItem,
+  ChatMenuSubContent,
+  ChatMenuSubTrigger,
+} from '@/components/ui/ChatMenu'
 import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { StatusDot } from '@/components/ui/StatusDot'
+import { type ChatProject, NO_PROJECT, tildePath } from '@/lib/backend/projects'
 import { isAwaitingAnswer } from '@/lib/chat-activity'
+import type { ConversationDetailsDraft } from '@/lib/conversation-details'
 import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
-import { formatRelative } from '@/lib/relative-age'
+import { shortAge } from '@/lib/short-age'
 import { cn } from '@/lib/utils'
 import type {
   Conversation,
@@ -33,7 +45,6 @@ import type {
   SubagentColor,
 } from '@/types/chat'
 import { MarqueeLabel } from './MarqueeLabel'
-import { RenameConversationDialog } from './RenameConversationDialog'
 
 /* The menu trigger is the one action that survives on touch, so it carries
  the 48px coarse-pointer target the tree recipe is built around. */
@@ -43,10 +54,6 @@ const menuActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12
  through the menu, so the shortcut drops off coarse pointers. A pinned
  chat's pin stays on show in the same place, hovered or not. */
 const pinActionClassName = `${uiClasses.treeItemAction} conversation-row__pin`
-
-/* Menu rows on the console's popover canon: Inter 14px, 36px tall, an
- icon then its label, generous inset so the list breathes. */
-const MENU_ITEM_CLASS = 'gap-2.5 rounded-lg px-2.5 py-2 text-sm'
 
 interface ConversationRowProps {
   conversation: Conversation
@@ -88,6 +95,56 @@ interface ConversationRowProps {
    * row needs telling apart. Omitted (or `user`) draws no tag.
    */
   kind?: ConversationKind
+  /**
+   * Save "Conversation details" (name, description, switch, project). Absent,
+   * the dialog's name is all that is saved, through `onRename`.
+   */
+  onSaveDetails?: (draft: ConversationDetailsDraft) => Promise<void> | void
+  /** The engine's chat projects: the details' Project select and "Move to project". */
+  projects?: readonly ChatProject[]
+  /** Move the conversation to a project, or `none` ("No project"). */
+  onMoveToProject?: (projectId: string) => Promise<void> | void
+  /** Show "Let the agent keep it up to date" in the details. */
+  agentSwitch?: boolean
+  /** The listed conversations: Details reads a sub-agent's account from its parent. */
+  conversations?: readonly Conversation[]
+  /**
+   * The row's second line (chat-projects §1.3.1): `full` always draws it
+   * (status, else description, else folder); `status` only when there is a
+   * status line or a description. Sub-agent rows never draw it.
+   */
+  secondLine?: 'full' | 'status'
+  /** A "No project" row ends its second line with the folder, in mono. */
+  folderTail?: boolean
+}
+
+/** What the second line says, by rule: the status line when the chat needs
+ *  the reader, else the description, else the folder. */
+export function rowSecondLine(
+  conversation: Pick<
+    Conversation,
+    'status' | 'statusReason' | 'description' | 'workingDir'
+  >,
+  mode: 'full' | 'status',
+): { kind: 'status' | 'description' | 'folder'; text: string } | null {
+  if (isAwaitingAnswer(conversation)) {
+    return { kind: 'status', text: 'Waiting for you' }
+  }
+  if (conversation.status === 'error') {
+    return {
+      kind: 'status',
+      text: conversation.statusReason
+        ? `Error: ${conversation.statusReason}`
+        : 'Error',
+    }
+  }
+  if (conversation.description) {
+    return { kind: 'description', text: conversation.description }
+  }
+  if (mode === 'full' && conversation.workingDir) {
+    return { kind: 'folder', text: tildePath(conversation.workingDir) }
+  }
+  return null
 }
 
 interface RowGlyph {
@@ -162,9 +219,16 @@ export function ConversationRow({
   caretColumn = false,
   onToggleTree,
   kind,
+  onSaveDetails,
+  projects,
+  onMoveToProject,
+  agentSwitch = false,
+  conversations,
+  secondLine,
+  folderTail = false,
 }: ConversationRowProps) {
-  // Renaming opens a centred dialog (the row is too narrow to show a whole
-  // title while it is edited); the dialog hands focus back to the row.
+  // "Conversation details" opens a centred dialog (the row is too narrow to
+  // edit a whole title in place); the dialog hands focus back to the row.
   const [renaming, setRenaming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -179,6 +243,23 @@ export function ConversationRow({
     !isAwaitingAnswer(conversation)
   const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
   const PinIcon = pinned ? PinOff : Pin
+  const line2 =
+    secondLine && depth === 0 ? rowSecondLine(conversation, secondLine) : null
+  const tail =
+    folderTail &&
+    depth === 0 &&
+    line2?.kind !== 'folder' &&
+    conversation.workingDir
+      ? tildePath(conversation.workingDir)
+      : null
+  const twoLines = line2 !== null || tail !== null
+  const currentProject = conversation.projectId ?? NO_PROJECT
+  const saveDetails = (draft: ConversationDetailsDraft) =>
+    onSaveDetails
+      ? onSaveDetails(draft)
+      : draft.title.trim() && draft.title.trim() !== conversation.title
+        ? onRename(draft.title.trim())
+        : undefined
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested menu/caret/pin <button>s; using a real <button> here would nest interactive elements.
@@ -190,6 +271,8 @@ export function ConversationRow({
       aria-label={`open ${conversation.title}`}
       className={uiClasses.treeItem}
       style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
+      // A second line stands the row taller (conversation-tree.css).
+      data-two-line={twoLines || undefined}
       data-menu-open={menuOpen || undefined}
       data-pinned={pinned || undefined}
       data-inactive={inactive || undefined}
@@ -264,9 +347,34 @@ export function ConversationRow({
       {/* A long title fades at its right edge and slides into view while the
  row is hovered (MarqueeLabel), so the whole name is readable
  without widening the sidebar. */}
-      <MarqueeLabel className={uiClasses.treeItemLabel}>
-        {conversation.title}
-      </MarqueeLabel>
+      {twoLines ? (
+        <span className="conversation-row__text">
+          <MarqueeLabel className={uiClasses.treeItemLabel}>
+            {conversation.title}
+          </MarqueeLabel>
+          <span
+            className="conversation-row__line2"
+            data-kind={line2?.kind}
+            title={line2?.kind === 'description' ? line2.text : undefined}
+          >
+            {line2 ? (
+              <span className="conversation-row__line2-text">{line2.text}</span>
+            ) : null}
+            {tail ? (
+              <span
+                className="conversation-row__folder"
+                title={conversation.workingDir ?? undefined}
+              >
+                {tail}
+              </span>
+            ) : null}
+          </span>
+        </span>
+      ) : (
+        <MarqueeLabel className={uiClasses.treeItemLabel}>
+          {conversation.title}
+        </MarqueeLabel>
+      )}
       {/* The trailing edge keeps every control where it was: the pin has its
  own place (on show while pinned, on hover otherwise), and the time
  and the ⋯ share one cell at the far right, the ⋯ taking the time's
@@ -311,7 +419,7 @@ export function ConversationRow({
         ) : null}
         <span className="conversation-row__slot">
           <span className={uiClasses.treeItemMeta}>
-            {formatRelative(conversation.updatedAt)}
+            {shortAge(conversation.updatedAt)}
           </span>
           {/* biome-ignore lint/a11y/noStaticElementInteractions: a propagation boundary around the menu trigger, not a control. */}
           <span
@@ -329,56 +437,81 @@ export function ConversationRow({
                   <Ellipsis aria-hidden />
                 </DropdownMenuTrigger>
               </Hint>
-              <DropdownMenuContent
+              <ChatMenuContent
                 align="end"
                 sideOffset={6}
-                className="conversation-row-menu min-w-44 p-1.5"
+                data-row-menu=""
+                className="min-w-44"
               >
-                <DropdownMenuItem
-                  className={MENU_ITEM_CLASS}
-                  onClick={() => setRenaming(true)}
-                >
+                <ChatMenuItem onClick={() => setRenaming(true)}>
                   <Pencil aria-hidden />
-                  Rename
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className={MENU_ITEM_CLASS}
+                  Conversation details…
+                </ChatMenuItem>
+                {projects && onMoveToProject && depth === 0 ? (
+                  <DropdownMenuSub>
+                    <ChatMenuSubTrigger>
+                      <FolderInput aria-hidden />
+                      Move to project
+                    </ChatMenuSubTrigger>
+                    <ChatMenuSubContent data-row-menu="" className="min-w-48">
+                      <DropdownMenuRadioGroup
+                        value={currentProject}
+                        onValueChange={(value) => {
+                          if (typeof value !== 'string') return
+                          if (value !== currentProject) {
+                            void Promise.resolve(onMoveToProject(value)).catch(
+                              () => undefined,
+                            )
+                          }
+                        }}
+                      >
+                        {projects.map((project) => (
+                          <ChatMenuRadioItem
+                            key={project.id}
+                            value={project.id}
+                          >
+                            <ProjectDot color={project.color} />
+                            <span className="truncate">{project.name}</span>
+                          </ChatMenuRadioItem>
+                        ))}
+                        <ChatMenuRadioItem value={NO_PROJECT}>
+                          No project
+                        </ChatMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </ChatMenuSubContent>
+                  </DropdownMenuSub>
+                ) : null}
+                <ChatMenuItem
                   disabled={!onTogglePin}
                   onClick={() => onTogglePin?.()}
                 >
                   <PinIcon aria-hidden />
                   {pinned ? 'Unpin' : 'Pin'}
-                </DropdownMenuItem>
+                </ChatMenuItem>
                 {reorder ? (
                   <>
-                    <DropdownMenuItem
-                      className={MENU_ITEM_CLASS}
+                    <ChatMenuItem
                       disabled={!reorder.canMoveUp}
                       onClick={() => reorder.onMove(-1)}
                     >
                       <ArrowUp aria-hidden />
                       Move up
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      className={MENU_ITEM_CLASS}
+                    </ChatMenuItem>
+                    <ChatMenuItem
                       disabled={!reorder.canMoveDown}
                       onClick={() => reorder.onMove(1)}
                     >
                       <ArrowDown aria-hidden />
                       Move down
-                    </DropdownMenuItem>
+                    </ChatMenuItem>
                   </>
                 ) : null}
                 <DropdownMenuSeparator className="my-1.5" />
-                <DropdownMenuItem
-                  variant="destructive"
-                  className={MENU_ITEM_CLASS}
-                  onClick={onRemove}
-                >
+                <ChatMenuItem variant="destructive" onClick={onRemove}>
                   <Trash2 aria-hidden />
                   Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
+                </ChatMenuItem>
+              </ChatMenuContent>
             </DropdownMenu>
           </span>
         </span>
@@ -403,12 +536,15 @@ export function ConversationRow({
       ) : caretColumn ? (
         <span aria-hidden className={uiClasses.treeItemCaret} data-slot="" />
       ) : null}
-      <RenameConversationDialog
+      <ConversationDetailsDialog
         open={renaming}
-        title={conversation.title}
+        conversation={conversation}
         onOpenChange={setRenaming}
-        onSave={onRename}
+        onSave={saveDetails}
         returnFocusTo={rowRef}
+        projects={depth === 0 ? projects : undefined}
+        agentSwitch={agentSwitch}
+        conversations={conversations}
       />
     </div>
   )

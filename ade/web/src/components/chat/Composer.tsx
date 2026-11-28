@@ -6,12 +6,15 @@ import {
   ClipboardCheck,
   Loader2,
   Plus,
+  SlidersVertical,
   Square,
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -21,6 +24,7 @@ import {
 } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { Hint } from '@/components/ui/Hint'
+import { LockedModelLabel } from '@/components/ui/LockedModelLabel'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
   type DraftAttachmentChange,
@@ -63,6 +67,12 @@ import { BankPicker } from './BankPicker'
 import { SendGlyph } from './ChatGlyphs'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import './conversation-design.css'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import { ComposerPill } from '@/components/ui/ComposerPill'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
@@ -156,12 +166,49 @@ export function composerControlNodes(
   props: ComposerControlProps,
 ): { footer: ReactNode[]; project: ReactNode[] } {
   const nodes = { footer: [] as ReactNode[], project: [] as ReactNode[] }
-  for (const { id, placement, render: Control } of controls) {
+  for (const { id, placement, label, render: Control } of controls) {
     nodes[placement === 'project' ? 'project' : 'footer'].push(
-      <Control key={id} {...props} />,
+      placement === 'project' ? (
+        <Control key={id} {...props} />
+      ) : (
+        <ComposerPickerRow key={id} label={label}>
+          <Control {...props} />
+        </ComposerPickerRow>
+      ),
     )
   }
   return nodes
+}
+
+/**
+ * Where the pickers after the model are rendered: on their own (the phone
+ * sheet) they are bare pills; in the Options popover's list each sits
+ * beside its name.
+ */
+const ComposerPickerListContext = createContext(false)
+
+function ComposerPickerRow({
+  label,
+  children,
+}: {
+  label?: string
+  children: ReactNode
+}) {
+  const listed = useContext(ComposerPickerListContext)
+  if (!listed) return <>{children}</>
+  if (!label) {
+    return (
+      <span className="col-span-2 flex min-h-9 min-w-0 items-center">
+        {children}
+      </span>
+    )
+  }
+  return (
+    <>
+      <span className="text-sm text-ink-faint">{label}</span>
+      <span className="flex min-h-9 min-w-0 items-center">{children}</span>
+    </>
+  )
 }
 
 export interface ComposerSubmitPayload {
@@ -214,6 +261,11 @@ interface ComposerProps {
   modelPickerOpenRequest?: number
   /** Agent profile owns model + effort for this session. */
   modelLocked?: boolean
+  /**
+   * A side chat's lock (chat-projects §2.3.2): the model label with a lock
+   * instead of the picker, and what a tap on it says.
+   */
+  lockedModel?: { label: string; hint: string }
   /**
    * Per-conversation permission mode (manual / auto / full). Owned by
    * the backend `approval_settings` scope; ChatView passes the loaded
@@ -270,6 +322,13 @@ interface ComposerProps {
   /** Prevent sending without locking the editor (e.g. transcript hydration). */
   submitBlocked?: boolean
   /**
+   * While true, a send that `submitBlocked` stops is held instead of ignored:
+   * it goes, with the editor's text at that moment, as soon as the composer
+   * can send. For a block that ends by itself, such as the transcript read of
+   * a chat that has just opened, where an Enter would otherwise do nothing.
+   */
+  holdSubmit?: boolean
+  /**
    * Claims a send someone already decided for this chat's draft (see
    * `sendDraftWhenReady`), answering the text it was decided for. Asked the
    * first time the composer can send; the draft goes only if it still holds
@@ -284,6 +343,11 @@ interface ComposerProps {
    * draft text, and the editor keeps its `message composer` label.
    */
   idlePlaceholder?: string
+  /**
+   * The editor's accessible name when it is not the chat's own composer (a
+   * side chat's: "Ask aside…"); default `message composer`.
+   */
+  inputLabel?: string
   /**
    * Put the caret in the editor on mount. The caller decides, because only it
    * knows whether focus is welcome: on a touch device it raises the on-screen
@@ -423,6 +487,7 @@ export function Composer({
   catalogLoading,
   modelPickerOpenRequest,
   modelLocked,
+  lockedModel,
   permissionMode,
   permissionModeLoading,
   showPermissionMode = true,
@@ -447,9 +512,11 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   submitBlocked,
+  holdSubmit,
   claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
+  inputLabel,
   autoFocus,
   externalInput = true,
   composerId: composerIdProp,
@@ -663,7 +730,15 @@ export function Composer({
   const optionsDisabled = isStreaming || blocked
 
   const handleSubmit = useCallback(() => {
-    if (submitDisabled) return
+    if (submitDisabled) {
+      // A chat that has just opened is still reading its transcript: the
+      // send is held and goes the moment it can (the pending-send effect
+      // below), its text left in the editor until then.
+      if (holdSubmit && browseId === null && textRef.current.trim()) {
+        pendingSubmitRef.current = true
+      }
+      return
+    }
     const text = textRef.current.trim()
     const empty = !text && attachments.length === 0
     // Editing a queued message: send the edit (or remove the message when
@@ -688,6 +763,7 @@ export function Composer({
     setClearToken((t) => t + 1)
   }, [
     submitDisabled,
+    holdSubmit,
     attachments,
     onSubmit,
     browseId,
@@ -883,7 +959,8 @@ export function Composer({
     for (const text of texts) onSubmit({ text, attachments: [] })
   }, [submitDisabled, model, onSubmit, heldToken])
   // A send that arrived while the composer could not send (a chat pane just
-  // opened again, its session still loading) goes the moment it can.
+  // opened again, its session still loading; an Enter held by `holdSubmit`)
+  // goes the moment it can.
   useEffect(() => {
     if (
       submitDisabled ||
@@ -917,7 +994,7 @@ export function Composer({
   // menu's footer names the chord and does the same on click.
   const selectedOption = modelOptions.find((option) => option.id === model)
   const cycleEffort = useCallback(() => {
-    if (optionsDisabled || modelLocked) return
+    if (optionsDisabled || modelLocked || lockedModel) return
     const levels = effortOptionsFor(selectedOption).filter(
       (option) => !option.disabled,
     )
@@ -928,6 +1005,7 @@ export function Composer({
   }, [
     optionsDisabled,
     modelLocked,
+    lockedModel,
     selectedOption,
     thinkingLevel,
     onThinkingLevelChange,
@@ -950,6 +1028,43 @@ export function Composer({
   }, [])
 
   const reduceMotion = useReducedMotion()
+  /* The pickers after the model: a worker's controls (the judge), the
+   * agent, the memory bank and the permission mode, each on a named row of
+   * the Options popover. */
+  const extraPickers =
+    !!composerControls ||
+    !!agentPicker ||
+    (showMemoryBank && !!onMemoryBankChange) ||
+    showPermissionMode
+  const renderExtraPickers = () => (
+    <>
+      {composerControls}
+      {agentPicker ? (
+        <ComposerPickerRow label="Agent">
+          <ComposerActionsSlot layout="wide">{agentPicker}</ComposerActionsSlot>
+        </ComposerPickerRow>
+      ) : null}
+      {showMemoryBank && onMemoryBankChange ? (
+        <ComposerPickerRow label="Memory">
+          <BankPicker
+            value={memoryBank ?? null}
+            onChange={onMemoryBankChange}
+            disabled={optionsDisabled}
+          />
+        </ComposerPickerRow>
+      ) : null}
+      {showPermissionMode ? (
+        <ComposerPickerRow label="Permissions">
+          <PermissionModePicker
+            value={permissionMode}
+            onChange={onPermissionModeChange}
+            disabled={optionsDisabled || !!permissionModeLoading}
+          />
+        </ComposerPickerRow>
+      ) : null}
+    </>
+  )
+
   const renderActionButton = () =>
     isStreaming &&
     !(queueWhileStreaming && (hasText || attachments.length > 0)) ? (
@@ -1006,6 +1121,7 @@ export function Composer({
     <ComposerAttachmentsContext.Provider value={attachmentsContext}>
       <LexicalShell
         lexicalEditorRef={lexicalEditorRef}
+        ariaLabel={inputLabel}
         onChange={(text) => {
           textRef.current = text
           setHasText(text.trim().length > 0)
@@ -1170,19 +1286,31 @@ export function Composer({
                 <ComposerActionsSlot layout="narrow">
                   {agentPicker}
                 </ComposerActionsSlot>
-                <ModelPicker
-                  value={model}
-                  options={modelOptions}
-                  openRequest={modelPickerOpenRequest}
-                  thinkingLevel={thinkingLevel}
-                  onChange={onModelChange}
-                  onThinkingLevelChange={onThinkingLevelChange}
-                  disabled={optionsDisabled || modelLocked}
-                  loading={catalogLoading}
-                  showRefresh={false}
-                  triggerAppearance="subtle"
-                  className="composer-mobile-model min-w-0 shrink"
-                />
+                {lockedModel ? (
+                  // The narrowest panes shed it like the picker (the
+                  // `composer-mobile-model` rule).
+                  <span className="composer-mobile-model flex min-w-0 shrink">
+                    <LockedModelLabel
+                      label={lockedModel.label}
+                      hint={lockedModel.hint}
+                      className="min-w-0"
+                    />
+                  </span>
+                ) : (
+                  <ModelPicker
+                    value={model}
+                    options={modelOptions}
+                    openRequest={modelPickerOpenRequest}
+                    thinkingLevel={thinkingLevel}
+                    onChange={onModelChange}
+                    onThinkingLevelChange={onThinkingLevelChange}
+                    disabled={optionsDisabled || modelLocked}
+                    loading={catalogLoading}
+                    showRefresh={false}
+                    triggerAppearance="subtle"
+                    className="composer-mobile-model min-w-0 shrink"
+                  />
+                )}
                 <span aria-hidden className="min-w-2 flex-1" />
                 {composerActions ? (
                   <div className="flex shrink-0 items-center">
@@ -1215,44 +1343,57 @@ export function Composer({
  the model (with its provider), a worker's controls, then the
  agent, memory and permission pickers; what you do with it on the right — injected
  actions, attach, and send, where the eye lands after typing. */}
-          {/* One row at every pane width: in a narrow pane (a side panel, a
- split) the pickers shrink — the model name truncates, the agent
- drops to its icon — and the send button stays in view. */}
+          {/* One row at every pane width: the model, then one Options pill
+ for everything else the message goes out with (a worker's control
+ such as the judge, the agent, the memory bank, the permission
+ mode), each on its own named row in the popover. */}
           <div className="composer-desktop-toolbar hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
             <div className="flex min-w-0 flex-1 items-center gap-1">
-              <ModelPicker
-                value={model}
-                options={modelOptions}
-                openRequest={modelPickerOpenRequest}
-                thinkingLevel={thinkingLevel}
-                onChange={onModelChange}
-                onThinkingLevelChange={onThinkingLevelChange}
-                disabled={optionsDisabled || modelLocked}
-                loading={catalogLoading}
-                showRefresh={false}
-                triggerAppearance="subtle"
-                className="min-w-0 max-w-[24rem]"
-              />
-              {/* A worker's per-session controls (the judge) sit between the
- model and the agent: what the message goes out with, in the
- order it is decided. */}
-              {composerControls}
-              <ComposerActionsSlot layout="wide">
-                {agentPicker}
-              </ComposerActionsSlot>
-              {showMemoryBank && onMemoryBankChange ? (
-                <BankPicker
-                  value={memoryBank ?? null}
-                  onChange={onMemoryBankChange}
-                  disabled={optionsDisabled}
+              {lockedModel ? (
+                <LockedModelLabel
+                  label={lockedModel.label}
+                  hint={lockedModel.hint}
+                  className="max-w-[24rem]"
                 />
-              ) : null}
-              {showPermissionMode ? (
-                <PermissionModePicker
-                  value={permissionMode}
-                  onChange={onPermissionModeChange}
-                  disabled={optionsDisabled || !!permissionModeLoading}
+              ) : (
+                <ModelPicker
+                  value={model}
+                  options={modelOptions}
+                  openRequest={modelPickerOpenRequest}
+                  thinkingLevel={thinkingLevel}
+                  onChange={onModelChange}
+                  onThinkingLevelChange={onThinkingLevelChange}
+                  disabled={optionsDisabled || modelLocked}
+                  loading={catalogLoading}
+                  showRefresh={false}
+                  triggerAppearance="subtle"
+                  className="min-w-0 max-w-[24rem]"
                 />
+              )}
+              {extraPickers ? (
+                <Popover>
+                  {/* The same pill language as the model picker beside it:
+ icon, label, chevron. */}
+                  <PopoverTrigger render={<ComposerPill />}>
+                    <SlidersVertical aria-hidden className="size-4 shrink-0" />
+                    <span>Options</span>
+                    <ChevronDown aria-hidden className="size-4 shrink-0" />
+                  </PopoverTrigger>
+                  {/* Kept mounted: a worker's control keeps its state
+ between opens, like the agent picker's list. */}
+                  <PopoverContent
+                    keepMounted
+                    align="start"
+                    side="top"
+                    sideOffset={8}
+                  >
+                    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-0.5 px-0.5">
+                      <ComposerPickerListContext.Provider value>
+                        {renderExtraPickers()}
+                      </ComposerPickerListContext.Provider>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               ) : null}
             </div>
 
@@ -1333,7 +1474,7 @@ export function Composer({
         defaultWorkingDir={defaultWorkingDir}
         worktreePicker={worktreePicker}
         disabled={optionsDisabled}
-        modelDisabled={modelLocked}
+        modelDisabled={modelLocked || lockedModel !== undefined}
         onModelChange={onModelChange}
         onMemoryBankChange={onMemoryBankChange}
         onWorkingDirChange={onWorkingDirChange}

@@ -2,7 +2,7 @@
 
 [package]
 name = "image-resize"
-version = "0.2.3"
+version = "0.3.2"
 edition = "2024"
 publish = false
 
@@ -11,23 +11,57 @@ name = "image-resize"
 path = "src/main.rs"
 
 [dependencies]
+fast_image_resize = "6.2"
 futures-util = "0.3"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
 iii-sdk = "=0.27.0"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-kamadak-exif = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# DCT-scaled JPEG decode, which zune-jpeg lacks. Without rayon it still runs a thread per component.
+jpeg-decoder = { version = "0.3.2", default-features = false }
+libwebp-sys = "0.14"
+moxcms = "0.8"
+# Must stay on the same schemars major as iii-sdk so the derived JsonSchema is the trait the SDK takes.
+schemars = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive", "env"] }
+# No env-filter: RUST_LOG is parsed as Targets, which spares the regex crates.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 
-# Release profile for published binaries: thin LTO with one codegen unit runs
-# faster than Cargo's default, and strip drops the symbol table for a smaller
-# download at no runtime cost.
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "time", "net"] }
+# A scripted engine for tests/process.rs; already in the graph through iii-sdk.
+tokio-tungstenite = "0.28"
+
+# Release profile for published binaries: fat LTO, one codegen unit, stripped.
+# Dependencies (mostly the SDK, TLS and telemetry graph) build for size; the
+# image path stays at opt-level 3, as does this crate, where image's generic
+# codecs are instantiated: "z" on either makes a call up to 5x slower.
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true
+
+[profile.release.package]
+"*" = { opt-level = "z" }
+image = { opt-level = 3 }
+fast_image_resize = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+jpeg-decoder = { opt-level = 3 }
+png = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+flate2 = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+adler2 = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+moxcms = { opt-level = 3 }
+pxfm = { opt-level = 3 }
+# Its C build reads OPT_LEVEL from this profile.
+libwebp-sys = { opt-level = 3 }

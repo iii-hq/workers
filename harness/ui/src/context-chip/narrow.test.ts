@@ -27,4 +27,10 @@ describe('context chip in a narrow pane', () => {
       expect(body).not.toMatch(/\.harness-ui-chip-ring \{\s*display: none;/)
     }
   })
+
+  // chat-projects §3.3.3: the "auto 160k" label is for wide surfaces; a
+  // narrow pane keeps the ring's tick only.
+  it('drops the auto-compact label under 30rem', () => {
+    expect(containerRules().get('30rem')).toMatch(/\.harness-ui-chip-auto \{\s*display: none;/)
+  })
 })

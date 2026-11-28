@@ -13,6 +13,7 @@ export default function setup(host: Host) {
   // Per-session provider beside the model picker; older consoles lack the slot.
   host.chat?.registerComposerControl?.({
     id: 'judge-provider',
+    label: 'Judge',
     render: createJudgeSessionControl(host.iii, configurationPanel),
   })
 }

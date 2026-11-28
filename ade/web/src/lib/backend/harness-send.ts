@@ -125,7 +125,8 @@ export interface HarnessSendRequest {
   session_id?: string
   /** A string is sugar for a user text message. */
   message: string | HarnessUserMessage
-  model: string
+  /** Omitted on a side chat: the engine runs it on its lock (chat-projects §2.2). */
+  model?: string
   provider?: string
   /** Webhook dedupe: a repeated key returns the original `{session_id, turn_id}`. */
   idempotency_key?: string
@@ -218,20 +219,25 @@ export interface HarnessStatusReport {
   children: HarnessChildRef[]
   /** A completed turn is parked rather than terminal while this is true. */
   expects_wake: boolean
-  /** Question cards still up in the session. Absent from an older harness. */
-  open_asks?: number
   /** Wake details are omitted when no wake is armed. */
   armed_wakes?: HarnessArmedWake[]
   /** Messages queued while a step streams, in arrival order. */
   queued?: HarnessQueuedMessage[]
   result?: unknown
   result_error?: string | null
+  /**
+   * The Claude Code account the turn runs on and why (verbose only, an
+   * engine with chat-projects phase 4).
+   */
+  account?: { id: string; source?: string } | null
   /** The last generate step's context accounting (verbose only). */
   context?: {
     total: number
     usable: number
     free: number
     categories?: { tools?: number; overhead?: number }
+    /** Phase 3 (contract C): read it with `parseSnapshotAutocompact`. */
+    autocompact?: unknown
   }
 }
 
@@ -242,25 +248,6 @@ export interface HarnessStopResponse {
 /** Whether a status report represents a turn that is still in flight. */
 export function isTurnActive(status: HarnessTurnStatus): boolean {
   return status === 'running' || status === 'awaiting_functions'
-}
-
-/** A completed turn either waits for a wake or is over. */
-export type TurnRest = 'waiting' | 'ended'
-
-/**
- * How a completed turn rests, by the harness's own rule (`expects_wake`). Null
- * for any other state: running, failed, cancelled, a question card up, or an
- * older harness that does not count them. `ended` does not mean that nothing
- * is pending: a run or a child that nobody observes is not a wake.
- */
-export function turnRest(
-  report: Pick<
-    HarnessStatusReport,
-    'status' | 'expects_wake' | 'open_asks'
-  > | null,
-): TurnRest | null {
-  if (report?.status !== 'completed' || report.open_asks !== 0) return null
-  return report.expects_wake ? 'waiting' : 'ended'
 }
 
 /**

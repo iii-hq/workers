@@ -91,7 +91,7 @@ type Hub struct {
 	inFlight        map[string]int  // guarded by mu: mesh::call calls per calling machine
 	emit            func([]byte)    // delivers a mesh::status answer to its observers; nil publishes nothing
 	// Set only by reconcileTunnel. tunnelProxy: PROXY v2 headers from loopback are
-	// quick-tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
+	// tunnel's. tunnelRaw: the tunnel is OpenTunnel, which hands a visitor's
 	// bytes to loopback unchanged, so forwarding headers from loopback are the visitor's.
 	tunnelProxy, tunnelRaw atomic.Bool
 	// Guarded by mu: what reconcileTunnel last saw.

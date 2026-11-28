@@ -383,6 +383,8 @@ fn forbidden_unprefixed_step(
             function_id,
             "email::config-status"
                 | "claude::auth::status"
+                // A Claude Code account's access token (chat-projects phase 4).
+                | "tmux::accounts::credential"
                 | "pi::auth::status"
                 | "storage::getBucket"
                 | "storage::saveBucket"
@@ -527,6 +529,8 @@ fn forbidden_unprefixed_step(
                 | "worktree::land-step"
                 | "slack::events"
                 | "openwiki::cron::refresh-due"
+                // Reads the person's Claude Code transcripts (chat-projects phase 4).
+                | "tmux::usage::claude_outside"
         )
     {
         return Some(
@@ -1558,6 +1562,7 @@ mod tests {
             ("storage::getBucket", "credential"),
             ("email::config-status", "credential"),
             ("claude::auth::status", "credential"),
+            ("tmux::accounts::credential", "credential"),
             ("context::compact", "turn-control"),
             ("judge-openai::on-secret-change", "lifecycle"),
             ("telegram-bot::on-message-added", "lifecycle"),
@@ -1585,6 +1590,7 @@ mod tests {
             ("ios-simulator::tenants::list", "policy denies"),
             ("slack::events", "policy denies"),
             ("openwiki::cron::refresh-due", "policy denies"),
+            ("tmux::usage::claude_outside", "policy denies"),
         ] {
             for prefix in ["", "laptop::", "a::b::", "laptop:::"] {
                 let id = format!("{prefix}{function}");

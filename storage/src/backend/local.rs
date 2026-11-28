@@ -578,6 +578,23 @@ struct PendingUpload {
 }
 
 impl LocalBackend {
+    /// An object's metadata and an open descriptor on its bytes, read under
+    /// the commit lock so an overwrite cannot retire the data file between
+    /// the two. Once open, the descriptor keeps this version readable.
+    async fn open_object(&self, key: &str) -> Result<(StoredMetadata, File), BackendError> {
+        let _guard = self.store.commit_lock.lock().await;
+        let metadata = self.metadata(key).await?;
+        let data_path = self.store.data_path(&metadata.data_file);
+        let file = File::open(&data_path).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                BackendError::NotFound
+            } else {
+                provider_error(format!("read object {}: {error}", data_path.display()))
+            }
+        })?;
+        Ok((metadata, file))
+    }
+
     async fn metadata(&self, key: &str) -> Result<StoredMetadata, BackendError> {
         let metadata_path = self.store.metadata_path(key);
         let bytes = tokio::fs::read(&metadata_path).await.map_err(|error| {
@@ -1041,6 +1058,65 @@ impl Backend for LocalBackend {
             ]),
             expires_at,
         })
+    }
+
+    async fn copy_from(
+        &self,
+        source: &dyn Backend,
+        req: &CopyReq,
+    ) -> Result<Option<CopyResp>, BackendError> {
+        use tokio::io::AsyncReadExt;
+        let Some(source) = source.as_any().downcast_ref::<LocalBackend>() else {
+            return Ok(None);
+        };
+        let (metadata, mut file) = source.open_object(&req.source_key).await?;
+        let mut pending = self.begin_upload(&req.key).await?;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let read = match file.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) => {
+                    Self::abort_upload(pending).await;
+                    return Err(provider_error(format!("read local object: {error}")));
+                }
+            };
+            if let Err(error) = Self::write_chunk(&mut pending, &buffer[..read], None).await {
+                Self::abort_upload(pending).await;
+                return Err(error);
+            }
+        }
+        if pending.size != metadata.size {
+            let copied = pending.size;
+            Self::abort_upload(pending).await;
+            return Err(provider_error(format!(
+                "local object {} has {copied} bytes, its metadata says {}",
+                req.source_key, metadata.size
+            )));
+        }
+        let cache_control = if req.keeps_headers() {
+            metadata.cache_control
+        } else {
+            req.cache_control.clone()
+        };
+        let stored = self
+            .commit_upload(
+                pending,
+                req.key.clone(),
+                req.content_type.clone().unwrap_or(metadata.content_type),
+                cache_control,
+                req.metadata.clone().unwrap_or(metadata.metadata),
+            )
+            .await?;
+        Ok(Some(CopyResp {
+            etag: stored.etag,
+            size: stored.size,
+            version_id: None,
+        }))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     fn provider(&self) -> &'static str {
@@ -1721,6 +1797,127 @@ mod tests {
             Full,
             "an unparseable number is junk"
         );
+    }
+
+    #[tokio::test]
+    async fn copies_between_local_buckets_keeping_or_replacing_headers() {
+        let (_temp, staging, prepared) = backend(false).await;
+        let cdn = build(&prepared.context, "cdn".into(), "cdn".into()).unwrap();
+        let body: Vec<u8> = (0..3 * 1024 * 1024 + 7).map(|i| (i % 251) as u8).collect();
+        staging
+            .put(PutReq {
+                key: "staging/1/app.dmg".into(),
+                body: body.clone(),
+                content_type: "application/octet-stream".into(),
+                cache_control: Some("no-store".into()),
+                metadata: HashMap::from([("sha".to_string(), "1".to_string())]),
+            })
+            .await
+            .unwrap();
+
+        let kept = cdn
+            .copy_from(
+                staging.as_ref(),
+                &CopyReq {
+                    source_key: "staging/1/app.dmg".into(),
+                    key: "kept.dmg".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .expect("local buckets copy server-side");
+        assert_eq!(kept.size, body.len() as u64);
+        let read = cdn
+            .get(GetReq {
+                key: "kept.dmg".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(read.body, body);
+        assert_eq!(read.etag, kept.etag);
+        assert_eq!(read.content_type, "application/octet-stream");
+        let head = cdn
+            .head(HeadReq {
+                key: "kept.dmg".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(head.metadata.unwrap().get("sha").unwrap(), "1");
+
+        cdn.copy_from(
+            staging.as_ref(),
+            &CopyReq {
+                source_key: "staging/1/app.dmg".into(),
+                key: "workers/app/1/app.dmg".into(),
+                content_type: Some("application/x-apple-diskimage".into()),
+                cache_control: Some("public, max-age=31536000, immutable".into()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let head = cdn
+            .head(HeadReq {
+                key: "workers/app/1/app.dmg".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(head.content_type, "application/x-apple-diskimage");
+        assert_eq!(head.size, body.len() as u64);
+        assert_eq!(head.metadata.unwrap().get("sha").unwrap(), "1");
+
+        // The source stays; a missing one is NotFound and writes nothing.
+        assert!(
+            staging
+                .head(HeadReq {
+                    key: "staging/1/app.dmg".into(),
+                    ..Default::default()
+                })
+                .await
+                .is_ok()
+        );
+        let missing = cdn
+            .copy_from(
+                staging.as_ref(),
+                &CopyReq {
+                    source_key: "gone".into(),
+                    key: "never".into(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(missing, Err(BackendError::NotFound)));
+        assert!(matches!(
+            cdn.head(HeadReq {
+                key: "never".into(),
+                ..Default::default()
+            })
+            .await,
+            Err(BackendError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_local_bucket_does_not_copy_from_another_provider() {
+        let (_temp, local, _prepared) = backend(false).await;
+        let other = crate::backend::mock::MockBackend::default();
+        let copied = local
+            .copy_from(
+                &other,
+                &CopyReq {
+                    source_key: "a".into(),
+                    key: "b".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(copied.is_none());
     }
 
     async fn put_text(backend: &Arc<dyn Backend>, key: &str, body: &[u8]) {

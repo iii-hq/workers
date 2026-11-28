@@ -362,10 +362,21 @@ The scaffolds in [iii-hq/templates](https://github.com/iii-hq/templates)
 (`worker-node-ade`, `worker-crud`, `worker-python-ade`) install this package
 from npm at an exact version, and the agent that builds a new user's worker
 reads its types. A stale release teaches an API the console no longer has:
-0.3.0 still declared `registerTrigger` and had no `observe`. After a change
-here that a worker UI can see, publish it by hand:
+0.3.0 still declared `registerTrigger` and had no `observe`.
 
-1. Bump `version` in `package.json`.
-2. From this folder, run `npm publish --access public`.
-3. In iii-hq/templates, bump `@iii-dev/console-ui` in those three
-   `package.json` files and run each one's `typecheck`/`build`.
+Publishing is automatic:
+[`publish-npm-packages.yml`](../../.github/workflows/publish-npm-packages.yml)
+runs on every push to `main` that touches this folder, packs it, and stages
+a new version on npm when the packed files differ from npm's `latest`. The
+version comes from the conventional commits since the last release (`feat` →
+minor, `!` or `BREAKING CHANGE` → major, minor below 1.0.0, anything else →
+patch). The org token can only stage: a maintainer approves the stage with
+2FA (`npm stage approve <id>`, the id is in the run's summary), and the next
+run (at most an hour later) commits the version to `package.json` and tags
+`@iii-dev/console-ui@<version>`.
+To pick the version yourself, bump `version` in `package.json` in your PR; to
+force a bump or dry-run the plan, dispatch the workflow by hand.
+
+After a release that a worker UI can see, in iii-hq/templates bump
+`@iii-dev/console-ui` in those three `package.json` files and run each one's
+`typecheck`/`build`.

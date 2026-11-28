@@ -363,7 +363,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             number(
               'max_watch_days',
               'Maximum watch duration (days)',
-              'At most 30: each watch holds a quick-tunnel lease, and leases last at most 30 days. Applies to new watches.',
+              'At most 30: each watch holds a tunnel lease, and leases last at most 30 days. Applies to new watches.',
               { min: 1, max: 30 },
             ),
             number(
@@ -482,6 +482,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
           text('default_bank', 'Default bank'),
           toggle('inject_rules', 'Inject rules', undefined, { defaultValue: true }),
           toggle('inject_memories', 'Inject memories', undefined, { defaultValue: true }),
+          toggle('recall_in_automation', 'Recall in automation sessions', 'Off, sessions of kind automation (workflow nodes, kanban dispatches, sentinel investigations and the like, and their sub-agents) get only rules and pinned memories.'),
           number('recall_limit', 'Recall limit', undefined, { min: 1 }),
           number('recall_budget_tokens', 'Recall token budget', undefined, { min: 1 }),
           number('pinned_limit', 'Pinned memories per turn', 'Over the cap, the most recently updated are shown.', { min: 0 }),
@@ -517,6 +518,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'default_bank',
       'inject_rules',
       'inject_memories',
+      'recall_in_automation',
       'recall_limit',
       'recall_budget_tokens',
       'pinned_limit',

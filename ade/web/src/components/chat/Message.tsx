@@ -1,11 +1,15 @@
 import {
   Bot,
+  Check,
+  Copy,
+  CornerDownLeft,
   Download,
   Ellipsis,
   FileCode,
   FileIcon,
   FileText,
   MessageSquareQuote,
+  MessagesSquare,
   Sparkles,
   Trash2,
 } from 'lucide-react'
@@ -16,10 +20,9 @@ import { ObserverActivityCard } from '@/components/observer-activity/ObserverAct
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
+import { ChatMenuContent, ChatMenuItem } from '@/components/ui/ChatMenu'
 import { Chip } from '@/components/ui/Chip'
 import { Hint } from '@/components/ui/Hint'
 import { Prompt } from '@/components/ui/Prompt'
@@ -27,12 +30,16 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   AskInSideChatContext,
+  isSummaryPrompt,
   SideChatQuotesContext,
+  SideChatRepliesContext,
   splitQuotedMessage,
 } from '@/lib/chat-aside'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { FileMessageContext, useOpenMessageFile } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
 import { splitMessageBlocks } from '@/lib/message-blocks'
+import { entryIdOfMessage } from '@/lib/sessions/entry-mapper'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
 import {
@@ -268,31 +275,52 @@ function MessageBody({
   }
 }
 
+/**
+ * The compaction marker. A phase-3 record (chat-projects contract C) reads
+ * its sentence, which names a project in its own case: "Auto-compacted at
+ * 160k · 161k → 34k tokens · acme-web rule". An older record keeps the
+ * eyebrow, "Compacted · 1,200 tokens".
+ */
 function CompactionMarker({ message }: { message: SystemMessageType }) {
   const tokens = message.tokensBefore ?? 0
   const summary = message.summaryText ?? ''
+  const facts = message.compaction
   return (
-    <article className="my-2">
+    <article className="my-2" data-compaction-trigger={facts?.trigger}>
       <details className="group">
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
-          <Eyebrow
-            size="lg"
-            className="flex items-center gap-2 group-hover:text-ink transition-colors"
-          >
-            <span>Compacted</span>
-            {tokens > 0 ? (
-              <>
-                <span className="text-ink-ghost">·</span>
-                <span className="tabular-nums">
-                  {tokens.toLocaleString()} tokens
-                </span>
-              </>
-            ) : null}
-            <span className="text-ink-ghost normal-case tracking-normal text-meta">
-              show summary
+          {facts ? (
+            <span className="flex min-w-0 shrink items-baseline gap-2 text-xs text-ink-faint transition-colors group-hover:text-ink">
+              <span
+                data-compaction-marker=""
+                className="min-w-0 text-center tabular-nums"
+              >
+                {message.content}
+              </span>
+              <span className="shrink-0 text-meta text-ink-ghost">
+                show summary
+              </span>
             </span>
-          </Eyebrow>
+          ) : (
+            <Eyebrow
+              size="lg"
+              className="flex items-center gap-2 group-hover:text-ink transition-colors"
+            >
+              <span>Compacted</span>
+              {tokens > 0 ? (
+                <>
+                  <span className="text-ink-ghost">·</span>
+                  <span className="tabular-nums">
+                    {tokens.toLocaleString()} tokens
+                  </span>
+                </>
+              ) : null}
+              <span className="text-ink-ghost normal-case tracking-normal text-meta">
+                show summary
+              </span>
+            </Eyebrow>
+          )}
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (
@@ -495,6 +523,7 @@ function UserMessage({
   )
   // In a side chat, a question asked about a quote opens with that quote.
   const sideQuotes = useContext(SideChatQuotesContext)
+  const sideReplies = useContext(SideChatRepliesContext)
   const quoted = sideQuotes
     ? splitQuotedMessage(message.content, sideQuotes.quotes)
     : null
@@ -506,6 +535,21 @@ function UserMessage({
     () => splitMessageBlocks(text, blockRenderers),
     [text, blockRenderers],
   )
+  // The summary prompt `harness::side-chat::summarize` sent: one quiet line.
+  if (sideReplies && isSummaryPrompt(message.content)) {
+    return (
+      <article
+        className="chat-message flex justify-end"
+        data-message-role="user"
+        data-summary-prompt=""
+      >
+        <span className="inline-flex items-center gap-1.5 font-sans text-xs text-ink-faint">
+          <Sparkles aria-hidden className="size-4 shrink-0" />
+          Asked for a summary
+        </span>
+      </article>
+    )
+  }
   return (
     <article
       className="chat-message group flex flex-col items-end gap-2"
@@ -581,6 +625,7 @@ function UserMessage({
           ))}
         </div>
       ) : null}
+      <ForkMarks messageId={message.id} />
     </article>
   )
 }
@@ -618,6 +663,22 @@ function AssistantMessage({
   // payload fall back to the prose gate.
   const copySource = copyText ?? (message.content || undefined)
   const quoted = sideChat?.quotedIds.has(message.id) === true
+  // A side chat's summary reply (`side_chat_summaries`): the summary card.
+  const sideReplies = useContext(SideChatRepliesContext)
+  if (
+    sideReplies &&
+    !generating &&
+    message.content &&
+    sideReplies.summaries.has(entryIdOfMessage(message.id))
+  ) {
+    return (
+      <SummaryCard
+        text={message.content}
+        bringBackLabel={sideReplies.bringBackLabel}
+        onBringBack={() => sideReplies.bringBack(message.content)}
+      />
+    )
+  }
   return (
     <article
       className="chat-message group flex flex-col gap-2"
@@ -687,7 +748,95 @@ function AssistantMessage({
           changedFiles={changedFiles ?? []}
         />
       ) : null}
+      <ForkMarks messageId={message.id} />
     </article>
+  )
+}
+
+/**
+ * A side chat's summary for its conversation (chat-projects §2.3.2): a card
+ * titled "Summary for the main chat", with "Bring back" and "Copy".
+ */
+function SummaryCard({
+  text,
+  bringBackLabel,
+  onBringBack,
+}: {
+  text: string
+  bringBackLabel: string
+  onBringBack: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <article
+      className="chat-message flex flex-col gap-2 rounded-xl bg-card px-3.5 py-3 ring-1 ring-card-edge"
+      data-message-role="assistant"
+      data-side-chat-summary=""
+    >
+      <header className="flex items-center gap-1.5 font-sans text-xs font-medium text-ink-faint">
+        <Sparkles aria-hidden className="size-4 shrink-0" />
+        Summary for the main chat
+      </header>
+      <div className="chat-prose min-w-0">
+        <Markdown>{text}</Markdown>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          data-bring-back=""
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-surface px-2.5 font-sans text-body text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 max-sm:h-11"
+          onClick={onBringBack}
+        >
+          <CornerDownLeft aria-hidden className="size-4 shrink-0" />
+          {bringBackLabel}
+        </button>
+        <button
+          type="button"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 font-sans text-body text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 max-sm:h-11"
+          onClick={() => {
+            void copyTextToClipboard(text).then((ok) => {
+              if (ok) setCopied(true)
+            })
+          }}
+        >
+          {copied ? (
+            <Check aria-hidden className="size-4 shrink-0" />
+          ) : (
+            <Copy aria-hidden className="size-4 shrink-0" />
+          )}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </article>
+  )
+}
+
+/**
+ * Under a message a side chat was forked at, one line per side chat:
+ * "Sidechat from here · <title>"; a click opens it (chat-projects §2.3.1).
+ */
+function ForkMarks({ messageId }: { messageId: string }) {
+  const sideChat = useContext(AskInSideChatContext)
+  const marks = sideChat?.marks?.get(messageId)
+  const open = sideChat?.open
+  if (!marks?.length || !open) return null
+  return (
+    <div className="flex w-full flex-col items-start gap-0.5">
+      {marks.map((mark) => (
+        <button
+          key={mark.id}
+          type="button"
+          data-side-chat-mark={mark.id}
+          onClick={() => open(mark.id)}
+          className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 font-sans text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 max-sm:min-h-11"
+        >
+          <MessagesSquare aria-hidden className="size-4 shrink-0" />
+          <span className="min-w-0 truncate">
+            Sidechat from here · {mark.title}
+          </span>
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -760,6 +909,9 @@ function ReplyFooter({
   changedFiles: ChangedFile[]
 }) {
   const sideChat = useContext(AskInSideChatContext)
+  const sideReplies = useContext(SideChatRepliesContext)
+  const fork = sideChat?.fork
+  const forkHere = fork ? () => fork(entryIdOfMessage(message.id)) : undefined
   const openFile = useOpenMessageFile()
   const [showAllFiles, setShowAllFiles] = useState(false)
   const visible = showAllFiles
@@ -791,6 +943,31 @@ function ReplyFooter({
           <CopyMessageButton text={copySource} label="Copy reply" />
         </Hint>
       ) : null}
+      {forkHere ? (
+        // Next to Copy on wide screens; in the menu on phones (§2.3.1).
+        <Hint label="Side chat" side="top">
+          <button
+            type="button"
+            aria-label="Side chat"
+            data-message-action="side-chat"
+            className="chat-message-action relative flex size-5 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:outline-offset-2 focus-visible:ring-ring/50 max-sm:hidden"
+            onClick={forkHere}
+          >
+            <MessagesSquare className="size-4 shrink-0" aria-hidden />
+          </button>
+        </Hint>
+      ) : null}
+      {sideReplies && message.content ? (
+        <button
+          type="button"
+          data-bring-back=""
+          className="chat-message-action inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 font-sans text-xs text-ink-faint hover:text-ink focus-visible:ring-3 focus-visible:outline-none focus-visible:ring-ring/50 max-sm:h-11"
+          onClick={() => sideReplies.bringBack(message.content)}
+        >
+          <CornerDownLeft className="size-4 shrink-0" aria-hidden />
+          {sideReplies.bringBackLabel}
+        </button>
+      ) : null}
       <DropdownMenu>
         <Hint label="More" side="top">
           <DropdownMenuTrigger
@@ -801,14 +978,15 @@ function ReplyFooter({
             <Ellipsis className="size-4 shrink-0" aria-hidden />
           </DropdownMenuTrigger>
         </Hint>
-        <DropdownMenuContent
-          align="start"
-          sideOffset={6}
-          className="min-w-52 p-1.5"
-        >
+        <ChatMenuContent align="start" sideOffset={6} className="min-w-52">
+          {forkHere ? (
+            <ChatMenuItem className="sm:hidden" onClick={forkHere}>
+              <MessagesSquare aria-hidden />
+              Side chat
+            </ChatMenuItem>
+          ) : null}
           {sideChat && message.content ? (
-            <DropdownMenuItem
-              className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+            <ChatMenuItem
               onClick={() =>
                 sideChat.ask({
                   messageId: message.id,
@@ -819,16 +997,13 @@ function ReplyFooter({
             >
               <MessageSquareQuote aria-hidden />
               Ask about this in side chat
-            </DropdownMenuItem>
+            </ChatMenuItem>
           ) : null}
-          <DropdownMenuItem
-            className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
-            onClick={() => downloadReply(message)}
-          >
+          <ChatMenuItem onClick={() => downloadReply(message)}>
             <Download aria-hidden />
             Download as Markdown
-          </DropdownMenuItem>
-        </DropdownMenuContent>
+          </ChatMenuItem>
+        </ChatMenuContent>
       </DropdownMenu>
       {visible.map((file) => (
         <ChangedFileChip key={file.path} file={file} onOpen={open} />

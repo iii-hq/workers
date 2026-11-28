@@ -3,8 +3,10 @@
 //! boot, `harness::on-turn-started` / `harness::on-turn-completed` at turn
 //! boundaries, `harness::on-message-queued` when a message parks in the
 //! mid-turn queue, `harness::on-observers-changed` when a session's observer
-//! set or fire count changes, and `harness::on-compaction` when an explicit
-//! compaction starts and finishes (harness.md § Events emitted). Consumers
+//! set or fire count changes, and `harness::on-compaction` when a
+//! compaction starts and finishes (`/compact`, autocompact at the end of a
+//! turn, and a compaction inside a turn, which emits only its completion)
+//! (harness.md § Events emitted). Consumers
 //! observe them to react without polling.
 //!
 //! The harness emits an event by calling its function with `CallAction::Void`,
@@ -66,6 +68,10 @@ pub struct TurnStartedEvent {
     /// The session this one is displayed under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// The Claude Code account the turn runs on and why (`claude-code`
+    /// turns, chat-projects phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::AccountRef>,
 }
 
 /// `harness::on-turn-completed`: a turn reached a terminal status. A turn that ended
@@ -97,6 +103,10 @@ pub struct TurnCompletedEvent {
     /// The latest generation's context accounting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
+    /// The Claude Code account the turn ran on and why (`claude-code`
+    /// turns, chat-projects phase 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<crate::accounts::AccountRef>,
 }
 
 /// `harness::on-message-queued`: a pointer to a message parked in the
@@ -117,15 +127,30 @@ pub struct ObserversChangedEvent {
     pub timestamp: i64,
 }
 
-/// `harness::on-compaction`: an explicit compaction's progress.
+/// `harness::on-compaction`: a compaction's progress (chat-projects
+/// contract C).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CompactionEvent {
     pub session_id: String,
     pub compaction_id: String,
-    /// `started` or `completed`.
+    /// `started` or `completed`. A compaction inside a turn (`inline`,
+    /// `limit`) emits only `completed`.
     pub phase: String,
     pub timestamp: i64,
-    /// `completed` only: `ok`, `busy`, `empty` or `failed`.
+    /// What started it: `command`, `auto`, `inline` or `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<crate::compaction::Trigger>,
+    /// `command`, `auto`, `auto_inline` or `limit`, for older readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `auto` and `inline`: the threshold crossed (`effective_tokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_tokens: Option<u64>,
+    /// `auto` and `inline`: the rule that set the threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<crate::autocompact::Rule>,
+    /// `completed` only: `ok`, `busy`, `empty`, `failed` or `cancelled` (a
+    /// Stop abandoned an automatic compaction).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     /// `completed` only: the user-facing message.
@@ -137,6 +162,15 @@ pub struct CompactionEvent {
     pub tokens_before: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_after: Option<u64>,
+    /// `completed` only: the whole context's tokens before and after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<u64>,
+    /// `completed` with `failed` only: why the summariser failed, as
+    /// context-manager said (1.3.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::clients::context::CompactFailure>,
 }
 
 /// Registers one event function: private, and its handler returns the event.
@@ -301,14 +335,30 @@ impl TurnEvents {
         register_event(
             iii,
             ON_COMPACTION_FN,
-            "An explicit compaction of a session started (`phase: started`) or finished \
-             (`phase: completed`, with `status` ok/busy/empty/failed and the user-facing \
-             `message`). Filter on input.session_id or input.compaction_id.",
+            "A compaction of a session started (`phase: started`) or finished \
+             (`phase: completed`, with `status` ok/busy/empty/failed/cancelled and the \
+             user-facing `message`). `trigger` says what started it: command (/compact), auto \
+             (the end of a turn past the autocompact threshold), inline (a turn's assembly at \
+             the autocompact budget) or limit (at the model's limit); inline and limit emit only \
+             `completed`. Filter on input.session_id or input.compaction_id.",
             schema_value::<CompactionEvent>(),
+        );
+        register_event(
+            iii,
+            crate::functions::projects::ON_CHANGED_FN,
+            crate::functions::projects::ON_CHANGED_DESC,
+            schema_value::<crate::functions::projects::ProjectsChangedEvent>(),
+        );
+        register_event(
+            iii,
+            crate::functions::chat_settings::ON_CHANGED_FN,
+            crate::functions::chat_settings::ON_CHANGED_DESC,
+            schema_value::<crate::functions::chat_settings::ChatSettingsChangedEvent>(),
         );
         tracing::info!(
             "registered harness::on-ready / on-turn-started / on-turn-completed / \
-             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction"
+             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction / \
+             projects::on-changed / chat-settings::on-changed"
         );
 
         Self {
@@ -363,10 +413,18 @@ impl TurnEvents {
         self.emit(ON_COMPACTION_FN, payload).await;
     }
 
+    /// A chat project was created, updated or deleted
+    /// (`harness::projects::on-changed`).
+    pub async fn emit_projects_changed(&self, payload: Value) {
+        self.emit(crate::functions::projects::ON_CHANGED_FN, payload)
+            .await;
+    }
+
     /// `message_preview` is the first characters of the user message that
     /// started the turn (a sub-agent's task text for a child), so a consumer
     /// can name the turn without reading the transcript; `depth` is 0 for a
     /// top-level turn.
+    #[allow(clippy::too_many_arguments)]
     pub async fn emit_started(
         &self,
         session_id: &str,
@@ -375,6 +433,7 @@ impl TurnEvents {
         display_parent: Option<&str>,
         message_preview: Option<&str>,
         depth: u32,
+        account: Option<&crate::accounts::TurnAccount>,
     ) {
         tracing::info!(session_id, turn_id, "turn started");
         if !self.iii.is_observed(ON_TURN_STARTED_FN) {
@@ -390,6 +449,7 @@ impl TurnEvents {
             payload["message_preview"] = Value::String(preview.to_string());
         }
         put_parent(&mut payload, parent, display_parent);
+        put_account(&mut payload, account);
         self.emit(ON_TURN_STARTED_FN, payload).await;
     }
 
@@ -407,6 +467,7 @@ impl TurnEvents {
         terminal: bool,
         context: Option<&crate::context_snapshot::ContextSnapshotV1>,
         open_asks: usize,
+        account: Option<&crate::accounts::TurnAccount>,
     ) {
         tracing::info!(
             session_id,
@@ -447,6 +508,7 @@ impl TurnEvents {
         if let Some(snapshot) = context {
             payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
         }
+        put_account(&mut payload, account);
         self.emit(ON_TURN_COMPLETED_FN, payload).await;
     }
 
@@ -474,6 +536,29 @@ impl TurnEvents {
         if let Err(error) = self.iii.call(request).await {
             tracing::warn!(function_id, %error, "harness event call failed");
         }
+    }
+}
+
+/// Call an event function fire-and-forget, when something observes it.
+pub async fn emit_void(iii: &IIIClient, function_id: &str, payload: Value) {
+    if !iii.is_observed(function_id) {
+        return;
+    }
+    let request = CallRequest {
+        function_id: function_id.to_string(),
+        payload,
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    };
+    if let Err(error) = iii.call(request).await {
+        tracing::warn!(function_id, %error, "harness event call failed");
+    }
+}
+
+/// `account {id, source}` on a turn event, for a turn that has one.
+fn put_account(payload: &mut Value, account: Option<&crate::accounts::TurnAccount>) {
+    if let Some(account) = account {
+        payload["account"] = serde_json::to_value(account.public()).unwrap_or(Value::Null);
     }
 }
 
@@ -620,6 +705,36 @@ mod tests {
         let before = top.clone();
         put_parent(&mut top, None, None);
         assert_eq!(top, before);
+    }
+
+    /// `account {id, source}` (chat-projects contract D), never the
+    /// project the ledger counts the turn under.
+    #[test]
+    fn put_account_writes_what_the_turn_events_publish() {
+        let account = crate::accounts::TurnAccount {
+            id: "work".into(),
+            source: crate::accounts::AccountSource::Project,
+            project_id: Some("prj_1".into()),
+        };
+        let mut started = json!({ "session_id": "s_1", "turn_id": "t_1", "timestamp": 1,
+            "depth": 0 });
+        put_account(&mut started, Some(&account));
+        assert_eq!(
+            started["account"],
+            json!({ "id": "work", "source": "project" })
+        );
+        let event: TurnStartedEvent = serde_json::from_value(started).unwrap();
+        assert_eq!(event.account, Some(account.public()));
+
+        let mut completed = json!({ "session_id": "s_1", "turn_id": "t_1",
+            "status": "failed", "terminal": true, "timestamp": 2 });
+        put_account(&mut completed, Some(&account));
+        let event: TurnCompletedEvent = serde_json::from_value(completed).unwrap();
+        assert_eq!(event.account, Some(account.public()));
+
+        let mut other = json!({ "session_id": "s_1" });
+        put_account(&mut other, None);
+        assert_eq!(other, json!({ "session_id": "s_1" }));
     }
 
     #[test]

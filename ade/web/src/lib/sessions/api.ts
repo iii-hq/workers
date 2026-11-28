@@ -41,6 +41,35 @@ export const TRANSCRIPT_OLDER_PAGE_LIMIT = 25
 /** Sidebar page size (one page; `updated_desc` keeps recent chats first). */
 const LIST_PAGE_LIMIT = 200
 
+/**
+ * The last `session::list` page had a `next_cursor`: older sessions aren't
+ * listed here, so counts made from the list are lower bounds ("12+").
+ */
+let listHasMore = false
+const listHasMoreListeners = new Set<() => void>()
+
+function setListHasMore(next: boolean): void {
+  if (next === listHasMore) return
+  listHasMore = next
+  for (const listener of listHasMoreListeners) listener()
+}
+
+export function sessionListHasMore(): boolean {
+  return listHasMore
+}
+
+export function subscribeSessionListHasMore(listener: () => void): () => void {
+  listHasMoreListeners.add(listener)
+  return () => {
+    listHasMoreListeners.delete(listener)
+  }
+}
+
+/** Tests and stories: say whether the list stopped at its page. */
+export function setSessionListHasMoreForTests(next: boolean): void {
+  setListHasMore(next)
+}
+
 export async function listSessions(): Promise<SessionMeta[]> {
   const client = await getIiiClient()
   const resp = await client.call<{
@@ -51,6 +80,7 @@ export async function listSessions(): Promise<SessionMeta[]> {
     { limit: LIST_PAGE_LIMIT, order: 'updated_desc' },
     { timeoutMs: 10_000 },
   )
+  setListHasMore(Boolean(resp?.next_cursor))
   return resp?.sessions ?? []
 }
 
@@ -136,6 +166,24 @@ export async function setSessionMeta(input: {
 }): Promise<{ meta: SessionMeta }> {
   const client = await getIiiClient()
   return client.call('session::set-meta', input)
+}
+
+/**
+ * Merge metadata keys on the server (`session::patch-meta`, chat-projects
+ * D9): each key in `set` is replaced whole, each key in `unset` removed, and
+ * every other key is left as it is, so two writers never lose each other's
+ * keys. A key in both is refused (`bad_request`). Only on engines that list
+ * the function (`ChatCapabilities.patchMeta`); `setSessionMeta` otherwise.
+ */
+export async function patchSessionMeta(input: {
+  session_id: string
+  title?: string
+  description?: string
+  set?: Record<string, unknown>
+  unset?: string[]
+}): Promise<{ meta: SessionMeta }> {
+  const client = await getIiiClient()
+  return client.call('session::patch-meta', input)
 }
 
 /** `session::set-draft`'s answer: what is parked after the write. */

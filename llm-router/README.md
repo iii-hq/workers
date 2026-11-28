@@ -97,6 +97,16 @@ The main recovery codes are `router/provider_unavailable`,
 `router/provider_auth_expired`, `router/provider_rate_limited`,
 `router/context_overflow`, and `router/provider_rejected`.
 
+A provider can add `error_details` to its error terminal's assistant message:
+`{usage_limit, window?, resets_at_ms?}`, with `window` `five_hour` or `week`
+and `resets_at_ms` in milliseconds since the epoch. `usage_limit: true` means
+the account's usage limit is reached (today `provider-claude-code` sets it from
+Anthropic's `anthropic-ratelimit-unified-*` headers). The kind stays
+`rate_limited` and the code `router/provider_rate_limited`, but the router does
+not retry it, the `error` object says `retryable: false`, and it carries the
+same `error_details`. The field is omitted when absent, and readers that do not
+know it ignore it; any other `rate_limited` is retried as before.
+
 `router/stream_timeout` means the router's own `stream_timeout_ms` budget ran
 out before the provider finished. It is `permanent` and not retryable, because
 the same request would meet the same budget; raise `stream_timeout_ms` (and

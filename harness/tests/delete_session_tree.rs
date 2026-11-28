@@ -42,6 +42,14 @@ struct Store {
     topology_held_on_delete: Vec<bool>,
     /// The targets of the observers the mock engine added, by observer id.
     observers: BTreeMap<String, String>,
+    /// The approval-gate on this stack, by the request its
+    /// `approval::on-session-deleted` reads: `Some("observe-v2")` is
+    /// approval-gate 1.1.7 (an observer target of `session::on-deleted`
+    /// reading `iii_sdk::Observed<Value, {session_id}>`), `Some("bare")` a
+    /// gate from before Observe v2 (`{session_id}`), `None` any payload.
+    approval_gate: Option<&'static str>,
+    /// The sessions the gate purged, in order.
+    approval_purged: Vec<String>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -116,10 +124,14 @@ impl Store {
                 .map(|meta| json!({"meta":meta}))
                 .unwrap_or(Value::Null)),
             "session::list" => {
-                let parent = &data["metadata"]["parent_session_id"];
-                Ok(
-                    json!({"sessions":self.sessions.values().filter(|m| &m["metadata"]["parent_session_id"] == parent).cloned().collect::<Vec<_>>()}),
-                )
+                // session-manager's metadata filter: every key named, equal.
+                let filter = data["metadata"].as_object().cloned().unwrap_or_default();
+                Ok(json!({"sessions": self
+                    .sessions
+                    .values()
+                    .filter(|m| filter.iter().all(|(k, v)| m["metadata"].get(k) == Some(v)))
+                    .cloned()
+                    .collect::<Vec<_>>()}))
             }
             "session::messages" => {
                 Ok(json!({"messages":self.messages.get(sid).cloned().unwrap_or_default()}))
@@ -161,7 +173,29 @@ impl Store {
                 self.messages.remove(sid);
                 Ok(json!({"deleted":existed}))
             }
-            "session::set-status" | "approval::on-session-deleted" => Ok(json!({"ok":true})),
+            "session::set-status" => Ok(json!({"ok":true})),
+            "approval::on-session-deleted" => {
+                #[derive(serde::Deserialize)]
+                struct SessionDeleted {
+                    session_id: String,
+                }
+                let purged = match self.approval_gate {
+                    Some("observe-v2") => serde_json::from_value::<
+                        iii_sdk::Observed<Value, SessionDeleted>,
+                    >(data.clone())
+                    .map_err(|e| e.to_string())?
+                    .output
+                    .map(|event| event.session_id),
+                    Some(_) => Some(
+                        serde_json::from_value::<SessionDeleted>(data.clone())
+                            .map_err(|e| e.to_string())?
+                            .session_id,
+                    ),
+                    None => None,
+                };
+                self.approval_purged.extend(purged);
+                Ok(json!({"ok":true}))
+            }
             "approval::list-pending" => Ok(json!({"pending":[]})),
             "approval::get-settings" => Ok(json!({"source":"defaults"})),
             "router::abort" => Ok(json!({"aborted":true})),
@@ -352,6 +386,18 @@ impl Stack {
         store.put("harness_turn",id,json!({"session_id":id,"turn_id":format!("t_{id}"),"status":status,
             "step":0,"turn_count":0,"depth":0,"options":{"model":"fake","max_turns":16},"created_at":1,"updated_at":1}));
     }
+    /// A side chat of `of` (chat-projects phase 2): linked by
+    /// `side_chat_of`, not `parent_session_id`, with its lock in state.
+    fn side_chat(&self, id: &str, of: &str, status: &str) {
+        self.session(id, None, status);
+        let mut store = self.store.lock().unwrap();
+        store.sessions.get_mut(id).unwrap()["metadata"] = json!({"side_chat_of": of});
+        store.put(
+            "harness_side_chat",
+            id,
+            json!({"session_id": id, "parent_session_id": of}),
+        );
+    }
     fn set_status(&self, id: &str, status: &str) {
         let mut store = self.store.lock().unwrap();
         let mut turn = store.state("harness_turn", id);
@@ -530,6 +576,195 @@ async fn subtree_deletion_preserves_parent_sibling_and_is_idempotent() {
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].1["session_id"], "parent");
     assert!(queued[0].1["message"].to_string().contains("Do not await"));
+}
+
+/// chat-projects §2.2: deleting a session deletes the side chats of every
+/// session it deletes, with their own subtrees, before them; another
+/// session's side chats stay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_takes_the_side_chats_of_every_deleted_session_and_their_trees() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side_of_child2", "child2", "completed");
+    stack.session("side_child", Some("side_of_child2"), "completed");
+    stack.side_chat("side_of_grandchild", "grandchild1", "completed");
+    stack.side_chat("side_of_parent", "parent", "completed");
+    // The control plane's copy of a pending decision of child2: it ends
+    // with its decision, not with the conversation.
+    stack.side_chat("decision_of_child2", "child2", "completed");
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("decision_of_child2")
+        .unwrap()["metadata"]["side_chat_question"] = json!("child2/q1");
+    let accepted = stack.request("child2").await;
+    let done = stack.run(&accepted.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(
+        done.deleted_session_ids,
+        vec![
+            "side_of_grandchild",
+            "side_child",
+            "side_of_child2",
+            "grandchild1",
+            "child2"
+        ],
+        "side chats and their trees first, the selected tree after"
+    );
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.sessions.keys().cloned().collect::<Vec<_>>(),
+        vec!["child1", "decision_of_child2", "parent", "side_of_parent"]
+    );
+    for id in ["side_of_child2", "side_of_grandchild"] {
+        assert!(
+            store.state("harness_side_chat", id).is_null(),
+            "{id}'s lock went"
+        );
+        assert!(store.state("harness_turn", id).is_null());
+    }
+    assert!(!store.state("harness_side_chat", "side_of_parent").is_null());
+    // Tombstoned like every member: a late send cannot recreate them.
+    assert!(
+        store
+            .state("harness_deletion_guard", "side_child")
+            .is_string()
+    );
+}
+
+/// P29: a side chat closed (`harness::side-chat::close`, which deletes it
+/// through delete-session-tree) and then its conversation deleted, back to
+/// back. The conversation's run that comes while the side chat's deletion
+/// still owns the side chat is a real overlap and is refused; once the side
+/// chat's deletion completed, the conversation's retry is accepted and
+/// completes. The refused attempt's candidate members (the side chat among
+/// them) must not outlive it as an overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conversation_deleted_right_after_closing_its_side_chat_is_not_held_by_it() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side", "child2", "completed");
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("side")
+        .unwrap()["metadata"]["side_chat_fork_point"] =
+        json!({"entry_id": "e_1", "message_count": 0});
+    let closed = harness::side_chat::close(
+        &stack.deps,
+        harness::side_chat::SideChatRequest {
+            session_id: "side".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(closed.deleted);
+    let side = closed.operation_id.unwrap();
+    let conversation = stack.request("child2").await;
+    assert_eq!(conversation.status, DeletionStatus::Deleting);
+
+    // The side chat's deletion still owns it: overlapping, refused, nothing
+    // erased.
+    let refused = stack.run(&conversation.operation_id).await;
+    assert_eq!(refused.status, DeletionStatus::Failed, "{refused:?}");
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("overlapping deletion of side")),
+        "{refused:?}"
+    );
+    assert!(refused.deleted_session_ids.is_empty());
+    {
+        let mut store = stack.store.lock().unwrap();
+        assert!(store.sessions.contains_key("child2"));
+        // The refused attempt planned nothing and owns no members.
+        let stored = store.state("harness_deletion", &conversation.operation_id);
+        assert_eq!(stored["planned"], json!(false));
+        assert_eq!(stored["members"], json!([]), "{stored}");
+        // An operation a harness from before this fix refused still holds
+        // its candidates: they must not count on its retry either.
+        let mut legacy = stored;
+        legacy["members"] = json!(["child2", "grandchild1", "side"]);
+        store.put("harness_deletion", &conversation.operation_id, legacy);
+    }
+
+    let side = stack.run(&side).await;
+    assert_eq!(side.status, DeletionStatus::Completed, "{side:?}");
+    assert_eq!(side.deleted_session_ids, vec!["side"]);
+
+    // After it completed, the retry is accepted and completes.
+    let retried = stack.request("child2").await;
+    assert_eq!(retried.status, DeletionStatus::Deleting, "{retried:?}");
+    assert_eq!(retried.attempt, 2);
+    let done = stack.run(&retried.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store.sessions.keys().cloned().collect::<Vec<_>>(),
+        vec!["child1", "parent"]
+    );
+}
+
+/// P29, the order that always worked: the side chat's deletion reported
+/// completed, then the conversation's, at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_conversation_deleted_after_its_side_chats_deletion_completed_goes_through() {
+    let stack = Stack::new("running").await;
+    stack.side_chat("side", "child2", "completed");
+    let side = stack.request("side").await;
+    assert_eq!(
+        stack.run(&side.operation_id).await.status,
+        DeletionStatus::Completed
+    );
+    let conversation = stack.request("child2").await;
+    assert_eq!(conversation.status, DeletionStatus::Deleting);
+    let done = stack.run(&conversation.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+}
+
+/// P14 (KAN-74): with approval-gate on the stack, deleting a tree finishes.
+/// approval-gate 1.1.7 reads `approval::on-session-deleted`'s request as the
+/// `Observed` envelope of `session::on-deleted`, and a gate from before
+/// Observe v2 reads the bare event; the harness's call satisfies both, and
+/// each gate purges every deleted session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_finishes_with_approval_gate_present_either_generation() {
+    for gate in ["observe-v2", "bare"] {
+        let stack = Stack::new("running").await;
+        stack.store.lock().unwrap().approval_gate = Some(gate);
+        let accepted = stack.request("child2").await;
+        let done = stack.run(&accepted.operation_id).await;
+        assert_eq!(done.status, DeletionStatus::Completed, "{gate}: {done:?}");
+        assert_eq!(done.error, None, "{gate}");
+        assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+        assert_eq!(
+            stack.store.lock().unwrap().approval_purged,
+            vec!["grandchild1", "child2"],
+            "{gate}: the gate purged each deleted session"
+        );
+    }
+}
+
+/// The mock gate is as strict as approval-gate 1.1.7: the bare event the
+/// harness used to send fails it with the error P14 saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mock_gate_refuses_the_bare_event_like_approval_gate_1_1_7() {
+    let stack = Stack::new("running").await;
+    let mut store = stack.store.lock().unwrap();
+    store.approval_gate = Some("observe-v2");
+    let error = store
+        .respond(
+            "approval::on-session-deleted",
+            &json!({"session_id": "child2"}),
+            &Value::Null,
+        )
+        .unwrap_err();
+    assert!(error.contains("missing field `observer_id`"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2414,6 +2649,37 @@ async fn a_failing_recall_ledger_purge_still_acknowledges_session_deleted() {
             .state("harness_turn", "child2")
             .is_null()
     );
+}
+
+/// The autocompact back-off and log are best-effort too: a store that cannot
+/// clear them must not fail the deletion or skip the purges after them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_autocompact_purge_still_acknowledges_session_deleted() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .fail_scope
+        .insert(harness::autocompact::BACKOFF_SCOPE.into());
+    let ack = on_session_deleted::handle(
+        &stack.deps,
+        SessionDeletedEvent {
+            session_id: "child2".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(ack.ok);
+    let store = stack.store.lock().unwrap();
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == harness::autocompact::BACKOFF_SCOPE
+        && data["key"] == "child2"));
+    // The purges after it ran: the side-chat lock and the turn record.
+    assert!(store.calls.iter().any(|(f, data)| f == "state::delete"
+        && data["scope"] == harness::side_chat::LOCK_SCOPE
+        && data["key"] == "child2"));
+    assert!(store.state("harness_turn", "child2").is_null());
 }
 
 /// A step holds its record in memory and writes it back when it ends. The

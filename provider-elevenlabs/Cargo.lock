@@ -993,7 +993,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.5.9"
+version = "1.6.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "provider-elevenlabs"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "clap",

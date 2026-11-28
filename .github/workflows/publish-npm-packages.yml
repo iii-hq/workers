@@ -1,0 +1,279 @@
+name: Publish npm packages
+
+# Publishes the workspace packages that leave the repository to npm and owns
+# their versions: @iii-dev/console-ui (worker UIs outside this repo compile
+# against it) and @iii-dev/native-ui (the native-app SDK). Inside the repo both
+# stay linked through workspace:*, so a version is only what npm serves.
+#
+# The org's NPM_TOKEN can only stage a version (`npm stage publish`); a
+# maintainer approves it with 2FA (`npm stage approve <id>` or npmjs.com), and
+# only then is it on the registry. So a release takes two runs:
+#
+#   1. A push to main packs each package and compares the shipped files with
+#      the registry's `latest` (.github/scripts/npm_package_release.py):
+#        - same files                → nothing to stage;
+#        - different files           → stage the next version, from the
+#                                      conventional commits since the last
+#                                      version change (feat → minor,
+#                                      `!`/BREAKING CHANGE → major, minor below
+#                                      1.0.0, anything else → patch);
+#        - package.json ahead of npm → stage that hand-picked version as is
+#                                      (first publication included);
+#        - a stage still pending     → stage nothing until it is approved or
+#                                      rejected.
+#   2. Once approved, the next run (push or the hourly schedule) sees npm ahead
+#      of package.json and commits the version with the subject Release
+#      Control's drift skips (as sync-manifest-versions.yml does), then tags
+#      `<name>@<version>` on the commit that set it.
+#
+# A dispatch can pick one package, force a patch/minor/major bump, or dry-run.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/console-ui/**'
+      - 'packages/native-ui/**'
+      # The catalog pins the dependency ranges pnpm writes into the tarball.
+      - 'pnpm-workspace.yaml'
+      - '.github/scripts/npm_package_release.py'
+      - '.github/workflows/publish-npm-packages.yml'
+  schedule:
+    # Picks up approved stages: write their version and tag.
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to release
+        type: choice
+        options: [all, console-ui, native-ui]
+        default: all
+      bump:
+        description: auto reads the commits and skips unchanged packages; patch, minor or major always stage
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: Plan and pack only; stage, commit and tag nothing
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: publish-npm-packages
+  cancel-in-progress: false
+
+env:
+  # `npm stage` needs npm 12, which needs Node ^22.22.2 or ^24.15.0.
+  NPM_VERSION: '12.2.2'
+
+jobs:
+  publish:
+    name: Publish @iii-dev/${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Push the version commit and tag to main.
+      contents: write
+      # npm provenance.
+      id-token: write
+    strategy:
+      fail-fast: false
+      # One at a time: each job may push a version commit to main, and the
+      # next one checks out main after it.
+      max-parallel: 1
+      matrix:
+        package: ${{ fromJSON((inputs.package == '' || inputs.package == 'all') && '["console-ui","native-ui"]' || format('["{0}"]', inputs.package)) }}
+    env:
+      PACKAGE: ${{ matrix.package }}
+      PACKAGE_DIR: packages/${{ matrix.package }}
+      BUMP: ${{ inputs.bump || 'auto' }}
+      DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # main's head, not the triggering SHA: the concurrency group drops
+          # queued runs, so every run converges on whatever main is now.
+          ref: main
+          # The release baseline and commit range come from history.
+          fetch-depth: 0
+          filter: blob:none
+          # The version commit and tag are pushed with the job token.
+          persist-credentials: true
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Install npm
+        run: npm install --global "npm@$NPM_VERSION"
+
+      - name: Install
+        run: pnpm --filter "@iii-dev/$PACKAGE..." install --frozen-lockfile
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          echo "PACK_DIR=$RUNNER_TEMP/pack" >> "$GITHUB_ENV"
+          PACK_DIR=$RUNNER_TEMP/pack
+          rm -rf "$PACK_DIR" && mkdir -p "$PACK_DIR"
+          (cd "$PACKAGE_DIR" && pnpm pack --pack-destination "$PACK_DIR")
+
+      - name: List staged versions
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./$PACKAGE_DIR/package.json').name")
+          staged=$RUNNER_TEMP/staged.json
+          if ! npm stage list "$name" --json > "$staged"; then
+            # A package that was never published may have no stage listing;
+            # a wrong guess here only makes `npm stage publish` refuse a
+            # version that is already staged.
+            echo "::warning::npm stage list $name failed; assuming nothing is staged"
+            echo '[]' > "$staged"
+          fi
+          echo "STAGED_JSON=$staged" >> "$GITHUB_ENV"
+
+      - name: Plan
+        id: plan
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/npm_package_release.py plan \
+            --package-dir "$PACKAGE_DIR" \
+            --tarball "$(ls "$PACK_DIR"/*.tgz)" \
+            --bump "$BUMP" \
+            --staged-json "$STAGED_JSON" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Write and tag the published version
+        if: env.DRY_RUN != 'true' && steps.plan.outputs.latest != ''
+        env:
+          SYNC: ${{ steps.plan.outputs.sync }}
+          LATEST: ${{ steps.plan.outputs.latest }}
+          NAME: ${{ steps.plan.outputs.name }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ -n "$SYNC" ]; then
+            python3 .github/scripts/npm_package_release.py set-version --package-dir "$PACKAGE_DIR" --version "$SYNC"
+            # Release Control's drift skips commits with exactly this subject.
+            git commit --quiet --message 'chore(release): sync package manifests to published versions' \
+              --message "$NAME@$SYNC" -- "$PACKAGE_DIR/package.json"
+            for attempt in 1 2 3; do
+              git push origin HEAD:main && break
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              git pull --rebase origin main
+            done
+          fi
+          # Tag the commit that set the registry's latest, once.
+          current=$(node -p "require('./$PACKAGE_DIR/package.json').version")
+          tag="$NAME@$LATEST"
+          if [ "$current" = "$LATEST" ] && ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            git tag "$tag" "$(python3 .github/scripts/npm_package_release.py baseline --package-dir "$PACKAGE_DIR")"
+            git push origin "refs/tags/$tag"
+          fi
+
+      - name: Check
+        if: steps.plan.outputs.action == 'stage'
+        env:
+          # The native-ui test host's wall-time deadlines (see ci.yml).
+          III_NATIVE_UI_BUDGET_SCALE: '4'
+        run: |
+          set -euo pipefail
+          case "$PACKAGE" in
+            console-ui)
+              node --test "$PACKAGE_DIR"/*.test.mjs
+              ;;
+            native-ui)
+              pnpm --filter @iii-dev/native-ui typecheck
+              pnpm --filter @iii-dev/native-ui test
+              (cd "$PACKAGE_DIR" && node scripts/gen-catalog.mjs --check && node scripts/gen-conformance.mjs --check)
+              ;;
+            *)
+              echo "no checks defined for $PACKAGE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Stage on npm
+        id: stage
+        if: steps.plan.outputs.action == 'stage'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Only the tarball carries the new version: package.json in main
+          # follows once the stage is approved and on the registry.
+          python3 .github/scripts/npm_package_release.py set-version --package-dir "$PACKAGE_DIR" --version "$VERSION"
+          rm -rf "$PACK_DIR" && mkdir -p "$PACK_DIR"
+          (cd "$PACKAGE_DIR" && pnpm pack --pack-destination "$PACK_DIR")
+          tarball=$(ls "$PACK_DIR"/*.tgz)
+          if [ "$DRY_RUN" = true ]; then
+            npm stage publish "$tarball" --access public --dry-run
+          else
+            npm stage publish "$tarball" --access public --provenance | tee "$RUNNER_TEMP/stage.out"
+            stage_id=$(sed -n 's/.*staged with id \([^)]*\)).*/\1/p' "$RUNNER_TEMP/stage.out" | head -n 1)
+            echo "id=$stage_id" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        if: always() && steps.plan.outputs.action != ''
+        env:
+          NAME: ${{ steps.plan.outputs.name }}
+          ACTION: ${{ steps.plan.outputs.action }}
+          CURRENT: ${{ steps.plan.outputs.current }}
+          LATEST: ${{ steps.plan.outputs.latest }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          SYNC: ${{ steps.plan.outputs.sync }}
+          REASON: ${{ steps.plan.outputs.reason }}
+          STAGE_ID: ${{ steps.stage.outputs.id }}
+        run: |
+          {
+            echo "### $NAME"
+            echo
+            echo "| action | version | package.json | npm latest | synced | dry run |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            echo "| $ACTION | $VERSION | $CURRENT | ${LATEST:-none} | ${SYNC:-no} | $DRY_RUN |"
+            echo
+            echo "$REASON"
+            if [ -n "$STAGE_ID" ]; then
+              echo
+              echo "Staged as \`$STAGE_ID\`. A maintainer approves it with \`npm stage approve $STAGE_ID\`" \
+                "(or on npmjs.com); the next run writes the version to package.json and tags it."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  index:
+    # A job-token push starts no workflow, and Release Control resolves main's
+    # head through its descriptor index (see sync-manifest-versions.yml).
+    # Checked even when nothing was pushed: a head that already has a run is
+    # skipped.
+    needs: publish
+    if: ${{ !cancelled() && inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Index main's head
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          head_runs=$(gh run list --workflow deploy-descriptor-index.yml --commit "$head" \
+            --limit 1 --json databaseId --jq length)
+          if [ "$head_runs" = 0 ]; then
+            gh workflow run deploy-descriptor-index.yml --ref main
+          fi

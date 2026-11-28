@@ -365,6 +365,7 @@ fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<
         "reactive_depth",
         "context",
         "open_asks",
+        "account",
     ]);
     let shape = payloads.iter().all(|payload| {
         let Some(map) = payload.as_object() else {
@@ -590,6 +591,7 @@ mod tests {
             tree_sessions: Vec::new(),
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
+            meta_updates: Vec::new(),
         }
     }
 

@@ -293,7 +293,7 @@ iii call kanban::label::convert --json '{"label":"phase-2","into":"release","nam
 |---|---|---|
 | `kanban::project::list` | Projects with status, totals, `open_questions`, repositories and column counts; `include_archived` adds archived ones. | allowed |
 | `kanban::release::list` | Releases with derived status, totals, `open_questions`, `reopened` and the per-project breakdown. | allowed |
-| `kanban::project::create` | Create a project. | denied, except a create whose `lead` is `deepwork` (the deepwork kit files each run under its own project) |
+| `kanban::project::create` | Create a project. | denied, except a create whose `lead` is `deepwork` or `workflow` (the deepwork and workflow kits file each run under its own project) |
 | `kanban::project::update` / `archive` / `restore` | Manage a project. | denied |
 | `kanban::release::create` / `update` / `ship` / `reopen` / `delete` | Manage a release. | denied |
 | `kanban::label::convert` | Put the tickets with a label into a project or release. | denied |
@@ -306,7 +306,7 @@ iii call kanban::label::convert --json '{"label":"phase-2","into":"release","nam
 returns `projects` and `releases` next to its columns. Agents read projects and
 releases and can set `parent`, `project` and `release` on tickets; planning
 them is a human's call in the console, which `iii-permissions.yaml` enforces
-(the one exception: a deepwork run creates its own project).
+(the one exception: a deepwork or workflow run creates its own project).
 
 ## Questions and decisions
 
@@ -389,8 +389,8 @@ or assignment was written by one of its `actors`. The dispatcher claims it
 (moves it to In progress with the `starting` pill, as actor `kanban-dispatch`)
 and sends its first message: the card key, then
 `args: project=<its project> <args>` (`resume=<KEY>` first when the
-card carries `dw:run`, so dragging a finished or stopped deepwork run back to
-To do resumes it). The session is an `automation` session titled
+card carries `dw:run` or `wf:run`, so dragging a finished or stopped deepwork
+or workflow run back to To do resumes it, and the card gets `▶ Resumed …`). The session is an `automation` session titled
 `<KEY> · <title>`, rooted at the project's `root`, with every function allowed
 as in a console session; the card gets `▶ Started deepwork — session …`.
 
@@ -421,6 +421,11 @@ as in a console session; the card gets `▶ Started deepwork — session …`.
 - **Trust.** `actors` compares the activity `actor`, which callers set
   themselves: it keeps agents' writes from starting runs by accident, not an
   agent that pretends to be `user`. Map only projects whose cards you would run.
+
+A rule may name `workflow` as its `assignee` (and `agent`) instead. A
+workflow run ticket (`wf:run`) dragged back to To do resumes like a deepwork
+one, with `resume=<KEY>`. The workflow kit writes the same plain
+`Orchestrator session:` line on its run ticket.
 
 A rule takes effect from the next board write. Rules that cannot run (no
 assignee or model, no project with an absolute root) are dropped on load.

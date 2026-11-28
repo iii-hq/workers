@@ -6,7 +6,7 @@
 //! calls through the observer the call is for, as the queue worker does; the
 //! tunnel mock has no deliver hook, so iii delivers each call to every
 //! observer whose filters match, with that observer's `capture`, as for the
-//! quick-tunnel worker.
+//! tunnel worker.
 //! Like the queue worker, the queue keeps one durable subscription per
 //! observer outside a group (`observer:<id>`) and one per group (`@<group>`);
 //! a subscription and its backlog outlive the observers that consumed it.
@@ -26,7 +26,7 @@ use std::{
 
 pub const PROVIDER: &str = "integration-provider";
 const ON_MESSAGE: &str = "queue::on-message";
-const ON_CHANGED: &str = "quick-tunnel::on-changed";
+const ON_CHANGED: &str = "tunnel::on-changed";
 pub const CONSUMER: &str = "integration-consumer";
 
 /// The observers of one mock source, kept by its added and removed hooks.
@@ -271,7 +271,7 @@ impl Default for Tunnel {
 impl Tunnel {
     pub fn register(&self, iii: &IIIClient) {
         // Each call is one tunnel snapshot, delivered by iii (default
-        // delivery). quick-tunnel::on-changed takes no args: observers filter
+        // delivery). tunnel::on-changed takes no args: observers filter
         // on input.tunnel_id.
         self.observers
             .host(iii, ON_CHANGED, "Local controlled tunnel lifecycle", None);
@@ -282,7 +282,7 @@ impl Tunnel {
             Some(json!({"type":"object"})),
         );
         let this = self.clone();
-        iii.register_function("quick-tunnel::acquire", RegisterFunction::new(move |input: Value| {
+        iii.register_function("tunnel::acquire", RegisterFunction::new(move |input: Value| {
             let consumer = input["consumer_id"].as_str().ok_or_else(|| Error::Handler("consumer required".into()))?;
             assert_eq!(input["tunnel_id"], "webhooks");
             let expiry = chrono::DateTime::parse_from_rfc3339(input["expires_at"].as_str().unwrap()).unwrap();
@@ -297,7 +297,7 @@ impl Tunnel {
         }).description("Local idempotent tunnel lease").request_format(json!({"type":"object"})).response_format(json!({"type":"object"})));
         let this = self.clone();
         iii.register_function(
-            "quick-tunnel::status",
+            "tunnel::status",
             RegisterFunction::new(move |_input: Value| {
                 let mut result = this.snapshot.lock().unwrap().clone();
                 result["leases"] = json!(this.leases.lock().unwrap().values().collect::<Vec<_>>());
@@ -309,7 +309,7 @@ impl Tunnel {
         );
         let this = self.clone();
         iii.register_function(
-            "quick-tunnel::release",
+            "tunnel::release",
             RegisterFunction::new(move |input: Value| {
                 let id = input["lease_id"]
                     .as_str()
@@ -331,7 +331,7 @@ impl Tunnel {
     pub fn lease_count(&self) -> usize {
         self.leases.lock().unwrap().len()
     }
-    /// The tunnel is ready: calls quick-tunnel::on-changed with the snapshot,
+    /// The tunnel is ready: calls tunnel::on-changed with the snapshot,
     /// which iii delivers to the observers, and returns the snapshot. The
     /// call returns before the observers' targets answer.
     pub async fn ready(&self, iii: &IIIClient, url: &str, generation: &str) -> Value {

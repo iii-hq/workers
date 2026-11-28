@@ -52,6 +52,10 @@ export interface ContextSnapshot {
   usage?: SnapshotUsage
   /** Running cost of the whole session, summed across generation steps. */
   session_cost_usd?: number | null
+  /** Auto-compact (chat-projects phase 3, contract C): `{setting_tokens,
+      effective_tokens, cap_tokens, rule}`. Absent from an older harness;
+      read with `autocompactMark` (lib/autocompact.ts), never trusted raw. */
+  autocompact?: unknown
   timestamp: number
 }
 

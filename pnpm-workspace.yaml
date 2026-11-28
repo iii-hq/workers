@@ -31,6 +31,7 @@ packages:
   - harness/ui
   - memory/ui
   - pdf/ui
+  - image-resize/ui
   - state/ui
   - storage/ui
   - cron/ui

@@ -12,6 +12,7 @@
  * (harness::on-turn-completed).
  */
 
+import { parseSnapshotAutocompact } from '@/lib/autocompact'
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
@@ -26,6 +27,7 @@ import {
   startApprovalEventsSubscription,
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
+import { onTurnAutocompact } from './autocompact'
 import { compactionWindow, latestCompactionAnchor } from './compaction-window'
 import {
   getTurnStatus,
@@ -37,10 +39,8 @@ import {
   isTurnActive,
   sendTurn,
   stopTurn,
-  type TurnRest,
   toSkillOptions,
   toSystemPromptOptions,
-  turnRest,
 } from './harness-send'
 import {
   disposeSessionObserver,
@@ -53,6 +53,7 @@ import {
   translateTurnSource,
 } from './translate'
 import {
+  startAskEventsSubscription,
   startObserversChangedSubscription,
   startQueuedEventsSubscription,
   startTurnEventsSubscription,
@@ -215,6 +216,8 @@ async function buildSendRequest(
   messageId: string,
   opts?: ChatStreamOptions,
 ): Promise<HarnessSendRequest> {
+  if (opts?.sideChatLocked)
+    return buildLockedSendRequest(prompt, sessionId, messageId, opts)
   const { provider, model: modelId } = resolveRunParams(model)
   const thinkingLevel = toThinkingLevel(opts?.thinkingLevel)
   const providerOptions = toProviderOptions(provider, opts?.thinkingLevel)
@@ -255,6 +258,34 @@ async function buildSendRequest(
       ...(providerOptions ? { provider_options: providerOptions } : {}),
       ...(reasoning ? { reasoning } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
+    },
+  }
+}
+
+/**
+ * A side chat's send on an engine with side chats: the message and the
+ * tracing ids only. Everything the lock holds is left out, so the harness
+ * fills it from the lock (and the first request reads the conversation's
+ * prompt cache).
+ */
+export function buildLockedSendRequest(
+  prompt: string,
+  sessionId: string,
+  messageId: string,
+  opts?: ChatStreamOptions,
+): HarnessSendRequest {
+  return {
+    session_id: sessionId,
+    message: buildMessageInput(
+      prompt,
+      opts?.attachedBlocks ?? [],
+      opts?.attachedImages ?? [],
+      opts?.attachedFiles ?? [],
+    ),
+    idempotency_key: messageId,
+    session: { metadata: { surface: 'console' } },
+    options: {
+      metadata: { session_id: sessionId, message_id: messageId },
     },
   }
 }
@@ -529,16 +560,14 @@ async function realContextUsage(
   const context = status?.context
   if (!context) return null
   const { total, usable, free } = context
-  return typeof total === 'number' &&
-    typeof usable === 'number' &&
-    typeof free === 'number'
-    ? { total, usable, free }
-    : null
-}
-
-async function realTurnRest(sessionId: string): Promise<TurnRest | null> {
-  const client = await getIiiClient()
-  return turnRest(await getTurnStatus(client, sessionId))
+  if (
+    typeof total !== 'number' ||
+    typeof usable !== 'number' ||
+    typeof free !== 'number'
+  )
+    return null
+  const autocompact = parseSnapshotAutocompact(context.autocompact)
+  return { total, usable, free, ...(autocompact ? { autocompact } : {}) }
 }
 
 /** `harness::unqueue` — pull a still-parked message back out of the queue.
@@ -627,6 +656,113 @@ function realOnObserversChanged(
       off = startObserversChangedSubscription(client, sessionId, () =>
         onEvent(),
       )
+      offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected') onEvent()
+      })
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+    offConn?.()
+  }
+}
+
+/** States of a `harness::ask` entry that still wait on the person. */
+const AWAITING_ASK_STATES = new Set(['open', 'expired'])
+
+type AskListReply = {
+  entries?: { session_id?: unknown; question_id?: unknown; state?: unknown }[]
+  cursor?: unknown
+} | null
+
+/** `harness::ask::list` for one session, every page: question id → waiting. */
+async function readAskEntries(
+  client: Awaited<ReturnType<typeof getIiiClient>>,
+  sessionId: string,
+): Promise<Map<string, boolean>> {
+  const states = new Map<string, boolean>()
+  let cursor: string | undefined
+  do {
+    const reply = await client.call<AskListReply>('harness::ask::list', {
+      session_id: sessionId,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    })
+    if (!reply || !Array.isArray(reply.entries)) {
+      throw new Error('Could not read the session’s questions.')
+    }
+    for (const entry of reply.entries) {
+      if (
+        entry.session_id === sessionId &&
+        typeof entry.question_id === 'string' &&
+        typeof entry.state === 'string'
+      ) {
+        states.set(entry.question_id, AWAITING_ASK_STATES.has(entry.state))
+      }
+    }
+    cursor =
+      typeof reply.cursor === 'string' && reply.cursor
+        ? reply.cursor
+        : undefined
+  } while (cursor)
+  return states
+}
+
+/** `harness::ask::settlements`: the cards settled through the chat. */
+async function readAskSettlements(
+  client: Awaited<ReturnType<typeof getIiiClient>>,
+  sessionId: string,
+): Promise<Set<string>> {
+  const reply = await client.call<{
+    settlements?: { question_id?: unknown }[]
+  } | null>('harness::ask::settlements', { session_id: sessionId })
+  if (!reply || !Array.isArray(reply.settlements)) {
+    throw new Error('Could not read the session’s settled questions.')
+  }
+  const settled = new Set<string>()
+  for (const row of reply.settlements) {
+    if (typeof row.question_id === 'string') settled.add(row.question_id)
+  }
+  return settled
+}
+
+/**
+ * Which of the session's question cards still wait on the person. An entry
+ * in the ask store is the truth; a card without one (asked through an
+ * agent's own tool path) is settled once a settlement row names it.
+ */
+async function realAskStates(
+  sessionId: string,
+): Promise<ReadonlyMap<string, boolean>> {
+  const client = await getIiiClient()
+  const [entries, settlements] = await Promise.allSettled([
+    readAskEntries(client, sessionId),
+    readAskSettlements(client, sessionId),
+  ])
+  if (entries.status === 'rejected' && settlements.status === 'rejected') {
+    throw entries.reason
+  }
+  const states =
+    entries.status === 'fulfilled' ? entries.value : new Map<string, boolean>()
+  if (settlements.status === 'fulfilled') {
+    for (const id of settlements.value) {
+      if (!states.has(id)) states.set(id, false)
+    }
+  }
+  return states
+}
+
+/** Ask events for a session, with the same reconnect reseed as
+ *  `realOnObserversChanged`. */
+function realOnAskChanged(sessionId: string, onEvent: () => void): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  let offConn: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startAskEventsSubscription(client, sessionId, onEvent)
       offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected') onEvent()
       })
@@ -859,12 +995,14 @@ export const realBackend: ChatBackend = {
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
   contextUsage: realContextUsage,
-  turnRest: realTurnRest,
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
+  onTurnAutocompact,
   listObservers: realListObservers,
   onObserversChanged: realOnObserversChanged,
+  askStates: realAskStates,
+  onAskChanged: realOnAskChanged,
   disposeObserver: realDisposeObserver,
   watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import { CLAUDE_CODE_PROVIDER } from '@/lib/backend/claude-accounts'
 import { resolveConfigurationFamily } from '@/lib/configuration-family'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { fetchProviderList, type ProviderListEntry } from '@/lib/models-catalog'
@@ -28,6 +29,7 @@ import {
   SaveBar,
   type SaveStatus,
 } from '@/pages/Configuration/tabs/WorkersTab/SaveBar'
+import { ClaudeCodeAccountsSection } from './ClaudeAccountsDialog'
 import { providerForModel } from './model-picker-presentation'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
@@ -674,6 +676,9 @@ export function ProviderConfigurationPanel({
       )}
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 font-inter">
+        {providerId === CLAUDE_CODE_PROVIDER ? (
+          <ClaudeCodeAccountsSection />
+        ) : null}
         {configurationsQuery.error ? (
           loadErrorPanel(
             'Could not resolve router configuration',

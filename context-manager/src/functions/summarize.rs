@@ -6,7 +6,7 @@ use crate::core::estimate::{Estimator, estimator_for_model};
 use crate::core::prune::cap_results_with_sizes;
 use crate::core::summary::{build_system_prompt, render_user_prompt, strip_media};
 use crate::ports::{Deps, SummarizeError, SummarizeRequest, TurnKnobs};
-use crate::types::{AgentMessage, ContentBlock, ModelInput};
+use crate::types::{AgentMessage, ContentBlock, Failure, FailureKind, ModelInput, ProviderOptions};
 
 // Bound cost and runtime even when a summary fails to shrink between chunks.
 const MAX_CHUNKS: usize = 32;
@@ -30,6 +30,7 @@ pub(super) struct PromptSteering<'a> {
 
 /// `max_result_tokens` is the cap the caller's results are held to (`0`
 /// none): assemble's, after a request's override, or the configured one.
+/// `provider_options` ride on every `router::chat` call the pipeline makes.
 pub(super) async fn summarize_head(
     deps: &Deps,
     model: &ModelInput,
@@ -37,6 +38,7 @@ pub(super) async fn summarize_head(
     input_budget: u64,
     max_result_tokens: u64,
     steering: PromptSteering<'_>,
+    provider_options: Option<&ProviderOptions>,
 ) -> Result<String, SummarizeError> {
     let config = deps.config().await;
     let mut stripped = strip_media(head);
@@ -57,10 +59,27 @@ pub(super) async fn summarize_head(
             .saturating_mul(1_000)
             .saturating_sub(1_000),
     );
-    let operation = summarize_prompt(deps, model, &prompt, input_budget, steering);
+    let operation = summarize_prompt(
+        deps,
+        model,
+        &prompt,
+        input_budget,
+        steering,
+        provider_options,
+    );
     tokio::time::timeout(Duration::from_millis(timeout_ms), operation)
         .await
-        .map_err(|_| SummarizeError::Failed("summary pipeline exceeded its time budget".into()))?
+        .map_err(|_| {
+            SummarizeError::Failed(Failure::new(
+                FailureKind::Timeout,
+                "summary pipeline exceeded its time budget",
+            ))
+        })?
+}
+
+/// A history the pipeline cannot fit: the input did not fit (`input_too_large`).
+fn too_large(message: String) -> SummarizeError {
+    SummarizeError::Failed(Failure::new(FailureKind::InputTooLarge, message))
 }
 
 async fn summarize_prompt(
@@ -69,13 +88,14 @@ async fn summarize_prompt(
     prompt: &str,
     input_budget: u64,
     steering: PromptSteering<'_>,
+    provider_options: Option<&ProviderOptions>,
 ) -> Result<String, SummarizeError> {
     let estimator = estimator_for_model(&model.id);
     let mut remaining = prompt;
     let optimistic_chunks =
         preflight_chunk_count(estimator, prompt, input_budget, steering.instructions)?;
     if optimistic_chunks > MAX_CHUNKS as u64 {
-        return Err(SummarizeError::Failed(format!(
+        return Err(too_large(format!(
             "history needs at least {optimistic_chunks} fragments; maximum is {MAX_CHUNKS}"
         )));
     }
@@ -117,7 +137,7 @@ async fn summarize_prompt(
             let budget = request_budget(estimator, &system_prompt, input_budget, history_cap);
             let end = fitting_prefix(estimator, &system_prompt, remaining, budget);
             if end == 0 {
-                return Err(SummarizeError::Failed(format!(
+                return Err(too_large(format!(
                     "summary instructions and anchor leave no room for history within {input_budget} tokens"
                 )));
             }
@@ -163,6 +183,7 @@ async fn summarize_prompt(
                     user_prompt: user_prompt.to_owned(),
                     model: model.id.clone(),
                     provider: model.provider.clone(),
+                    provider_options: provider_options.cloned(),
                 })
                 .await;
             match result {
@@ -198,7 +219,7 @@ async fn summarize_prompt(
 }
 
 fn too_many_calls() -> SummarizeError {
-    SummarizeError::Failed(format!(
+    too_large(format!(
         "history requires more than {MAX_CHUNKS} bounded summary calls"
     ))
 }
@@ -287,12 +308,12 @@ fn preflight_chunk_count(
     let optimistic_system = build_system_prompt(None, instructions);
     let empty_request = request_tokens(estimator, &optimistic_system, "");
     let capacity = input_budget.checked_sub(empty_request).ok_or_else(|| {
-        SummarizeError::Failed(format!(
+        too_large(format!(
             "summary instructions leave no room for history within {input_budget} tokens"
         ))
     })?;
     if capacity == 0 {
-        return Err(SummarizeError::Failed(format!(
+        return Err(too_large(format!(
             "summary instructions leave no room for history within {input_budget} tokens"
         )));
     }

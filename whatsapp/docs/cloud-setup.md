@@ -190,13 +190,13 @@ or supplied through `WHATSAPP_WEBHOOK_VERIFY_TOKEN` when that override is set.
 Enable the `messages` field and subscribe the app to the WABA. Starting a
 tunnel does not register or change the callback in Meta.
 
-The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
-`cloudflared` installed when quick-tunnel uses its default provider (none is
-needed with `provider: opentunnel`) and its `webhooks` target pointing to the
+The `tunnel` worker must run in the WhatsApp worker's namespace, with
+`cloudflared` installed only when tunnel uses `provider: cloudflared` (the
+default `opentunnel` provider needs no binary) and its `webhooks` target pointing to the
 HTTP worker's restricted webhook listener (normally `http://127.0.0.1:3112`).
 Only routes
 explicitly marked `public_webhook` are exposed there. The worker observes
-`quick-tunnel::on-changed`, filtered on `input.tunnel_id` `webhooks`, to follow
+`tunnel::on-changed`, filtered on `input.tunnel_id` `webhooks`, to follow
 the tunnel's status and URL. The generated URL is one of:
 
 ```text

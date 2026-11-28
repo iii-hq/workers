@@ -1,0 +1,172 @@
+{
+  "function_id": "harness::autocompact::log",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "limit": {
+        "default": null,
+        "description": "How many, newest first (default 20, at most 50).",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "LogRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "LogEntry": {
+        "description": "One automatic compaction, as `harness::autocompact::log` lists it.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "context_after": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context_before": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/Rule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "threshold_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "The conversation's title when it compacted.",
+            "type": "string"
+          },
+          "trigger": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Trigger"
+              }
+            ],
+            "description": "`auto` or `inline`."
+          }
+        },
+        "required": [
+          "at_ms",
+          "session_id",
+          "title",
+          "trigger"
+        ],
+        "type": "object"
+      },
+      "Rule": {
+        "description": "The rule that decided a conversation's setting.",
+        "properties": {
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_name": {
+            "description": "The project's name when the rule was read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/definitions/RuleScope"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "type": "object"
+      },
+      "RuleScope": {
+        "description": "Which level's setting applies.",
+        "oneOf": [
+          {
+            "enum": [
+              "global",
+              "project"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The conversation's own (a side chat's: its conversation's).",
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "Trigger": {
+        "description": "What started a compaction (chat-projects contract C).",
+        "oneOf": [
+          {
+            "description": "`/compact` or `harness::compact`.",
+            "enum": [
+              "command"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The end of a turn past the autocompact threshold.",
+            "enum": [
+              "auto"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A turn's assembly, at the autocompact budget.",
+            "enum": [
+              "inline"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A turn's assembly, at the model's own limit (as before autocompact).",
+            "enum": [
+              "limit"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "items": {
+      "$ref": "#/definitions/LogEntry"
+    },
+    "title": "Array_of_LogEntry",
+    "type": "array"
+  }
+}

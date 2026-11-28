@@ -69,6 +69,12 @@ jobs:
         working-directory: ide/tests/e2e
         run: ./run-tests.sh
 
+      - name: Turn snapshot retention with a real engine
+        working-directory: ide
+        env:
+          III_IDE_BIN: ${{ github.workspace }}/ide/target/release/ide
+        run: III_BIN="$(command -v iii)" cargo test --locked --test turn_retention -- --ignored --nocapture
+
       # Reuse the binary built by the default suite — saves ~40s of cargo build.
       - name: Run jailed harness (2 cases, S-C1 regression)
         working-directory: ide/tests/e2e

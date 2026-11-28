@@ -612,7 +612,7 @@ impl<T: Clone> FileCache<T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const FILE: &str = r#"{"claudeAiOauth":{"accessToken":"demo-work","refreshToken":"r","expiresAt":1794443325000,
@@ -770,13 +770,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The fake `security` of `tests/support`, in a folder of its own.
+    /// The fake `security` of `tests/support`, in a folder of its own,
+    /// once it can be run: a fork elsewhere in the test process may hold the
+    /// new file open for a moment ("text file busy"). Run with no arguments,
+    /// it notes nothing.
     pub(crate) fn fake_security(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir).unwrap();
         let program = dir.join("security");
         std::fs::write(&program, include_str!("../../tests/support/fake-security")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..100 {
+            match std::process::Command::new(&program)
+                .stdin(std::process::Stdio::null())
+                .output()
+            {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => break,
+            }
+        }
         program
     }
 

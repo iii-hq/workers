@@ -1,5 +1,6 @@
 //! The checked-in integration fixtures.
 
+mod account_usage_limit_retry;
 mod adversarial_content_rendering;
 mod agent_identity;
 mod agent_preloaded_functions;
@@ -8,6 +9,7 @@ mod agent_shared_prompt_prefix;
 mod ask_bypasses_approval_hook;
 mod ask_ends_turn;
 mod ask_open_answer;
+mod autocompact_turn_end;
 mod binding_prefix_append_only;
 mod call_argument_contract;
 mod call_argument_diagnosis;
@@ -15,6 +17,9 @@ mod call_argument_reconciliation;
 mod child_discovery_granted;
 mod compaction_anchor;
 mod condition_failure_notice;
+mod console_account_usage_limit;
+mod console_set_description;
+mod console_side_chat;
 mod console_streamed_text;
 mod database_row_wake;
 mod direct_spawn_leaf_pipeline;
@@ -35,6 +40,8 @@ mod queued_message_edit_unqueue;
 mod repeated_failed_call_breaker;
 mod reseed_parked_message;
 mod router_midstream_terminal_error;
+mod set_description_ends_turn;
+mod side_chat_same_prefix;
 mod spawn_reuse_guard;
 mod standing_wake_delivery;
 mod state_worker_sidecar;
@@ -61,6 +68,7 @@ pub enum ScenarioDriver {
 /// Every fixture, in stable slug order.
 pub fn all() -> Vec<ScenarioFixture> {
     let mut fixtures = vec![
+        account_usage_limit_retry::scenario(),
         adversarial_content_rendering::scenario(),
         agent_identity::scenario(),
         agent_preloaded_functions::scenario(),
@@ -69,10 +77,14 @@ pub fn all() -> Vec<ScenarioFixture> {
         ask_bypasses_approval_hook::scenario(),
         ask_ends_turn::scenario(),
         ask_open_answer::scenario(),
+        autocompact_turn_end::scenario(),
         binding_prefix_append_only::scenario(),
         child_discovery_granted::scenario(),
         compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
+        console_account_usage_limit::scenario(),
+        console_set_description::scenario(),
+        console_side_chat::scenario(),
         console_streamed_text::scenario(),
         database_row_wake::scenario(),
         direct_spawn_leaf_pipeline::scenario(),
@@ -94,6 +106,8 @@ pub fn all() -> Vec<ScenarioFixture> {
         repeated_failed_call_breaker::scenario(),
         reseed_parked_message::scenario(),
         router_midstream_terminal_error::scenario(),
+        set_description_ends_turn::scenario(),
+        side_chat_same_prefix::scenario(),
         spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
         stop_parked::quiet_deadlines(),
@@ -117,7 +131,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 47);
+        assert_eq!(fixtures.len(), 54);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

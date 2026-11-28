@@ -12,8 +12,10 @@ into a router-owned channel), `provider::openai-codex::refresh_models`
 (fetches and reconciles the authenticated Codex model catalog), and
 `provider::openai-codex::count_tokens` (local prompt token estimation with
 the tiktoken tokenizers behind `router::count_tokens`, over the Responses
-items the stream sends, with each image costed from its dimensions; never
-runs the model, costs nothing, and needs no network).
+items the stream sends, with each image costed from its dimensions and each
+replayed reasoning item at one token per 16 encrypted bytes, a measured
+overcount of what the backend bills; never runs the model,
+costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented
@@ -125,7 +127,19 @@ provider id `openai`.
   backend itself accepts input up to ~922K on current models, so the ceiling
   is the larger limit that is still safe to advertise.
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
-  optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
+  `include: ["reasoning.encrypted_content"]`, optional `tools` and
+  `reasoning: { effort }`. Each assistant message item
+  carries a `phase`, derived from the stored reply: `commentary` when the reply
+  has a function call. Without a call, the last text is `final_answer` and any
+  earlier text is a separate `commentary` item. Each reasoning item is kept in
+  its thinking block's signature (with the server item id, which is stored but
+  not sent) and replayed, without an id and only for the same model:
+  reasoning that opens a reply goes first, ahead of that reply's text; later
+  reasoning goes right before the reply's next function call. Reasoning with
+  nothing emitted after it, or followed only by text after the reply's first
+  text, is dropped.
+  Tool result images go inside `function_call_output.output` as
+  `input_text` + `input_image` parts. Headers: `Authorization: Bearer`,
   `chatgpt-account-id`, Codex compatibility `version`,
   `openai-beta: responses=experimental`,
   `originator: codex_cli_rs`.
@@ -150,7 +164,9 @@ provider id `openai`.
   `usage.cache_read` for the real signal; the shared body key stays in case the
   backend's routing changes.
 - **SSE:** `response.output_text.delta` → text, `response.reasoning_*` →
-  thinking, `response.function_call_arguments.delta` → tool calls,
+  thinking (one thinking block per reasoning item, signed when its
+  `output_item.done` carries `encrypted_content`),
+  `response.function_call_arguments.delta` → tool calls,
   `response.completed` → usage + terminal. Unknown event types are ignored
   (forward-compat).
 - **Liveness / errors:** `ping` at least every 30s of silence; 401/403 →
