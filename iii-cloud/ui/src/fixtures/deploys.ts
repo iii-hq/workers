@@ -5,6 +5,7 @@ import type { Deploy, Status } from '../types'
 import { apiPath, type Board, base, DEPLOY_BASE, ENV, project, st, T } from './base'
 
 export const DEV = { id: '4d6e8f0a-1b2c-4d3e-9f5a-6b7c8d9e0f1a', name: 'dev', production: false, branch: 'dev' }
+const DEV_CONSOLE = 'https://cloud.iii.dev/iii/registry/dev'
 
 const here = project(true)
 export const devProject: NonNullable<Status['project']> = {
@@ -39,7 +40,7 @@ const dep = (n: number, sha: string, message: string, min: number, extra: Partia
   checked_ready: true,
   created_at: T(min),
   finished_at: T(min - 3),
-  console_url: `https://cloud.iii.dev/iii/registry/dev/deployments/${n}`,
+  console_url: `${DEV_CONSOLE}/deployments/${n}`,
   ...extra,
 })
 

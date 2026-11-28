@@ -51,7 +51,7 @@ const devProject = (over: Partial<Project> = {}, head = SHA.tip): Project => ({
   ...project(true),
   default_branch: 'main',
   checkout,
-  environment: { ...DEV, manifest: 'api/worker-compose-prod.yaml', url: 'https://dev.registry.iii.dev' },
+  environment: { ...DEV, manifest: 'api/worker-compose-prod.yaml', url: 'https://registry-2-dev.iii.cloud' },
   environments: [ENV, DEV],
   workspace: {
     mode: 'worktree',
