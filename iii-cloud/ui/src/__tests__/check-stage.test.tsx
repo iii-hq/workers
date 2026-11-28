@@ -1596,9 +1596,22 @@ describe('small things the review found', () => {
     // not when the hand-off is no longer the environment's current one
     await stage({ ...withBrief, agent: { ...withBrief.agent!, handoff_id: 'another' } } as Status, answers)
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
-    // not when the hand-off has been quiet for more than 30 minutes (days later, its values are not counted again)
-    const quiet31 = new Date(Date.now() - 31 * 60_000).toISOString()
-    await stage({ ...withBrief, agent: { ...withBrief.agent!, last_activity_at: quiet31 } }, answers)
+    // a person who takes 40 minutes still sees it
+    const quiet40 = new Date(Date.now() - 40 * 60_000).toISOString()
+    await stage({ ...withBrief, agent: { ...withBrief.agent!, last_activity_at: quiet40 } }, answers)
+    expect(region('Details')?.textContent).toMatch(/You did 8/)
+    // counted once: a second ready check later does not count it again
+    const mid = {
+      ...r.checks![0],
+      id: 'chk-mid',
+      environment_id: r.check!.environment_id,
+      ready: true,
+      checked_at: '2020-06-01T00:00:00.000Z',
+    }
+    await stage({ ...withBrief, checks: [...withBrief.checks!, mid] }, answers)
+    expect(region('Details')?.textContent ?? '').not.toContain('You did')
+    // never for a stopped hand-off
+    await stage({ ...withBrief, agent: { ...withBrief.agent!, state: 'stopped' as const } }, answers)
     expect(region('Details')?.textContent ?? '').not.toContain('You did')
     // not for a check made before the hand-off began
     await stage({ ...withBrief, check: { ...withBrief.check!, checked_at: '2019-01-01T00:00:00.000Z' } }, answers)
@@ -2147,7 +2160,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     const openScreen = vi.fn()
     await stage(release(asking), {}, { openScreen })
     expect(buttonsOf()).toEqual(['Open chat', 'Run again'])
-    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first, then press this again.")
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
     expect(openScreen).toHaveBeenCalled()
     // the status shows no question, but the worker says one is open
@@ -2160,7 +2173,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     })
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
     await flush()
-    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first, then press this again.")
     expect(stop()?.textContent).not.toContain("Sent to your agent's chat.")
   })
 
@@ -2331,7 +2344,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     const compose = await stage({ ...release(note), agent: null, handoff_brief: null }, reply, { openScreen })
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
     await flush()
-    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).toContain("Answer your agent's question in the chat first, then press this again.")
     expect(openScreen).toHaveBeenCalled()
     // the compose fallback is not used: nothing goes into a chat
     expect(compose.compose).not.toHaveBeenCalled()
@@ -2415,7 +2428,7 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     await click([...(stop()?.querySelectorAll('button') ?? [])][0])
     await flush()
     expect(h.compose).toHaveBeenCalled()
-    expect(stop()?.textContent).not.toContain("Answer your agent's question in the chat first.")
+    expect(stop()?.textContent).not.toContain("Answer your agent's question in the chat first, then press this again.")
   })
 
   it("a hand-off quiet for 31 minutes is not current: no wait for the worker's continue", async () => {

@@ -101,7 +101,7 @@ export function LaunchNote({ check }: { check?: string | null }) {
   if (launch?.kind === 'asks') {
     return (
       <div className="iii-cloud-body">
-        <span className="iii-cloud-psmall">Answer your agent's question in the chat first.</span>
+        <span className="iii-cloud-psmall">Answer your agent's question in the chat first, then press this again.</span>
       </div>
     )
   }
