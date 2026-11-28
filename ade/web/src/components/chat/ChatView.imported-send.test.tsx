@@ -24,6 +24,7 @@ const composer = vi.hoisted(() => ({
   props: null as null | {
     model: string | null
     submitBlocked: boolean
+    onModelChange: (model: string) => Promise<boolean>
     onSubmit: (payload: ComposerSubmitPayload) => Promise<void>
   },
 }))
@@ -35,6 +36,8 @@ vi.mock('./Composer', () => ({
   },
 }))
 const stream = vi.fn(async function* () {})
+const updateModel = vi.fn()
+const previewModelSwitch = vi.fn()
 const session: Conversation = {
   id: 'new-native-copy',
   title: 'Imported',
@@ -67,10 +70,12 @@ function render(
     <TooltipProvider>
       <ChatView
         conversation={conversation}
-        backend={{ id: 'mock', stream } as unknown as ChatBackend}
+        backend={
+          { id: 'mock', stream, previewModelSwitch } as unknown as ChatBackend
+        }
         modelOptions={[{ id: 'ade::chosen', label: 'Chosen ADE model' }]}
         catalogLoading={false}
-        onUpdateModel={noop}
+        onUpdateModel={updateModel}
         onUpdateThinkingLevel={noop}
         onUpdateWorkingDir={noop}
         onAppendMessage={noop}
@@ -88,7 +93,35 @@ beforeEach(() => {
   composer.mounts = 0
   statusCall.mockReset().mockResolvedValue(null)
   stream.mockClear()
+  updateModel.mockReset()
+  previewModelSwitch.mockReset().mockResolvedValue({
+    needsCompaction: false,
+    tokens: 100,
+    usable: 10000,
+  })
   composer.props = null
+})
+it.each([null, '/ade/project'])(
+  'applies the first selected model while imported setup is incomplete (directory: %s)',
+  async (workingDir) => {
+    const props = render({ ...session, workingDir })
+    expect(props.submitBlocked).toBe(true)
+    await expect(props.onModelChange('ade::chosen')).resolves.toBe(true)
+    expect(previewModelSwitch).toHaveBeenCalledWith(
+      session.id,
+      'ade::chosen',
+      undefined,
+    )
+    expect(updateModel).toHaveBeenCalledWith(session.id, 'ade::chosen')
+    expect(stream).not.toHaveBeenCalled()
+  },
+)
+it('does not apply an imported model selection when the context preview fails', async () => {
+  previewModelSwitch.mockRejectedValueOnce(new Error('Context unavailable'))
+  const props = render({ ...session, workingDir: '/ade/project' })
+  await expect(props.onModelChange('ade::chosen')).resolves.toBe(false)
+  expect(previewModelSwitch).toHaveBeenCalledOnce()
+  expect(updateModel).not.toHaveBeenCalled()
 })
 it('does not adopt the source model or project and blocks ordinary sends and compaction until configured', async () => {
   for (const conversation of [

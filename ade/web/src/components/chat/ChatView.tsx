@@ -1441,7 +1441,12 @@ export function ChatView({
     currentModel: effectiveModel,
     models: modelOptions,
     draft: conversation.draft === true,
-    disabled: submitBlocked || streamingIndicator || modelLocked,
+    // Missing import setup blocks sending, not the selection that completes it.
+    disabled:
+      executionBlocked ||
+      checkingImportedTurn ||
+      streamingIndicator ||
+      modelLocked,
     transcript: conversation.messages,
     revision: conversation.updatedAt,
     onSwitch: (model) => onUpdateModel(conversation.id, model),
