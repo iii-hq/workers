@@ -10,7 +10,13 @@
 import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
-import type { OpenRequest, OpenSpec, OpenVisibility, ResolveOpen } from '../agents.js';
+import {
+  isTmuxAttach,
+  type OpenRequest,
+  type OpenSpec,
+  type OpenVisibility,
+  type ResolveOpen,
+} from '../agents.js';
 import type { TerminalConfig } from '../config.js';
 import { jsonSchema } from '../run.js';
 import { type HostPrepared, prepareSession } from './workspace.js';
@@ -45,14 +51,21 @@ const DescribePayloadSchema = z.object({
  * The argv that opens a listed session. `resolveOpen` answers it relative to
  * the session's own prepared argv (the inventory host carries none): a resume
  * is appended to it, so the session keeps default-mcp and the operator's
- * args; `attach` joins a running background session and takes nothing else.
+ * args; `attach` joins a running background session and takes nothing else,
+ * and neither does a tmux attach, which runs `tmux` instead of claude.
  */
 export function openArgs(prepared: string[], open: OpenSpec): string[] {
-  return open.args[0] === 'attach' ? open.args : [...prepared, ...open.args];
+  return open.args[0] === 'attach' || open.program === 'tmux'
+    ? open.args
+    : [...prepared, ...open.args];
 }
 
-/** `--resume <id>` at the end, without `--fork-session`, or `attach <short id>`. */
+/**
+ * `--resume <id>` at the end, without `--fork-session`, `attach <short id>`,
+ * or the tmux attach of one pane.
+ */
 function isResumePlan(open: OpenSpec, claudeSessionId: string | undefined): boolean {
+  if (open.program !== undefined) return open.program === 'tmux' && isTmuxAttach(open.args);
   if (open.args[0] === 'attach') return open.args.length === 2;
   return (
     open.args.at(-2) === '--resume' &&
@@ -122,6 +135,8 @@ export function registerTerminal(
           if (
             fresh.cwd !== open.cwd ||
             fresh.copy !== open.copy ||
+            fresh.program !== open.program ||
+            JSON.stringify(fresh.env ?? {}) !== JSON.stringify(open.env ?? {}) ||
             fresh.args.length !== open.args.length ||
             !fresh.args.every((arg, i) => arg === open.args[i])
           ) {
@@ -134,6 +149,8 @@ export function registerTerminal(
         if (!open) return spec;
         return {
           ...spec,
+          ...(open.program ? { program: open.program } : {}),
+          ...(open.env ? { env: { ...spec.env, ...open.env } } : {}),
           args: openArgs(spec.args, open),
           ...(request ? { claude_session_id: request.claude_session_id } : {}),
           ...(open.copy ? { copy: true } : {}),
@@ -149,7 +166,7 @@ export function registerTerminal(
     },
     {
       description:
-        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit fork always creates a separate conversation; an explicit resume reopens the original (`--resume`, or `attach` for a running background session) and is refused while another process has it.',
+        'Prepare and describe one Claude terminal session: the claude binary, its argv, the folder it runs in (cwd, else the compose project folder), and its environment. Installs the iii Claude Code plugin in that folder when it is missing. With `session`, the argv and folder that open that listed session, or an error that says why it cannot be opened. An explicit fork always creates a separate conversation; an explicit resume reopens the original (`--resume`, `attach` for a running background session, or program `tmux` with `attach-session -t <$S> ; select-window -t <@W> ; select-pane -t <%P>` and env TMUX empty for a live interactive session in a tmux pane) and is refused while another process has it.',
       request_format: jsonSchema(DescribePayloadSchema),
       response_format: {
         type: 'object',

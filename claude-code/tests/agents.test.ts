@@ -264,7 +264,7 @@ const prepared = {
 };
 
 function host(
-  exec: (command: string) => unknown,
+  exec: (command: string, args?: string[]) => unknown,
   options: {
     external?: boolean;
     prepared?: typeof prepared;
@@ -282,7 +282,8 @@ function host(
     if (req.function_id === 'shell::pty::sessions') return options.ptys?.() ?? { sessions: [] };
     if (req.function_id !== 'shell::exec') return realCall(req as never);
     fake.calls.push({ function_id: req.function_id, payload: req.payload });
-    return exec(String(req.payload.command));
+    const args = req.payload.args;
+    return exec(String(req.payload.command), Array.isArray(args) ? args.map(String) : undefined);
   };
   const tracked = new Set(options.tracked ?? []);
   const agents = registerAgents(
@@ -1441,6 +1442,129 @@ describe('opening a listed session', () => {
       expect(await fake.heldElsewhere(ID)).toBe(false);
       expect(await fake.resolveOpen('h')).toEqual(plain);
     });
+  });
+});
+
+describe('resuming a live session in a tmux pane', () => {
+  const ID = '7e64247f-5095-4a53-9b54-2d8d61b20356';
+  const ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+  const resume = { mode: 'resume' as const, claude_session_id: ID, guard: 'g' };
+  const ATTACH = [
+    'attach-session',
+    '-t',
+    '$0',
+    ';',
+    'select-window',
+    '-t',
+    '@4',
+    ';',
+    'select-pane',
+    '-t',
+    '%25',
+  ];
+  type Out = { stdout: string; stderr: string; exit_code: number };
+  const out = (stdout: string, exit_code = 0): Out => ({ stdout, stderr: '', exit_code });
+  // The session's claude runs as pid 42; pid 40 is the shell of pane `%25`.
+  const PANES = '7 $1 @1 %1\n40 $0 @4 %25\n';
+  const PS = '1 0\n7 1\n40 7\n42 40\n';
+  const tmuxHost = (
+    over: { tmux?: () => Out; ps?: () => Out; rows?: CliRow[] } = {},
+    options: Parameters<typeof host>[1] = { external: true },
+  ) =>
+    host((command) => {
+      if (command === 'tmux') return over.tmux ? over.tmux() : out(PANES);
+      if (command === 'ps') return over.ps ? over.ps() : out(PS);
+      return ok(over.rows ?? [interactive(ID, 'idle')])();
+    }, options);
+  const programs = (fake: FakeIii) =>
+    fake.calls.filter((c) => c.function_id === 'shell::exec').map((c) => c.payload.command);
+  const listed = async (fake: FakeIii) =>
+    ((await list(fake)) as { agents: Array<{ id: string; tmux?: unknown }> }).agents;
+
+  it('attaches to the tmux pane of a live interactive session, directly and through a wrapper', async () => {
+    const plan = { program: 'tmux', args: ATTACH, cwd: '/repo', env: { TMUX: '' } };
+    const fake = tmuxHost();
+    expect(await fake.resolveOpen(ID, resume)).toEqual(plan);
+    expect(fake.calls.find((c) => c.payload.command === 'tmux')?.payload.args).toEqual([
+      'list-panes',
+      '-a',
+      '-F',
+      '#{pane_pid} #{session_id} #{window_id} #{pane_id}',
+    ]);
+    expect(fake.calls.find((c) => c.payload.command === 'ps')?.payload.args).toEqual([
+      '-A',
+      '-o',
+      'pid=,ppid=',
+    ]);
+    // A wrapper process between the pane shell and claude.
+    const wrapped = tmuxHost({ ps: () => out('1 0\n40 1\n41 40\n42 41\n') });
+    expect(await wrapped.resolveOpen(ID, resume)).toEqual(plan);
+  });
+
+  it('lists the tmux pane of a live interactive session', async () => {
+    expect((await listed(tmuxHost()))[0].tmux).toEqual({
+      session: '$0',
+      window: '@4',
+      pane: '%25',
+    });
+  });
+
+  it('refuses a live session outside tmux with OPEN_ELSEWHERE', async () => {
+    const fake = tmuxHost({ ps: () => out('1 0\n7 1\n40 7\n30 1\n42 30\n') });
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    expect((await listed(fake))[0]).not.toHaveProperty('tmux');
+  });
+
+  it.each<[string, () => Out]>([
+    ['no server', () => ({ stdout: '', stderr: 'no server running', exit_code: 1 })],
+    ['no binary', () => ({ stdout: '', stderr: 'tmux: not found', exit_code: 127 })],
+    ['killed', () => ({ stdout: PANES, stderr: '', exit_code: -1 })],
+    [
+      'a failed call',
+      () => {
+        throw new Error('shell::exec timed out');
+      },
+    ],
+  ])('refuses with OPEN_ELSEWHERE when tmux unavailable: %s', async (_name, tmux) => {
+    await expect(tmuxHost({ tmux }).resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+  });
+
+  // 70 ancestors between claude and the pane shell: past the 64-step walk.
+  const longChain = [
+    '42 100',
+    ...Array.from({ length: 70 }, (_, i) => `${100 + i} ${101 + i}`),
+    '170 40',
+    '40 1',
+  ].join('\n');
+  it.each<[string, () => Out]>([
+    ['ps exits non-zero', () => ({ stdout: '', stderr: 'ps: not permitted', exit_code: 1 })],
+    ['an ancestor loop', () => out('42 43\n43 44\n44 42\n')],
+    ['pid 1 without a pane', () => out('1 0\n30 1\n42 30\n')],
+    ['a chain over 64 steps', () => out(longChain)],
+  ])('refuses with OPEN_ELSEWHERE when the process tree unavailable: %s', async (_name, ps) => {
+    await expect(tmuxHost({ ps }).resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+  });
+
+  it.each([
+    ['a session', '40 $0;x @4 %25'],
+    ['a window', '40 $0 @4 x %25'],
+    ['a pane', '40 $0 @4 %1;kill'],
+    ['a pane pid listed twice', '40 $0 @4 %25\n40 $1 @5 %26'],
+  ])('never puts a malformed tmux id in argv: %s', async (_name, panes) => {
+    const fake = tmuxHost({ tmux: () => out(`${panes}\n`) });
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    expect((await listed(fake))[0]).not.toHaveProperty('tmux');
+  });
+
+  it('keeps tmux hidden when off: no tmux field, and its resume refused', async () => {
+    const fake = tmuxHost({}, { external: false, tracked: [ID] });
+    const agents = await listed(fake);
+    expect(agents.map((a) => a.id)).toEqual([ID]);
+    expect(agents[0]).not.toHaveProperty('tmux');
+    await expect(fake.resolveOpen(ID, resume)).rejects.toThrow(new Error(ELSEWHERE));
+    // Neither tmux nor the process tree is read without the grant.
+    expect(programs(fake)).not.toContain('tmux');
+    expect(programs(fake)).not.toContain('ps');
   });
 });
 

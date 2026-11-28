@@ -51,6 +51,12 @@ const AgentRowSchema = z.object({
     .string()
     .optional()
     .describe('The console terminal (shell::pty) that runs this session'),
+  tmux: z
+    .object({ session: z.string(), window: z.string(), pane: z.string() })
+    .optional()
+    .describe(
+      'The tmux pane a live interactive session runs in ($N, @N and %N ids); only with external_sessions on',
+    ),
   name: z.string().optional(),
   cwd: z.string().optional(),
   waiting_for: z.string().optional(),
@@ -62,8 +68,17 @@ export type AgentRow = z.infer<typeof AgentRowSchema>;
 /**
  * How a terminal opens a listed session; `copy` when it opens a fork of it.
  * `release` drops the opening guard a resume set, for a describe that failed.
+ * `program` and `env` replace the claude binary and add to its environment:
+ * only a tmux attach sets them, and its argv is then the whole argv.
  */
-export type OpenSpec = { args: string[]; cwd: string; copy?: true; release?: () => void };
+export type OpenSpec = {
+  args: string[];
+  cwd: string;
+  copy?: true;
+  release?: () => void;
+  program?: 'tmux';
+  env?: Record<string, string>;
+};
 /** `guard` names one describe call: its own revalidation passes the opening guard it set. */
 export type OpenRequest =
   | { mode: 'fork'; claude_session_id: string }
@@ -103,6 +118,115 @@ const INVENTORY_UNAVAILABLE = 'Terminal host inventory unavailable';
  */
 const OPENING_MS = 15_000;
 const OPEN_ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+
+/** A tmux pane on the terminal host, by its session, window and pane ids. */
+export type TmuxPane = { session: string; window: string; pane: string };
+/** tmux's own id shapes; anything else from its output never reaches argv. */
+const TMUX_ID = { session: /^\$[0-9]+$/, window: /^@[0-9]+$/, pane: /^%[0-9]+$/ } as const;
+const TMUX_FORMAT = '#{pane_pid} #{session_id} #{window_id} #{pane_id}';
+// Short: the rail's listing waits for it after the CLI inventory.
+const TMUX_LOOKUP_MS = 2_000;
+const MAX_ANCESTORS = 64;
+
+const validPane = (pane: TmuxPane) =>
+  TMUX_ID.session.test(pane.session) &&
+  TMUX_ID.window.test(pane.window) &&
+  TMUX_ID.pane.test(pane.pane);
+
+/**
+ * The tmux argv that opens a terminal on a pane: one more client of the same
+ * tmux session, so both clients share one view of it.
+ */
+export function tmuxAttach(pane: TmuxPane): string[] {
+  return [
+    'attach-session',
+    '-t',
+    pane.session,
+    ';',
+    'select-window',
+    '-t',
+    pane.window,
+    ';',
+    'select-pane',
+    '-t',
+    pane.pane,
+  ];
+}
+
+/** Whether `args` is exactly the attach of one pane with well-formed ids. */
+export function isTmuxAttach(args: string[]): boolean {
+  if (args.length !== 11) return false;
+  const pane = { session: args[2], window: args[6], pane: args[10] };
+  return validPane(pane) && tmuxAttach(pane).every((arg, i) => arg === args[i]);
+}
+
+const pidOf = (value: string | undefined) =>
+  value !== undefined && /^[0-9]{1,10}$/.test(value) ? Number(value) : Number.NaN;
+
+/**
+ * Which tmux pane each process on the terminal host runs under: `tmux
+ * list-panes -a` gives each pane's shell pid, `ps` every process's parent,
+ * and a pid is walked up its ancestors to a pane shell (at most 64 steps,
+ * stopping at pid 1 or on a loop). Null when tmux, its server or `ps` cannot
+ * be read. Both outputs are untrusted: a pane line that does not parse into
+ * tmux's own id shapes, or a pane pid listed twice, matches nothing.
+ */
+export async function tmuxPanes(
+  iii: IIIClient,
+  env: Record<string, string>,
+): Promise<((pid: number) => TmuxPane | undefined) | null> {
+  const run = (command: string, args: string[]) =>
+    exec(iii, command, { args, env, timeoutMs: TMUX_LOOKUP_MS });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = await Promise.race([
+      Promise.all([
+        run('tmux', ['list-panes', '-a', '-F', TMUX_FORMAT]),
+        run('ps', ['-A', '-o', 'pid=,ppid=']),
+      ]).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), TMUX_LOOKUP_MS);
+      }),
+    ]);
+    if (!read) return null;
+    const [panes, ps] = read;
+    if (panes.exit_code !== 0 || ps.exit_code !== 0) return null;
+    // null marks a pane pid whose line does not parse, or that is listed twice.
+    const paneOf = new Map<number, TmuxPane | null>();
+    for (const line of panes.stdout.split('\n')) {
+      const fields = line.trim().split(/\s+/);
+      const pid = pidOf(fields[0]);
+      if (!Number.isSafeInteger(pid) || pid <= 1) continue;
+      const pane = { session: fields[1] ?? '', window: fields[2] ?? '', pane: fields[3] ?? '' };
+      paneOf.set(pid, fields.length === 4 && validPane(pane) && !paneOf.has(pid) ? pane : null);
+    }
+    const parentOf = new Map<number, number>();
+    for (const line of ps.stdout.split('\n')) {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length !== 2) continue;
+      const [pid, ppid] = fields.map(pidOf);
+      if (Number.isSafeInteger(pid) && Number.isSafeInteger(ppid)) parentOf.set(pid, ppid);
+    }
+    return (pid) => {
+      const seen = new Set<number>();
+      let current = pid;
+      for (let step = 0; step <= MAX_ANCESTORS; step++) {
+        const pane = paneOf.get(current);
+        if (pane !== undefined) return pane ?? undefined;
+        if (current <= 1 || seen.has(current)) return undefined;
+        seen.add(current);
+        const parent = parentOf.get(current);
+        if (parent === undefined) return undefined;
+        current = parent;
+      }
+      return undefined;
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export function parseAgentsJson(stdout: string): CliRow[] | null {
   try {
@@ -158,6 +282,8 @@ export function mergeInventory(input: {
   known: (claudeSessionId: string) => boolean;
   /** The console terminal whose process is `pid`. */
   ptyOf: (pid: number) => string | undefined;
+  /** The tmux pane `pid` runs under; read only with external on. */
+  tmuxOf?: (pid: number) => TmuxPane | undefined;
   external: boolean;
   markExternal?: boolean;
 }): { agents: AgentRow[]; hidden: number } {
@@ -197,6 +323,10 @@ export function mergeInventory(input: {
     const status = cliStatus(row);
     const waitingFor = status === 'waiting' ? str(row.waitingFor) : undefined;
     const pty = typeof row.pid === 'number' ? input.ptyOf(row.pid) : undefined;
+    const pane =
+      input.external && kind === 'interactive' && typeof row.pid === 'number'
+        ? input.tmuxOf?.(row.pid)
+        : undefined;
     const agent: AgentRow = {
       id: sessionId,
       kind,
@@ -211,6 +341,7 @@ export function mergeInventory(input: {
         ? { short_id: str(row.id) }
         : {}),
       ...(pty ? { pty_session_id: pty } : {}),
+      ...(pane && validPane(pane) ? { tmux: { ...pane } } : {}),
       ...(str(row.name) ? { name: str(row.name) } : {}),
       ...(str(row.cwd) ? { cwd: str(row.cwd) } : {}),
       ...(waitingFor ? { waiting_for: waitingFor } : {}),
@@ -353,7 +484,7 @@ export function registerAgents(
       !showAll ? hookSessions(iii) : new Set<string>(),
       replies ? null : claudePtys(iii),
     ]);
-    const merge = (externalVisibility = showAll) =>
+    const merge = (externalVisibility = showAll, tmuxOf?: (pid: number) => TmuxPane | undefined) =>
       mergeInventory({
         // Older headless records must not shadow an explicitly listed CLI row.
         // Keep excluding CLI rows for headless runs this worker still owns.
@@ -364,6 +495,7 @@ export function registerAgents(
           : snapshot.rows,
         known: (id) => tracker.has(id) || hooked.has(id),
         ptyOf: (pid) => str(ptys?.find((pty) => pty.pid === pid && livePty(pty))?.session_id),
+        tmuxOf,
         external: externalVisibility,
         markExternal,
       });
@@ -465,6 +597,12 @@ export function registerAgents(
           readSnapshot: include_config_id ? railSnapshot : cliSnapshot,
         }),
       ]);
+      // The tmux pane of a live terminal session, looked up only with a live grant;
+      // the publication check below still decides whether it is listed.
+      const panes =
+        epoch !== null && merge(true).agents.some((a) => a.kind === 'interactive' && a.alive)
+          ? await tmuxPanes(iii, current().env)
+          : null;
       // Recheck at publication; merge the same snapshot without external rows if revoked.
       const currentEpoch = access.epoch;
       // The rail skips the checkpoint wait to stay within its deadline. Until the
@@ -472,7 +610,7 @@ export function registerAgents(
       // written meanwhile fall behind it; the next heartbeat picks the grant up.
       const capturing = include_config_id === true && access.watchCheckpointPending === true;
       const authorized = epoch !== null && epoch === currentEpoch && !capturing;
-      const { agents, hidden } = merge(authorized);
+      const { agents, hidden } = merge(authorized, panes ?? undefined);
       const details = detail ? [authorized ? detail : INVENTORY_UNAVAILABLE] : [];
       // Access is null both when the setting is off and while an enabled setting is
       // not yet confirmed (a reload); the setting's live value tells them apart.
@@ -611,6 +749,22 @@ export function registerAgents(
         }
         // A headless run takes its next turn through claude::start, not a terminal.
         if (row.kind === 'headless') throw new Error('a headless run is not resumed in a terminal');
+        if (row.alive && row.kind === 'interactive') {
+          // A second client of the same tmux pane, never a second process on the
+          // conversation. Resolved fresh at every call, and only with a live grant.
+          const panes = epoch === null ? null : await tmuxPanes(iii, prepared.env);
+          if (epoch !== access.epoch)
+            throw new Error('session visibility changed; refresh the list');
+          const pane = panes ? merge(true, panes).agents.find((a) => a.id === id)?.tmux : undefined;
+          if (!pane || !validPane(pane)) throw new Error(OPEN_ELSEWHERE);
+          return {
+            program: 'tmux',
+            args: tmuxAttach(pane),
+            cwd: row.cwd ?? prepared.workspace,
+            // Attach even when the terminal host's own shell runs inside tmux.
+            env: { TMUX: '' },
+          };
+        }
         if (row.alive) {
           if (row.kind !== 'background') throw new Error(OPEN_ELSEWHERE);
           if (!row.short_id || !SHORT_ID.test(row.short_id)) {

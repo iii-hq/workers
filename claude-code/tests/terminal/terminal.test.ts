@@ -19,7 +19,12 @@ vi.mock('../../src/run.js', async (original) => ({
   ...(await original<typeof import('../../src/run.js')>()),
   isLive: (id: string) => live.has(id),
 }));
-beforeEach(() => live.clear());
+// What `tmux list-panes -a` and `ps` print on the terminal host; null: neither exists.
+let hostTools: null | { panes: () => string; ps: string } = null;
+beforeEach(() => {
+  live.clear();
+  hostTools = null;
+});
 
 type Handler = (payload: unknown) => Promise<Record<string, unknown>>;
 
@@ -40,6 +45,10 @@ function setup(
       const p = request.payload ?? {};
       switch (request.function_id) {
         case 'shell::exec':
+          if (hostTools && (p.command === 'tmux' || p.command === 'ps')) {
+            const stdout = p.command === 'tmux' ? hostTools.panes() : hostTools.ps;
+            return { stdout, stderr: '', exit_code: 0 };
+          }
           if (Array.isArray(p.args)) return claude.run(p.command, p.args, p.cwd);
           if (inventory && String(p.command).endsWith(' agents --json --all')) {
             return { stdout: JSON.stringify(inventory()), stderr: '', exit_code: 0 };
@@ -438,6 +447,75 @@ describe('claude::terminal::describe', () => {
         /changed or is unavailable/,
       );
       expect(claude.installs).toEqual([]);
+    });
+
+    describe('a live session in a tmux pane', () => {
+      // claude runs as pid 42 under the shell (pid 40) of pane %25, window @4, session $0.
+      const tmuxRow: CliRow = { sessionId: id, kind: 'interactive', cwd: '/fixture', pid: 42 };
+      const ATTACH = [
+        'attach-session',
+        '-t',
+        '$0',
+        ';',
+        'select-window',
+        '-t',
+        '@4',
+        ';',
+        'select-pane',
+        '-t',
+        '%25',
+      ];
+      const inPane = (panes: () => string = () => '40 $0 @4 %25\n') => {
+        hostTools = { panes, ps: '1 0\n40 1\n42 40\n' };
+      };
+
+      it('resume mode returns the tmux attach of its pane, unprefixed', async () => {
+        inPane();
+        const { describeFn } = setup({}, () => [tmuxRow]);
+        const spec = await describeFn.handler(resume);
+        expect(spec).toMatchObject({ program: 'tmux', args: ATTACH, claude_session_id: id });
+        expect(spec).not.toHaveProperty('copy');
+      });
+
+      it('the tmux attach runs with TMUX set to the empty string', async () => {
+        inPane();
+        const { describeFn } = setup({}, () => [tmuxRow]);
+        const spec = await describeFn.handler(resume);
+        expect((spec.env as Record<string, string>).TMUX).toBe('');
+        expect(spec.env).toMatchObject({ III_URL: 'ws://127.0.0.1:49134' });
+      });
+
+      it('refuses when the tmux pane changed between the two resolves', async () => {
+        let reads = 0;
+        inPane(() => (++reads === 1 ? '40 $0 @4 %25\n' : '40 $0 @4 %26\n'));
+        const { describeFn } = setup({}, () => [tmuxRow]);
+        await expect(describeFn.handler(resume)).rejects.toThrow(
+          /^the session changed while opening; refresh the list$/,
+        );
+        expect(reads).toBe(2);
+      });
+
+      it('resume mode refuses a tmux plan whose ids do not have tmux shapes', async () => {
+        const { describeFn, resolveOpen } = setup();
+        const bad = [...ATTACH];
+        bad[10] = '%1;kill';
+        resolveOpen.mockResolvedValue({
+          program: 'tmux',
+          args: bad,
+          cwd: '/fixture',
+          env: { TMUX: '' },
+        });
+        await expect(describeFn.handler(resume)).rejects.toThrow(/^no resume plan/);
+      });
+
+      it('legacy open of a tmux row still returns a --fork-session copy', async () => {
+        inPane();
+        const { describeFn } = setup({}, () => [tmuxRow]);
+        const spec = await describeFn.handler(legacy);
+        expect(spec).toMatchObject({ copy: true, program: CLAUDE });
+        expect((spec.args as string[]).slice(-3)).toEqual(['--resume', id, '--fork-session']);
+        expect(spec.env).not.toHaveProperty('TMUX');
+      });
     });
   });
 

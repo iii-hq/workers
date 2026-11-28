@@ -44,6 +44,34 @@ for (const [i, name] of ['Draft A', 'Draft B'].entries()) {
     cwd: '/fixture/workspace',
   });
 }
+// A live interactive session in a tmux pane: Resume joins that pane.
+const tmuxId = '12345679-1234-4321-8123-000000000001';
+rows.push({
+  id: tmuxId,
+  claude_session_id: tmuxId,
+  name: 'Tmux review',
+  external_only: true,
+  kind: 'interactive',
+  alive: true,
+  status: 'idle',
+  cwd: '/fixture/workspace',
+  tmux: { session: '$0', window: '@4', pane: '%25' },
+} as (typeof rows)[number]);
+type Pane = { session: string; window: string; pane: string };
+const paneOf = (row: (typeof rows)[number]) => (row as { tmux?: Pane }).tmux;
+const tmuxAttach = (pane: Pane) => [
+  'attach-session',
+  '-t',
+  pane.session,
+  ';',
+  'select-window',
+  '-t',
+  pane.window,
+  ';',
+  'select-pane',
+  '-t',
+  pane.pane,
+];
 type Source = {
   function_id: string;
   args?: { claude_session_id?: string };
@@ -323,6 +351,8 @@ const host = {
         if (!row.alive) return { ...base, args: ['--resume', row.id] };
         if (row.kind === 'background' && row.short_id)
           return { ...base, args: ['attach', row.short_id] };
+        const pane = paneOf(row);
+        if (pane) return { ...base, program: 'tmux', env: { TMUX: '' }, args: tmuxAttach(pane) };
         throw new Error(elsewhere);
       }
       throw new Error(`Unexpected synthetic call: ${fn}`);
@@ -366,6 +396,30 @@ function Preview() {
     async open({ key, pty, spec }) {
       setOpenCalls((n) => n + 1);
       const args = spec?.args;
+      // A live tmux session: exactly the attach of its own pane, run by tmux.
+      const joined = rows.find((row) => {
+        const pane = paneOf(row);
+        return (
+          !!pane &&
+          spec?.program === 'tmux' &&
+          spec.env?.TMUX === '' &&
+          Array.isArray(args) &&
+          args.length === 11 &&
+          tmuxAttach(pane).every((arg, i) => args[i] === arg)
+        );
+      });
+      if (!pty && joined && args) {
+        const n = ++nextPtyId.current;
+        setCount(n);
+        setScreen({
+          pty: `fixture-tmux-${n}`,
+          key,
+          text: `Tmux terminal · ${joined.name} · ${args.join(' ')}`,
+        });
+        return true;
+      }
+      if (spec?.program === 'tmux')
+        throw new Error('The fixture only opens the attach of a listed pane');
       const original = rows.find((row) => row.id === args?.at(-1) || row.short_id === args?.at(-1));
       if (!pty && original && args?.includes('--fork-session') === false) {
         // The original conversation, never a copy: a resume or an attach.

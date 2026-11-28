@@ -916,6 +916,26 @@ async function testSessionActions(code) {
     assert.doesNotMatch(document.body.textContent, /Resumed Design review/);
   });
 
+  await test('Resume joins a live session in its own tmux pane, and only that one', async (t) => {
+    const { click, document, text, until } = setup(t, { heartbeat: false });
+    await text('Tmux review');
+    const resume = await until(() => resumeButton(document, 'Tmux review'));
+    assert.notEqual(resume.getAttribute('aria-disabled'), 'true');
+    assert.equal(resume.getAttribute('aria-describedby'), null);
+    await click('Resume Tmux review');
+    await text('Resumed Tmux review');
+    await text(
+      'Tmux terminal · Tmux review · attach-session -t $0 ; select-window -t @4 ; select-pane -t %25',
+    );
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|--fork-session/);
+    assert.equal(openCalls(document), '1');
+    // A live session outside tmux keeps its refusal.
+    const design = resumeButton(document, 'Design review');
+    assert.equal(design.getAttribute('aria-disabled'), 'true');
+    const reason = document.getElementById(design.getAttribute('aria-describedby'));
+    assert.equal(reason?.textContent, ELSEWHERE);
+  });
+
   await test('a refused resume opens nothing and says why', async (t) => {
     const { click, document, text, until } = setup(t, { heartbeat: false, resumeRefused: true });
     await text('Finished review');

@@ -62,6 +62,8 @@ interface AgentRow {
   claude_session_id?: string;
   short_id?: string;
   pty_session_id?: string;
+  /** The tmux pane a live interactive session runs in, by tmux's own ids. */
+  tmux?: { session: string; window: string; pane: string };
   name?: string;
   cwd?: string;
   waiting_for?: string;
@@ -94,6 +96,35 @@ const HOST_STOP_TIMEOUT_MS = 50_000;
 
 /** The CLI's 8-hex background id, the only one `claude attach` is handed. */
 const SHORT_ID = /^[0-9a-f]{8}$/;
+
+/** The pane of a row, when its session, window and pane ids have tmux's own shapes. */
+const tmuxPane = (row: AgentRow) =>
+  row.tmux &&
+  /^\$[0-9]+$/.test(row.tmux.session) &&
+  /^@[0-9]+$/.test(row.tmux.window) &&
+  /^%[0-9]+$/.test(row.tmux.pane)
+    ? row.tmux
+    : undefined;
+
+/** Exactly the argv that attaches a terminal to that pane, and nothing else. */
+function attachesPane(row: AgentRow, args: unknown[]): boolean {
+  const pane = tmuxPane(row);
+  if (!pane) return false;
+  const expected = [
+    'attach-session',
+    '-t',
+    pane.session,
+    ';',
+    'select-window',
+    '-t',
+    pane.window,
+    ';',
+    'select-pane',
+    '-t',
+    pane.pane,
+  ];
+  return args.length === expected.length && expected.every((arg, i) => args[i] === arg);
+}
 
 /** Read by assistive technology, not drawn: why a shown action cannot run. */
 const VISUALLY_HIDDEN = {
@@ -400,7 +431,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
   };
   const rows = currentVisibility
     ? listed
-    : listed.filter((row) => !row.external_only).map((row) => ({ ...row, short_id: undefined }));
+    : listed
+        .filter((row) => !row.external_only)
+        .map((row) => ({ ...row, short_id: undefined, tmux: undefined }));
   const activeConfirmation =
     confirmation &&
     ((!confirmation.row.external_only &&
@@ -511,11 +544,14 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         args.length === 2 &&
         args[0] === 'attach' &&
         args[1] === row.short_id;
+      // A live tmux session opens as one more client of its own pane.
+      const tmux = spec?.program === 'tmux';
+      const joinsPane = tmux && row.kind === 'interactive' && row.alive && attachesPane(row, args);
       if (
         spec?.claude_session_id !== claudeId ||
         spec.copy !== undefined ||
         !spec.program ||
-        !(resumes || attaches)
+        (tmux ? !joinsPane : !(resumes || attaches))
       )
         throw new Error('The resume could not be verified. Refresh the list and try again.');
       const key = `resume:${claudeId}`;
@@ -616,8 +652,9 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       !row.pty_session_id &&
       !inTerminal;
     const attachable = row.kind === 'background' && SHORT_ID.test(row.short_id ?? '');
+    const joinable = row.kind === 'interactive' && !!tmuxPane(row);
     const resumeBlocked =
-      !row.alive || attachable
+      !row.alive || attachable || joinable
         ? undefined
         : row.kind === 'background'
           ? 'This background session has no short id to attach by.'
@@ -673,7 +710,12 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
                     aria-label={`Resume ${name}`}
                     aria-disabled={!!opening || !!resumeBlocked}
                     aria-describedby={resumeBlocked ? resumeReasonId : undefined}
-                    title={resumeBlocked ?? `Reopen ${name} here, with input`}
+                    title={
+                      resumeBlocked ??
+                      (joinable && row.alive
+                        ? `Join ${name} in its tmux session here, sharing its view`
+                        : `Reopen ${name} here, with input`)
+                    }
                     style={resumeBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                     onClick={() => {
                       if (opening) return;
