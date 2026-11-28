@@ -3,12 +3,13 @@
  * can see (`claude::agents::list`), what each is doing, and the one action
  * that applies to it. Select an original to follow replies without a terminal.
  *
- * Three groups: the sessions open in this console; the others on the host,
- * mostly watched (only a live background one
- * can be stopped from here); and the worker's own headless runs, which take a
- * message or a stop. The runs come last because they are never pruned, and a
- * session waiting on the operator must not sit below them. Whatever waits
- * comes first in each group.
+ * Four groups: the sessions open in this console; the others on the host,
+ * mostly watched (only a live background one can be stopped from here); the
+ * worker's own headless runs, which take a message or a stop; and the
+ * interactive sessions that ended on the host, which only resume. The runs
+ * come after the live groups because they are never pruned, and a session
+ * waiting on the operator must not sit below them. Whatever waits comes first
+ * in each live group; the ended ones are newest first.
  *
  * Live through the engine: a turn starting or settling writes
  * `claude_sessions` / `claude_turns`, and a hooked terminal reports its
@@ -58,6 +59,8 @@ interface AgentRow {
   kind: 'headless' | 'interactive' | 'background';
   status: Status;
   alive: boolean;
+  /** An interactive session no process runs, read from its transcript on the host. */
+  ended?: boolean;
   external_only?: boolean;
   claude_session_id?: string;
   short_id?: string;
@@ -166,14 +169,16 @@ function nameOf(row: AgentRow): string {
 
 function describe(row: AgentRow): string {
   const parts = [
-    row.status === 'waiting' && row.waiting_for
-      ? `Waiting for ${row.waiting_for}`
-      : STATUS[row.status].word,
+    row.ended
+      ? 'Ended'
+      : row.status === 'waiting' && row.waiting_for
+        ? `Waiting for ${row.waiting_for}`
+        : STATUS[row.status].word,
   ];
   // The group already says "this worker" for a headless row; on the host the
   // kind is what separates a terminal someone drives from a background agent.
   if (row.kind === 'background') parts.push('Background');
-  if (row.kind === 'interactive') parts.push('Interactive');
+  if (row.kind === 'interactive' && !row.ended) parts.push('Interactive');
   const when = row.started_at_ms ?? row.updated_at_ms;
   if (when) parts.push(formatRelative(when));
   if (row.cwd) parts.push(shortPath(row.cwd));
@@ -453,7 +458,13 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
     openingFork ?? (activeConfirmation?.action === 'fork' ? activeConfirmation.row.id : null);
 
   const here = byAttention(rows.filter((row) => row.pty_session_id));
-  const hosted = byAttention(rows.filter((row) => !row.pty_session_id && row.kind !== 'headless'));
+  const hosted = byAttention(
+    rows.filter((row) => !row.pty_session_id && row.kind !== 'headless' && !row.ended),
+  );
+  // When each last wrote its transcript, newest first.
+  const ended = rows
+    .filter((row) => !row.pty_session_id && row.ended)
+    .sort((a, b) => (b.updated_at_ms ?? 0) - (a.updated_at_ms ?? 0));
   const own = byAttention(rows.filter((row) => !row.pty_session_id && row.kind === 'headless'));
   const onScreen = rows.find(
     (row) => row.pty_session_id && row.pty_session_id === terminal.current,
@@ -644,7 +655,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
       row.alive && (row.kind === 'headless' || (row.kind === 'background' && !!row.short_id));
     const name = nameOf(row);
     const openLabel = `Open original: ${name}`;
-    const canFork = !!row.claude_session_id;
+    // An ended row only resumes: it has no reply feed to follow, and no fork here.
+    const canFork = !!row.claude_session_id && !row.ended;
     // Never on a row already in this console's terminal: that terminal is its writer.
     const canResume =
       (row.kind === 'interactive' || row.kind === 'background') &&
@@ -670,8 +682,8 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
           aria-selected={undefined}
           leading={<StatusDot tone={status.tone} pulse={status.pulse} aria-hidden />}
           label={
-            // A headless run has no conversation to follow: its name is just text.
-            row.kind === 'headless' ? (
+            // A headless run or an ended session has no conversation to follow: its name is just text.
+            row.kind === 'headless' || row.ended ? (
               <span title={[name, row.cwd, row.id].filter(Boolean).join('\n')}>
                 {row.name ? row.name : <span className="claude-sessions-id">{name}</span>}
               </span>
@@ -870,6 +882,7 @@ export function SessionsRail({ host, terminal }: { host: Host; terminal: AgentTe
         {group('here', 'In this console', here)}
         {group('host', 'On this host', hosted)}
         {group('own', 'This worker', own)}
+        {group('ended', 'Ended', ended)}
       </List>
     );
   }

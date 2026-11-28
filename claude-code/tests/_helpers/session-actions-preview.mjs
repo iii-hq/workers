@@ -961,6 +961,56 @@ async function testSessionActions(code) {
     assert.doesNotMatch(document.body.textContent, /Resumed|Original terminal/);
   });
 
+  const ENDED = ['Latest fix', 'Yesterday plan', 'Old notes'];
+  // The text of each row in the rail group labelled `label`, in order; null while it is absent.
+  const groupRows = (document, label) => {
+    const list = Array.from(document.querySelectorAll('[role="list"][aria-labelledby]')).find(
+      (el) =>
+        document
+          .getElementById(el.getAttribute('aria-labelledby'))
+          ?.textContent.replace(/\s*\d+\s*$/, '')
+          .trim() === label,
+    );
+    return list
+      ? Array.from(list.querySelectorAll('[role="listitem"]'), (row) => row.textContent)
+      : null;
+  };
+
+  await test('ended rows are listed newest first under Ended', async (t) => {
+    const { document, text, until } = setup(t, { heartbeat: false });
+    await text('Latest fix');
+    const ended = await until(() => groupRows(document, 'Ended'));
+    assert.equal(ended.length, ENDED.length);
+    for (const [i, name] of ENDED.entries())
+      assert.ok(ended[i].includes(name), `${name} is row ${i}`);
+  });
+
+  await test('ended rows are listed only under Ended', async (t) => {
+    const { document, text, until } = setup(t, { heartbeat: false });
+    await text('Latest fix');
+    const hosted = await until(() => groupRows(document, 'On this host'));
+    for (const name of ENDED) {
+      assert.ok(!hosted.some((row) => row.includes(name)), `${name} is under On this host`);
+      assert.equal(document.querySelectorAll(`[aria-label="Resume ${name}"]`).length, 1);
+      // Resume only: no fork and no reply viewer for an ended row.
+      assert.equal(document.querySelector(`[aria-label="Fork ${name}"]`), null);
+      assert.equal(document.querySelector(`[aria-label="Open original: ${name}"]`), null);
+    }
+  });
+
+  await test('Resume opens an ended session', async (t) => {
+    const { click, document, text, until } = setup(t, { heartbeat: false });
+    await text('Latest fix');
+    const resume = await until(() => resumeButton(document, 'Latest fix'));
+    assert.notEqual(resume.getAttribute('aria-disabled'), 'true');
+    assert.equal(resume.getAttribute('aria-describedby'), null);
+    await click('Resume Latest fix');
+    await text('Resumed Latest fix');
+    await text('Original terminal · Latest fix · --resume e2345672-1234-4321-8123-000000000001');
+    assert.doesNotMatch(document.body.textContent, /Separate fork terminal|--fork-session/);
+    assert.equal(openCalls(document), '1');
+  });
+
   const HINT = /sessions on the terminal host are hidden; set external_sessions: true to list them/;
 
   await test('shows the external sessions hint when every host row is hidden', async (t) => {

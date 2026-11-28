@@ -13,7 +13,12 @@ import { CONFIG_ID, fetchRuntime, type ReplyAccess, replyLease } from './configu
 import { withoutCaller } from './external-replies.js';
 import { isLive, jsonSchema } from './run.js';
 import { listSessions } from './state.js';
-import { readTranscript, Reply } from './terminal/external-transcript.js';
+import {
+  type EndedSession,
+  readEndedSessions,
+  readTranscript,
+  Reply,
+} from './terminal/external-transcript.js';
 import { exec, quote } from './terminal/host.js';
 import type { Prepared } from './terminal/workspace.js';
 import { TURN_SCOPE } from './turns.js';
@@ -40,6 +45,12 @@ const AgentRowSchema = z.object({
   kind: z.enum(['headless', 'interactive', 'background']),
   status: z.enum(['busy', 'idle', 'waiting', 'done', 'error', 'stopped', 'unknown']),
   alive: z.boolean().describe('A process is running the session now'),
+  ended: z
+    .boolean()
+    .optional()
+    .describe(
+      'An interactive session no process runs, read from its transcript on the terminal host; only with external_sessions on',
+    ),
   external_only: z.boolean().optional().describe('This row requires live external visibility.'),
   session_id: z.string().optional(),
   claude_session_id: z.string().optional(),
@@ -111,6 +122,13 @@ const StopPayloadSchema = z.object({
 /** The CLI's 8-hex background id; anything else never reaches the shell. */
 const SHORT_ID = /^[0-9a-f]{8}$/;
 const INVENTORY_UNAVAILABLE = 'Terminal host inventory unavailable';
+/** Ended interactive sessions listed from the host's transcripts, newest first. */
+const ENDED_LIMIT = 20;
+/**
+ * What the transcript reader returns, before the ids the CLI lists are
+ * dropped: it runs alongside the CLI listing, so it cannot skip them itself.
+ */
+const ENDED_READ_LIMIT = ENDED_LIMIT + 44;
 
 /**
  * How long a conversation counts as open after a plain `--resume` was handed
@@ -286,6 +304,8 @@ export function mergeInventory(input: {
   tmuxOf?: (pid: number) => TmuxPane | undefined;
   external: boolean;
   markExternal?: boolean;
+  /** Interactive sessions no process runs, from the host's transcripts; listed only with external on. */
+  ended?: EndedSession[];
 }): { agents: AgentRow[]; hidden: number } {
   const ours = new Set(input.records.map((r) => r.claude_session_id).filter(Boolean));
   const runningHere = new Set(
@@ -360,7 +380,30 @@ export function mergeInventory(input: {
     hidden++;
     return false;
   });
-  return { agents: [...headless, ...visible], hidden };
+  // Never a second row for a conversation the CLI or this worker lists.
+  const listedIds = new Set<string | null | undefined>([
+    ...ours,
+    ...[...headless, ...cli].map((agent) => agent.claude_session_id),
+  ]);
+  const ended: AgentRow[] = input.external
+    ? (input.ended ?? [])
+        .filter((session) => !listedIds.has(session.id))
+        .sort((a, b) => b.mtime_ms - a.mtime_ms)
+        .slice(0, ENDED_LIMIT)
+        .map((session) => ({
+          id: session.id,
+          kind: 'interactive',
+          status: 'stopped',
+          alive: false,
+          ended: true,
+          external_only: true,
+          claude_session_id: session.id,
+          ...(session.title ? { name: session.title } : {}),
+          cwd: session.cwd,
+          updated_at_ms: session.mtime_ms,
+        }))
+    : [];
+  return { agents: [...headless, ...visible, ...ended], hidden };
 }
 
 /** The terminal host's `claude agents --json`, or why there is none. */
@@ -470,19 +513,38 @@ export function registerAgents(
       showAll = replies,
       markExternal = false,
       readSnapshot = cliSnapshot,
+      ended = false,
     }: {
       host?: Prepared;
       replies?: boolean;
       showAll?: boolean;
       markExternal?: boolean;
       readSnapshot?: typeof cliSnapshot;
+      /** Read the ended sessions of the host's transcripts too, once this settles true. */
+      ended?: boolean | Promise<boolean>;
     } = {},
   ) => {
-    const [records, snapshot, hooked, ptys] = await Promise.all([
-      listSessions(iii),
+    const sessions = listSessions(iii);
+    // Alongside the CLI listing, under the reader's own cap; a failure lists none.
+    // The ids the CLI lists are dropped at the merge, which is why it reads more.
+    const endedRead = Promise.all([sessions, ended])
+      .then(([own, wanted]) =>
+        wanted
+          ? readEndedSessions(
+              iii,
+              host.env,
+              own.map((record) => record.claude_session_id).filter((id): id is string => !!id),
+              { limit: ENDED_READ_LIMIT },
+            )
+          : [],
+      )
+      .catch(() => []);
+    const [records, snapshot, hooked, ptys, endedSessions] = await Promise.all([
+      sessions,
       readSnapshot(iii, host, all),
       !showAll ? hookSessions(iii) : new Set<string>(),
       replies ? null : claudePtys(iii),
+      endedRead,
     ]);
     const merge = (externalVisibility = showAll, tmuxOf?: (pid: number) => TmuxPane | undefined) =>
       mergeInventory({
@@ -498,6 +560,7 @@ export function registerAgents(
         tmuxOf,
         external: externalVisibility,
         markExternal,
+        ended: endedSessions,
       });
     return { merge, detail: snapshot.detail };
   };
@@ -589,12 +652,15 @@ export function registerAgents(
       // The setting read starts with them: it tells an off setting from an
       // unconfirmed one when host rows are hidden, and is otherwise unused.
       const setting = fetchRuntime(iii);
+      const confirmed = access.confirm({ waitForWatchCheckpoint: !include_config_id });
       const [epoch, { merge, detail }] = await Promise.all([
-        access.confirm({ waitForWatchCheckpoint: !include_config_id }),
+        confirmed,
         inventory(all === true, {
           showAll: false,
           markExternal: include_config_id,
           readSnapshot: include_config_id ? railSnapshot : cliSnapshot,
+          // Transcripts are read only under a live grant; publication still checks it.
+          ended: confirmed.then((granted) => granted !== null).catch(() => false),
         }),
       ]);
       // The tmux pane of a live terminal session, looked up only with a live grant;
@@ -720,8 +786,10 @@ export function registerAgents(
 
   const resolveOpen: ResolveOpen = async (id, request) => {
     const epoch = access.epoch;
+    // Ended rows too, so a dead row resumes and a live conversation is refused.
     const { merge, detail } = await inventory(true, {
       showAll: epoch !== null,
+      ended: epoch !== null,
     });
     if (epoch !== access.epoch) throw new Error('session visibility changed; refresh the list');
     if (detail)

@@ -263,6 +263,24 @@ one row per session:
   `external_sessions` on: it is what `claude::agents::stop` needs.
   `pty_session_id` names the console terminal (`shell::pty`) that runs the
   session, when one does.
+- ended `interactive` sessions, only with a confirmed live
+  `external_sessions: true`: sessions no process runs any more, read from the
+  terminal host's transcripts (`$CLAUDE_CONFIG_DIR/projects`, else
+  `~/.claude/projects`, no symlink followed below it). Only top-level files
+  named `<uuid>.jsonl` modified in the last 7 days count, and only a bounded
+  head of each is read: a session the CLI started interactively (`entrypoint`
+  `cli`) with a recorded folder. At most 20, newest first, each with
+  `alive: false`, `ended: true`, `status: "stopped"`, `cwd` (the folder of its
+  first record that has one), `name` (its title, when it has one) and
+  `updated_at_ms` (when the transcript last changed). No message text is read
+  into the list. A session `claude agents --json --all` lists (live, or a
+  finished background one) and a run of this worker are never listed again as
+  ended. The read runs alongside the CLI listing under its own short cap; when
+  it times out or fails, the list has no ended rows and is otherwise unchanged.
+  Resume (`claude::terminal::describe` with `mode: "resume"`) opens one with
+  `claude --resume <id>` in that folder, and refuses while a process has the
+  conversation open again. An ended row is not a reply source: the reply and
+  follow lookups do not find it.
 
 That output has no versioned contract, so a value this worker does not know
 reads as `unknown`, and a failed or unreadable listing leaves only the
@@ -279,8 +297,9 @@ that id, and for interactive sessions, which nothing here can stop.
 
 The console's **claude** page shows this list in a rail beside the terminal:
 the sessions open in this console, the others on the host, of which a live
-background one can be stopped, and the worker's own runs, which take a message
-(`claude::start`) or a stop (`claude::stop`). It re-reads when a turn starts or settles (`claude_sessions`
+background one can be stopped, the worker's own runs, which take a message
+(`claude::start`) or a stop (`claude::stop`), and, under **Ended**, the ended
+interactive sessions, newest first, which take a Resume. It re-reads when a turn starts or settles (`claude_sessions`
 and `claude_turns` in state), when a hooked terminal reports a session start, a
 prompt, a stop or an end, when the terminal beside it changes session, when the
 window gains focus, and on its refresh button.

@@ -1,6 +1,15 @@
-import { appendFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type CliRow, mergeInventory, parseAgentsJson, registerAgents } from '../src/agents.js';
+import {
+  type AgentRow,
+  type CliRow,
+  mergeInventory,
+  parseAgentsJson,
+  registerAgents,
+} from '../src/agents.js';
 import { CONFIG_ID, observeConfigChanges } from '../src/configuration.js';
 import type { SessionRecord } from '../src/types.js';
 import {
@@ -11,6 +20,7 @@ import {
   MiB,
   record as transcriptRecord,
   recordId,
+  runnerPath,
   withSyntheticHost,
 } from './_helpers/external-replies-host.js';
 import { type FakeIii, fakeIii } from './_helpers/fake-iii.js';
@@ -557,9 +567,12 @@ describe('claude::agents::list', () => {
     await list(fake);
     await list(fake, { all: true });
     const execs = fake.calls.filter((c) => c.function_id === 'shell::exec');
+    // With the grant on, the ended-session transcript reader runs beside each listing.
     expect(execs.map((c) => c.payload.command)).toEqual([
       "'/opt/claude bin/claude' agents --json",
+      'python3',
       "'/opt/claude bin/claude' agents --json --all",
+      'python3',
     ]);
     expect(execs[0].payload).toMatchObject({ env: { HOME: '/home/u' }, timeout_ms: 15_000 });
   });
@@ -809,8 +822,10 @@ describe('claude::agents::stop', () => {
       { id: BG, alive: true, short_id: 'abcdef01' },
     ]);
     expect(await stop(fake)).toEqual({ id: BG, stopped: true });
+    // The listing also reads ended sessions; stop reads only a fresh CLI listing.
     expect(commands(fake)).toEqual([
       "'/opt/claude bin/claude' agents --json",
+      'python3',
       "'/opt/claude bin/claude' agents --json",
       "'/opt/claude bin/claude' stop abcdef01",
     ]);
@@ -1580,5 +1595,201 @@ describe('a conversation open on the terminal host', () => {
   it('is held by nothing where the host cannot be read', async () => {
     const fake = host(() => ({ stdout: '', stderr: 'boom', exit_code: 2 }));
     expect(await fake.heldElsewhere('live')).toBe(false);
+  });
+});
+
+describe('ended interactive sessions from transcripts', () => {
+  const ELSEWHERE = 'This session is open in another terminal. Close it there to resume it.';
+  const DAY = 86_400_000;
+  const uuid = (n: number) => `e0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'claude-ended-'));
+  });
+  afterEach(() => rm(root, { recursive: true, force: true }));
+
+  /** A transcript the CLI wrote for session `id`, last modified `ageMs` ago. */
+  async function transcript(
+    name: string,
+    records: unknown[],
+    ageMs = DAY,
+    project = '-work-a',
+  ): Promise<void> {
+    const dir = join(root, 'projects', project);
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, name);
+    await writeFile(file, records.map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const at = new Date(Date.now() - ageMs);
+    await utimes(file, at, at);
+  }
+  const recordsOf = (id: string, { cwd = '/work/a', entrypoint = 'cli', title = '' } = {}) => [
+    { type: 'mode', mode: 'normal', sessionId: id },
+    ...(title ? [{ type: 'ai-title', aiTitle: title, sessionId: id }] : []),
+    {
+      type: 'user',
+      uuid: recordId(1),
+      parentUuid: null,
+      sessionId: id,
+      entrypoint,
+      cwd,
+      message: { role: 'user', content: 'private prompt' },
+    },
+  ];
+  const session = (id: string, ageMs = DAY, options: Parameters<typeof recordsOf>[1] = {}) =>
+    transcript(`${id}.jsonl`, recordsOf(id, options), ageMs);
+
+  type Reader = 'real' | 'stall' | 'fail';
+  /** A terminal host whose transcripts the real python reader reads from `root`, its CLAUDE_CONFIG_DIR. */
+  function endedHost(
+    rows: () => CliRow[],
+    options: Parameters<typeof host>[1] & { reader?: () => Reader } = {},
+  ) {
+    return host(
+      (command, args) => {
+        if (command !== 'python3') return ok(rows())();
+        const reader = options.reader?.() ?? 'real';
+        if (reader === 'stall') return new Promise(() => {});
+        if (reader === 'fail') return { stdout: '', stderr: 'private diagnostic', exit_code: 1 };
+        const r = spawnSync('python3', args ?? [], {
+          env: { ...runnerPath(), CLAUDE_CONFIG_DIR: root },
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        return { stdout: r.stdout, stderr: r.stderr, exit_code: r.status ?? -1 };
+      },
+      { external: true, ...options },
+    );
+  }
+  const agentsOf = async (fake: FakeIii) =>
+    ((await list(fake, { all: true })) as unknown as { agents: AgentRow[] }).agents;
+  const endedIds = async (fake: FakeIii) =>
+    (await agentsOf(fake)).filter((a) => a.ended).map((a) => a.id);
+
+  it('ended session listed with its recorded cwd and title', async () => {
+    await session(uuid(1), DAY, { title: 'Plan the release' });
+    const agents = await agentsOf(endedHost(() => []));
+    expect(agents).toEqual([
+      {
+        id: uuid(1),
+        kind: 'interactive',
+        status: 'stopped',
+        alive: false,
+        ended: true,
+        external_only: true,
+        claude_session_id: uuid(1),
+        name: 'Plan the release',
+        cwd: '/work/a',
+        updated_at_ms: expect.any(Number),
+      },
+    ]);
+    expect(Math.abs(Date.now() - DAY - (agents[0].updated_at_ms ?? 0))).toBeLessThan(60_000);
+    // Metadata only: no message text leaves the host.
+    expect(JSON.stringify(agents)).not.toContain('private prompt');
+  });
+
+  it('lists the first recorded cwd of a transcript with two', async () => {
+    await transcript(`${uuid(1)}.jsonl`, [
+      ...recordsOf(uuid(1), { cwd: '/work/first' }),
+      { ...recordsOf(uuid(1), { cwd: '/work/second' })[1], uuid: recordId(2) },
+    ]);
+    const [row] = await agentsOf(endedHost(() => []));
+    expect(row).toMatchObject({ id: uuid(1), cwd: '/work/first' });
+  });
+
+  it('does not list a transcript older than 7 days', async () => {
+    await session(uuid(1), 8 * DAY);
+    await session(uuid(2), 6 * DAY);
+    expect(await endedIds(endedHost(() => []))).toEqual([uuid(2)]);
+  });
+
+  it('lists the 20 newest of 25 qualifying transcripts, newest first', async () => {
+    for (let n = 0; n < 25; n++) await session(uuid(n), (n + 1) * 3_600_000);
+    expect(await endedIds(endedHost(() => []))).toEqual(
+      Array.from({ length: 20 }, (_, n) => uuid(n)),
+    );
+  });
+
+  it('does not list a headless transcript as ended', async () => {
+    await session(uuid(1), DAY, { entrypoint: 'sdk-ts' });
+    await session(uuid(2), DAY);
+    expect(await endedIds(endedHost(() => []))).toEqual([uuid(2)]);
+  });
+
+  it('does not list a non-uuid transcript name', async () => {
+    await transcript('notes.jsonl', recordsOf(uuid(1)));
+    await transcript(`${uuid(2)}-copy.jsonl`, recordsOf(uuid(2)));
+    await transcript(`${uuid(3)}.json`, recordsOf(uuid(3)));
+    expect(await endedIds(endedHost(() => []))).toEqual([]);
+  });
+
+  it('lists a live id not ended, only as its live row', async () => {
+    await session(uuid(1));
+    const agents = await agentsOf(endedHost(() => [interactive(uuid(1), 'idle')]));
+    expect(agents.filter((a) => a.claude_session_id === uuid(1))).toEqual([
+      expect.objectContaining({ id: uuid(1), alive: true }),
+    ]);
+    expect(agents.some((a) => a.ended)).toBe(false);
+  });
+
+  it('lists a finished background not ended, only as its background row', async () => {
+    await session(uuid(1));
+    const agents = await agentsOf(endedHost(() => [background(uuid(1), 'done')]));
+    expect(agents).toEqual([expect.objectContaining({ id: uuid(1), kind: 'background' })]);
+    expect(agents[0]).not.toHaveProperty('ended');
+  });
+
+  it.each<Reader>([
+    'stall',
+    'fail',
+  ])('lists no ended rows on an ended reader failure (%s) and keeps the live ones', async (reader) => {
+    await session(uuid(1));
+    const fake = endedHost(() => [interactive(uuid(9), 'busy')], { reader: () => reader });
+    const result = (await list(fake, { all: true })) as unknown as {
+      agents: AgentRow[];
+      inventory_status: string;
+      detail?: string;
+    };
+    expect(result.agents.map((a) => a.id)).toEqual([uuid(9)]);
+    expect(result.inventory_status).toBe('available');
+    expect(result.detail ?? '').not.toContain('private diagnostic');
+  });
+
+  it('keeps ended sessions hidden with external_sessions off, without reading transcripts', async () => {
+    await session(uuid(1));
+    const fake = endedHost(() => [], { external: false });
+    expect(await agentsOf(fake)).toEqual([]);
+    await expect(
+      fake.resolveOpen(uuid(1), { mode: 'resume', claude_session_id: uuid(1), guard: 'g' }),
+    ).rejects.toThrow('no session with that id is listed');
+    expect(fake.calls.map((c) => c.payload.command)).not.toContain('python3');
+  });
+
+  it('resume ended gives --resume <id> in its recorded folder', async () => {
+    await session(uuid(1), DAY, { cwd: '/work/ended' });
+    const fake = endedHost(() => []);
+    expect(await endedIds(fake)).toEqual([uuid(1)]);
+    const spec = await fake.resolveOpen(uuid(1), {
+      mode: 'resume',
+      claude_session_id: uuid(1),
+      guard: 'g',
+    });
+    expect(spec).toMatchObject({
+      args: ['--plugin-dir', '/p', '--resume', uuid(1)],
+      cwd: '/work/ended',
+    });
+    expect(spec).not.toHaveProperty('copy');
+    // Not a reply source: the reply and follow lookups do not find it.
+    await expect(fake.replyRow(uuid(1))).rejects.toThrow('session not listed');
+  });
+
+  it('refuses with OPEN_ELSEWHERE an ended id running again', async () => {
+    await session(uuid(1));
+    let rows: CliRow[] = [];
+    const fake = endedHost(() => rows);
+    expect(await endedIds(fake)).toEqual([uuid(1)]);
+    rows = [interactive(uuid(1), 'idle')];
+    await expect(
+      fake.resolveOpen(uuid(1), { mode: 'resume', claude_session_id: uuid(1), guard: 'g' }),
+    ).rejects.toThrow(new Error(ELSEWHERE));
   });
 });

@@ -518,3 +518,181 @@ export async function readTranscript(
   }
   throw new Error('transcript unavailable');
 }
+
+/** An interactive session no process runs, as its transcript records it. */
+const EndedSession = z.strictObject({
+  id: z.guid(),
+  cwd: z.string().min(1).max(4096).startsWith('/'),
+  title: z.string().min(1).max(200).optional(),
+  mtime_ms: z.number().int().nonnegative(),
+});
+export type EndedSession = z.infer<typeof EndedSession>;
+/** At most this many sessions in one read. */
+export const MAX_ENDED = 64;
+const EndedListing = z.strictObject({ sessions: z.array(EndedSession).max(MAX_ENDED) });
+// Every listed cwd and title escaped to \uXXXX, with room to spare.
+const MAX_ENDED_STDOUT = 1 << 20;
+export const ENDED_READ_MS = 3_000;
+
+// Runs on the terminal host, like READER: the same projects root, pinned the
+// same way, never following a symlink below it. It lists the top-level
+// `<uuid>.jsonl` transcripts modified within 7 days, newest first, and reads
+// only a bounded head of each: interactive (`entrypoint` `cli`) sessions with
+// a recorded cwd, the ids in argv after the limit skipped, at most the limit
+// (argv's first value, 1 to 64). It prints only the id,
+// the cwd of the first record that has one, the title and the mtime.
+const ENDED_READER = String.raw`
+import json, os, re, stat, sys, time
+
+NAME = re.compile(r'([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.jsonl')
+DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+FILE = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+WINDOW_NS, HEAD, MAX_HEADS = 7 * 86400 * 10**9, 64 << 10, 200
+MAX_PROJECTS, MAX_FILES, MAX_CWD, MAX_TITLE = 4096, 65536, 4096, 200
+
+def require(ok):
+    if not ok:
+        raise ValueError()
+
+def reject_constant(_):
+    raise ValueError()
+
+def pinned_root():
+    base = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
+    path = os.path.realpath(os.path.join(base, 'projects'))
+    root = os.open('/', DIR)
+    try:
+        for component in path.split('/'):
+            if component:
+                child = os.open(component, DIR, dir_fd=root)
+                os.close(root)
+                root = child
+    except BaseException:
+        os.close(root)
+        raise
+    return root
+
+def candidates(root, skip, oldest):
+    found = []
+    with os.scandir(root) as projects:
+        for count, project in enumerate(projects, 1):
+            require(count <= MAX_PROJECTS)
+            if project.is_symlink() or not project.is_dir(follow_symlinks=False):
+                continue
+            sub = os.open(project.name, DIR, dir_fd=root)
+            try:
+                with os.scandir(sub) as files:
+                    for n, entry in enumerate(files, 1):
+                        require(n <= MAX_FILES)
+                        match = NAME.fullmatch(entry.name)
+                        if not match or match.group(1).lower() in skip or entry.is_symlink():
+                            continue
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISREG(info.st_mode) and info.st_mtime_ns >= oldest:
+                            found.append((info.st_mtime_ns, project.name, entry.name, match.group(1), info))
+            finally:
+                os.close(sub)
+    found.sort(key=lambda c: (-c[0], c[1], c[2]))
+    return found
+
+def head(root, project, name, sid, listed):
+    # The cwd and title of a cli session, from the first HEAD bytes only.
+    sub = os.open(project, DIR, dir_fd=root)
+    try:
+        fd = os.open(name, FILE, dir_fd=sub)
+    finally:
+        os.close(sub)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and os.path.samestat(info, listed))
+        data = os.pread(fd, HEAD, 0)
+    finally:
+        os.close(fd)
+    # A last line the bound cut is not read.
+    entrypoint, cwd, titles = None, None, {}
+    for line in data[:data.rfind(b'\n') + 1].splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line.decode('utf-8'), parse_constant=reject_constant)
+        require(isinstance(row, dict) and row.get('sessionId', sid) == sid)
+        if entrypoint is None and 'entrypoint' in row:
+            entrypoint = row['entrypoint']
+            require(entrypoint == 'cli')
+        if cwd is None and 'cwd' in row:
+            cwd = row['cwd']
+            require(isinstance(cwd, str) and cwd.startswith('/') and '\0' not in cwd and len(cwd) <= MAX_CWD)
+        for kind, field in (('custom-title', 'customTitle'), ('ai-title', 'aiTitle')):
+            if row.get('type') == kind and isinstance(row.get(field), str):
+                titles[kind] = ' '.join(row[field].split())[:MAX_TITLE]
+    require(entrypoint == 'cli' and cwd is not None)
+    return cwd, titles.get('custom-title') or titles.get('ai-title')
+
+def listing(limit, skip):
+    require(1 <= limit <= 64)
+    root = pinned_root()
+    try:
+        out, seen = [], set()
+        found = candidates(root, skip, time.time_ns() - WINDOW_NS)
+        for reads, (mtime, project, name, sid, info) in enumerate(found):
+            if len(out) == limit or reads == MAX_HEADS:
+                break
+            if sid.lower() in seen:
+                continue
+            try:
+                cwd, title = head(root, project, name, sid, info)
+            except Exception:
+                continue
+            seen.add(sid.lower())
+            row = {'id': sid, 'cwd': cwd, 'mtime_ms': mtime // 1000000}
+            if title:
+                row['title'] = title
+            out.append(row)
+        return json.dumps({'sessions': out}, separators=(',', ':'))
+    finally:
+        os.close(root)
+
+try:
+    require(re.fullmatch(r'[0-9]{1,2}', sys.argv[1]))
+    sys.stdout.write(listing(int(sys.argv[1]), {sid.lower() for sid in sys.argv[2:]}))
+except Exception:
+    sys.exit(1)
+`;
+
+/**
+ * At most `limit` ended interactive sessions of the terminal host's
+ * transcripts, newest first, skipping the ids in `skip`. Empty when the
+ * reader fails, prints anything else, or outlasts `timeoutMs`: a listing
+ * never waits longer on it or fails because of it.
+ */
+export async function readEndedSessions(
+  iii: IIIClient,
+  env: Record<string, string>,
+  skip: Iterable<string>,
+  { limit = 20, timeoutMs = ENDED_READ_MS }: { limit?: number; timeoutMs?: number } = {},
+): Promise<EndedSession[]> {
+  const count = Math.min(Math.max(Math.trunc(limit), 1), MAX_ENDED);
+  // They become argv: only UUIDs, so none can read as a flag.
+  const ids = [...new Set(skip)].filter((id) => z.guid().safeParse(id).success);
+  const skipped = new Set(ids.map((id) => id.toLowerCase()));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      exec(iii, 'python3', {
+        args: ['-I', '-S', '-B', '-c', ENDED_READER, String(count), ...ids],
+        env,
+        timeoutMs,
+      })
+        .then((r) => {
+          if (r.exit_code !== 0 || r.stdout.length > MAX_ENDED_STDOUT) return [];
+          const { sessions } = EndedListing.parse(JSON.parse(r.stdout));
+          return sessions.filter((s) => !skipped.has(s.id.toLowerCase())).slice(0, count);
+        })
+        .catch(() => []),
+      new Promise<EndedSession[]>((resolve) => {
+        timer = setTimeout(() => resolve([]), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

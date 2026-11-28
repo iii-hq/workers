@@ -57,6 +57,27 @@ rows.push({
   cwd: '/fixture/workspace',
   tmux: { session: '$0', window: '@4', pane: '%25' },
 } as (typeof rows)[number]);
+// Interactive sessions that ended on the host, read from their transcripts:
+// listed out of order, so the rail's 'Ended' group must sort them, newest first.
+for (const [n, name, ageMs] of [
+  [1, 'Yesterday plan', 86_400_000],
+  [2, 'Latest fix', 3_600_000],
+  [3, 'Old notes', 3 * 86_400_000],
+] as const) {
+  const id = `e234567${n}-1234-4321-8123-000000000001`;
+  rows.push({
+    id,
+    claude_session_id: id,
+    name,
+    external_only: true,
+    kind: 'interactive',
+    alive: false,
+    ended: true,
+    status: 'stopped',
+    cwd: '/fixture/ended',
+    updated_at_ms: Date.now() - ageMs,
+  } as (typeof rows)[number]);
+}
 type Pane = { session: string; window: string; pane: string };
 const paneOf = (row: (typeof rows)[number]) => (row as { tmux?: Pane }).tmux;
 const tmuxAttach = (pane: Pane) => [
