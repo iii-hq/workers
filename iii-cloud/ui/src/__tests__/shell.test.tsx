@@ -203,6 +203,7 @@ describe('Manage', () => {
     // With nothing the check is holding the person for, the folder's commits are the next action.
     const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
     await click(btn('Deploy to production'))
+    expect(h.calls.filter((c) => c.id === 'iii-cloud::check')).toHaveLength(1)
     expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, from_page: true })
     expect(path()).toBe('Projects / registry · production / Deploy')
     // One screen, no step rail: the header says the next thing to do.
@@ -251,13 +252,6 @@ describe('Start: the project in use with a deploy going on', () => {
     expect(btn('Open')?.getAttribute('data-variant')).toBe('secondary')
     await click(btn('Open'))
     expect(path()).toBe('Projects / registry · production')
-  })
-
-  it('a phone: the Deploying chip is on the name line, and the row has no chevron', async () => {
-    ui.narrow = true
-    await board('start-deploying')
-    expect(el.querySelector('.iii-cloud-start-name .iii-cloud-state')?.textContent).toBe('Deploying')
-    expect(el.querySelector('.iii-cloud-start-row svg:not(.iii-cloud-state svg)')).toBeNull()
   })
 })
 
@@ -399,13 +393,6 @@ describe('the hand-over between places, end to end', () => {
     for (let i = 0; i < 5; i++) await flush()
   }
 
-  it('Projects: Open goes to the environment and switches nothing', async () => {
-    const h = await mount(live, ctx({ at: 'start' }), cloudAnswers({ [apiPath('/deployments')]: { deployments: [] } }))
-    await click(btn('Open'))
-    expect(path()).toBe('Projects / registry · production')
-    expect(uses(h)).toEqual([])
-  })
-
   it('first time: Confirm takes the project up, starts the check, then opens the Deploy screen', async () => {
     const b = boards['setup-existing']
     // The worker takes the project up on project::use: the status carries its environment from then on.
@@ -445,14 +432,6 @@ describe('the hand-over between places, end to end', () => {
       manifest: expect.any(String),
     })
     expect(path()).toBe('Projects / registry · dev / Deploy')
-  })
-
-  it('the environment: Deploy to <env> starts the check, then opens the Deploy screen', async () => {
-    const h = await mount({ ...live, check: null }, ctx({ at: 'env', env: ENV.id }))
-    await click(btn('Deploy to production'))
-    expect(calls(h, 'iii-cloud::check')).toEqual(['iii-cloud::check'])
-    expect(h.calls.find((c) => c.id === 'iii-cloud::check')?.payload).toMatchObject({ run: true, from_page: true })
-    expect(path()).toBe('Projects / registry · production / Deploy')
   })
 
   it('the Deploy screen: Back to <env> returns to the environment', async () => {

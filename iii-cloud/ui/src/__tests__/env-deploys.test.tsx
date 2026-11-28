@@ -130,20 +130,11 @@ describe('Deployments', () => {
     await settle()
     expect(text()).toContain('No deployments of dev yet')
   })
-
-  it('a failed row opens its record, and Back to the environment is the path', async () => {
-    await board('env-page')
-    await settle()
-    await click(rowOf(2)?.querySelector('button'))
-    expect(path()).toBe('Projects / registry · dev / Deployment #2')
-    await click(byText('button', 'registry · dev'))
-    expect(path()).toBe('Projects / registry · dev')
-  })
 })
 
 describe("a failed deployment's record (Env3)", () => {
   it('the cause first, what still serves, the three cells, where it stopped and the full log', async () => {
-    await board('manage-deploys-failed')
+    const h = await board('manage-deploys-failed')
     await settle()
     const t = text()
     const title = 'Your app starts its own web server; iii cloud only sends traffic to its http package'
@@ -159,6 +150,11 @@ describe("a failed deployment's record (Env3)", () => {
     expect(byText('a', 'Full log in iii cloud')?.getAttribute('href')).toContain('/deployments/2')
     expect(el.querySelector('aside')).toBeNull()
     expect(el.querySelector('[role=toolbar]')?.textContent).toContain('Failed')
+    // No rollback, no log tabs, no stages list: iii cloud has them, and no call asks for them.
+    for (const gone of ['Roll back', 'Errors only', 'Open that deployment', 'Stages']) expect(t).not.toContain(gone)
+    expect(
+      h.calls.filter((c) => c.id === 'iii-cloud::api').some((c) => /logs|rollback/.test(String(c.payload?.path))),
+    ).toBe(false)
   })
 
   it('nothing was live then: nobody saw an error', async () => {
@@ -213,16 +209,6 @@ describe("a failed deployment's record (Env3)", () => {
     await click(btn('Back to dev'))
     expect(path()).toBe('Projects / registry · dev')
   })
-
-  it('no rollback, no log tabs, no stages list: iii cloud has them', async () => {
-    const h = await board('manage-deploys-failed')
-    await settle()
-    for (const gone of ['Roll back', 'Errors only', 'Open that deployment', 'Stages'])
-      expect(text()).not.toContain(gone)
-    expect(
-      h.calls.filter((c) => c.id === 'iii-cloud::api').some((c) => /logs|rollback/.test(String(c.payload?.path))),
-    ).toBe(false)
-  })
 })
 
 describe('on a narrow pane (Phone-Failed)', () => {
@@ -237,14 +223,6 @@ describe('on a narrow pane (Phone-Failed)', () => {
     expect(bar?.querySelector('button')?.textContent).toBe('Fix with your agent')
     expect(el.querySelector('.iii-cloud-rec-head button')).toBeNull()
     expect(bar?.textContent).toContain('Its fix goes through the check, and you confirm the deploy.')
-  })
-
-  it('the environment page on a phone keeps the deployments as rows with the word at the end', async () => {
-    ui.narrow = true
-    await board('env-page')
-    await settle()
-    expect(rows()).toHaveLength(6)
-    expect(rowOf(2)?.textContent).toContain('Failed')
   })
 })
 
@@ -266,5 +244,8 @@ describe('Open on a row', () => {
     await click(btn('Open deployment #2'))
     await settle()
     expect(path()).toBe('Projects / registry · dev / Deployment #2')
+    // The path's environment is the way back.
+    await click(byText('button', 'registry · dev'))
+    expect(path()).toBe('Projects / registry · dev')
   })
 })

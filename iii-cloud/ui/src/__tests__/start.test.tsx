@@ -36,7 +36,7 @@ const showStart = async (status: Status = startStatus, answers = {}) => {
 
 describe('Projects (desktop)', () => {
   it('the path, who is signed in, the count, one add button, the rows in order (in use, recent, this folder’s other projects)', async () => {
-    await board('start')
+    const h = await board('start')
     await settle()
     expect(path()).toBe('Projects')
     const bar = el.querySelector('[role=toolbar]')?.textContent
@@ -55,25 +55,36 @@ describe('Projects (desktop)', () => {
       '~/workspaces/registry',
     )
     expect(text()).toContain("Opening a project doesn't stop the others.")
-  })
-
-  it('every row has one action, Open; no Switch, no In use, nothing about a worker moving', async () => {
-    await board('start')
-    await settle()
+    // Every row has one action, Open: no Switch, no In use, nothing about a worker moving.
     for (const name of ['registry', 'billing', 'registry-3', 'registry-eu']) {
       expect([...(place(name)?.querySelectorAll('button') ?? [])].map((b) => b.textContent)).toEqual(['Open'])
     }
     expect(text()).not.toMatch(/Switch|In use|this worker|the worker/)
-  })
-
-  it('the pill is the state of the environment: Live, Deploying, Failed, Not deployed yet, Deleted', async () => {
-    await board('start')
-    await settle()
+    // The pill is the state of the environment.
     expect(pill('registry')).toBe('Live')
     expect(pill('billing')).toBe('Deploying')
     expect(pill('registry-eu')).toBe('Failed')
     expect(pill('registry-3')).toBe('Not deployed yet')
     expect(pill('old')).toBe('Deleted')
+    // Deleted in iii cloud: until when it can be restored, the way to iii cloud, and no Open.
+    expect(lines('old')[0]).toBe('restorable until 3 Dec')
+    expect(place('old')?.querySelector('a')?.textContent).toBe('Open in iii cloud')
+    expect(place('old')?.querySelector('a')?.getAttribute('href')).toMatch(
+      /^https:\/\/cloud\.iii\.dev\/iii\/deletions$/,
+    )
+    expect(openOf('old')).toBeNull()
+    // Open takes another project up with project::use, then lands on its environment.
+    expect(openOf('billing')?.getAttribute('aria-label')).toBe('Open billing in ~/workspaces/billing')
+    await click(openOf('billing'))
+    expect(uses(h)).toEqual([
+      {
+        path: '/home/you/workspaces/billing',
+        cloud_project_id: 'p-billing',
+        environment_id: 'e-billing-dev',
+        mode: 'checkout',
+      },
+    ])
+    expect(path()).toBe('Projects / registry · production')
   })
 
   it('something waits on the person in the project in use: its pill says Needs you, its line what waits', async () => {
@@ -125,22 +136,6 @@ describe('Projects (desktop)', () => {
     expect(pill('billing')).toBeUndefined()
   })
 
-  it('Open takes another project up with project::use, then lands on its environment', async () => {
-    const h = await board('start')
-    await settle()
-    expect(openOf('billing')?.getAttribute('aria-label')).toBe('Open billing in ~/workspaces/billing')
-    await click(openOf('billing'))
-    expect(uses(h)).toEqual([
-      {
-        path: '/home/you/workspaces/billing',
-        cloud_project_id: 'p-billing',
-        environment_id: 'e-billing-dev',
-        mode: 'checkout',
-      },
-    ])
-    expect(path()).toBe('Projects / registry · production')
-  })
-
   it('until iii cloud lists the environments, Open is off and busy', async () => {
     const answers = cloudAnswers(startCloud)
     const api = (q: Record<string, unknown>) =>
@@ -169,17 +164,6 @@ describe('Projects (desktop)', () => {
     await showStart(startStatus, { 'iii-cloud::project::use': answer })
     await click(openOf('billing'))
     expect(text()).toContain('dev no longer exists; showing production')
-  })
-
-  it('deleted in iii cloud: the Deleted pill, until when it can be restored, the way to iii cloud, and no Open', async () => {
-    await board('start')
-    await settle()
-    expect(lines('old')[0]).toBe('restorable until 3 Dec')
-    expect(place('old')?.querySelector('a')?.textContent).toBe('Open in iii cloud')
-    expect(place('old')?.querySelector('a')?.getAttribute('href')).toMatch(
-      /^https:\/\/cloud\.iii\.dev\/iii\/deletions$/,
-    )
-    expect(openOf('old')).toBeNull()
   })
 
   it('deleted, in a team the person is no longer in: no link to the console (never another team’s)', async () => {

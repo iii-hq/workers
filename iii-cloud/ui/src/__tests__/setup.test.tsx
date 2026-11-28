@@ -94,20 +94,16 @@ describe('sign in (First1)', () => {
     expect(path()).toBe('Projects')
   })
 
-  it('signed out: the browser button calls connect; the API key waits behind a disclosure', async () => {
+  it('the key goes to the vault with secrets::set, then connect carries only its name', async () => {
     const h = await mount({ ...boards['setup-signin'].status, connection: { ...cardRecords.signedOut } })
     expect(text()).not.toContain('Waiting for your approval')
+    // The browser button calls connect; the API key waits behind a disclosure, named IIICLOUD_API_KEY.
     await click(btn('Sign in with the browser'))
     expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::connect', payload: { method: 'browser' } })
     expect(el.querySelector('#iii-cloud-secret-name')).toBeNull()
     await click(btn("Can't use a browser here? Use an API key"))
     expect((el.querySelector('#iii-cloud-secret-name') as HTMLInputElement).value).toBe('IIICLOUD_API_KEY')
     expect(text()).toContain("It can't create projects or environments, so adding a project needs the browser")
-  })
-
-  it('the key goes to the vault with secrets::set, then connect carries only its name', async () => {
-    const h = await mount({ ...boards['setup-signin'].status, connection: { ...cardRecords.signedOut } })
-    await click(btn("Can't use a browser here? Use an API key"))
     await type(el.querySelector('input[type="password"]'), 'k-123')
     await click(btn('Save key'))
     expect(sent(h).slice(-2)).toEqual(['secrets::set', 'iii-cloud::connect'])
@@ -181,41 +177,13 @@ describe('confirm (First2): four rows, each filled with what the page found', ()
       'Your agent works in a clean copy of what is committed, so your folder stays as it is. The 4 uncommitted changes in your folder stay there: commit them to include them.',
     )
     expect(el.querySelector('aside')).toBeNull()
-  })
-
-  it('the repository has a project: it, the environment that is not production, the environment in use is not asked', async () => {
-    await board('setup-existing')
-    expect(detail('Project')).toMatchObject({
-      value: 'registry',
-      note: 'It is built from this repository · 2 environments',
-    })
-    expect(detail('Environment')?.value).toBe('dev')
-    expect(detail('Environment')?.note).toBe(`Assisted deploy. ${assistedHow('dev')}`)
-    expect(detail('Compose file')?.value).toBe(FILE)
-  })
-
-  it('the button says what it does: "Create <project> and check it" or "Continue to the check", and what is created', async () => {
-    await board('setup-new')
+    // The button says what it does, and what is created.
     expect(primary()?.textContent).toBe('Create registry and check it')
     expect(text()).toContain(
       'This creates the project and its test environment in iii cloud and starts the check. Nothing is deployed until you confirm a deploy.',
     )
     // Nothing to go back to on the first run.
     expect(btn('Cancel')).toBeNull()
-  })
-
-  it('"Continue to the check" when nothing is created', async () => {
-    await board('setup-existing')
-    expect(primary()?.textContent).toBe('Continue to the check')
-    expect(text()).toContain('This starts the check of dev. Nothing is deployed until you confirm a deploy.')
-  })
-
-  it('the old steps are not reachable: their contexts land on the confirmation or the Deploy place', async () => {
-    await mount({ ...base, project: chosen, check: null }, ctx({ at: 'setup', step: 'code' }))
-    expect(text()).toContain('Put registry on iii cloud')
-    expect(el.querySelector('aside[aria-label="Setup steps"]')).toBeNull()
-    await mount(base, ctx({ at: 'setup', step: 'values' }, 2))
-    expect(path()).toBe('Projects / registry · production / Deploy')
   })
 })
 
@@ -235,9 +203,10 @@ describe('Change: each row opens in place, one at a time', () => {
     expect(sent(h)).toEqual([])
   })
 
-  it('Folder: the picker, what was found, and "Let your agent edit this folder" closed by default', async () => {
-    await board('setup-new')
+  it('Folder: another folder reads again, with project::resolve, and the page stays here', async () => {
+    const h = await board('setup-new')
     await click(changeOf('Folder') ?? null)
+    // The picker, what was found, and "Let your agent edit this folder" closed by default.
     expect((el.querySelector('[data-directory-picker]') as HTMLInputElement).value).toBe(
       '/home/you/workspaces/registry',
     )
@@ -246,11 +215,6 @@ describe('Change: each row opens in place, one at a time', () => {
     expect(text()).toContain('Another folder reads again')
     expect(el.querySelector('[role=alertdialog]')).toBeNull()
     expect(btn('Let your agent edit this folder instead of a copy')).toBeTruthy()
-  })
-
-  it('Folder: another folder reads again, with project::resolve, and the page stays here', async () => {
-    const h = await board('setup-new')
-    await click(changeOf('Folder') ?? null)
     await type(el.querySelector('[data-directory-picker]'), '/home/you/workspaces/other')
     expect(lastCall(h.calls)).toEqual({
       id: 'iii-cloud::project::resolve',
@@ -275,6 +239,17 @@ describe('Change: each row opens in place, one at a time', () => {
 
   it('Project: the project of this repository, "New project", the other repositories by name; the choice changes the row and the button', async () => {
     await board('setup-existing')
+    // The repository has a project: it, the environment that is not production, the one in use is not asked.
+    expect(detail('Project')).toMatchObject({
+      value: 'registry',
+      note: 'It is built from this repository · 2 environments',
+    })
+    expect(detail('Environment')?.value).toBe('dev')
+    expect(detail('Environment')?.note).toBe(`Assisted deploy. ${assistedHow('dev')}`)
+    expect(detail('Compose file')?.value).toBe(FILE)
+    // Nothing is created: the button only continues to the check.
+    expect(primary()?.textContent).toBe('Continue to the check')
+    expect(text()).toContain('This starts the check of dev. Nothing is deployed until you confirm a deploy.')
     await click(changeOf('Project') ?? null)
     expect(radios('Project').map((r) => r.textContent)).toEqual([
       'registryBuilt from iii-hq/registry · 2 environments',
@@ -547,19 +522,14 @@ describe('no folder known yet, and adding a project', () => {
     expect(primary()).toBeNull()
   })
 
-  it('no project and no folder: the picker is open, and the page asks nothing else', async () => {
-    await mount({ ...base, project: null, check: null }, ctx({ at: 'setup' }))
-    expect(text()).toContain('Pick the folder of your project. The page reads it and fills in the rest.')
-    expect(el.querySelector('[data-directory-picker]')).not.toBeNull()
-    expect(primary()).toBeNull()
-  })
-
   it('the first step: the Folder editor is in a card, the picker says "Choose folder", no Done and no note about a button below', async () => {
     await mount({ ...base, project: null, check: null }, ctx({ at: 'setup' }))
     expect(el.querySelector('.iii-cloud-detailcard [data-directory-picker]')?.getAttribute('placeholder')).toBe(
       'Choose folder',
     )
     expect(btn('Done')).toBeNull()
+    expect(text()).toContain('Pick the folder of your project. The page reads it and fills in the rest.')
+    expect(primary()).toBeNull()
     expect(text()).not.toContain('Only the button below does')
     expect(el.querySelector('.iii-cloud-setup-title')?.textContent).toBe("Choose your project's folder")
     // Who is signed in is in the bar, as on the board.

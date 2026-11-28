@@ -251,20 +251,6 @@ describe('the next-action card: the same count and the same agent states as the 
     expect(n.detail).not.toContain('Working')
   })
 
-  it("the agent's question is counted once, in the list both screens use; a question that names a counted value is that value", () => {
-    const ask = { ...agent('waiting_for_you'), question: 'Keep path:// for http?' }
-    const base = dev({ check: needsYou })
-    const before = youOf(base).count
-    expect(youOf(dev({ check: needsYou, agent: ask })).count).toBe(before + 1)
-    expect(next(dev({ check: needsYou, agent: ask })).title).toMatch(new RegExp(`^${before + 1} things? `))
-    // the same name asked through iii-cloud::secret and in the chat: one thing
-    const names = youOf(base).values
-    if (names.length) {
-      const named = { ...ask, question: `What is the value of ${names[0]}?` }
-      expect(youOf(dev({ check: needsYou, agent: named })).count).toBe(before)
-    }
-  })
-
   it('a ready check whose agent asks something is "Ready to deploy" here too, and a pull-request hand-off\'s question is not counted', () => {
     const ask = { ...agent('waiting_for_you'), question: 'Keep path:// for http?', question_source: 'agent' as const }
     const n = next(dev({ check: { ...passed, ready: true }, agent: ask }))
@@ -274,6 +260,8 @@ describe('the next-action card: the same count and the same agent states as the 
     const before = youOf(dev({ check: needsYou })).count
     expect(youOf(dev({ check: needsYou, agent: { ...ask, kind: 'pull_request' as const } })).count).toBe(before)
     expect(youOf(dev({ check: needsYou, agent: ask })).count).toBe(before + 1)
+    // The card's title counts it too, once.
+    expect(next(dev({ check: needsYou, agent: ask })).title).toMatch(new RegExp(`^${before + 1} things? `))
   })
 
   it('a question is matched against whole value names, not pieces of words', () => {
@@ -341,19 +329,15 @@ describe('the next-action card: when two states apply, the first of the order wi
     expect(n.title).toBe('A check of dev is running')
   })
 
-  it('a deployment running beats a check that needs you; a held one beats a running one', () => {
-    expect(next(dev({ deploys: [running7, ...devDeploys], check: needsYou })).state).toBe('running')
-    const second = { ...running7, id: 'dep-8', number: 8 }
-    expect(next(dev({ deploys: [second, held7, ...devDeploys], check: needsYou })).state).toBe('held')
-  })
-
   it('what needs you beats the agent working, which beats a passed check, which beats a failed deployment', () => {
     expect(next(dev({ check: needsYou, agent: agent('working') })).state).toBe('you')
     expect(next(dev({ check: passed, agent: agent('working') })).state).toBe('agent')
     expect(next(dev({ check: passed, deploys: [failed7, ...devDeploys] })).state).toBe('passed')
-  })
-
-  it('a passed check of the very commit whose deployment failed is not offered again: the failure comes first', () => {
+    // A deployment running beats a check that needs you; a held one beats a running one.
+    expect(next(dev({ deploys: [running7, ...devDeploys], check: needsYou })).state).toBe('running')
+    const second = { ...running7, id: 'dep-8', number: 8 }
+    expect(next(dev({ deploys: [second, held7, ...devDeploys], check: needsYou })).state).toBe('held')
+    // A passed check of the very commit whose deployment failed is not offered again: the failure comes first.
     const same = { ...passed, commit: failed7.commit.sha }
     expect(next(dev({ check: same, deploys: [failed7, ...devDeploys] }, clean)).state).toBe('failed')
   })

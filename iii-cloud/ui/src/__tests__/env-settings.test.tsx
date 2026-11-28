@@ -57,7 +57,7 @@ const open = (
 
 describe('the list', () => {
   it('every name the compose file reads, once, and the other secrets and variables of the environment after them', async () => {
-    await board('manage-settings')
+    const h = await board('manage-settings')
     await settle()
     expect(rows().map((r) => r.querySelector('td')?.textContent)).toEqual([
       'STRIPE_SECRET_KEY',
@@ -70,6 +70,20 @@ describe('the list', () => {
     ])
     expect(path()).toBe('Projects / registry · dev / Secrets and variables')
     expect(el.querySelector('aside')).toBeNull()
+    // No override banners, next-deploy table, workers config, machines or compose-file dialog, and none is read.
+    for (const gone of [
+      'Use my app file',
+      'What the next deploy runs',
+      "Workers' config",
+      'Rotate credentials',
+      'Change…',
+      'Machine',
+    ]) {
+      expect(text()).not.toContain(gone)
+    }
+    const reads = h.calls.filter((c) => c.id === 'iii-cloud::api').map((c) => String(c.payload?.path))
+    expect(reads).toContain(apiPath('/variables', DEV.id))
+    expect(reads.filter((p) => /resources|config|machines|domains/.test(p) || p.endsWith(DEV.id))).toEqual([])
   })
 
   it('name, kind, value or where it came from, when it takes effect, and one action', async () => {
@@ -102,6 +116,9 @@ describe('the list', () => {
     expect(action('SEARCH_WEIGHT_STARS')?.textContent).toBe('Edit')
     expect(action('ASSET_BUCKET_KEY')?.textContent).toBe('Set')
     expect(action('DATABASE_PRIMARY_URL')).toBeNull()
+    // Set on a name with no value: a typed value starts as a secret.
+    await click(action('ASSET_BUCKET_KEY'))
+    expect(el.querySelector('tbody input[type="password"]')).not.toBeNull()
   })
 
   it('what the file reads is said under the title, with what is not set', async () => {
@@ -139,24 +156,6 @@ describe('the list', () => {
     await settle()
     expect(text()).toContain('No secrets or variables yet')
   })
-
-  it('no override banners, next-deploy table, workers config, machines or compose-file dialog', async () => {
-    const h = await board('manage-settings')
-    await settle()
-    for (const gone of [
-      'Use my app file',
-      'What the next deploy runs',
-      "Workers' config",
-      'Rotate credentials',
-      'Change…',
-      'Machine',
-    ]) {
-      expect(text()).not.toContain(gone)
-    }
-    const reads = h.calls.filter((c) => c.id === 'iii-cloud::api').map((c) => String(c.payload?.path))
-    expect(reads).toContain(apiPath('/variables', DEV.id))
-    expect(reads.filter((p) => /resources|config|machines|domains/.test(p) || p.endsWith(DEV.id))).toEqual([])
-  })
 })
 
 describe('names iii cloud sets', () => {
@@ -182,7 +181,7 @@ describe('names iii cloud sets', () => {
 
 describe('the restart notice', () => {
   it('shows when a value reached iii cloud after the serving deployment started, with its two actions', async () => {
-    await board('manage-settings')
+    const h = await board('manage-settings')
     await settle()
     const note = byText(
       '[role=status] b',
@@ -194,6 +193,10 @@ describe('the restart notice', () => {
     )
     expect(btn('Restart app and jobs now')).not.toBeNull()
     expect(btn('Wait for the next deploy')).not.toBeNull()
+    // Wait for the next deploy hides it without a call.
+    await click(btn('Wait for the next deploy'))
+    expect(text()).not.toContain('keep the old value')
+    expect(writes(h.calls)).toEqual([])
   })
 
   it('Restart app and jobs now asks, then restarts each group as the person', async () => {
@@ -208,14 +211,6 @@ describe('the restart notice', () => {
       ['POST', apiPath('/machines/groups/jobs/restart', DEV.id)],
     ])
     expect(text()).not.toContain('keep the old value')
-  })
-
-  it('Wait for the next deploy hides it without a call', async () => {
-    const h = await board('manage-settings')
-    await settle()
-    await click(btn('Wait for the next deploy'))
-    expect(text()).not.toContain('keep the old value')
-    expect(writes(h.calls)).toEqual([])
   })
 
   it('not at all when nothing changed since the deployment started, or the value is live', async () => {
@@ -267,13 +262,6 @@ describe('saving from a row', () => {
         idempotency_key: expect.any(String),
       },
     ])
-  })
-
-  it('Set on a name with no value: a typed value starts as a secret', async () => {
-    await board('manage-settings')
-    await settle()
-    await click(action('ASSET_BUCKET_KEY'))
-    expect(el.querySelector('tbody input[type="password"]')).not.toBeNull()
   })
 
   it("the row's menu turns the kind around: a secret becomes a variable (and back), no two buttons per row", async () => {

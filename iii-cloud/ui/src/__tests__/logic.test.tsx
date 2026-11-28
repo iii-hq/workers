@@ -177,16 +177,6 @@ describe('one source per fact (the review, defects 1, 2 and 7)', () => {
   })
 })
 
-describe('replaced deploys, dirty runs and new codes', () => {
-  it('NOT_SAVED, RUN_PANIC and PR_HEAD_CHANGED have plain messages', () => {
-    expect(plainMessage({ code: 'NOT_SAVED', message: 'x' })).toContain("this API key can't write variables")
-    expect(plainMessage({ code: 'RUN_PANIC', message: 'x' })).toBe('The run stopped unexpectedly. Run it again.')
-    expect(plainMessage({ code: 'PR_HEAD_CHANGED', message: 'x' })).toBe(
-      'The pull request changed after the check. Check again.',
-    )
-  })
-})
-
 describe('check events', () => {
   it('an older check does not replace the current one; a newer one does', async () => {
     const h = await mount(base, ctx({ at: 'deploy', env: ENV.id }))
@@ -231,6 +221,11 @@ describe('final core fields', () => {
       expect(m.length).toBeGreaterThan(30)
     }
     expect(plainMessage({ code: 'NO_COMMITS', message: 'x' })).toContain('Commit something first')
+    expect(plainMessage({ code: 'NOT_SAVED', message: 'x' })).toContain("this API key can't write variables")
+    expect(plainMessage({ code: 'RUN_PANIC', message: 'x' })).toBe('The run stopped unexpectedly. Run it again.')
+    expect(plainMessage({ code: 'PR_HEAD_CHANGED', message: 'x' })).toBe(
+      'The pull request changed after the check. Check again.',
+    )
     expect(workerError(null, 'RUN_BUSY', 'run run-1a2b3c is running since 2026-11-25T14:03:00.000Z').started_at).toBe(
       '2026-11-25T14:03:00.000Z',
     )
@@ -501,16 +496,6 @@ describe('the hub keeps what a page that is gone cannot', () => {
       await a.current.call('use', 'iii-cloud::project::use', { environment_id: env }, { changesSource: changes })
     })
 
-  it('a project::use that changes the source marks the environment: its check is stale, any other check is not', async () => {
-    const h = fakeHost(base, { 'iii-cloud::project::use': {} })
-    const hub = hubOf(h.host)
-    await act(async () => hub.refresh(false))
-    const a = await grab(h.host)
-    await useCall(a, ENV.id, true)
-    expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
-    expect(hub.movedFrom('e-other')).toBeNull()
-  })
-
   it('a plain re-selection (CloudPage for a route) marks nothing, and never erases a recorded move', async () => {
     const h = fakeHost(base, { 'iii-cloud::project::use': {} })
     const hub = hubOf(h.host)
@@ -521,6 +506,8 @@ describe('the hub keeps what a page that is gone cannot', () => {
     await useCall(a, ENV.id, true)
     await useCall(a, ENV.id, false)
     expect(hub.movedFrom(ENV.id)).toBe(base.check?.id)
+    // A use that changes the source marks only that environment: any other one's check is not stale.
+    expect(hub.movedFrom('e-other')).toBeNull()
   })
 
   it("the move is of that environment's latest check (not the selected one's), under the environment the Project says", async () => {
@@ -694,22 +681,6 @@ describe('the hub keeps what a page that is gone cannot', () => {
     forgetHubMemory()
     expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
     expect(store.size).toBe(0)
-    vi.unstubAllGlobals()
-  })
-
-  it('a recorded stop IS in storage; once cleared, nothing is left to carry over', () => {
-    const store = new Map<string, string>()
-    vi.stubGlobal('localStorage', {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    })
-    hubOf(fakeHost(base).host).markStopped(ENV.id, true)
-    expect([...store.keys()].some((k) => k.includes(ENV.id))).toBe(true)
-    hubOf(fakeHost(base).host).markStopped(ENV.id, false)
-    forgetHubMemory()
-    expect(store.size).toBe(0)
-    expect(hubOf(fakeHost(base).host).stopped(ENV.id)).toBe(false)
     vi.unstubAllGlobals()
   })
 

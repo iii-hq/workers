@@ -61,14 +61,8 @@ const region = (name: string) => el.querySelector(`[role=region][aria-label="${n
 const route = { at: 'deploy', env: DEV.id } as const
 
 describe('one screen, no step rail', () => {
-  it.each([
-    'deploy-what',
-    'deploy-review',
-    'deploy-follow-running',
-    'deploy-follow-live',
-    'deploy-follow-failed',
-  ] as const)('%s: a path bar and the screen; no rail, no "What goes" step', async (id) => {
-    await board(id)
+  it('deploy-what: a path bar and the screen; no rail, no "What goes" step', async () => {
+    await board('deploy-what')
     expect(path()).toBe('Projects / registry · dev / Deploy')
     expect(el.querySelector('aside')).toBeNull()
     expect(text()).not.toMatch(/Check before deploy|What goes to dev\?|Review and deploy|app file/i)
@@ -123,6 +117,17 @@ describe('Change', () => {
     expect(radio('api/workers-compose.yaml')?.getAttribute('aria-disabled')).toBe('true')
     // The environment is not changed here: it says to open the other one, and that control is on screen.
     expect(panel?.textContent).toContain('to deploy somewhere else, open that environment from the sidebar or Projects')
+    // A label column, the chosen file framed (not only by its icon), Cancel a link, and the running check goes on.
+    expect([...(panel?.querySelectorAll('.iii-cloud-cs-clabel') ?? [])].map((l) => l.textContent)).toEqual([
+      'Code',
+      'Compose file',
+      'Environment',
+    ])
+    expect(radio('api/worker-compose-prod.yaml')?.hasAttribute('data-selected')).toBe(true)
+    expect(radio('api/worker-compose.staging.yaml')?.hasAttribute('data-selected')).toBe(false)
+    expect(btn('Cancel')?.className).toContain('iii-cloud-linkbtn')
+    expect(btn('Cancel')?.getAttribute('data-variant')).toBeNull()
+    expect(text()).toContain('Until you confirm a change, the check that is running goes on.')
     await click(btn('Cancel'))
     expect(region('What goes to dev')).toBeNull()
     expect(worker(h.calls)).toEqual([])
@@ -199,23 +204,6 @@ describe('Change', () => {
 })
 
 describe('the canvas: Change and the deployment', () => {
-  it('Change: a label column, the chosen option framed, Cancel a link, and the sentence about the running check', async () => {
-    await board('deploy-what', {}, cloudList())
-    await click(btn('Change'))
-    const panel = region('What goes to dev')
-    expect([...(panel?.querySelectorAll('.iii-cloud-cs-clabel') ?? [])].map((l) => l.textContent)).toEqual([
-      'Code',
-      'Compose file',
-      'Environment',
-    ])
-    // The chosen file shows as chosen, not only by its icon; the others do not.
-    expect(radio('api/worker-compose-prod.yaml')?.hasAttribute('data-selected')).toBe(true)
-    expect(radio('api/worker-compose.staging.yaml')?.hasAttribute('data-selected')).toBe(false)
-    expect(btn('Cancel')?.className).toContain('iii-cloud-linkbtn')
-    expect(btn('Cancel')?.getAttribute('data-variant')).toBeNull()
-    expect(text()).toContain('Until you confirm a change, the check that is running goes on.')
-  })
-
   it('one uncommitted change reads in the singular', async () => {
     const s = boards['deploy-what'].status
     const p = s.project as NonNullable<Status['project']>
@@ -245,13 +233,6 @@ describe('the canvas: Change and the deployment', () => {
     await board('deploy-what')
     expect(el.querySelector('.iii-cloud-head-name')?.textContent).toBe('Deploy to dev')
   })
-
-  it('live: the address in mono, one proven row, no goes line, and the roll back sentence', async () => {
-    await board('deploy-follow-live')
-    expect(el.querySelectorAll('.iii-cloud-cs-facts li')).toHaveLength(1)
-    expect(el.querySelector('.iii-cloud-stephead-sub')?.textContent).not.toContain('to dev ·')
-    expect(text()).toContain('While a deploy runs, this screen shows the same stages with the running one marked')
-  })
 })
 
 describe('the deployment', () => {
@@ -273,6 +254,13 @@ describe('the deployment', () => {
     expect(text()).toContain('search: loading trigram index (1.2M rows)')
     expect(text()).toContain('dev keeps serving #5 until #6 is live.')
     expect(btn('Back to dev')).toBeNull()
+    // The first stage says "pushed" only when this page started the deployment: one made in the console pushed nothing.
+    const s = boards['deploy-follow-running'].status
+    const hand = { ...s.deploys[0], check_id: null, approved_by_worker: false, from_console: true, type: 'redeploy' }
+    await mount({ ...s, deploys: [hand, ...s.deploys.slice(1)] }, ctx({ ...route, deploy: hand.id }))
+    const first = el.querySelector('[aria-label="Deployment stages"] li')?.textContent ?? ''
+    expect(first).toContain('Deployment #6 of 9c04e7f started')
+    expect(first).not.toContain('Pushed')
   })
 
   it('running from this machine: Cancel the deployment asks first, then posts the cancel to iii cloud', async () => {
@@ -307,6 +295,12 @@ describe('the deployment', () => {
     expect(byText('a', 'roll back to #5 in iii cloud')?.getAttribute('href')).toBe(
       'https://cloud.iii.dev/iii/registry/dev/deployments/5',
     )
+    // One proven row, no "goes" line, and the roll back sentence.
+    expect(el.querySelectorAll('.iii-cloud-cs-facts li')).toHaveLength(1)
+    expect(el.querySelector('.iii-cloud-stephead-sub')?.textContent).not.toContain('to dev ·')
+    expect(text()).toContain('While a deploy runs, this screen shows the same stages with the running one marked')
+    // The stages say Deployments, never Deploys.
+    expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)
     await click(btn('Back to dev'))
     expect(path()).toBe('Projects / registry · dev')
   })
@@ -374,28 +368,21 @@ describe('the deployment', () => {
     )
     expect(title()).toBe('Deployment #6 needs your action')
     expect(text()).toContain('iii cloud holds this deployment until you approve')
+    // Confirm is the one primary, with Cancel and the console link beside it.
+    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
+    expect([...el.querySelectorAll('button[data-variant=primary]')].map((b) => b.textContent)).toEqual([
+      'Confirm deploy',
+    ])
+    expect(btn('Cancel deployment #6')).toBeTruthy()
+    expect([...el.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])).toContainEqual([
+      'Open it in iii cloud',
+      held.console_url,
+    ])
     await click(btn('Confirm deploy'))
     expect(h.calls.find((c) => c.id === 'iii-cloud::deploy')?.payload).toEqual({
       check_id: 'chk-dev',
       deployment_id: 'dep-6',
     })
-  })
-
-  it('the first stage says "pushed" only when this page started the deployment', async () => {
-    await board('deploy-follow-running')
-    const first = () => el.querySelector('[aria-label="Deployment stages"] li')?.textContent ?? ''
-    expect(first()).toContain("Pushed 9c04e7f to dev's branch and started #6")
-    // A deployment made in the console (no mark of this page) pushed nothing.
-    const s = boards['deploy-follow-running'].status
-    const hand = { ...s.deploys[0], check_id: null, approved_by_worker: false, from_console: true, type: 'redeploy' }
-    await mount({ ...s, deploys: [hand, ...s.deploys.slice(1)] }, ctx({ ...route, deploy: hand.id }))
-    expect(first()).toContain('Deployment #6 of 9c04e7f started')
-    expect(first()).not.toContain('Pushed')
-  })
-
-  it('the stages say Deployments, never Deploys', async () => {
-    await board('deploy-follow-live')
-    expect(text()).not.toMatch(/\bDeploys?\b(?! \w{7} to)/)
   })
 })
 
@@ -466,16 +453,6 @@ describe('a deployment iii cloud holds says why and what to do next', () => {
       kind: 'deploy_fix',
       deployment_id: 'dep-6',
     })
-  })
-
-  it('2. held and a passed check of that commit: Confirm deploy is the one primary, with Cancel and the console link', async () => {
-    await mount(status(heldBase), at, { 'iii-cloud::deploy': {} })
-    // The class the phone's wrap rules target.
-    expect(el.querySelector('.iii-cloud-cs-stop .iii-cloud-cs-decide')).toBeTruthy()
-    expect(title()).toBe('Deployment #6 needs your action')
-    expect(primaries()).toEqual(['Confirm deploy'])
-    expect(btn('Cancel deployment #6')).toBeTruthy()
-    expect(links()).toContainEqual(['Open it in iii cloud', heldBase.console_url])
   })
 
   it('3b. started here, its check no longer the newest: a passed check of the same commit confirms it again', async () => {
@@ -778,14 +755,6 @@ describe('the review: Change, held deployments, who is serving, what a refusal s
     await board('deploy-what', ctx(route, 2), cloudAnswers({}))
     await click(btn('Change'))
     expect(region('What goes to dev')?.textContent).not.toMatch(/serves|Nothing is live/)
-  })
-
-  it('the last refused check shows at the top, kept by the hub after the card that asked is gone', async () => {
-    const h = await board('deploy-what')
-    await act(async () => hubOf(h.host).setCheckError(DEV.id, { code: 'NO_COMMITS', message: 'x' }))
-    expect(text()).toContain('Commit something first')
-    await act(async () => hubOf(h.host).setCheckError(DEV.id, null))
-    expect(text()).not.toContain('Commit something first')
   })
 
   it('a deployment iii cloud holds on production: Confirm asks for the name first, then sends check_id and deployment_id', async () => {

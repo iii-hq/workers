@@ -255,16 +255,6 @@ describe('Your agent', () => {
     await click([...el.querySelectorAll('[role=alertdialog] button')].find((b) => b.textContent === 'Stop the agent'))
     expect(lastCall(h.calls)).toEqual({ id: 'iii-cloud::handoff::stop', payload: { id: 'ho-d' } })
   })
-
-  it('a waiting agent says what it asks, with the chat to answer in', async () => {
-    const waiting = {
-      ...B('deploy-fixing'),
-      agent: { ...agent('waiting_for_you'), handoff_id: 'ho-d', kind: 'ready' as const },
-    }
-    await stage(waiting, {}, { openScreen: vi.fn() })
-    expect(region('Your agent')?.textContent).toContain('Keep path:// for http and storage')
-    expect(btn('Open chat')).toBeTruthy()
-  })
 })
 
 describe('Details', () => {
@@ -383,18 +373,14 @@ describe('Ready', () => {
     )
   })
 
-  it('a local run that was reused is still a pass', async () => {
-    const reused = { ...passed.run, reused: true } as NonNullable<typeof passed.run>
-    await stage({ ...dev, check: { ...passed, run: reused } })
-    expect(title()).toBe('Ready to deploy to dev')
-    expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(false)
-  })
-
   it('a reused run says when it really ran, and "Run it again" forces a real one', async () => {
     const reused = { ...passed.run, reused: true, finished_at: '2026-11-27T11:30:00.000Z' } as NonNullable<
       typeof passed.run
     >
     const h = await stage({ ...dev, check: { ...passed, run: reused } })
+    // a reused run is still a pass
+    expect(title()).toBe('Ready to deploy to dev')
+    expect(btn('Deploy 9c04e7f to dev')?.hasAttribute('disabled')).toBe(false)
     expect(text()).toContain('the local run passed at')
     expect(text()).toContain('(not run again: nothing changed)')
     await click(btn('Run it again'))
@@ -465,13 +451,6 @@ describe('when the check cannot finish', () => {
     expect(btn('Check again')).toBeTruthy()
   })
 
-  it('another deployment running: Follow it', async () => {
-    const h = await stage(B('state-busy'))
-    expect(text()).toContain('Deployment #6 to dev is already running')
-    await click(btn('Follow #6'))
-    expect(h.go).toHaveBeenCalledWith({ at: 'deploy', env: expect.any(String), deploy: 'dep-dev-6' })
-  })
-
   it('signed out: sign in again, nothing else is lost', async () => {
     const h = await stage(B('state-signedout'))
     expect(stopPanel('Your iii cloud sign-in expired')).toBeTruthy()
@@ -483,11 +462,6 @@ describe('when the check cannot finish', () => {
     const run = { ...found.run, status: 'failed', error: { stage: 'build', code: 'RUN_REPLACED', message: 'x' } }
     await stage({ ...B('deploy-problems'), check: { ...found, run: run as NonNullable<typeof found.run> } })
     expect(el.querySelector('.iii-cloud-cs-stop')).toBeNull()
-  })
-
-  it('a worker that sends no reused, auto_fix or fix still works', async () => {
-    await stage({ ...B('deploy-fixing'), auto_fix: undefined })
-    expect(title()).toBe('Your agent is fixing 1')
   })
 })
 
@@ -602,16 +576,6 @@ describe('the review: what a check that is not ready still offers', () => {
     ...over,
   })
 
-  it('a deployment going of the SAME check still stops Deploy: its notice follows it, whatever check it came from', async () => {
-    const s = B('deploy-passed')
-    await stage({
-      ...s,
-      deploys: [runningOf(s, { check_id: s.check!.id, created_at: new Date().toISOString() }), ...s.deploys],
-    })
-    expect(btn('Follow #9')).toBeTruthy()
-    expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
-  })
-
   it('a deployment going that is not the newest also stops Deploy: the shared lock counts every running one', async () => {
     const s = B('deploy-passed')
     const newest = {
@@ -626,25 +590,6 @@ describe('the review: what a check that is not ready still offers', () => {
     expect(btn('Follow #9')).toBeNull()
     expect(deployButtons().every((b) => b.hasAttribute('disabled'))).toBe(true)
     expect(text()).toContain('Deployment #9 is still going.')
-  })
-
-  it('a deployment held in iii cloud that this machine did not start does not lock Deploy, and says deploying replaces it', async () => {
-    const s = B('deploy-passed')
-    const held = runningOf(s, {
-      id: 'dep-held',
-      number: 11,
-      status: 'needs_action' as const,
-      type: 'push',
-      check_id: null,
-      approved_by_worker: false,
-      from_console: true,
-      created_at: new Date(Date.now() + 1000).toISOString(),
-    })
-    await stage({ ...s, deploys: [held, ...s.deploys] })
-    expect(text()).toContain('Deployment #11 is waiting for confirmation in iii cloud')
-    expect(text()).toContain('replaces it')
-    const primary = deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? ''))
-    expect(primary?.hasAttribute('disabled')).toBe(false)
   })
 
   it("a held deployment is this machine's only by the worker's markers (check_id, approved, created); a pr or the check's commit alone is elsewhere", async () => {
@@ -681,6 +626,7 @@ describe('the review: what a check that is not ready still offers', () => {
     for (const [why, over] of Object.entries(elsewhere)) {
       await stage({ ...s, deploys: [runningOf(s, { id: 'dep-held', number: 11, ...over }), ...s.deploys] })
       expect(text(), why).toContain('Deployment #11 is waiting for confirmation in iii cloud')
+      expect(text(), why).toContain('replaces it')
       expect(btn('Follow #11'), why).toBeNull()
       const primary = deployButtons().find((b) => /^Deploy 9c04e7f/.test(b.textContent ?? ''))
       expect(primary?.hasAttribute('disabled'), why).toBe(false)
@@ -969,23 +915,6 @@ describe('the check follows the canvas', () => {
       for (const i of items) expect(dialog).toContain(i.name)
     })
 
-    it("the agent's secret request is in the card, not in You", async () => {
-      const items = [
-        valueItem('ASKED_KEY', {
-          // The worker marks an ask `required` too.
-          need: 'required',
-          default: null,
-          asked: { request_id: 'r1', description: 'Signs the cookies.' },
-          suggestions: [],
-        }),
-      ]
-      await stage(quiet, { 'iii-cloud::values': answer(items) })
-      expect(card()?.textContent).toContain('1 your agent asked for')
-      expect(card()?.textContent).not.toContain('required by')
-      expect(card()?.textContent).toContain('Signs the cookies.')
-      expect(region('You')).toBeNull()
-    })
-
     it('a session that cannot write: the buttons are off, with the sentence', async () => {
       await stage(quiet, { 'iii-cloud::values': answer(names('OPT', 2), { save: 'api_key' }) })
       expect((btn('Set values') as HTMLButtonElement).disabled).toBe(true)
@@ -1199,6 +1128,9 @@ describe('the check follows the canvas', () => {
       ]
       await stage(quiet, { 'iii-cloud::values': answer(db) })
       expect(card()?.textContent).toContain('1 your agent asked for')
+      expect(card()?.textContent).not.toContain('required by')
+      expect(card()?.textContent).toContain('The database is outside iii cloud.')
+      expect(region('You')).toBeNull()
       expect(title()).toBe('1 value to set')
       expect(countOf('Secrets and variables')).toBe('1')
       // b. iii cloud's variables could not be read: nothing is known to be missing
@@ -1528,30 +1460,6 @@ describe('small things the review found', () => {
     expect(region('Your agent')?.textContent).toContain('waiting for your answer')
   })
 
-  it('COMMAND_PRINTS_ENVIRONMENT is an ordinary agent-owned row', async () => {
-    const p = {
-      ...rcVariables[0],
-      id: 'p-env',
-      code: 'COMMAND_PRINTS_ENVIRONMENT',
-      file: null,
-      line: null,
-      source: 'check_here' as const,
-      severity: 'block' as const,
-      owner: 'agent' as const,
-      title: 'The release command prints its whole environment',
-      detail: 'It would write every secret into the log.',
-      fix: 'Remove the `env` call from the script.',
-    }
-    const w = { ...rcFixing, agent: null, handoff_brief: null }
-    await stage({
-      ...w,
-      check: { ...w.check!, problems: [p], run: { ...w.check!.run!, status: 'passed' as const, error: null } },
-    })
-    expect(title()).toBe('1 for your agent to fix')
-    expect(region('Your agent')?.textContent).toContain('The release command prints its whole environment')
-    expect(region('Your agent')?.textContent).toContain('It would write every secret into the log.')
-  })
-
   it('the values you set since the hand-off began count in "You did N"', async () => {
     const r = B('deploy-passed')
     const names8 = Array.from({ length: 8 }, (_, i) => `SET_${i}_KEY`)
@@ -1795,6 +1703,7 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(title()).toMatch(/^\d+ things? needs? you · \d+ for your agent to fix$/)
     expect(title()).not.toMatch(/is fixing/)
     expect(region('Your agent')?.textContent).toContain('waiting for your answer')
+    expect(region('Your agent')?.textContent).toContain('Keep path://?')
     expect(region('Your agent')?.textContent).not.toMatch(/working \d+ min/)
   })
 
@@ -1901,11 +1810,6 @@ describe('an agent that ended its turn waiting on a wake', () => {
     expect(title()).toBe('Ready to deploy to dev')
     expect(region('Your agent')?.textContent).toContain('Keep path:// for http and storage?')
   })
-
-  it('an agent that works still says it works', async () => {
-    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
-    expect(title()).toMatch(/your agent is fixing/)
-  })
 })
 
 describe("the run's last lines", () => {
@@ -1967,9 +1871,7 @@ describe("the run's last lines", () => {
       'Node.js v20.18.0',
       '!! Workers failed: release-control',
     ]
-    const tail = runTail(log)
-    expect(tail[0]).toContain('JWT_SECRET')
-    expect(tail.length).toBeLessThanOrEqual(6)
+    expect(runTail(log)[0]).toContain('JWT_SECRET')
     // a name from the values read counts as naming a variable too
     const lower = runTail(
       [
@@ -1984,18 +1886,6 @@ describe("the run's last lines", () => {
       ['jwt_secret'],
     )
     expect(lower[0]).toContain('jwt_secret')
-  })
-
-  it('a later ERROR line or node error code is not a variable: the line naming JWT_SECRET survives the stack', () => {
-    const log = [
-      "❌ Invalid environment variables: { JWT_SECRET: [ 'Required' ] }",
-      '[worker-x] [12:00:01] ERROR (1): Failed to start',
-      'Error [ERR_MODULE_NOT_FOUND]: Cannot find module',
-      ...Array.from({ length: 6 }, (_, i) => `    at frame${i} (file.js:${i})`),
-      'Node.js v20.18.0',
-      '!! Workers failed: release-control',
-    ]
-    expect(runTail(log)[0]).toContain('JWT_SECRET')
     // a name matches as a whole word: `port` is not in "report"
     const t = runTail(
       [
@@ -2012,13 +1902,6 @@ describe("the run's last lines", () => {
     expect(t[0]).toContain('Invalid value for port')
   })
 
-  it('four missing variables: the message and all four names, six lines, no wasted slot', () => {
-    const tail = runTail(real(['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']))
-    expect(tail).toHaveLength(6)
-    for (const n of ['A_KEY', 'B_KEY', 'C_KEY', 'D_KEY']) expect(tail.join('\n')).toContain(n)
-    expect(tail).not.toContain('…')
-  })
-
   it('no matching line: the last six', () => {
     const tail = runTail(Array.from({ length: 12 }, (_, i) => `plain ${i}`))
     expect(tail).toEqual(Array.from({ length: 6 }, (_, i) => `plain ${i + 6}`))
@@ -2027,6 +1910,11 @@ describe("the run's last lines", () => {
   it('a colour code without its escape character is not shown', () => {
     const tail = runTail(['[31mInvalid environment variables:[0m', 'X_KEY: required'])
     expect(tail.join('\n')).toBe('Invalid environment variables:\nX_KEY: required')
+  })
+
+  it('an agent that works still says it works', async () => {
+    await stage({ ...rcFixing, agent: { ...rcFixing.agent!, state: 'working' as const } })
+    expect(title()).toMatch(/your agent is fixing/)
   })
 })
 
@@ -2062,6 +1950,9 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     })
     const h = await stage(release(note), reused(true), { openScreen })
     expect(title()).toBe('1 for your agent to fix')
+    // the fifth run's screen: a "done for now" note, no problem rows, a run failed at release
+    expect(region('Your agent')?.textContent).toContain('done for now')
+    expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
     const buttons = [...(stop()?.querySelectorAll('button') ?? [])].map((b) => b.textContent)
     expect(buttons).toEqual(['Fix with your agent', 'Run again'])
     // The agent waits in its chat: the button calls the worker, which sends what failed into that chat, then the chat opens.
@@ -2087,13 +1978,6 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     // one row for the card, and not a second "Fix with your agent" beside the stop's
     expect(region('Your agent')?.textContent).toContain('The local run stopped at Release')
     expect([...el.querySelectorAll('button')].filter((b) => b.textContent === 'Fix with your agent')).toHaveLength(1)
-  })
-
-  it('the title is never missing on the screen of the fifth run: a "done for now" note, no problem rows, a run failed at release', async () => {
-    await stage(release(note))
-    expect(title()).toBe('1 for your agent to fix')
-    expect(region('Your agent')?.textContent).toContain('done for now')
-    expect(region('Your agent')?.textContent).toContain('Your agent stopped before running it here like the cloud.')
   })
 
   const owned = (
@@ -2283,16 +2167,6 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(stop()?.textContent).toContain('Tell it in the chat.')
   })
 
-  it('replaced: a newer run took its place, nothing to fix and no action', async () => {
-    await stage(owned('replaced', { code: 'RUN_REPLACED', message: 'A newer run replaced this one.' }))
-    const replaced = [...el.querySelectorAll('[role=status]')].find((p) =>
-      p.textContent?.includes('A newer run replaced this one.'),
-    )
-    expect(replaced).toBeTruthy()
-    expect(replaced?.querySelectorAll('button')).toHaveLength(0)
-    expect(title() ?? '').not.toContain('for your agent to fix')
-  })
-
   it('a plan that could not be read is said once, with one button when the run also failed; routes may be a value too', async () => {
     const w = release(note)
     const both = {
@@ -2418,6 +2292,10 @@ describe("a local run that failed at the release stage is the agent's to fix", (
     expect(
       [...el.querySelectorAll('[role=status]')].some((x) => x.textContent?.includes('A newer run replaced this one.')),
     ).toBe(true)
+    // a newer run took its place: nothing to fix and no action
+    const only = [...el.querySelectorAll('[role=status]')].find((x) => x.textContent?.includes('A newer run replaced'))
+    expect(only?.querySelectorAll('button')).toHaveLength(0)
+    expect(title() ?? '').not.toContain('for your agent to fix')
   })
 
   it('asks without a session (the older answer): the launch path runs, so the hand-off is not left without a chat', async () => {

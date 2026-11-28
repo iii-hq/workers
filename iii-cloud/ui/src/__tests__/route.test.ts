@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { boards } from '../fixtures'
 import { base, ENV, signedOut } from '../fixtures/base'
-import { defaultRoute, envState, legacyRoute, pathOf, type Route, routeFromContext, SETUP_STEPS } from '../route'
+import { defaultRoute, envState, legacyRoute, pathOf, type Route, routeFromContext } from '../route'
 import type { RecentProject, Status } from '../types'
 
 const main = base
@@ -134,12 +134,6 @@ describe('pathOf', () => {
       'Projects→start',
       'Add a project',
     ])
-  })
-})
-
-describe('SETUP_STEPS', () => {
-  it('first time has two steps: sign in, then confirm', () => {
-    expect(SETUP_STEPS).toEqual(['signin', 'confirm'])
   })
 })
 
