@@ -106,8 +106,24 @@ fn first_text(message: &Value) -> String {
 }
 
 pub fn env_values(ctx: &Ctx) -> Vec<String> {
-    let mut out: Vec<String> = ctx.known_secrets.lock().unwrap().clone();
+    env_pairs(ctx).into_iter().map(|(_, v)| v).collect()
+}
+
+/// `env_values` with the variable each value came from (None for one only the worker holds):
+/// the names that a kept copy shows in place of a value.
+pub fn env_pairs(ctx: &Ctx) -> Vec<(Option<String>, String)> {
+    let known = |out: &mut Vec<(Option<String>, String)>| {
+        out.extend(
+            ctx.known_secrets
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|v| (None, v.clone())),
+        );
+    };
+    let mut out = Vec::new();
     let Ok(sel) = selected(ctx) else {
+        known(&mut out);
         return out;
     };
     let checked = ctx
@@ -127,9 +143,14 @@ pub fn env_values(ctx: &Ctx) -> Vec<String> {
     }
     for dir in dirs {
         if let Ok(text) = std::fs::read_to_string(dir.join(".env")) {
-            out.extend(crate::local::parse_env(&text).into_iter().map(|(_, v)| v));
+            out.extend(
+                crate::local::parse_env(&text)
+                    .into_iter()
+                    .map(|(n, v)| (Some(n), v)),
+            );
         }
     }
+    known(&mut out);
     out
 }
 
@@ -422,6 +443,7 @@ pub async fn create(ctx: &Arc<Ctx>, request: HandoffRequest) -> Res<HandoffRespo
         waited_run: None,
         person_check: None,
         person_check_told: None,
+        person_check_sent: None,
     };
     // A follow-up goes into the chat the previous hand-off used, when it is still
     // there: the console's composer would only keep the text as a draft while
@@ -1067,6 +1089,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
             ctx.store.update(|s| {
                 if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                     h.person_check_told = Some(check_id.clone());
+                    h.person_check_sent = (sent == Continue::Sent).then(|| check_id.clone());
                 }
             });
         }
@@ -1112,6 +1135,7 @@ async fn poll(ctx: &Arc<Ctx>, id: &str, local: &mut Local) -> Poll {
                 ctx.store.update(|s| {
                     if let Some(h) = s.handoffs.iter_mut().find(|h| h.id == id) {
                         h.person_check_told = Some(check_id.clone());
+                        h.person_check_sent = (sent == Continue::Sent).then(|| check_id.clone());
                     }
                 });
             }
@@ -1546,9 +1570,10 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
     }) else {
         return false;
     };
-    // That check was already told (the poll, or this button a moment ago): not twice. Something did
-    // go to the agent for it, so the answer is yes.
-    if h.person_check_told.as_deref() == Some(check_id.as_str()) {
+    // That check was already sent to the agent (the poll, or this button a moment ago): not twice,
+    // and the answer is yes. One only marked told (the agent was working, the cap was reached, a
+    // wake was armed) sent nothing: it goes now when the cap allows, else the page's text goes.
+    if h.person_check_sent.as_deref() == Some(check_id.as_str()) {
         return true;
     }
     let Some(lines) = person_check_lines(ctx, &check_id).filter(|l| !l.is_empty()) else {
@@ -1561,6 +1586,7 @@ async fn send_on(ctx: &Ctx, h: &Handoff) -> bool {
         ctx.store.update(|s| {
             if let Some(h2) = s.handoffs.iter_mut().find(|x| x.id == h.id) {
                 h2.person_check_told = Some(check_id.clone());
+                h2.person_check_sent = Some(check_id.clone());
             }
         });
     }
@@ -1610,10 +1636,7 @@ fn person_check_lines(ctx: &Ctx, check_id: &str) -> Option<Vec<(String, String)>
         {
             return None;
         }
-        let persons = c
-            .problems
-            .iter()
-            .any(|p| p.owner == Owner::Person && p.severity == Severity::Block);
+        let persons = person_blocks(c);
         let mut lines: Vec<(String, String)> = c
             .problems
             .iter()
@@ -1882,11 +1905,23 @@ pub fn run_code_owner(code: &str) -> RunOwner {
 }
 
 /// The hand-off's newest run: of its own checks, on the newest check's commit.
-fn own_run<'a>(s: &'a crate::store::State, h: &'a Handoff) -> Option<&'a Run> {
+fn own_check_run<'a>(s: &'a crate::store::State, h: &'a Handoff) -> Option<(&'a Check, &'a Run)> {
     let latest = own_checks(s, h).next()?;
     own_checks(s, h)
         .filter(|c| c.commit == latest.commit)
-        .find_map(|c| c.run.as_ref())
+        .find_map(|c| c.run.as_ref().map(|r| (c, r)))
+}
+
+fn own_run<'a>(s: &'a crate::store::State, h: &'a Handoff) -> Option<&'a Run> {
+    own_check_run(s, h).map(|(_, r)| r)
+}
+
+/// The person has a blocking problem open on this check: the input of `run_ask`, the same in
+/// every place that calls it.
+pub fn person_blocks(c: &Check) -> bool {
+    c.problems
+        .iter()
+        .any(|p| p.owner == Owner::Person && p.severity == Severity::Block)
 }
 
 /// A failed run as `(code, "<message> (stage <stage>)")`.
@@ -1919,7 +1954,7 @@ enum RunJudgment {
 
 fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
     ctx.store.read(|s| {
-        let run = own_run(s, h)?;
+        let (check, run) = own_check_run(s, h)?;
         match run.status {
             RunStatus::Passed => None,
             RunStatus::Running => Some(match &run.waiting_on {
@@ -1940,7 +1975,7 @@ fn run_judgment(ctx: &Ctx, h: &Handoff) -> Option<RunJudgment> {
             RunStatus::Failed => {
                 // The one rule (`run_ask`): the person's failure is theirs, a replaced run says
                 // nothing, any other is the agent's line.
-                let ask = run_ask(run, false)?;
+                let ask = run_ask(run, person_blocks(check))?;
                 match (ask.owner, ask.line) {
                     (RunOwner::Person, _) => Some(RunJudgment::Person(run_failure_of(run))),
                     (_, Some(line)) => Some(RunJudgment::Agent(line)),

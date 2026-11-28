@@ -1732,6 +1732,8 @@ fn a_command_that_prints_the_environment_is_a_problem() {
         "printenv &>/tmp/x",
         "export",
         "pnpm build\nenv\npnpm start",
+        "cat <<< \"$X\" > f\nenv",
+        "echo $((1<<2))\nprintenv",
     ] {
         assert!(prints_environment(yes).is_some(), "{yes}");
     }

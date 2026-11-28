@@ -422,6 +422,8 @@ struct Exec {
     problems: Vec<String>,
     /// Values the run must never show: `.env` values and bindings.
     secrets: Vec<String>,
+    /// The run's own `.env` and folder values by name, for the kept copies.
+    named: Vec<Named>,
     prep: Option<Prep>,
     pg: Vec<String>,
     child: Option<Child>,
@@ -773,7 +775,7 @@ pub fn restored_problem(restored: &[String], moved: &[String], dir: &Path) -> Pr
             if n == 1 { "" } else { "s" }
         ),
         Some(format!(
-            "{}{more} The versions the run left are in {}; values of secrets are replaced in those copies. If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
+            "{}{more} The versions the run left are in {}; values of secrets are replaced in those copies (a value that came from a variable reads `[redacted:NAME]`, so an ordinary one is recovered from its name). If one of them was your own edit made during the run, apply it again and commit it. Read a version with `iii-cloud::check::read` (`left: \"<path>\"`) and compare it with the file.",
             parts.join(" "),
             dir.display()
         )),
@@ -924,6 +926,8 @@ pub struct SetAside {
     pub moved: Vec<String>,
     /// Where their rewritten versions were kept.
     pub saved_in: Option<PathBuf>,
+    /// Of those, the ones kept as their bytes because they are not text.
+    pub binary: Vec<String>,
 }
 
 /// `set_aside`, and with the run's folder: each tracked file that was clean when the run began and
@@ -939,8 +943,21 @@ pub async fn set_aside_run(
     before: &std::collections::BTreeMap<String, String>,
     run_dir: Option<&Path>,
 ) -> SetAside {
-    set_aside_run_with(ctx, ws, before, run_dir, &crate::handoff::env_values(ctx)).await
+    set_aside_run_with(ctx, ws, before, run_dir, &crate::handoff::env_pairs(ctx)).await
 }
+
+/// The index of a run's kept files, beside its `left/` folder: what a listed (redacted) name is
+/// on disk and whether the kept copy is text.
+pub const LEFT_INDEX: &str = "left.paths.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct LeftEntry {
+    pub path: String,
+    pub text: bool,
+}
+
+/// A secret value and the variable it came from, when it came from one.
+pub type Named = (Option<String>, String);
 
 /// `set_aside_run` with the secret values to replace in the kept copies: the run's own full set.
 pub async fn set_aside_run_with(
@@ -948,7 +965,7 @@ pub async fn set_aside_run_with(
     ws: &Path,
     before: &std::collections::BTreeMap<String, String>,
     run_dir: Option<&Path>,
-    secrets: &[String],
+    secrets: &[Named],
 ) -> SetAside {
     // The person's own folder: every change in it is theirs to judge, none is the run's.
     if is_persons_folder(ctx, ws) {
@@ -966,6 +983,7 @@ pub async fn set_aside_run_with(
     let mut restored: Vec<String> = vec![];
     let mut moved: Vec<String> = vec![];
     let mut left_dir: Option<PathBuf> = None;
+    let mut binary: Vec<String> = vec![];
     if let Some(run_dir) = run_dir {
         let tracked: std::collections::BTreeSet<String> =
             tool::git(ws, &["ls-files", "-z", "--modified", "--deleted"])
@@ -996,13 +1014,15 @@ pub async fn set_aside_run_with(
         let mut budget = LEFT_BYTES_MAX;
         // Tracked files: save each, check it again, then put it back.
         let (ws2, dir2, secrets2) = (ws.to_path_buf(), dir.clone(), secrets.to_vec());
-        let (saved, left_over) = tokio::task::spawn_blocking(move || {
+        let (saved, left_over, binary_saved) = tokio::task::spawn_blocking(move || {
             let mut budget = budget;
-            let kept = keep_files(&ws2, &dir2, candidates, &mut budget, &secrets2);
-            (kept, budget)
+            let mut binary = vec![];
+            let kept = keep_files(&ws2, &dir2, candidates, &mut budget, &secrets2, &mut binary);
+            (kept, budget, binary)
         })
         .await
         .unwrap_or_default();
+        binary.extend(binary_saved);
         budget = left_over;
         restored = put_back(ws, &saved).await;
         for p in &restored {
@@ -1047,16 +1067,21 @@ pub async fn set_aside_run_with(
         };
         if !created.is_empty() {
             let (ws3, dir3, secrets3) = (ws.to_path_buf(), dir.clone(), secrets.to_vec());
-            moved = tokio::task::spawn_blocking(move || {
+            let (gone, binary_moved) = tokio::task::spawn_blocking(move || {
                 let mut budget = budget;
-                let kept = keep_files(&ws3, &dir3, created, &mut budget, &secrets3);
+                let mut binary = vec![];
+                let kept = keep_files(&ws3, &dir3, created, &mut budget, &secrets3, &mut binary);
                 // The moved files leave the copy now (their copies are in `left/`).
-                kept.into_iter()
+                let gone = kept
+                    .into_iter()
                     .filter(|p| remove_moved(&ws3, p, &before_dirs))
-                    .collect::<Vec<String>>()
+                    .collect::<Vec<String>>();
+                (gone, binary)
             })
             .await
             .unwrap_or_default();
+            moved = gone;
+            binary.extend(binary_moved);
             for p in &moved {
                 after.remove(p);
             }
@@ -1103,6 +1128,7 @@ pub async fn set_aside_run_with(
         restored,
         moved,
         saved_in: left_dir,
+        binary,
     }
 }
 
@@ -1113,11 +1139,12 @@ fn keep_files(
     dir: &Path,
     list: Vec<String>,
     budget: &mut u64,
-    secrets: &[String],
+    secrets: &[Named],
+    binary: &mut Vec<String>,
 ) -> Vec<String> {
     let mut kept: Vec<(String, String)> = vec![];
     for p in list {
-        let Some((hash, len)) = save_left(ws, dir, &p, secrets) else {
+        let Some((hash, len, text)) = save_left(ws, dir, &p, secrets) else {
             continue;
         };
         if len > *budget {
@@ -1126,6 +1153,9 @@ fn keep_files(
             continue;
         }
         *budget -= len;
+        if !text {
+            binary.push(p.clone());
+        }
         kept.push((p, hash));
     }
     recheck(ws, dir, kept, secrets)
@@ -1159,13 +1189,13 @@ fn remove_moved(ws: &Path, rel: &str, before: &std::collections::BTreeSet<String
 /// Right before the checkout: each saved file is hashed again. One whose content changed since its
 /// save is saved again, and put back only if it holds still: `left/` always has the bytes that
 /// the checkout replaces.
-fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>, secrets: &[String]) -> Vec<String> {
+fn recheck(ws: &Path, dir: &Path, kept: Vec<(String, String)>, secrets: &[Named]) -> Vec<String> {
     kept.into_iter()
         .filter_map(|(p, hash)| {
             if fingerprint(&ws.join(&p)) == hash {
                 return Some(p);
             }
-            let (again, _) = save_left(ws, dir, &p, secrets)?;
+            let (again, ..) = save_left(ws, dir, &p, secrets)?;
             (fingerprint(&ws.join(&p)) == again).then_some(p)
         })
         .collect()
@@ -1237,8 +1267,11 @@ fn parents_are_directories(ws: &Path, rel: &str) -> bool {
 /// The copy is WRITTEN with the run's secret values replaced (a `${…}` the run resolved would
 /// otherwise sit there in the clear, for anyone who reads `left/`); putting a file back uses
 /// `git checkout`, never this copy. The hash returned is of the SOURCE bytes, so the guard that
-/// looks at the file again compares what is really there. A file that is not text is not kept.
-fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(String, u64)> {
+/// looks at the file again compares what is really there. A file that is not text is kept as its
+/// bytes (nothing to replace in them; `check::read` refuses it, and the folder is 0700): the run's
+/// binary data still leaves the copy, and a tracked one is still put back. The last value says
+/// whether it is text.
+fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[Named]) -> Option<(String, u64, bool)> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -1248,7 +1281,7 @@ fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(St
         // Deleted: only when it is NotFound and no parent that exists is a file or a link (a file
         // where a directory was is the run's own data: it is not for a checkout to remove).
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && parents_are_directories(ws, rel) => {
-            return Some(("-".to_string(), 0));
+            return Some(("-".to_string(), 0, true));
         }
         Err(_) => return None,
     };
@@ -1262,17 +1295,31 @@ fn save_left(ws: &Path, dir: &Path, rel: &str, secrets: &[String]) -> Option<(St
         .create(to.parent()?)
         .ok()?;
     let bytes = std::fs::read(&from).ok()?;
-    let text = std::str::from_utf8(&bytes).ok()?;
-    let kept = redact(text, secrets);
+    let text = std::str::from_utf8(&bytes).ok();
+    let kept = match text {
+        Some(t) => redact_named(
+            t,
+            &secrets
+                .iter()
+                .map(|(n, v)| (n.as_deref(), v.as_str()))
+                .collect::<Vec<_>>(),
+        )
+        .into_bytes(),
+        None => bytes.clone(),
+    };
     std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(&to)
-        .and_then(|mut f| f.write_all(kept.as_bytes()))
+        .and_then(|mut f| f.write_all(&kept))
         .ok()?;
-    Some((hex::encode(Sha256::digest(&bytes)), bytes.len() as u64))
+    Some((
+        hex::encode(Sha256::digest(&bytes)),
+        bytes.len() as u64,
+        text.is_some(),
+    ))
 }
 
 /// The changed paths of the worktree that are the agent's: not what the last local run left
@@ -1465,6 +1512,7 @@ async fn prepare(
         settings: env_body.get("settings").cloned().unwrap_or(Value::Null),
         problems: check.problems.iter().map(|p| p.code.clone()).collect(),
         secrets: vec![],
+        named: vec![],
         prep: None,
         pg: vec![],
         child: None,
@@ -1638,8 +1686,10 @@ impl Exec {
         if let Some(before) = self.wrote_before.take() {
             // The kept copies are written with every secret this run knows replaced (its `.env`,
             // the folder's values, the database URL and passwords) and what the worker holds.
-            let mut secrets = self.secrets.clone();
-            secrets.extend(crate::handoff::env_values(&self.ctx));
+            // Named values first: a value both named and not shows its name.
+            let mut secrets = self.named.clone();
+            secrets.extend(crate::handoff::env_pairs(&self.ctx));
+            secrets.extend(self.secrets.iter().map(|v| (None, v.clone())));
             let done = set_aside_run_with(
                 &self.ctx,
                 &self.workspace,
@@ -1654,22 +1704,42 @@ impl Exec {
             }
             if !done.restored.is_empty() || !done.moved.is_empty() {
                 // A path can carry a secret (a vault named after a key): said redacted.
-                let restored: Vec<String> = done.restored.iter().map(|p| self.redact(p)).collect();
-                let moved: Vec<String> = done.moved.iter().map(|p| self.redact(p)).collect();
-                // A path shown redacted is read by that name: the index (in the run's private
-                // `left/` folder) maps it back to the name on disk.
-                let index: std::collections::BTreeMap<String, String> = done
-                    .restored
+                // Two paths that redact to one name get distinct names (` (2)`), so each is read.
+                let mut taken = std::collections::BTreeSet::new();
+                let mut shown = |p: &String| {
+                    let base = self.redact(p);
+                    let mut name = base.clone();
+                    let mut n = 1;
+                    while !taken.insert(name.clone()) {
+                        n += 1;
+                        name = format!("{base} ({n})");
+                    }
+                    name
+                };
+                let restored: Vec<String> = done.restored.iter().map(&mut shown).collect();
+                let moved: Vec<String> = done.moved.iter().map(&mut shown).collect();
+                // A path shown redacted is read by that name, and one kept as bytes is marked: the
+                // index sits beside the run's private `left/` folder, not in it.
+                let index: std::collections::BTreeMap<String, LeftEntry> = restored
                     .iter()
-                    .chain(done.moved.iter())
-                    .map(|p| (self.redact(p), p.clone()))
-                    .filter(|(shown, real)| shown != real)
+                    .chain(moved.iter())
+                    .zip(done.restored.iter().chain(done.moved.iter()))
+                    .map(|(shown, p)| {
+                        (
+                            shown.clone(),
+                            LeftEntry {
+                                path: p.clone(),
+                                text: !done.binary.contains(p),
+                            },
+                        )
+                    })
+                    .filter(|(shown, e)| *shown != e.path || !e.text)
                     .collect();
                 if !index.is_empty()
-                    && let Some(dir) = &done.saved_in
+                    && let Some(dir) = done.saved_in.as_ref().and_then(|d| d.parent())
                     && let Ok(text) = serde_json::to_string(&index)
                 {
-                    let _ = std::fs::write(dir.join(".paths.json"), text);
+                    let _ = std::fs::write(dir.join(LEFT_INDEX), text);
                 }
                 self.run.restored = restored.clone();
                 self.run.moved = moved.clone();
@@ -1783,6 +1853,8 @@ impl Exec {
             }
         }
         self.secrets.extend(run_env.iter().map(|(_, v)| v.clone()));
+        self.named
+            .extend(run_env.iter().map(|(n, v)| (Some(n.clone()), v.clone())));
         self.secrets
             .extend(self.ctx.known_secrets.lock().unwrap().iter().cloned());
         let http_ports = manifest
@@ -3076,16 +3148,59 @@ async fn pump(out: impl tokio::io::AsyncRead + Unpin, file: PathBuf, secrets: Ar
     }
 }
 
-/// Replace every secret value (3 characters or more) with `[redacted]`.
+/// Replace every secret value (3 characters or more) with `[redacted]`. The longest value goes
+/// first, so a short one that sits inside a longer secret (`test` in `sk_test_51N…`) cannot
+/// leave the rest of that secret in the clear. A value is also caught as a writer may have
+/// written it: JSON-escaped, YAML single-quoted (`'` doubled), and, when it has several lines,
+/// each line of 8 characters or more (a block scalar indents them).
 pub fn redact(text: &str, secrets: &[String]) -> String {
-    secrets
-        .iter()
-        // Every non-empty value, so `s3cret` goes too; only 1-2 characters
-        // would turn the log into noise.
-        .filter(|s| s.len() >= 3)
-        .fold(text.to_string(), |acc, s| {
-            acc.replace(s.as_str(), "[redacted]")
-        })
+    redact_named(
+        text,
+        &secrets
+            .iter()
+            .map(|s| (None, s.as_str()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `redact`, where a value that came from a named variable is replaced by `[redacted:NAME]`
+/// (the first name given for a value wins). Used for the kept copies only: there the agent
+/// needs to tell an ordinary value (`LOG_LEVEL=info`) from a secret to apply a file again.
+pub fn redact_named(text: &str, secrets: &[(Option<&str>, &str)]) -> String {
+    // Every non-empty value, so `s3cret` goes too; only 1-2 characters would turn the log into
+    // noise.
+    let mut needles: Vec<(String, String)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (name, value) in secrets.iter().filter(|(_, v)| v.len() >= 3) {
+        let marker = match name {
+            Some(n) => format!("[redacted:{n}]"),
+            None => "[redacted]".to_string(),
+        };
+        let json = serde_json::to_string(value).unwrap_or_default();
+        let mut forms = vec![
+            value.to_string(),
+            json.trim_matches('"').to_string(),
+            value.replace('\'', "''"),
+        ];
+        if value.contains('\n') {
+            forms.extend(
+                value
+                    .lines()
+                    .map(|l| l.trim_end_matches('\r'))
+                    .filter(|l| l.len() >= 8)
+                    .map(str::to_string),
+            );
+        }
+        for f in forms {
+            if f.len() >= 3 && seen.insert(f.clone()) {
+                needles.push((f, marker.clone()));
+            }
+        }
+    }
+    needles.sort_by_key(|n| std::cmp::Reverse(n.0.len()));
+    needles
+        .into_iter()
+        .fold(text.to_string(), |acc, (n, m)| acc.replace(&n, &m))
 }
 
 fn tail_of(file: &Path) -> Vec<String> {
@@ -3152,7 +3267,79 @@ pub async fn prune(runs: &Path, keep: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{recheck, save_left};
+    use super::{recheck, redact, save_left};
+
+    #[test]
+    fn a_kept_copy_names_the_variable_a_value_came_from() {
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("c.yaml"),
+            "level: info\nsee the info page\nkey: sk_live_abcdef\n",
+        )
+        .unwrap();
+        let secrets = vec![
+            (Some("LOG_LEVEL".to_string()), "info".to_string()),
+            (None, "sk_live_abcdef".to_string()),
+        ];
+        save_left(ws.path(), left.path(), "c.yaml", &secrets).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("c.yaml")).unwrap(),
+            "level: [redacted:LOG_LEVEL]\nsee the [redacted:LOG_LEVEL] page\nkey: [redacted]\n"
+        );
+    }
+
+    #[test]
+    fn a_value_is_caught_as_a_writer_may_have_written_it() {
+        let pem = "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQ\nsecondlineofthekey==\n-----END KEY-----";
+        let quoted = "it's-a-secret-v4lue";
+        let secrets = vec![pem.to_string(), quoted.to_string()];
+        let block = "key: |-\n  -----BEGIN KEY-----\n  MIIEvQIBADANBgkqhkiG9w0BAQ\n  secondlineofthekey==\n  -----END KEY-----\n";
+        let out = redact(block, &secrets);
+        assert!(
+            !out.contains("MIIEvQ") && !out.contains("secondline"),
+            "{out}"
+        );
+        let yaml = "pw: 'it''s-a-secret-v4lue'\n";
+        assert_eq!(redact(yaml, &secrets), "pw: '[redacted]'\n");
+        let json = format!("{{\"pem\":{}}}", serde_json::to_string(pem).unwrap());
+        assert_eq!(redact(&json, &secrets), "{\"pem\":\"[redacted]\"}");
+    }
+
+    #[test]
+    fn a_short_value_inside_a_longer_secret_does_not_leave_the_secret_in_the_clear() {
+        let key = "sk_test_51NabcSECRETPART";
+        let secrets = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let text = format!("key: {key}");
+        assert_eq!(redact(&text, &secrets(&["test", key])), "key: [redacted]");
+        let url = "postgres://app:Hunter2pw@db.example.com/app";
+        assert_eq!(
+            redact(&format!("url: {url}"), &secrets(&["app", url, "app"])),
+            "url: [redacted]"
+        );
+        // The same through a kept copy.
+        let ws = tempfile::tempdir().unwrap();
+        let left = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ws.path().join("c.yaml"),
+            format!("key: {key}\nurl: {url}\n"),
+        )
+        .unwrap();
+        save_left(
+            ws.path(),
+            left.path(),
+            "c.yaml",
+            &secrets(&["test", "app", key, url])
+                .into_iter()
+                .map(|v| (None, v))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("c.yaml")).unwrap(),
+            "key: [redacted]\nurl: [redacted]\n"
+        );
+    }
 
     #[test]
     fn a_file_changed_between_its_save_and_the_checkout_is_saved_again() {
@@ -3184,13 +3371,13 @@ mod tests {
     fn the_kept_copy_has_secrets_replaced_and_the_guard_compares_the_source() {
         let ws = tempfile::tempdir().unwrap();
         let left = tempfile::tempdir().unwrap();
-        let secrets = vec!["pg-pass-xyz".to_string()];
+        let secrets = vec![(None, "pg-pass-xyz".to_string())];
         std::fs::write(
             ws.path().join("c.yaml"),
             "url: postgres://u:pg-pass-xyz@h/db\n",
         )
         .unwrap();
-        let (hash, _) = save_left(ws.path(), left.path(), "c.yaml", &secrets).unwrap();
+        let (hash, ..) = save_left(ws.path(), left.path(), "c.yaml", &secrets).unwrap();
         let kept = std::fs::read_to_string(left.path().join("c.yaml")).unwrap();
         assert!(!kept.contains("pg-pass-xyz"), "{kept}");
         // The source is unchanged: the guard passes, though the copy differs from it.

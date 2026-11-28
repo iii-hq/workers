@@ -3813,6 +3813,49 @@ async fn asking_again_for_a_check_already_told_answers_that_something_went() {
 }
 
 #[tokio::test]
+async fn a_check_marked_told_without_a_send_is_sent_when_the_person_asks() {
+    // The person's check ended while the agent worked: told (old news), nothing sent. The agent is
+    // done now and the person asks again: it goes now.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    h.ctx.store.update(|s| {
+        s.handoffs[0].person_check = Some("person-check".into());
+        s.handoffs[0].person_check_told = Some("person-check".into());
+    });
+    let before = continues(&h).len();
+    let made = create(&h.ctx, ready_req()).await.unwrap();
+    assert!(made.reused && made.sent == Some(true), "{made:?}");
+    assert_eq!(
+        continues(&h).len(),
+        before + 1,
+        "the check went to the agent"
+    );
+
+    // The cap is reached: nothing is sent, the answer is no and the page's text is delivered.
+    let (h, _ws, _w, _keep) = ended_agent().await;
+    person_check(&h, vec![], Some(release_failed()), false);
+    h.ctx.store.update(|s| {
+        s.handoffs[0].person_check_told = Some("person-check".into());
+        s.handoffs[0].continues = 3;
+    });
+    let before = sent(&h).len();
+    let made = create(
+        &h.ctx,
+        HandoffRequest {
+            text: Some("PAGE TEXT".into()),
+            ..ready_req()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        made.reused && made.sent == Some(false) && made.delivered,
+        "{made:?}"
+    );
+    assert!(sent(&h)[before..].iter().any(|m| m.contains("PAGE TEXT")));
+}
+
+#[tokio::test]
 async fn a_new_hand_off_never_puts_the_pages_text_onto_an_open_ask_of_the_old_chat() {
     // The old hand-off is quiet for over 30 minutes (not reused) with a real ask still open.
     let (h, _ws, w, _keep) = ended_agent().await;

@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+/// What one request to the cloud is given before it fails.
+pub const REQUEST_TIMEOUT_SECS: u64 = 60;
+
 use crate::config::Config;
 use crate::configuration::ConfigCell;
 use crate::error::{CloudError, Res};
@@ -195,7 +198,7 @@ impl Ctx {
             store,
             plat,
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 .user_agent(concat!("iii-cloud-worker/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .expect("http client builds"),
